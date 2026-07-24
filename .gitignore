@@ -48,6 +48,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.replit
+.replitignore
+.replit_integration_files/
+.agents/
+replit.md
 
 # Uploaded user files (persisted on disk, not committed to git)
 /uploads/
