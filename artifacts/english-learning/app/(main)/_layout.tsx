@@ -11,6 +11,9 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import authStorage from "@/utils/authStorage";
 import { TabGuide, TAB_GUIDE_CONTENT, type TabGuideTab } from "@/components/TabGuide";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PlacementTest } from "@/components/PlacementTest";
+import { fc } from "@/hooks/useFlashcards";
 
 export const SESSION_START_KEY = "timer_session_start";
 
@@ -141,6 +144,8 @@ function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: 
   const hideTabBar = [
     "assignment/[id]",
     "submission-review/[id]",
+    "flashcards/study/[deckId]",
+    "flashcards/placement",
   ].includes(currentRouteName);
   if (hideTabBar) return null;
 
@@ -277,6 +282,10 @@ function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: 
 function MainLayoutInner() {
   const { user, isLoading } = useAuth();
   const colors = useColors();
+  const qc = useQueryClient();
+  // Гейт placement-теста: ученик проходит тест уровня при первом входе.
+  const isStudentRole = user?.role === "student";
+  const placementSettingsQ = useQuery({ queryKey: ["fc-settings"], queryFn: fc.getSettings, enabled: !!user && isStudentRole });
 
   // State for the tab guide
   const [guideState, setGuideState] = useState<{
@@ -318,6 +327,25 @@ function MainLayoutInner() {
   const isTeacher = isTeacherOrAdmin(user.role);
   const isParent = user.role === "parent";
 
+  // Первый вход ученика без пройденного теста → показываем тест уровня.
+  if (isStudent) {
+    if (placementSettingsQ.isLoading) {
+      return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      );
+    }
+    if (placementSettingsQ.data && !placementSettingsQ.data.placementDone) {
+      return (
+        <View style={{ flex: 1 }}>
+          <StudentTimerManager />
+          <PlacementTest onDone={() => { qc.invalidateQueries({ queryKey: ["fc-settings"] }); placementSettingsQ.refetch(); }} />
+        </View>
+      );
+    }
+  }
+
   return (
     <>
       {isStudent && <StudentTimerManager />}
@@ -343,6 +371,14 @@ function MainLayoutInner() {
             title: "Задания",
             tabBarIcon: ({ color }) => <Feather name="book-open" size={22} color={color} />,
           }}
+        />
+
+        <Tabs.Screen
+          name="flashcards"
+          options={isStudent
+            ? { title: "Слова", tabBarIcon: ({ color }) => <Feather name="layers" size={22} color={color} /> }
+            : { href: null }
+          }
         />
 
         <Tabs.Screen name="history" options={{ href: null }} />
@@ -398,6 +434,11 @@ function MainLayoutInner() {
         <Tabs.Screen name="friend/[id]" options={{ href: null }} />
         <Tabs.Screen name="teacher-results/[id]" options={{ href: null }} />
         <Tabs.Screen name="submission-review/[id]" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/study/[deckId]" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/placement" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/stats" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
       </Tabs>
 
       {/* Preload mascot image so it appears instantly when TabGuide opens */}

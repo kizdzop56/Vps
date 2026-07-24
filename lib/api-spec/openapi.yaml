@@ -26,6 +26,8 @@ tags:
     description: Points and leaderboard
   - name: upload
     description: File uploads
+  - name: flashcards
+    description: Vocabulary flashcards, decks and CEFR placement test
 
 paths:
   /healthz:
@@ -654,6 +656,238 @@ paths:
               schema:
                 $ref: "#/components/schemas/UploadResult"
 
+  /flashcards/decks:
+    get:
+      operationId: listDecks
+      tags: [flashcards]
+      summary: List decks with per-user progress
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Decks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckList"
+    post:
+      operationId: createDeck
+      tags: [flashcards]
+      summary: Create a custom deck
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeckRequest"
+      responses:
+        "201":
+          description: Created deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlashcardDeck"
+
+  /flashcards/decks/{id}/words:
+    get:
+      operationId: listDeckWords
+      tags: [flashcards]
+      summary: List words in a deck
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Words
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WordList"
+    post:
+      operationId: addWord
+      tags: [flashcards]
+      summary: Add a word to a custom deck (auto-fills missing fields)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddWordRequest"
+      responses:
+        "201":
+          description: Added word
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlashcardWord"
+
+  /flashcards/decks/{id}/import:
+    post:
+      operationId: importWords
+      tags: [flashcards]
+      summary: Import words (CSV or JSON) into a custom deck
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportRequest"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+
+  /flashcards/study/{deckId}:
+    get:
+      operationId: getStudyQueue
+      tags: [flashcards]
+      summary: Get today's study queue for a deck (new + due cards)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: deckId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Study queue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyQueue"
+
+  /flashcards/review:
+    post:
+      operationId: submitReview
+      tags: [flashcards]
+      summary: Submit a card review (spaced-repetition update)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewRequest"
+      responses:
+        "200":
+          description: Updated card state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewResult"
+
+  /flashcards/placement:
+    get:
+      operationId: getPlacementTest
+      tags: [flashcards]
+      summary: Get placement test questions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Placement test
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementTest"
+    post:
+      operationId: submitPlacement
+      tags: [flashcards]
+      summary: Submit placement answers and compute CEFR level
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlacementSubmitRequest"
+      responses:
+        "200":
+          description: Placement result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementResultResponse"
+
+  /flashcards/stats:
+    get:
+      operationId: getFlashcardStats
+      tags: [flashcards]
+      summary: Get learning statistics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlashcardStats"
+
+  /flashcards/settings:
+    get:
+      operationId: getFlashcardSettings
+      tags: [flashcards]
+      summary: Get flashcard settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlashcardSettings"
+    patch:
+      operationId: updateFlashcardSettings
+      tags: [flashcards]
+      summary: Update flashcard settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSettingsRequest"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlashcardSettings"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1208,3 +1442,383 @@ components:
       required:
         - url
         - filename
+
+    FlashcardWord:
+      type: object
+      properties:
+        id:
+          type: integer
+        deckId:
+          type: integer
+        english:
+          type: string
+        partOfSpeech:
+          type: string
+        translationsRu:
+          type: array
+          items:
+            type: string
+        ipa:
+          type: string
+        exampleEn:
+          type: string
+        exampleRu:
+          type: string
+        cefrLevel:
+          type: string
+        audioUrl:
+          type: string
+      required:
+        - id
+        - deckId
+        - english
+        - translationsRu
+
+    WordList:
+      type: array
+      items:
+        $ref: "#/components/schemas/FlashcardWord"
+
+    FlashcardDeck:
+      type: object
+      properties:
+        id:
+          type: integer
+        ownerId:
+          type: integer
+        title:
+          type: string
+        theme:
+          type: string
+        description:
+          type: string
+        emoji:
+          type: string
+        isSystem:
+          type: boolean
+        cefrLevel:
+          type: string
+        wordCount:
+          type: integer
+      required:
+        - id
+        - title
+        - isSystem
+        - wordCount
+
+    DeckWithProgress:
+      type: object
+      properties:
+        id:
+          type: integer
+        ownerId:
+          type: integer
+        title:
+          type: string
+        theme:
+          type: string
+        description:
+          type: string
+        emoji:
+          type: string
+        isSystem:
+          type: boolean
+        cefrLevel:
+          type: string
+        wordCount:
+          type: integer
+        learnedCount:
+          type: integer
+        dueCount:
+          type: integer
+        newCount:
+          type: integer
+      required:
+        - id
+        - title
+        - isSystem
+        - wordCount
+        - learnedCount
+        - dueCount
+        - newCount
+
+    DeckList:
+      type: array
+      items:
+        $ref: "#/components/schemas/DeckWithProgress"
+
+    CreateDeckRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        theme:
+          type: string
+        emoji:
+          type: string
+        description:
+          type: string
+      required:
+        - title
+
+    AddWordRequest:
+      type: object
+      properties:
+        english:
+          type: string
+        translationsRu:
+          type: array
+          items:
+            type: string
+        ipa:
+          type: string
+        exampleEn:
+          type: string
+        exampleRu:
+          type: string
+        partOfSpeech:
+          type: string
+        cefrLevel:
+          type: string
+      required:
+        - english
+
+    ImportRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [csv, json]
+        content:
+          type: string
+      required:
+        - format
+        - content
+
+    ImportResult:
+      type: object
+      properties:
+        added:
+          type: integer
+        skipped:
+          type: integer
+      required:
+        - added
+        - skipped
+
+    StudyCard:
+      type: object
+      properties:
+        id:
+          type: integer
+        deckId:
+          type: integer
+        english:
+          type: string
+        partOfSpeech:
+          type: string
+        translationsRu:
+          type: array
+          items:
+            type: string
+        ipa:
+          type: string
+        exampleEn:
+          type: string
+        exampleRu:
+          type: string
+        cefrLevel:
+          type: string
+        memoryLevel:
+          type: integer
+        introduced:
+          type: boolean
+        isNew:
+          type: boolean
+      required:
+        - id
+        - deckId
+        - english
+        - translationsRu
+        - memoryLevel
+        - introduced
+        - isNew
+
+    StudyQueue:
+      type: object
+      properties:
+        deckId:
+          type: integer
+        deckTitle:
+          type: string
+        isSystem:
+          type: boolean
+        needsIntro:
+          type: boolean
+        newCount:
+          type: integer
+        reviewCount:
+          type: integer
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyCard"
+      required:
+        - deckId
+        - needsIntro
+        - newCount
+        - reviewCount
+        - cards
+
+    ReviewRequest:
+      type: object
+      properties:
+        wordId:
+          type: integer
+        result:
+          type: string
+          enum: [know, dont]
+      required:
+        - wordId
+        - result
+
+    ReviewResult:
+      type: object
+      properties:
+        wordId:
+          type: integer
+        memoryLevel:
+          type: integer
+        dueAt:
+          type: string
+      required:
+        - wordId
+        - memoryLevel
+        - dueAt
+
+    PlacementQuestion:
+      type: object
+      properties:
+        id:
+          type: integer
+        section:
+          type: string
+        question:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+      required:
+        - id
+        - section
+        - question
+        - options
+
+    PlacementTest:
+      type: object
+      properties:
+        total:
+          type: integer
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlacementQuestion"
+      required:
+        - total
+        - questions
+
+    PlacementAnswer:
+      type: object
+      properties:
+        id:
+          type: integer
+        choice:
+          type: integer
+      required:
+        - id
+        - choice
+
+    PlacementSubmitRequest:
+      type: object
+      properties:
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlacementAnswer"
+      required:
+        - answers
+
+    PlacementResultResponse:
+      type: object
+      properties:
+        score:
+          type: integer
+        total:
+          type: integer
+        cefrLevel:
+          type: string
+        message:
+          type: string
+      required:
+        - score
+        - total
+        - cefrLevel
+
+    FlashcardStatDay:
+      type: object
+      properties:
+        date:
+          type: string
+        learned:
+          type: integer
+        reviews:
+          type: integer
+        correct:
+          type: integer
+      required:
+        - date
+        - learned
+        - reviews
+        - correct
+
+    FlashcardStats:
+      type: object
+      properties:
+        totalLearned:
+          type: integer
+        totalWords:
+          type: integer
+        totalReviews:
+          type: integer
+        accuracy:
+          type: integer
+        daily:
+          type: array
+          items:
+            $ref: "#/components/schemas/FlashcardStatDay"
+      required:
+        - totalLearned
+        - totalWords
+        - totalReviews
+        - accuracy
+        - daily
+
+    FlashcardSettings:
+      type: object
+      properties:
+        dailyNewLimit:
+          type: integer
+        placementLevel:
+          type: string
+        placementDone:
+          type: boolean
+      required:
+        - dailyNewLimit
+        - placementDone
+
+    UpdateSettingsRequest:
+      type: object
+      properties:
+        dailyNewLimit:
+          type: integer

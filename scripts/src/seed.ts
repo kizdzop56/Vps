@@ -7,6 +7,7 @@
 import "./load-env";
 import bcrypt from "bcryptjs";
 import { db, pool, usersTable, teacherStudentsTable } from "@workspace/db";
+import { seedFlashcards } from "./seed-flashcards";
 
 const TEACHER = {
   username: "teacher",
@@ -72,6 +73,9 @@ async function main() {
     .insert(teacherStudentsTable)
     .values({ teacherId, studentId, status: "accepted" })
     .onConflictDoNothing();
+
+  // Готовые колоды флеш-карточек (идемпотентно)
+  await seedFlashcards();
 
   console.log("\n✅ Seed complete. Test accounts (login = username):\n");
   console.log(`  👩‍🏫  Teacher  →  username: ${TEACHER.username}   password: ${TEACHER.password}  (id ${teacherId})`);

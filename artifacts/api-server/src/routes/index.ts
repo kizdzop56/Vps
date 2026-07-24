@@ -12,6 +12,7 @@ import storageRouter from "./storage";
 import connectionsRouter from "./connections";
 import calendarRouter from "./calendar";
 import gamificationRouter from "./gamification";
+import flashcardsRouter from "./flashcards";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(storageRouter);
 router.use(connectionsRouter);
 router.use(calendarRouter);
 router.use(gamificationRouter);
+router.use(flashcardsRouter);
 
 export default router;

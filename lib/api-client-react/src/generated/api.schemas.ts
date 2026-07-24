@@ -271,6 +271,182 @@ export interface UploadResult {
   filename: string;
 }
 
+export interface FlashcardWord {
+  id: number;
+  deckId: number;
+  english: string;
+  partOfSpeech?: string;
+  translationsRu: string[];
+  ipa?: string;
+  exampleEn?: string;
+  exampleRu?: string;
+  cefrLevel?: string;
+  audioUrl?: string;
+}
+
+export type WordList = FlashcardWord[];
+
+export interface FlashcardDeck {
+  id: number;
+  ownerId?: number;
+  title: string;
+  theme?: string;
+  description?: string;
+  emoji?: string;
+  isSystem: boolean;
+  cefrLevel?: string;
+  wordCount: number;
+}
+
+export interface DeckWithProgress {
+  id: number;
+  ownerId?: number;
+  title: string;
+  theme?: string;
+  description?: string;
+  emoji?: string;
+  isSystem: boolean;
+  cefrLevel?: string;
+  wordCount: number;
+  learnedCount: number;
+  dueCount: number;
+  newCount: number;
+}
+
+export type DeckList = DeckWithProgress[];
+
+export interface CreateDeckRequest {
+  title: string;
+  theme?: string;
+  emoji?: string;
+  description?: string;
+}
+
+export interface AddWordRequest {
+  english: string;
+  translationsRu?: string[];
+  ipa?: string;
+  exampleEn?: string;
+  exampleRu?: string;
+  partOfSpeech?: string;
+  cefrLevel?: string;
+}
+
+export type ImportRequestFormat = typeof ImportRequestFormat[keyof typeof ImportRequestFormat];
+
+
+export const ImportRequestFormat = {
+  csv: 'csv',
+  json: 'json',
+} as const;
+
+export interface ImportRequest {
+  format: ImportRequestFormat;
+  content: string;
+}
+
+export interface ImportResult {
+  added: number;
+  skipped: number;
+}
+
+export interface StudyCard {
+  id: number;
+  deckId: number;
+  english: string;
+  partOfSpeech?: string;
+  translationsRu: string[];
+  ipa?: string;
+  exampleEn?: string;
+  exampleRu?: string;
+  cefrLevel?: string;
+  memoryLevel: number;
+  introduced: boolean;
+  isNew: boolean;
+}
+
+export interface StudyQueue {
+  deckId: number;
+  deckTitle?: string;
+  isSystem?: boolean;
+  needsIntro: boolean;
+  newCount: number;
+  reviewCount: number;
+  cards: StudyCard[];
+}
+
+export type ReviewRequestResult = typeof ReviewRequestResult[keyof typeof ReviewRequestResult];
+
+
+export const ReviewRequestResult = {
+  know: 'know',
+  dont: 'dont',
+} as const;
+
+export interface ReviewRequest {
+  wordId: number;
+  result: ReviewRequestResult;
+}
+
+export interface ReviewResult {
+  wordId: number;
+  memoryLevel: number;
+  dueAt: string;
+}
+
+export interface PlacementQuestion {
+  id: number;
+  section: string;
+  question: string;
+  options: string[];
+}
+
+export interface PlacementTest {
+  total: number;
+  questions: PlacementQuestion[];
+}
+
+export interface PlacementAnswer {
+  id: number;
+  choice: number;
+}
+
+export interface PlacementSubmitRequest {
+  answers: PlacementAnswer[];
+}
+
+export interface PlacementResultResponse {
+  score: number;
+  total: number;
+  cefrLevel: string;
+  message?: string;
+}
+
+export interface FlashcardStatDay {
+  date: string;
+  learned: number;
+  reviews: number;
+  correct: number;
+}
+
+export interface FlashcardStats {
+  totalLearned: number;
+  totalWords: number;
+  totalReviews: number;
+  accuracy: number;
+  daily: FlashcardStatDay[];
+}
+
+export interface FlashcardSettings {
+  dailyNewLimit: number;
+  placementLevel?: string;
+  placementDone: boolean;
+}
+
+export interface UpdateSettingsRequest {
+  dailyNewLimit?: number;
+}
+
 export type ListUsersParams = {
 role?: ListUsersRole;
 parentId?: number;
