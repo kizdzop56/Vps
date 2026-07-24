@@ -22,10 +22,11 @@ function normalize(s: string): string {
 function isCorrect(typed: string, translations: string[]): boolean {
   const t = normalize(typed);
   if (!t) return false;
-  return translations.some((tr) => {
-    const n = normalize(tr);
-    return n === t || n.split(/[,;/]/).map((x) => x.trim()).includes(t);
-  });
+  // Разбиваем каждый перевод на варианты (по , ; /) ДО нормализации, чтобы
+  // перевод из нескольких значений в одной строке («идти, ехать») матчился по «идти».
+  return translations.some((tr) =>
+    tr.split(/[,;/]/).some((part) => normalize(part) === t)
+  );
 }
 
 export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () => void }) {
@@ -58,7 +59,10 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
 
   const doFlip = useCallback((to: boolean) => {
     setFlipped(to);
-    Animated.timing(flip, { toValue: to ? 1 : 0, duration: 320, useNativeDriver: Platform.OS !== "web" }).start();
+    // useNativeDriver:false — panX управляется JS-драйвером (Animated.event ниже),
+    // поэтому все анимации карточки держим на одном (JS) драйвере во избежание
+    // конфликта «два драйвера на одном узле» на iOS/Android.
+    Animated.timing(flip, { toValue: to ? 1 : 0, duration: 320, useNativeDriver: false }).start();
   }, [flip]);
 
   const resetCard = useCallback(() => {
@@ -80,7 +84,7 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
     Animated.timing(panX, {
       toValue: result === "know" ? width : -width,
       duration: 220,
-      useNativeDriver: Platform.OS !== "web",
+      useNativeDriver: false,
     }).start(() => {
       if (pos + 1 >= cards.length) { setPhase("done"); return; }
       setPos((p) => p + 1);
@@ -93,7 +97,7 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
     const { translationX } = e.nativeEvent;
     if (translationX > SWIPE_THRESHOLD) commit("know");
     else if (translationX < -SWIPE_THRESHOLD) commit("dont");
-    else Animated.spring(panX, { toValue: 0, useNativeDriver: Platform.OS !== "web" }).start();
+    else Animated.spring(panX, { toValue: 0, useNativeDriver: false }).start();
   }, [commit, panX]);
 
   // ── слайд-шоу-знакомство ──
@@ -270,12 +274,12 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
                 onChangeText={setTyped}
                 placeholder="Введите перевод…"
                 placeholderTextColor={colors.mutedForeground}
-                onSubmitEditing={() => { setAnswered(isCorrect(typed, card?.translationsRu ?? [])); doFlip(true); }}
+                onSubmitEditing={() => { setAnswered(typed.trim() ? isCorrect(typed, card?.translationsRu ?? []) : null); doFlip(true); }}
                 style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.foreground }}
               />
             )}
             {!flipped ? (
-              <TouchableOpacity onPress={() => { setAnswered(isCorrect(typed, card?.translationsRu ?? [])); doFlip(true); }} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
+              <TouchableOpacity onPress={() => { setAnswered(typed.trim() ? isCorrect(typed, card?.translationsRu ?? []) : null); doFlip(true); }} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
                 <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Показать перевод</Text>
               </TouchableOpacity>
             ) : (
