@@ -1,0 +1,31 @@
+# Keep the Docker build context small and reproducible.
+.git
+node_modules
+**/node_modules
+
+# Replit-session leftovers (large, unused by the app — verified)
+attached_assets
+screenshots
+.agents
+.replit_integration_files
+.replit
+.replitignore
+
+# Local/dev artifacts
+**/dist
+**/dist-artifact
+**/static-build
+**/.expo
+**/.metro-cache
+*.tsbuildinfo
+uploads
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# Misc
+*.patch
+docker-compose.yml
+DEV.md

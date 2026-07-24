@@ -1,0 +1,41 @@
+# Caddy reverse proxy with automatic HTTPS (Let's Encrypt).
+# Place at /etc/caddy/Caddyfile. Caddy auto-provisions + renews the cert.
+#
+#   sudo apt install caddy
+#   sudo systemctl enable --now caddy
+#   sudo nano /etc/caddy/Caddyfile   # paste this, edit the domain
+#   sudo systemctl reload caddy
+
+your-domain.example.com {
+	# The Node app (prod-start.mjs) listens on 127.0.0.1:3000 and already does
+	# its OWN internal routing: /api/* -> Express, everything else -> Expo web.
+	# Health endpoint (already in the app): GET /api/healthz -> {"status":"ok"}.
+	reverse_proxy 127.0.0.1:3000
+
+	# Streaming + long uploads (voice chat audio, avatar uploads).
+	# flush_interval -1 streams responses immediately (SSE/websocket friendly).
+	flush_interval -1
+
+	# Baseline security headers (defense in depth behind the proxy).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		# Tighten if you don't embed the app in iframes anywhere.
+		# X-Frame-Options "DENY"
+	}
+
+	# Compress text responses.
+	encode gzip zstd
+
+	# Static asset long-cache is handled by Expo's hashed filenames.
+	# No extra cache directives needed here.
+
+	# Logging to systemd journal (default). Rotate via logrotate if file-based.
+	log {
+		output file /var/log/caddy/v2.log {
+			roll_size 100mb
+			roll_keep 7
+		}
+	}
+}

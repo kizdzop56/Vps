@@ -1,0 +1,1210 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: English Learning App API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User management
+  - name: assignments
+    description: Assignment management
+  - name: submissions
+    description: Assignment submissions
+  - name: voiceChat
+    description: AI voice chat sessions
+  - name: timeTracking
+    description: Student time tracking
+  - name: leaderboard
+    description: Points and leaderboard
+  - name: upload
+    description: File uploads
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List all users (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [student, parent, admin]
+        - name: parentId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get user by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserWithStats"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Update user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{id}/children:
+    get:
+      operationId: getParentChildren
+      tags: [users]
+      summary: Get children of a parent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of children
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserWithStats"
+
+  /assignments:
+    get:
+      operationId: listAssignments
+      tags: [assignments]
+      summary: List assignments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [text_test, audio, reading, video]
+        - name: ageMin
+          in: query
+          schema:
+            type: integer
+        - name: ageMax
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of assignments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Assignment"
+
+    post:
+      operationId: createAssignment
+      tags: [assignments]
+      summary: Create assignment (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAssignmentRequest"
+      responses:
+        "201":
+          description: Created assignment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+
+  /assignments/{id}:
+    get:
+      operationId: getAssignment
+      tags: [assignments]
+      summary: Get assignment by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Assignment detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateAssignment
+      tags: [assignments]
+      summary: Update assignment (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAssignmentRequest"
+      responses:
+        "200":
+          description: Updated assignment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+
+    delete:
+      operationId: deleteAssignment
+      tags: [assignments]
+      summary: Delete assignment (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /assignments/{id}/submit:
+    post:
+      operationId: submitAssignment
+      tags: [submissions]
+      summary: Submit assignment answers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitAssignmentRequest"
+      responses:
+        "200":
+          description: Submission result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionResult"
+
+  /assignments/{id}/submissions:
+    get:
+      operationId: getAssignmentSubmissions
+      tags: [submissions]
+      summary: Get all submissions for assignment (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of submissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Submission"
+
+  /students/{id}/submissions:
+    get:
+      operationId: getStudentSubmissions
+      tags: [submissions]
+      summary: Get submissions for a student
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of submissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Submission"
+
+  /students/{id}/errors:
+    get:
+      operationId: getStudentErrors
+      tags: [submissions]
+      summary: Get error summary for a student (admin/parent)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Error summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudentError"
+
+  /voice-chat/sessions:
+    get:
+      operationId: listVoiceChatSessions
+      tags: [voiceChat]
+      summary: List voice chat sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: studentId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VoiceChatSession"
+
+    post:
+      operationId: createVoiceChatSession
+      tags: [voiceChat]
+      summary: Start a new voice chat session
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceChatSession"
+
+  /voice-chat/sessions/{id}:
+    get:
+      operationId: getVoiceChatSession
+      tags: [voiceChat]
+      summary: Get voice chat session with messages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceChatSessionDetail"
+
+  /voice-chat/sessions/{id}/messages:
+    post:
+      operationId: sendVoiceMessage
+      tags: [voiceChat]
+      summary: Send audio message and get AI response
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendVoiceMessageRequest"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceMessageResponse"
+
+  /time-tracking/start:
+    post:
+      operationId: startTimeSession
+      tags: [timeTracking]
+      summary: Start time tracking session
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSession"
+
+  /time-tracking/end:
+    post:
+      operationId: endTimeSession
+      tags: [timeTracking]
+      summary: End time tracking session
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSession"
+
+  /students/{id}/time:
+    get:
+      operationId: getStudentTimeStats
+      tags: [timeTracking]
+      summary: Get time statistics for a student
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Time statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeStats"
+
+  /leaderboard:
+    get:
+      operationId: getLeaderboard
+      tags: [leaderboard]
+      summary: Get student leaderboard
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntry"
+
+  /upload/audio:
+    post:
+      operationId: uploadAudio
+      tags: [upload]
+      summary: Upload audio file
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+
+  /upload/video:
+    post:
+      operationId: uploadVideo
+      tags: [upload]
+      summary: Upload video file
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+
+  /upload/student-recording:
+    post:
+      operationId: uploadStudentRecording
+      tags: [upload]
+      summary: Upload student speech recording
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                assignmentId:
+                  type: integer
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+
+    RegisterRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [student, parent]
+        age:
+          type: integer
+          description: Required for students (5-18)
+        parentId:
+          type: integer
+          description: Parent user ID (optional, links student to parent)
+      required:
+        - username
+        - password
+        - name
+        - role
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+      required:
+        - token
+        - user
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [student, parent, admin]
+        age:
+          type: integer
+          nullable: true
+        totalPoints:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - username
+        - name
+        - role
+        - totalPoints
+        - createdAt
+
+    UserWithStats:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            totalTimeMinutes:
+              type: integer
+            completedAssignments:
+              type: integer
+            averageScore:
+              type: number
+              nullable: true
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        age:
+          type: integer
+
+    Assignment:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [text_test, audio, reading, video]
+        ageMin:
+          type: integer
+        ageMax:
+          type: integer
+        points:
+          type: integer
+        mediaUrl:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - description
+        - type
+        - ageMin
+        - ageMax
+        - points
+        - createdAt
+
+    AssignmentDetail:
+      allOf:
+        - $ref: "#/components/schemas/Assignment"
+        - type: object
+          properties:
+            questions:
+              type: array
+              items:
+                $ref: "#/components/schemas/Question"
+            content:
+              type: string
+              nullable: true
+              description: Reading text content for reading assignments
+
+    Question:
+      type: object
+      properties:
+        id:
+          type: integer
+        text:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+        correctAnswer:
+          type: string
+          nullable: true
+          description: Only returned for admin role
+        orderIndex:
+          type: integer
+      required:
+        - id
+        - text
+        - options
+        - orderIndex
+
+    CreateAssignmentRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [text_test, audio, reading, video]
+        ageMin:
+          type: integer
+        ageMax:
+          type: integer
+        points:
+          type: integer
+        mediaUrl:
+          type: string
+        content:
+          type: string
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreateQuestionRequest"
+      required:
+        - title
+        - description
+        - type
+        - ageMin
+        - ageMax
+        - points
+
+    CreateQuestionRequest:
+      type: object
+      properties:
+        text:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+        correctAnswer:
+          type: string
+        orderIndex:
+          type: integer
+      required:
+        - text
+        - options
+        - correctAnswer
+        - orderIndex
+
+    UpdateAssignmentRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        ageMin:
+          type: integer
+        ageMax:
+          type: integer
+        points:
+          type: integer
+        mediaUrl:
+          type: string
+        content:
+          type: string
+
+    SubmitAssignmentRequest:
+      type: object
+      properties:
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnswerInput"
+        recordingUrl:
+          type: string
+          nullable: true
+          description: URL of student recording for reading assignments
+      required:
+        - answers
+
+    AnswerInput:
+      type: object
+      properties:
+        questionId:
+          type: integer
+        answer:
+          type: string
+      required:
+        - questionId
+        - answer
+
+    SubmissionResult:
+      type: object
+      properties:
+        submissionId:
+          type: integer
+        score:
+          type: integer
+        totalQuestions:
+          type: integer
+        correctCount:
+          type: integer
+        pointsEarned:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestionResult"
+      required:
+        - submissionId
+        - score
+        - totalQuestions
+        - correctCount
+        - pointsEarned
+        - results
+
+    QuestionResult:
+      type: object
+      properties:
+        questionId:
+          type: integer
+        isCorrect:
+          type: boolean
+        studentAnswer:
+          type: string
+        correctAnswer:
+          type: string
+      required:
+        - questionId
+        - isCorrect
+        - studentAnswer
+        - correctAnswer
+
+    Submission:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentId:
+          type: integer
+        studentName:
+          type: string
+        assignmentId:
+          type: integer
+        assignmentTitle:
+          type: string
+        score:
+          type: integer
+        correctCount:
+          type: integer
+        totalQuestions:
+          type: integer
+        pointsEarned:
+          type: integer
+        recordingUrl:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestionResult"
+      required:
+        - id
+        - studentId
+        - studentName
+        - assignmentId
+        - assignmentTitle
+        - score
+        - correctCount
+        - totalQuestions
+        - pointsEarned
+        - submittedAt
+        - answers
+
+    StudentError:
+      type: object
+      properties:
+        assignmentId:
+          type: integer
+        assignmentTitle:
+          type: string
+        questionText:
+          type: string
+        studentAnswer:
+          type: string
+        correctAnswer:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+      required:
+        - assignmentId
+        - assignmentTitle
+        - questionText
+        - studentAnswer
+        - correctAnswer
+        - occurredAt
+
+    VoiceChatSession:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentId:
+          type: integer
+        studentName:
+          type: string
+        messageCount:
+          type: integer
+        pointsEarned:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - studentId
+        - studentName
+        - messageCount
+        - pointsEarned
+        - createdAt
+        - updatedAt
+
+    VoiceChatSessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/VoiceChatSession"
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/VoiceChatMessage"
+
+    VoiceChatMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        role:
+          type: string
+          enum: [student, ai]
+        audioUrl:
+          type: string
+          nullable: true
+        transcript:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - role
+        - transcript
+        - createdAt
+
+    SendVoiceMessageRequest:
+      type: object
+      properties:
+        audioBase64:
+          type: string
+          description: Base64 encoded audio data
+        mimeType:
+          type: string
+          description: Audio MIME type (e.g. audio/m4a, audio/webm)
+      required:
+        - audioBase64
+        - mimeType
+
+    VoiceMessageResponse:
+      type: object
+      properties:
+        studentMessage:
+          $ref: "#/components/schemas/VoiceChatMessage"
+        aiMessage:
+          $ref: "#/components/schemas/VoiceChatMessage"
+        pointsEarned:
+          type: integer
+      required:
+        - studentMessage
+        - aiMessage
+        - pointsEarned
+
+    TimeSession:
+      type: object
+      properties:
+        id:
+          type: integer
+        studentId:
+          type: integer
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          nullable: true
+          format: date-time
+        durationMinutes:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - studentId
+        - startedAt
+
+    TimeStats:
+      type: object
+      properties:
+        totalMinutes:
+          type: integer
+        todayMinutes:
+          type: integer
+        weekMinutes:
+          type: integer
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimeSession"
+      required:
+        - totalMinutes
+        - todayMinutes
+        - weekMinutes
+        - sessions
+
+    LeaderboardEntry:
+      type: object
+      properties:
+        rank:
+          type: integer
+        userId:
+          type: integer
+        name:
+          type: string
+        totalPoints:
+          type: integer
+        completedAssignments:
+          type: integer
+      required:
+        - rank
+        - userId
+        - name
+        - totalPoints
+        - completedAssignments
+
+    UploadResult:
+      type: object
+      properties:
+        url:
+          type: string
+        filename:
+          type: string
+      required:
+        - url
+        - filename

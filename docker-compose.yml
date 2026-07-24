@@ -1,0 +1,29 @@
+# Local Postgres for development / manual testing.
+# Usage:
+#   docker compose up -d      # start Postgres in the background
+#   docker compose down       # stop it (data is kept in the named volume)
+#   docker compose down -v    # stop and wipe the database
+#
+# Connection string (already set in .env.example):
+#   postgres://postgres:postgres@localhost:5432/english_learning
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: v1-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: english_learning
+    ports:
+      - "5432:5432"
+    volumes:
+      - v1_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d english_learning"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  v1_pgdata:

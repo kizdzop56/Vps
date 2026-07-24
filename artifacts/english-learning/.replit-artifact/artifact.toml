@@ -1,0 +1,32 @@
+kind = "mobile"
+previewPath = "/"
+title = "English Learning App"
+version = "1.0.0"
+id = "artifacts/english-learning"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 22710
+
+[services.development]
+run = "pnpm --filter @workspace/english-learning run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/english-learning", "run", "build" ]
+
+[services.production.health.startup]
+path = "/healthz"
+
+[services.production.run]
+args = [ "pnpm", "--filter", "@workspace/english-learning", "run", "serve" ]
+
+[services.production.run.env]
+PORT = "22710"
+BASE_PATH = "/"

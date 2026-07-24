@@ -1,0 +1,43 @@
+# Production Postgres for the VPS.
+# Usage:
+#   cp .env.production.example .env   # then edit
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f
+#
+# The Node app runs OUTSIDE this compose (managed by systemd) and connects
+# via 127.0.0.1:5432. The DB password must match DATABASE_URL in .env.
+#
+# Backups: see backup-postgres.sh (cron 03:00 daily).
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: v2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: v2
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: english_learning
+      # Hint Postgres to use less RAM on a 4GB VPS.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Bind to localhost ONLY — the app on the host connects via 127.0.0.1.
+      # Do NOT expose 5432 to the public internet.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - v2-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U v2 -d english_learning"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Conservative memory tuning for a 4GB VPS.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c max_connections=100
+      -c work_mem=4MB
+      -c log_min_duration_statement=500
+
+volumes:
+  v2-pgdata:

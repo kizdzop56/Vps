@@ -1,0 +1,61 @@
+# systemd unit for the Node app (api + web + in-process reverse proxy).
+# Place at /etc/systemd/system/v2.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now v2
+#   sudo systemctl status v2
+#   journalctl -u v2 -f   # tail logs
+
+[Unit]
+Description=V2 English Learning (Node api + web + proxy)
+Documentation=https://github.com/kizdzop56/V2
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=v2
+Group=v2
+
+# Working directory = the checked-out repo (with node_modules + built dist).
+WorkingDirectory=/opt/v2/app
+EnvironmentFile=/opt/v2/app/.env
+
+# prod-start.mjs runs: db push + seed + api + web + reverse proxy on $PORT.
+ExecStart=/usr/bin/node scripts/prod-start.mjs
+
+# Health endpoint already in the app: GET /api/healthz -> {"status":"ok"}.
+# Wire this into an external monitor (uptime robot / cron curl / Caddy health_uri
+# on a load balancer) — systemd's Type=simple only tracks process liveness,
+# not HTTP responsiveness.
+
+# Graceful shutdown: prod-start.mjs handles SIGTERM (kills children).
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+Restart=on-failure
+RestartSec=5s
+
+# Hardening (Node + Express + esbuild bundle; no shell, no writes outside app).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/v2/app/uploads /opt/v2/app/static-build /var/log/v2
+# If you use GOOGLE_APPLICATION_CREDENTIALS pointing into /opt/v2/secrets,
+# keep that path readable (ProtectSystem=strict already allows /opt).
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Resource limits — generous enough for the build-on-boot (expo export) path
+# but bounded so a runaway doesn't OOM the whole 4GB VPS.
+MemoryMax=3G
+TasksMax=512
+
+# Journald captures stdout/stderr.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=v2
+
+[Install]
+WantedBy=multi-user.target

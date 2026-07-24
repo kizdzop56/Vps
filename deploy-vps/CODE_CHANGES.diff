@@ -1,0 +1,287 @@
+=== artifacts/api-server/src/lib/objectStorage.ts ===
+--- /tmp/v2-orig/kizdzop56-V2-020558d/artifacts/api-server/src/lib/objectStorage.ts	2026-07-23 07:48:18.000000000 +0000
++++ /home/user/workspace/V2/artifacts/api-server/src/lib/objectStorage.ts	2026-07-23 17:43:17.445567492 +0000
+@@ -9,26 +9,22 @@
+   setObjectAclPolicy,
+ } from "./objectAcl";
+ 
+-const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
+-
++// GCS client. On a VPS use standard GCS auth: set GOOGLE_APPLICATION_CREDENTIALS
++// to the path of a service-account JSON key, and GCS_PROJECT_ID to the GCP
++// project that owns the bucket. The @google-cloud/storage SDK picks up
++// GOOGLE_APPLICATION_CREDENTIALS automatically when no explicit credentials
++// are passed, so we only forward projectId here.
+ export const objectStorageClient = new Storage({
+-  credentials: {
+-    audience: "replit",
+-    subject_token_type: "access_token",
+-    token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
+-    type: "external_account",
+-    credential_source: {
+-      url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
+-      format: {
+-        type: "json",
+-        subject_token_field_name: "access_token",
+-      },
+-    },
+-    universe_domain: "googleapis.com",
+-  },
+-  projectId: "",
++  projectId: process.env.GCS_PROJECT_ID || undefined,
+ });
+ 
++if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GCS_EMULATOR_HOST) {
++  console.warn(
++    "\n⚠️  GCS not configured: set GOOGLE_APPLICATION_CREDENTIALS (path to a " +
++      "service-account JSON key) and GCS_PROJECT_ID. Uploads will fail without it.\n"
++  );
++}
++
+ export class ObjectNotFoundError extends Error {
+   constructor() {
+     super("Object not found");
+@@ -238,30 +234,17 @@
+   method: "GET" | "PUT" | "DELETE" | "HEAD";
+   ttlSec: number;
+ }): Promise<string> {
+-  const request = {
+-    bucket_name: bucketName,
+-    object_name: objectName,
+-    method,
+-    expires_at: new Date(Date.now() + ttlSec * 1000).toISOString(),
++  // Native GCS V4 signed URL — replaces the Replit Object Storage sidecar.
++  // The service account must have the "Service Account Token Creator" /
++  // "Storage Object Admin" role on the bucket.
++  const options = {
++    version: "v4" as const,
++    action: method === "PUT" ? ("write" as const) : ("read" as const),
++    expires: Date.now() + ttlSec * 1000,
+   };
+-  const response = await fetch(
+-    `${REPLIT_SIDECAR_ENDPOINT}/object-storage/signed-object-url`,
+-    {
+-      method: "POST",
+-      headers: {
+-        "Content-Type": "application/json",
+-      },
+-      body: JSON.stringify(request),
+-      signal: AbortSignal.timeout(30_000),
+-    }
+-  );
+-  if (!response.ok) {
+-    throw new Error(
+-      `Failed to sign object URL, errorcode: ${response.status}, ` +
+-        `make sure you're running on Replit`
+-    );
+-  }
+-
+-  const { signed_url: signedURL } = (await response.json()) as { signed_url: string };
+-  return signedURL;
++  const [url] = await objectStorageClient
++    .bucket(bucketName)
++    .file(objectName)
++    .getSignedUrl(options);
++  return url;
+ }
+
+=== artifacts/english-learning/app/(main)/create-assignment.tsx ===
+--- /tmp/v2-orig/kizdzop56-V2-020558d/artifacts/english-learning/app/(main)/create-assignment.tsx	2026-07-23 07:48:18.000000000 +0000
++++ /home/user/workspace/V2/artifacts/english-learning/app/(main)/create-assignment.tsx	2026-07-23 18:00:48.763852419 +0000
+@@ -111,51 +111,39 @@
+       return { ...q, options: next, correctIndex: q.correctIndex >= next.length ? next.length - 1 : q.correctIndex };
+     }) }));
+ 
+-  // ── File upload ─────────────────────────────────────────────────────
++  // ── File upload (GCS presigned URL — persistent, survives redeploy) ──
+   const handleUpload = async (file: File, kind: "audio" | "video" | "image") => {
+     setUploading(kind);
+     set("formError" as any, "");
+     try {
+       const token = await authStorage.getItem("auth_token");
+ 
+-      if (kind === "image") {
+-        // Images are small — standard multer upload works fine.
+-        const form = new FormData();
+-        form.append("file", file);
+-        const res = await fetch(`${BASE}/api/upload/image`, {
+-          method: "POST", headers: { Authorization: `Bearer ${token ?? ""}` }, body: form,
+-        });
+-        const data = await res.json();
+-        if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки");
+-        setSt(p => ({ ...p, imageUrl: data.url, uploadedImageName: file.name }));
+-      } else {
+-        // Video/audio: use presigned GCS upload to bypass deployment proxy body-size limits.
+-        // Step 1: request a presigned PUT URL from our server (tiny JSON — no proxy issue).
+-        const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
+-          method: "POST",
+-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
+-          body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
+-        });
+-        const presignedData = await presignedRes.json();
+-        if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
+-
+-        const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
+-
+-        // Step 2: upload directly to GCS via presigned URL (bypasses our proxy entirely).
+-        const uploadRes = await fetch(uploadURL, {
+-          method: "PUT",
+-          headers: { "Content-Type": file.type },
+-          body: file,
+-        });
+-        if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
+-
+-        // Serving URL goes through our storage proxy (GET requests are not limited by proxy).
+-        // Append kind so viewers can detect video vs audio without relying on file extension.
+-        const serveUrl = `${BASE}/api/storage${objectPath}?kind=${kind}`;
+-
+-        if (kind === "audio") setSt(p => ({ ...p, audioUrl: serveUrl, uploadedAudioName: file.name }));
+-        else setSt(p => ({ ...p, videoUrl: serveUrl, uploadedVideoName: file.name }));
+-      }
++      // Step 1: request a presigned PUT URL from our server (tiny JSON — no proxy size limit).
++      const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
++        body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
++      });
++      const presignedData = await presignedRes.json();
++      if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
++
++      const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
++
++      // Step 2: upload directly to GCS via presigned URL (bypasses our proxy entirely).
++      const uploadRes = await fetch(uploadURL, {
++        method: "PUT",
++        headers: { "Content-Type": file.type },
++        body: file,
++      });
++      if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
++
++      // Serving URL goes through our storage proxy (GET requests are not limited by proxy).
++      // Append kind so viewers can detect video vs audio without relying on file extension.
++      const serveUrl = `${BASE}/api/storage${objectPath}?kind=${kind}`;
++
++      if (kind === "image") setSt(p => ({ ...p, imageUrl: serveUrl, uploadedImageName: file.name }));
++      else if (kind === "audio") setSt(p => ({ ...p, audioUrl: serveUrl, uploadedAudioName: file.name }));
++      else setSt(p => ({ ...p, videoUrl: serveUrl, uploadedVideoName: file.name }));
+     } catch (e: any) {
+       set("formError" as any, e.message);
+     } finally {
+
+=== artifacts/english-learning/app/(main)/assignment/[id].tsx ===
+--- /tmp/v2-orig/kizdzop56-V2-020558d/artifacts/english-learning/app/(main)/assignment/[id].tsx	2026-07-23 07:48:18.000000000 +0000
++++ /home/user/workspace/V2/artifacts/english-learning/app/(main)/assignment/[id].tsx	2026-07-23 18:01:22.688184314 +0000
+@@ -231,25 +231,44 @@
+     setFreeFormUploading(true);
+     try {
+       const token = await authStorage.getItem("auth_token");
+-      const form = new FormData();
+       const filename = asset.uri.split("/").pop() || "photo.jpg";
+       const match = /\.(\w+)$/.exec(filename);
+       const ext = match ? match[1] : "jpg";
++      const contentType = `image/${ext === "jpg" ? "jpeg" : ext}`;
++
++      // Web (the VPS deployment is Expo web): GCS presigned PUT for persistence.
+       if (Platform.OS === "web") {
+         const blobRes = await fetch(asset.uri);
+         const blob = await blobRes.blob();
+-        form.append("file", blob, filename);
++        const presignedRes = await fetch(`${BASE_URL}/api/storage/request-upload-url`, {
++          method: "POST",
++          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
++          body: JSON.stringify({ name: filename, size: blob.size, contentType }),
++        });
++        const presignedData = await presignedRes.json();
++        if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
++        const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
++        const uploadRes = await fetch(uploadURL, {
++          method: "PUT",
++          headers: { "Content-Type": contentType },
++          body: blob,
++        });
++        if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
++        setFreeFormAttachment(`${BASE_URL}/api/storage${objectPath}?kind=image`);
+       } else {
+-        form.append("file", { uri: asset.uri, name: filename, type: `image/${ext}` } as any);
++        // Native fallback (not used by the VPS web deployment): multer multipart
++        // — kept so the native app still builds/works. Files land on disk only.
++        const form = new FormData();
++        form.append("file", { uri: asset.uri, name: filename, type: contentType } as any);
++        const uploadRes = await fetch(`${BASE_URL}/api/upload/image`, {
++          method: "POST",
++          headers: { Authorization: `Bearer ${token ?? ""}` },
++          body: form,
++        });
++        const uploadData = await uploadRes.json();
++        if (!uploadRes.ok) throw new Error(uploadData.error ?? "Ошибка загрузки");
++        setFreeFormAttachment(uploadData.url);
+       }
+-      const uploadRes = await fetch(`${BASE_URL}/api/upload/image`, {
+-        method: "POST",
+-        headers: { Authorization: `Bearer ${token ?? ""}` },
+-        body: form,
+-      });
+-      const uploadData = await uploadRes.json();
+-      if (!uploadRes.ok) throw new Error(uploadData.error ?? "Ошибка загрузки");
+-      setFreeFormAttachment(uploadData.url);
+     } catch (e: any) {
+       Alert.alert("Не удалось загрузить фото", e.message ?? "Попробуйте снова.");
+     } finally {
+
+=== artifacts/english-learning/app/(main)/profile.tsx ===
+--- /tmp/v2-orig/kizdzop56-V2-020558d/artifacts/english-learning/app/(main)/profile.tsx	2026-07-23 07:48:18.000000000 +0000
++++ /home/user/workspace/V2/artifacts/english-learning/app/(main)/profile.tsx	2026-07-23 18:02:04.104589491 +0000
+@@ -1049,29 +1049,35 @@
+       const manipulated = await ImageManipulator.manipulateAsync(
+         asset.uri,
+         actions,
+-        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
++        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: false }
+       );
+-      let dataUri: string;
+-      if (manipulated.base64) {
+-        dataUri = `data:image/jpeg;base64,${manipulated.base64}`;
+-      } else {
+-        // Fallback: read via fetch → blob → FileReader
+-        const blobRes = await fetch(manipulated.uri);
+-        const blob = await blobRes.blob();
+-        dataUri = await new Promise<string>((resolve, reject) => {
+-          const reader = new FileReader();
+-          reader.onload = () => resolve(reader.result as string);
+-          reader.onerror = reject;
+-          reader.readAsDataURL(blob);
+-        });
+-      }
+-      if (dataUri.length > 500_000) {
++      // Upload to GCS (persistent object storage) instead of stuffing a base64
++      // data URI into the users row — keeps the DB small and survives redeploy.
++      const blobRes = await fetch(manipulated.uri);
++      const blob = await blobRes.blob();
++      if (blob.size > 500_000) {
+         setAvatarUrl(prevUrl);
+         Alert.alert("Фото слишком большое", "Попробуйте выбрать другое изображение.");
+         return;
+       }
+-      setAvatarUrl(dataUri);
+-      const ok = await saveProfile({ avatarUrl: dataUri });
++      const token = await authStorage.getItem("auth_token");
++      const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
++        body: JSON.stringify({ name: "avatar.jpg", size: blob.size, contentType: "image/jpeg" }),
++      });
++      const presignedData = await presignedRes.json();
++      if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
++      const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
++      const uploadRes = await fetch(uploadURL, {
++        method: "PUT",
++        headers: { "Content-Type": "image/jpeg" },
++        body: blob,
++      });
++      if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
++      const serveUrl = `${BASE}/api/storage${objectPath}?kind=image`;
++      setAvatarUrl(serveUrl);
++      const ok = await saveProfile({ avatarUrl: serveUrl });
+       if (!ok) {
+         setAvatarUrl(prevUrl);
+         Alert.alert(

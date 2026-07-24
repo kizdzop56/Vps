@@ -1,0 +1,40 @@
+# Render Blueprint: full app (API + web) + managed PostgreSQL.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# How to use: push this repo to GitHub, then in Render: New -> Blueprint ->
+# select the repo -> Apply. Render creates both resources automatically.
+#
+# Free-tier notes:
+# - web service (free): cold-starts after ~15 min idle (first request ~1 min)
+# - postgres (free): expires 30 days after creation (upgrade to keep data)
+# - uploads (avatars) are stored on ephemeral disk: lost on redeploy/restart
+
+services:
+  - type: web
+    name: v1-app
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: v1-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      # Push schema + seed test accounts (teacher/student) on every boot.
+      # Both are idempotent. Set to "false" after first successful deploy
+      # if you want faster boots.
+      - key: RUN_DB_SETUP
+        value: "true"
+      # Optional integrations — add values in the Render dashboard if needed:
+      # RESEND_API_KEY (email verification/reset), OPENAI_API_KEY (voice chat)
+
+databases:
+  - name: v1-db
+    plan: free
+    region: frankfurt
+    databaseName: english_learning
+    user: app
