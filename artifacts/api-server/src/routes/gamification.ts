@@ -30,6 +30,130 @@ function computeLevel(xp: number): number {
   return Math.min(level, 50);
 }
 
+// ── Серверная валидация наград ──────────────────────────────────────────────
+// Реальные статы пользователя, по которым проверяются условия наград.
+type ServerAchievementStats = {
+  completedAssignments: number;
+  totalPoints: number;
+  totalTimeMinutes: number;
+  voiceChatSessions: number;
+  loginStreak: number;
+  perfectScoreCount: number;
+  xpLevel: number;
+  earlyBirdSessions: number;
+};
+
+// Считает статы пользователя из БД (те же источники, что и /gamification/stats).
+async function computeAchievementStats(userId: number): Promise<ServerAchievementStats | null> {
+  const [userData] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  if (!userData) return null;
+
+  const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
+    .from(voiceChatSessionsTable)
+    .where(eq(voiceChatSessionsTable.studentId, userId));
+  const voiceChatSessions = voiceSessions[0]?.count ?? 0;
+
+  const perfectSubs = await db.select({ count: sql<number>`count(*)::int` })
+    .from(submissionsTable)
+    .where(and(
+      eq(submissionsTable.studentId, userId),
+      eq(submissionsTable.status, "graded"),
+      eq(submissionsTable.score, 100),
+    ));
+  const perfectScoreCount = perfectSubs[0]?.count ?? 0;
+
+  const completedSubs = await db.select({ count: sql<number>`count(*)::int` })
+    .from(submissionsTable)
+    .where(and(
+      eq(submissionsTable.studentId, userId),
+      eq(submissionsTable.status, "graded"),
+    ));
+  const completedAssignments = completedSubs[0]?.count ?? 0;
+
+  let earlyBirdSessions = 0;
+  try {
+    const earlySessions = await db.select({ count: sql<number>`count(*)::int` })
+      .from(timeSessionsTable)
+      .where(and(
+        eq(timeSessionsTable.studentId, userId),
+        sql`EXTRACT(HOUR FROM ${timeSessionsTable.startedAt}) < 9`
+      ));
+    earlyBirdSessions = earlySessions[0]?.count ?? 0;
+  } catch {
+    earlyBirdSessions = 0;
+  }
+
+  return {
+    completedAssignments,
+    totalPoints: userData.totalPoints,
+    totalTimeMinutes: userData.totalTimeMinutes ?? 0,
+    voiceChatSessions,
+    loginStreak: userData.loginStreak,
+    perfectScoreCount,
+    xpLevel: computeLevel(userData.totalPoints),
+    earlyBirdSessions,
+  };
+}
+
+// Условия для всех 50 наград. ДОЛЖНЫ соответствовать каталогу на клиенте
+// (english-learning/constants/achievements.ts). Награда записывается в БД
+// только если ЕЁ условие реально выполнено — клиенту доверять нельзя.
+const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => boolean> = {
+  // easy
+  welcome:      () => true,
+  tasks_1:      (s) => s.completedAssignments >= 1,
+  tasks_3:      (s) => s.completedAssignments >= 3,
+  tasks_5:      (s) => s.completedAssignments >= 5,
+  points_10:    (s) => s.totalPoints >= 10,
+  points_50:    (s) => s.totalPoints >= 50,
+  points_100:   (s) => s.totalPoints >= 100,
+  perfect_1:    (s) => s.perfectScoreCount >= 1,
+  streak_3:     (s) => s.loginStreak >= 3,
+  time_30:      (s) => s.totalTimeMinutes >= 30,
+  time_120:     (s) => s.totalTimeMinutes >= 120,
+  voice_1:      (s) => s.voiceChatSessions >= 1,
+  voice_3:      (s) => s.voiceChatSessions >= 3,
+  xp_5:         (s) => s.xpLevel >= 5,
+  early_1:      (s) => s.earlyBirdSessions >= 1,
+  // medium
+  tasks_10:     (s) => s.completedAssignments >= 10,
+  tasks_25:     (s) => s.completedAssignments >= 25,
+  tasks_50:     (s) => s.completedAssignments >= 50,
+  points_500:   (s) => s.totalPoints >= 500,
+  points_1000:  (s) => s.totalPoints >= 1000,
+  points_2000:  (s) => s.totalPoints >= 2000,
+  perfect_5:    (s) => s.perfectScoreCount >= 5,
+  perfect_10:   (s) => s.perfectScoreCount >= 10,
+  streak_7:     (s) => s.loginStreak >= 7,
+  streak_14:    (s) => s.loginStreak >= 14,
+  streak_30:    (s) => s.loginStreak >= 30,
+  time_600:     (s) => s.totalTimeMinutes >= 600,
+  time_1200:    (s) => s.totalTimeMinutes >= 1200,
+  time_1800:    (s) => s.totalTimeMinutes >= 1800,
+  time_2400:    (s) => s.totalTimeMinutes >= 2400,
+  voice_5:      (s) => s.voiceChatSessions >= 5,
+  voice_10:     (s) => s.voiceChatSessions >= 10,
+  voice_20:     (s) => s.voiceChatSessions >= 20,
+  voice_50:     (s) => s.voiceChatSessions >= 50,
+  xp_10:        (s) => s.xpLevel >= 10,
+  xp_20:        (s) => s.xpLevel >= 20,
+  xp_30:        (s) => s.xpLevel >= 30,
+  early_5:      (s) => s.earlyBirdSessions >= 5,
+  early_15:     (s) => s.earlyBirdSessions >= 15,
+  early_30:     (s) => s.earlyBirdSessions >= 30,
+  // hard
+  tasks_100:    (s) => s.completedAssignments >= 100,
+  tasks_200:    (s) => s.completedAssignments >= 200,
+  points_5000:  (s) => s.totalPoints >= 5000,
+  points_10000: (s) => s.totalPoints >= 10000,
+  time_3600:    (s) => s.totalTimeMinutes >= 3600,
+  time_6000:    (s) => s.totalTimeMinutes >= 6000,
+  streak_60:    (s) => s.loginStreak >= 60,
+  streak_100:   (s) => s.loginStreak >= 100,
+  perfect_25:   (s) => s.perfectScoreCount >= 25,
+  xp_50:        (s) => s.xpLevel >= 50,
+};
+
 const DAILY_LOGIN_POINTS = 30;
 const STREAK_BONUS_POINTS = [0, 0, 5, 10, 15, 20, 25, 50]; // bonus at streak day 3,4,5,6,7+
 
@@ -253,19 +377,37 @@ router.post("/gamification/achievements/unlock", requireAuth, async (req, res) =
     return;
   }
 
+  // Проверяем условия на сервере: награду можно записать ТОЛЬКО если её
+  // условие реально выполнено. Раньше сервер вставлял любые id от клиента —
+  // из-за этого награды начислялись без выполнения условий.
+  const stats = await computeAchievementStats(user.userId);
+  if (!stats) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  const eligibleIds = achievementIds.filter((id) => {
+    const condition = ACHIEVEMENT_CONDITIONS[id];
+    return typeof condition === "function" && condition(stats);
+  });
+  const rejectedIds = achievementIds.filter((id) => !eligibleIds.includes(id));
+
   const existing = await db.select({ achievementId: userAchievementsTable.achievementId })
     .from(userAchievementsTable)
     .where(eq(userAchievementsTable.userId, user.userId));
   const existingIds = new Set(existing.map(e => e.achievementId));
 
-  const newIds = achievementIds.filter(id => !existingIds.has(id));
+  const newIds = eligibleIds.filter(id => !existingIds.has(id));
   if (newIds.length > 0) {
     await db.insert(userAchievementsTable).values(
       newIds.map(achievementId => ({ userId: user.userId, achievementId }))
     );
   }
 
-  res.json({ unlocked: newIds, alreadyHad: achievementIds.filter(id => existingIds.has(id)) });
+  res.json({
+    unlocked: newIds,
+    alreadyHad: eligibleIds.filter(id => existingIds.has(id)),
+    rejected: rejectedIds,
+  });
 });
 
 // ── PATCH /gamification/mascot-name ────────────────────────────────────────

@@ -907,11 +907,16 @@ export default function ProfileScreen() {
     }
   }, [gamStats, isStudent, user?.knowledgeLevel, unlockAchievements]);
 
+  // Витрина наград строится СТРОГО по серверным статам (gamStats): пока они
+  // не загружены — считаем показатели нулевыми. Раньше здесь были
+  // оптимистичные локальные значения (completedCount / user.totalPoints /
+  // totalMinutes), из-за которых медали могли отображаться полученными до
+  // подтверждения сервером и без реального выполнения условий.
   const achievementStats: AchievementStats = {
-    completedAssignments: gamStats?.completedAssignments ?? completedCount,
-    totalPoints: gamStats?.totalPoints ?? user?.totalPoints ?? 0,
+    completedAssignments: gamStats?.completedAssignments ?? 0,
+    totalPoints: gamStats?.totalPoints ?? 0,
     knowledgeLevel: user?.knowledgeLevel ?? null,
-    totalTimeMinutes: gamStats?.totalTimeMinutes ?? totalMinutes,
+    totalTimeMinutes: gamStats?.totalTimeMinutes ?? 0,
     voiceChatSessions: gamStats?.voiceChatSessions ?? 0,
     loginStreak: gamStats?.loginStreak ?? 0,
     perfectScoreCount: gamStats?.perfectScoreCount ?? 0,
