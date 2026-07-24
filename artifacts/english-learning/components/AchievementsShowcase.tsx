@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState } from "react";
 import {
-  View, Text, Image, TouchableOpacity, Modal, StyleSheet, Animated,
+  View, Text, Image, TouchableOpacity, Modal, StyleSheet,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
@@ -13,14 +13,6 @@ interface AchievementsShowcaseProps {
   title?: string;
 }
 
-type AnimType = "shimmer" | "pulse" | "sparkle" | "spin" | "bounce";
-
-function getAnimType(id: string): AnimType {
-  const types: AnimType[] = ["shimmer", "pulse", "sparkle", "spin", "bounce"];
-  const hash = id.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  return types[hash % types.length];
-}
-
 function BadgeCard({
   achievement,
   isLocked = false,
@@ -30,88 +22,17 @@ function BadgeCard({
   isLocked?: boolean;
   onPress: () => void;
 }) {
-  const animType: AnimType = isLocked ? "shimmer" : getAnimType(achievement.id);
-
-  const shimmerX = useRef(new Animated.Value(-70)).current;
-  const pulseScale = useRef(new Animated.Value(1)).current;
-  const spark1 = useRef(new Animated.Value(0)).current;
-  const spark2 = useRef(new Animated.Value(0)).current;
-  const spark3 = useRef(new Animated.Value(0)).current;
-  const spinVal = useRef(new Animated.Value(0)).current;
-  const bounceY = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (isLocked) return;
-    let anim: Animated.CompositeAnimation | null = null;
-
-    if (animType === "shimmer") {
-      shimmerX.setValue(-70);
-      anim = Animated.loop(
-        Animated.sequence([
-          Animated.timing(shimmerX, { toValue: 70, duration: 1300, useNativeDriver: true }),
-          Animated.delay(2400),
-          Animated.timing(shimmerX, { toValue: -70, duration: 0, useNativeDriver: true }),
-        ])
-      );
-    } else if (animType === "pulse") {
-      anim = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseScale, { toValue: 1.12, duration: 750, useNativeDriver: true }),
-          Animated.timing(pulseScale, { toValue: 1, duration: 750, useNativeDriver: true }),
-          Animated.delay(1200),
-        ])
-      );
-    } else if (animType === "sparkle") {
-      const makeSpark = (a: Animated.Value, delay: number) =>
-        Animated.loop(
-          Animated.sequence([
-            Animated.delay(delay),
-            Animated.timing(a, { toValue: 1, duration: 320, useNativeDriver: true }),
-            Animated.timing(a, { toValue: 0, duration: 320, useNativeDriver: true }),
-            Animated.delay(1300),
-          ])
-        );
-      anim = Animated.parallel([
-        makeSpark(spark1, 0),
-        makeSpark(spark2, 420),
-        makeSpark(spark3, 840),
-      ]);
-    } else if (animType === "spin") {
-      anim = Animated.loop(
-        Animated.timing(spinVal, { toValue: 1, duration: 2200, useNativeDriver: true })
-      );
-    } else if (animType === "bounce") {
-      anim = Animated.loop(
-        Animated.sequence([
-          Animated.timing(bounceY, { toValue: -6, duration: 480, useNativeDriver: true }),
-          Animated.timing(bounceY, { toValue: 0, duration: 480, useNativeDriver: true }),
-          Animated.delay(1600),
-        ])
-      );
-    }
-
-    if (anim) anim.start();
-    return () => { if (anim) anim.stop(); };
-  }, [animType, isLocked]);
-
-  const spinDeg = spinVal.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-
+  // Медали статичные — idle-анимации (shimmer/pulse/sparkle/spin/bounce) убраны.
   const badgeBorderColor = isLocked ? "rgba(160,140,220,0.2)" : achievement.color + "55";
   const badgeBg = isLocked ? "rgba(220,210,255,0.15)" : achievement.bgColor;
 
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.75} style={styles.badgeWrap}>
-      <Animated.View
-        style={[
-          { position: "relative" },
-          animType === "bounce" && !isLocked && { transform: [{ translateY: bounceY }] },
-        ]}
-      >
-        <Animated.View
+      <View style={{ position: "relative" }}>
+        <View
           style={[
             styles.badgeRing,
             { borderColor: badgeBorderColor, backgroundColor: badgeBg },
-            animType === "pulse" && !isLocked && { transform: [{ scale: pulseScale }] },
           ]}
         >
           <View style={[styles.badgeImgWrap, isLocked && { opacity: 0.28 }]}>
@@ -122,67 +43,13 @@ function BadgeCard({
             )}
           </View>
 
-          {/* Shimmer sweep */}
-          {animType === "shimmer" && !isLocked && (
-            <Animated.View
-              style={{
-                position: "absolute",
-                width: 18,
-                height: 80,
-                backgroundColor: "rgba(255,255,255,0.5)",
-                transform: [{ rotate: "38deg" }, { translateX: shimmerX }],
-              }}
-            />
-          )}
-
-          {/* Spin arc */}
-          {animType === "spin" && !isLocked && (
-            <Animated.View
-              style={{
-                position: "absolute",
-                width: 56,
-                height: 56,
-                borderRadius: 28,
-                borderWidth: 2.5,
-                borderColor: "transparent",
-                borderTopColor: achievement.color,
-                borderRightColor: achievement.color + "70",
-                transform: [{ rotate: spinDeg }],
-              }}
-            />
-          )}
-
           {isLocked && (
             <View style={styles.lockOverlay}>
               <Feather name="lock" size={14} color="rgba(91,79,142,0.85)" />
             </View>
           )}
-        </Animated.View>
-
-        {/* Sparkle stars — outside ring */}
-        {animType === "sparkle" && !isLocked && (
-          <>
-            <Animated.Text
-              style={{
-                position: "absolute", top: -7, right: -3,
-                fontSize: 11, color: achievement.color, opacity: spark1,
-              }}
-            >✦</Animated.Text>
-            <Animated.Text
-              style={{
-                position: "absolute", top: 6, left: -9,
-                fontSize: 9, color: achievement.color, opacity: spark2,
-              }}
-            >✦</Animated.Text>
-            <Animated.Text
-              style={{
-                position: "absolute", bottom: -5, right: -2,
-                fontSize: 10, color: achievement.color, opacity: spark3,
-              }}
-            >✦</Animated.Text>
-          </>
-        )}
-      </Animated.View>
+        </View>
+      </View>
 
       <Text
         style={[styles.badgeTitle, { color: isLocked ? "#9b8ec4" : achievement.color }]}

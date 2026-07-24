@@ -69,3 +69,7 @@ dist-artifact/
 static-build/
 .metro-cache/
 .github/workflows/
+
+# Медали-PNG генерируются из *.png.b64 (scripts/decode-medal-assets.mjs, postinstall).
+# В git хранятся только текстовые .b64 — бинарь нельзя залить через GitHub API.
+artifacts/english-learning/assets/badges/medals/*.png
