@@ -585,3 +585,236 @@ export const UploadStudentRecordingResponse = zod.object({
 })
 
 
+/**
+ * @summary List decks with per-user progress
+ */
+export const ListDecksResponseItem = zod.object({
+  "id": zod.number(),
+  "ownerId": zod.number().optional(),
+  "title": zod.string(),
+  "theme": zod.string().optional(),
+  "description": zod.string().optional(),
+  "emoji": zod.string().optional(),
+  "isSystem": zod.boolean(),
+  "cefrLevel": zod.string().optional(),
+  "wordCount": zod.number(),
+  "learnedCount": zod.number(),
+  "dueCount": zod.number(),
+  "newCount": zod.number()
+})
+export const ListDecksResponse = zod.array(ListDecksResponseItem)
+
+
+/**
+ * @summary Create a custom deck
+ */
+export const CreateDeckBody = zod.object({
+  "title": zod.string(),
+  "theme": zod.string().optional(),
+  "emoji": zod.string().optional(),
+  "description": zod.string().optional()
+})
+
+export const CreateDeckResponse = zod.object({
+  "id": zod.number(),
+  "ownerId": zod.number().optional(),
+  "title": zod.string(),
+  "theme": zod.string().optional(),
+  "description": zod.string().optional(),
+  "emoji": zod.string().optional(),
+  "isSystem": zod.boolean(),
+  "cefrLevel": zod.string().optional(),
+  "wordCount": zod.number()
+})
+
+
+/**
+ * @summary List words in a deck
+ */
+export const ListDeckWordsParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ListDeckWordsResponseItem = zod.object({
+  "id": zod.number(),
+  "deckId": zod.number(),
+  "english": zod.string(),
+  "partOfSpeech": zod.string().optional(),
+  "translationsRu": zod.array(zod.string()),
+  "ipa": zod.string().optional(),
+  "exampleEn": zod.string().optional(),
+  "exampleRu": zod.string().optional(),
+  "cefrLevel": zod.string().optional(),
+  "audioUrl": zod.string().optional()
+})
+export const ListDeckWordsResponse = zod.array(ListDeckWordsResponseItem)
+
+
+/**
+ * @summary Add a word to a custom deck (auto-fills missing fields)
+ */
+export const AddWordParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AddWordBody = zod.object({
+  "english": zod.string(),
+  "translationsRu": zod.array(zod.string()).optional(),
+  "ipa": zod.string().optional(),
+  "exampleEn": zod.string().optional(),
+  "exampleRu": zod.string().optional(),
+  "partOfSpeech": zod.string().optional(),
+  "cefrLevel": zod.string().optional()
+})
+
+export const AddWordResponse = zod.object({
+  "id": zod.number(),
+  "deckId": zod.number(),
+  "english": zod.string(),
+  "partOfSpeech": zod.string().optional(),
+  "translationsRu": zod.array(zod.string()),
+  "ipa": zod.string().optional(),
+  "exampleEn": zod.string().optional(),
+  "exampleRu": zod.string().optional(),
+  "cefrLevel": zod.string().optional(),
+  "audioUrl": zod.string().optional()
+})
+
+
+/**
+ * @summary Import words (CSV or JSON) into a custom deck
+ */
+export const ImportWordsParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ImportWordsBody = zod.object({
+  "format": zod.enum(['csv', 'json']),
+  "content": zod.string()
+})
+
+export const ImportWordsResponse = zod.object({
+  "added": zod.number(),
+  "skipped": zod.number()
+})
+
+
+/**
+ * @summary Get today's study queue for a deck (new + due cards)
+ */
+export const GetStudyQueueParams = zod.object({
+  "deckId": zod.coerce.number()
+})
+
+export const GetStudyQueueResponse = zod.object({
+  "deckId": zod.number(),
+  "deckTitle": zod.string().optional(),
+  "isSystem": zod.boolean().optional(),
+  "needsIntro": zod.boolean(),
+  "newCount": zod.number(),
+  "reviewCount": zod.number(),
+  "cards": zod.array(zod.object({
+  "id": zod.number(),
+  "deckId": zod.number(),
+  "english": zod.string(),
+  "partOfSpeech": zod.string().optional(),
+  "translationsRu": zod.array(zod.string()),
+  "ipa": zod.string().optional(),
+  "exampleEn": zod.string().optional(),
+  "exampleRu": zod.string().optional(),
+  "cefrLevel": zod.string().optional(),
+  "memoryLevel": zod.number(),
+  "introduced": zod.boolean(),
+  "isNew": zod.boolean()
+}))
+})
+
+
+/**
+ * @summary Submit a card review (spaced-repetition update)
+ */
+export const SubmitReviewBody = zod.object({
+  "wordId": zod.number(),
+  "result": zod.enum(['know', 'dont'])
+})
+
+export const SubmitReviewResponse = zod.object({
+  "wordId": zod.number(),
+  "memoryLevel": zod.number(),
+  "dueAt": zod.string()
+})
+
+
+/**
+ * @summary Get placement test questions
+ */
+export const GetPlacementTestResponse = zod.object({
+  "total": zod.number(),
+  "questions": zod.array(zod.object({
+  "id": zod.number(),
+  "section": zod.string(),
+  "question": zod.string(),
+  "options": zod.array(zod.string())
+}))
+})
+
+
+/**
+ * @summary Submit placement answers and compute CEFR level
+ */
+export const SubmitPlacementBody = zod.object({
+  "answers": zod.array(zod.object({
+  "id": zod.number(),
+  "choice": zod.number()
+}))
+})
+
+export const SubmitPlacementResponse = zod.object({
+  "score": zod.number(),
+  "total": zod.number(),
+  "cefrLevel": zod.string(),
+  "message": zod.string().optional()
+})
+
+
+/**
+ * @summary Get learning statistics
+ */
+export const GetFlashcardStatsResponse = zod.object({
+  "totalLearned": zod.number(),
+  "totalWords": zod.number(),
+  "totalReviews": zod.number(),
+  "accuracy": zod.number(),
+  "daily": zod.array(zod.object({
+  "date": zod.string(),
+  "learned": zod.number(),
+  "reviews": zod.number(),
+  "correct": zod.number()
+}))
+})
+
+
+/**
+ * @summary Get flashcard settings
+ */
+export const GetFlashcardSettingsResponse = zod.object({
+  "dailyNewLimit": zod.number(),
+  "placementLevel": zod.string().optional(),
+  "placementDone": zod.boolean()
+})
+
+
+/**
+ * @summary Update flashcard settings
+ */
+export const UpdateFlashcardSettingsBody = zod.object({
+  "dailyNewLimit": zod.number().optional()
+})
+
+export const UpdateFlashcardSettingsResponse = zod.object({
+  "dailyNewLimit": zod.number(),
+  "placementLevel": zod.string().optional(),
+  "placementDone": zod.boolean()
+})
+
+
