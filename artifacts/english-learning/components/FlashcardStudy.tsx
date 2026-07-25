@@ -15,6 +15,7 @@ import { fc, speak, speechAvailable } from "@/hooks/useFlashcards";
 import type { StudyCard, StudyQueue } from "@workspace/api-client-react";
 
 const SWIPE_THRESHOLD = 110;
+const STUDY_BACKGROUND = "#F8F7FF";
 
 function normalize(s: string): string {
   return s.toLowerCase().trim().replace(/[.,!?;:()"']/g, "").replace(/ё/g, "е");
@@ -33,6 +34,8 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const width = Dimensions.get("window").width;
+  const height = Dimensions.get("window").height;
+  const cardHeight = Math.min(500, Math.max(400, height - insets.top - insets.bottom - 260));
 
   const [queue, setQueue] = useState<StudyQueue | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +78,9 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
 
   const cards: StudyCard[] = queue?.cards ?? [];
   const card = cards[pos];
+  const displayEnglish = card?.english?.trim() || "Слово не загружено";
+  const hasDisplayEnglish = Boolean(card?.english?.trim());
+  const progress = cards.length ? (pos + 1) / cards.length : 0;
 
   // ── завершить карточку с оценкой (know/dont) ──
   const commit = useCallback((result: "know" | "dont") => {
@@ -138,30 +144,39 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
   const correct = card ? isCorrect(typed, card.translationsRu) : false;
 
   const CardFaces = (
-    <View style={{ width: "100%", height: 440 }}>
+    <View style={{ width: "100%", height: cardHeight }}>
       {/* ЛИЦО */}
       <Animated.View
         style={{
           position: "absolute", width: "100%", height: "100%",
-          backgroundColor: colors.card, borderRadius: 24, borderWidth: 1, borderColor: colors.border,
-          padding: 24, alignItems: "center", justifyContent: "center",
+          backgroundColor: colors.card, borderRadius: 28, borderWidth: 1, borderColor: "rgba(99,102,241,0.16)",
+          padding: 28, alignItems: "center", justifyContent: "center", overflow: "hidden",
+          shadowColor: "#4338ca", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.11, shadowRadius: 24, elevation: 6,
           opacity: frontOpacity,
           transform: [{ perspective: 1000 }, { rotateY: frontRotateY }],
           ...(Platform.OS === "web" ? ({ backfaceVisibility: "hidden" } as object) : {}),
         }}
       >
-        <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 8 }}>{card?.partOfSpeech ?? ""}</Text>
-        <Text style={{ fontSize: 40, fontWeight: "900", color: colors.foreground, textAlign: "center" }}>{card?.english}</Text>
-        {speechAvailable() && (
-          <TouchableOpacity onPress={() => card && speak(card.english)} style={{ marginTop: 14, flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Feather name="volume-2" size={20} color={colors.primary} />
-            <Text style={{ color: colors.primary, fontWeight: "600" }}>Озвучить</Text>
+        <View style={{ position: "absolute", top: 20, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.accent, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 }}>
+          <Feather name="book-open" size={13} color={colors.primary} />
+          <Text style={{ fontSize: 12, color: colors.primary, fontWeight: "800" }}>{isIntro ? "Знакомство" : "Новое слово"}</Text>
+        </View>
+        <View style={{ alignItems: "center", maxWidth: "100%" }}>
+          {!!card?.partOfSpeech && <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 10, textTransform: "capitalize" }}>{card.partOfSpeech}</Text>}
+          <Text style={{ fontSize: 40, lineHeight: 48, fontWeight: "900", letterSpacing: -0.6, color: hasDisplayEnglish ? colors.foreground : colors.destructive, textAlign: "center" }}>{displayEnglish}</Text>
+          {!hasDisplayEnglish && <Text style={{ color: colors.mutedForeground, textAlign: "center", marginTop: 10, lineHeight: 19 }}>Вернитесь в колоду и добавьте карточку заново.</Text>}
+        </View>
+        {speechAvailable() && hasDisplayEnglish && (
+          <TouchableOpacity onPress={() => card && speak(card.english)} activeOpacity={0.8} style={{ marginTop: 18, flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.accent, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9 }}>
+            <Feather name="volume-2" size={19} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
           </TouchableOpacity>
         )}
         {!isIntro && (
-          <Text style={{ position: "absolute", bottom: 16, color: colors.mutedForeground, fontSize: 12 }}>
-            ← не знаю   ·   знаю →
-          </Text>
+          <View style={{ position: "absolute", bottom: 18, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Feather name="move" size={14} color={colors.mutedForeground} />
+            <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>Свайп: не знаю ←   знаю →</Text>
+          </View>
         )}
       </Animated.View>
 
@@ -235,20 +250,23 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
   );
 
   return (
-    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
+    <View style={{ flex: 1, backgroundColor: STUDY_BACKGROUND, paddingTop: insets.top + 8 }}>
       {/* шапка */}
-      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, marginBottom: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, marginBottom: 10 }}>
         <TouchableOpacity onPress={onExit} style={{ padding: 8 }}><Feather name="x" size={24} color={colors.foreground} /></TouchableOpacity>
         <View style={{ flex: 1, alignItems: "center" }}>
-          <Text style={{ color: colors.mutedForeground, fontWeight: "700", fontSize: 13 }}>
+          <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>
             {isIntro ? "Знакомство" : "Тренировка"} · {Math.min(pos + 1, cards.length)}/{cards.length}
           </Text>
+          <View style={{ width: 112, height: 5, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.13)", marginTop: 7, overflow: "hidden" }}>
+            <View style={{ width: `${Math.round(progress * 100)}%`, height: "100%", borderRadius: 999, backgroundColor: colors.primary }} />
+          </View>
         </View>
         <View style={{ width: 40 }} />
       </View>
 
       {/* карточка */}
-      <View style={{ flex: 1, paddingHorizontal: 16, justifyContent: "center" }}>
+      <View style={{ flex: 1, paddingHorizontal: 20, justifyContent: "center" }}>
         {isIntro ? (
           <TouchableOpacity activeOpacity={0.95} onPress={() => doFlip(!flipped)}>{CardFaces}</TouchableOpacity>
         ) : (
@@ -261,7 +279,7 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
       </View>
 
       {/* низ: ввод/кнопки */}
-      <View style={{ padding: 16, paddingBottom: Math.max(insets.bottom, 12) + 8, gap: 10 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) + 12, gap: 10 }}>
         {isIntro ? (
           <TouchableOpacity onPress={introNext} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
             <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>{!flipped ? "Показать перевод" : (pos + 1 >= cards.length ? "Начать тренировку" : "Следующее слово")}</Text>
