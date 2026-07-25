@@ -56,5 +56,11 @@ Log in as teacher in one browser window and student in an incognito window.
 - **Email (Resend) and voice chat (OpenAI)** are optional: set `RESEND_API_KEY`
   / `OPENAI_API_KEY` in the Render dashboard (Environment) to enable them.
   Login works without email verification (the server auto-verifies users).
+- **Automatic flashcard translations:** add `GOOGLE_TRANSLATE_API_KEY` in the
+  Render dashboard under **Environment**. Create the key in a Google Cloud project
+  with **Cloud Translation API** enabled, and restrict the key to that API. The
+  application uses Google Cloud Translation Basic (v2) for English-to-Russian
+  translations; without the key it uses a compatibility fallback, but the key is
+  recommended for a reliable production deployment.
 - After the first successful deploy you can set `RUN_DB_SETUP=false` for faster
   boots (schema/seed are idempotent, so leaving it on is also fine).

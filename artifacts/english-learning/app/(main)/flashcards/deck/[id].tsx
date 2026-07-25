@@ -29,6 +29,7 @@ export default function DeckDetail() {
   const [newEn, setNewEn] = useState("");
   const [newRu, setNewRu] = useState("");
   const [adding, setAdding] = useState(false);
+  const [addNotice, setAddNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
   const [importFormat, setImportFormat] = useState<"csv" | "json">("csv");
@@ -40,13 +41,25 @@ export default function DeckDetail() {
   };
 
   const addWord = async () => {
-    if (!newEn.trim()) return;
+    const english = newEn.trim();
+    if (!english) return;
     setAdding(true);
+    setAddNotice(null);
     try {
-      await fc.addWord(deckId, { english: newEn.trim(), translationsRu: newRu.trim() ? newRu.split(/[,;/]/).map((s) => s.trim()).filter(Boolean) : undefined });
-      setNewEn(""); setNewRu(""); refresh();
+      const added = await fc.addWord(deckId, {
+        english,
+        translationsRu: newRu.trim() ? newRu.split(/[,;/]/).map((s) => s.trim()).filter(Boolean) : undefined,
+      });
+      const translation = added.translationsRu.join(", ");
+      setNewEn("");
+      setNewRu("");
+      setAddNotice({
+        type: "success",
+        text: `Добавлено: ${added.english} — ${translation}${newRu.trim() ? "" : " (перевод получен автоматически)"}`,
+      });
+      refresh();
     } catch (e: any) {
-      Alert.alert("Не удалось добавить", e?.message ?? "Укажите перевод вручную.");
+      setAddNotice({ type: "error", text: e?.message ?? "Не удалось добавить слово. Проверьте написание и попробуйте ещё раз." });
     } finally {
       setAdding(false);
     }
@@ -94,14 +107,26 @@ export default function DeckDetail() {
       {isOwn && (
         <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 18 }}>
           <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground, marginBottom: 10 }}>Добавить слово</Text>
-          <TextInput value={newEn} onChangeText={setNewEn} placeholder="Английское слово" placeholderTextColor={colors.mutedForeground}
+          <TextInput value={newEn} onChangeText={(value) => { setNewEn(value); setAddNotice(null); }} placeholder="Английское слово или фраза" autoCapitalize="none" autoCorrect={false} placeholderTextColor={colors.mutedForeground}
             style={{ backgroundColor: colors.background === "transparent" ? "#fff" : colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8 }} />
-          <TextInput value={newRu} onChangeText={setNewRu} placeholder="Перевод (необязательно — подтянется автоматически)" placeholderTextColor={colors.mutedForeground}
-            style={{ backgroundColor: colors.background === "transparent" ? "#fff" : colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 10 }} />
+          <TextInput value={newRu} onChangeText={(value) => { setNewRu(value); setAddNotice(null); }} placeholder="Перевод (необязательно)" placeholderTextColor={colors.mutedForeground}
+            style={{ backgroundColor: colors.background === "transparent" ? "#fff" : colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8 }} />
+          <View style={{ flexDirection: "row", gap: 6, alignItems: "flex-start", marginBottom: 10 }}>
+            <Feather name="zap" size={14} color={colors.primary} style={{ marginTop: 1 }} />
+            <Text style={{ flex: 1, fontSize: 12, lineHeight: 17, color: colors.mutedForeground }}>
+              Оставьте перевод пустым — его найдёт Google Translate. Неверно написанное или несуществующее слово не будет добавлено.
+            </Text>
+          </View>
+          {addNotice && (
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-start", backgroundColor: (addNotice.type === "success" ? colors.success : colors.destructive) + "14", borderWidth: 1, borderColor: (addNotice.type === "success" ? colors.success : colors.destructive) + "45", borderRadius: 12, padding: 10, marginBottom: 10 }}>
+              <Feather name={addNotice.type === "success" ? "check-circle" : "alert-circle"} size={16} color={addNotice.type === "success" ? colors.success : colors.destructive} style={{ marginTop: 1 }} />
+              <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: addNotice.type === "success" ? colors.success : colors.destructive }}>{addNotice.text}</Text>
+            </View>
+          )}
           <View style={{ flexDirection: "row", gap: 10 }}>
             <TouchableOpacity onPress={addWord} disabled={adding || !newEn.trim()} activeOpacity={0.85}
               style={{ flex: 1, backgroundColor: newEn.trim() ? colors.primary : colors.border, borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
-              {adding ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>Добавить</Text>}
+              {adding ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>Добавить слово</Text>}
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowImport((v) => !v)} activeOpacity={0.85}
               style={{ backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center", justifyContent: "center" }}>

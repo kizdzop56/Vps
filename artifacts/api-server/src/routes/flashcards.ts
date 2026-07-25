@@ -1,6 +1,6 @@
 // Флеш-карточки: колоды, изучение с интервальным повторением, placement-тест,
 // статистика, свои колоды и импорт. Данные офлайн (сид), озвучка — на клиенте
-// (Web Speech API). OpenAI используется опционально для автозаполнения своих слов.
+// (Web Speech API). Для пользовательских слов перевод получаем через Google Translate.
 import { Router } from "express";
 import { db } from "@workspace/db";
 import {
@@ -14,7 +14,6 @@ import {
 } from "@workspace/db";
 import { eq, and, or, isNull, inArray, lte, gte, sql } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
-import OpenAI from "openai";
 
 const router = Router();
 
@@ -51,11 +50,116 @@ function clean<T extends Record<string, any>>(o: T): T {
   return out;
 }
 
-function getOpenAI(): OpenAI | null {
-  const apiKey = process.env["OPENAI_API_KEY"] || process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
-  const baseURL = process.env["OPENAI_API_BASE"] || process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"];
-  if (!apiKey) return null;
-  return new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+type DictionaryEntry = { phonetic?: string; phonetics?: Array<{ text?: string }> };
+type WordCheck =
+  | { ok: true; normalized: string; ipa?: string }
+  | { ok: false; code: "invalid-format" | "not-found" | "unavailable"; suggestion?: string };
+
+function normalizeEnglishInput(value: string): string {
+  return value
+    .trim()
+    .replace(/[’‘]/g, "'")
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ");
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)));
+}
+
+async function getSpellingSuggestion(english: string): Promise<string | undefined> {
+  try {
+    const url = new URL("https://api.datamuse.com/sug");
+    url.searchParams.set("s", english);
+    url.searchParams.set("max", "1");
+    const response = await fetch(url);
+    if (!response.ok) return undefined;
+    const data = await response.json() as Array<{ word?: unknown }>;
+    const candidate = typeof data[0]?.word === "string" ? normalizeEnglishInput(data[0].word) : "";
+    return candidate && candidate.toLowerCase() !== english.toLowerCase() ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function validateEnglishWord(input: string): Promise<WordCheck> {
+  const normalized = normalizeEnglishInput(input);
+  if (!normalized || normalized.length > 80 || !/^[A-Za-z]+(?:[ A-Za-z'-]*[A-Za-z])?$/.test(normalized)) {
+    return { ok: false, code: "invalid-format" };
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized)}`
+    );
+    if (response.status === 404) {
+      return { ok: false, code: "not-found", suggestion: await getSpellingSuggestion(normalized) };
+    }
+    if (!response.ok) return { ok: false, code: "unavailable" };
+
+    const data = await response.json() as DictionaryEntry[];
+    const entry = Array.isArray(data) ? data[0] : undefined;
+    const ipa = entry?.phonetic?.trim() || entry?.phonetics?.map((item) => item.text?.trim()).find(Boolean);
+    return { ok: true, normalized, ipa };
+  } catch {
+    return { ok: false, code: "unavailable" };
+  }
+}
+
+function validationErrorMessage(input: string, check: Exclude<WordCheck, { ok: true }>): string {
+  if (check.code === "invalid-format") {
+    return "Введите английское слово или короткую фразу только латинскими буквами.";
+  }
+  if (check.code === "not-found") {
+    return check.suggestion
+      ? `Слово «${input}» не найдено. Возможно, вы имели в виду «${check.suggestion}»?`
+      : `Слово «${input}» не найдено. Проверьте написание и попробуйте снова.`;
+  }
+  return "Сервис проверки слов временно недоступен. Попробуйте ещё раз немного позже.";
+}
+
+async function translateWithGoogle(english: string): Promise<string | null> {
+  try {
+    const apiKey = process.env["GOOGLE_TRANSLATE_API_KEY"]?.trim();
+
+    if (apiKey) {
+      // Официальный Cloud Translation Basic API v2.
+      const url = new URL("https://translation.googleapis.com/language/translate/v2");
+      url.searchParams.set("key", apiKey);
+      url.searchParams.set("q", english);
+      url.searchParams.set("source", "en");
+      url.searchParams.set("target", "ru");
+      url.searchParams.set("format", "text");
+      const response = await fetch(url, { method: "POST" });
+      if (!response.ok) return null;
+      const data = await response.json() as { data?: { translations?: Array<{ translatedText?: unknown }> } };
+      const translated = data.data?.translations?.[0]?.translatedText;
+      return typeof translated === "string" && translated.trim() ? decodeHtmlEntities(translated).trim() : null;
+    }
+
+    // Совместимый резервный путь: позволяет карточкам работать до настройки API-ключа.
+    const url = new URL("https://translate.googleapis.com/translate_a/single");
+    url.searchParams.set("client", "gtx");
+    url.searchParams.set("sl", "en");
+    url.searchParams.set("tl", "ru");
+    url.searchParams.set("dt", "t");
+    url.searchParams.set("q", english);
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json() as unknown;
+    const segments = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : [];
+    const translated = segments
+      .map((segment) => Array.isArray(segment) && typeof segment[0] === "string" ? segment[0] : "")
+      .join("")
+      .trim();
+    return translated ? decodeHtmlEntities(translated) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Placement-тест (CEFR). Вопросы адаптированы, ответы держим на сервере. ────
@@ -259,31 +363,6 @@ async function assertOwnDeck(deckId: number, userId: number): Promise<{ ok: bool
   return { ok: true };
 }
 
-// автозаполнение слова (перевод/IPA/пример) через OpenAI (если доступен)
-async function autofillWord(english: string): Promise<Partial<{ ru: string[]; ipa: string; exEn: string; exRu: string; pos: string; cefr: string }>> {
-  const client = getOpenAI();
-  if (!client) return {};
-  try {
-    const r = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{
-        role: "user",
-        content: `For the English word "${english}" return strict JSON with keys: ru (array of 1-3 Russian translations), ipa (IPA transcription with slashes), pos (part of speech), exEn (one simple example sentence), exRu (its Russian translation), cefr (CEFR level A1-C2). JSON only.`,
-      }],
-      response_format: { type: "json_object" },
-      temperature: 0.3,
-    });
-    const txt = r.choices[0]?.message?.content ?? "{}";
-    const j = JSON.parse(txt);
-    return {
-      ru: Array.isArray(j.ru) ? j.ru : (j.ru ? [String(j.ru)] : undefined),
-      ipa: j.ipa, exEn: j.exEn, exRu: j.exRu, pos: j.pos, cefr: j.cefr,
-    };
-  } catch {
-    return {};
-  }
-}
-
 // ── POST /flashcards/decks/:id/words (добавить слово в свою колоду) ──────────
 router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   const user = getUser(req);
@@ -292,27 +371,33 @@ router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
 
   const b = req.body as { english: string; translationsRu?: string[]; ipa?: string; exampleEn?: string; exampleRu?: string; partOfSpeech?: string; cefrLevel?: string };
-  if (!b.english || typeof b.english !== "string") { res.status(400).json({ error: "english required" }); return; }
+  if (!b.english || typeof b.english !== "string") { res.status(400).json({ error: "Введите английское слово." }); return; }
 
-  let ru = Array.isArray(b.translationsRu) ? b.translationsRu.filter(Boolean) : [];
-  let { ipa, exampleEn, exampleRu, partOfSpeech, cefrLevel } = b;
-
-  if (ru.length === 0 || !ipa || !exampleEn) {
-    const filled = await autofillWord(b.english.trim());
-    if (ru.length === 0 && filled.ru) ru = filled.ru;
-    ipa = ipa || filled.ipa;
-    exampleEn = exampleEn || filled.exEn;
-    exampleRu = exampleRu || filled.exRu;
-    partOfSpeech = partOfSpeech || filled.pos;
-    cefrLevel = cefrLevel || filled.cefr;
-  }
-  if (ru.length === 0) {
-    res.status(400).json({ error: "Не удалось получить перевод автоматически — укажите перевод вручную (translationsRu)." });
+  const english = normalizeEnglishInput(b.english);
+  const checked = await validateEnglishWord(english);
+  if (!checked.ok) {
+    const status = checked.code === "unavailable" ? 503 : checked.code === "not-found" ? 422 : 400;
+    res.status(status).json({ error: validationErrorMessage(english || b.english.trim(), checked) });
     return;
   }
 
+  let ru = Array.isArray(b.translationsRu)
+    ? b.translationsRu.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  let { ipa, exampleEn, exampleRu, partOfSpeech, cefrLevel } = b;
+
+  if (ru.length === 0) {
+    const translated = await translateWithGoogle(checked.normalized);
+    if (!translated) {
+      res.status(503).json({ error: "Не удалось получить перевод через Google Translate. Попробуйте ещё раз или укажите перевод вручную." });
+      return;
+    }
+    ru = [translated];
+  }
+  ipa = ipa || checked.ipa;
+
   const [row] = await db.insert(wordsTable).values({
-    deckId, english: b.english.trim(), partOfSpeech: partOfSpeech ?? null,
+    deckId, english: checked.normalized, partOfSpeech: partOfSpeech ?? null,
     translationsRu: ru, ipa: ipa ?? null, exampleEn: exampleEn ?? null, exampleRu: exampleRu ?? null,
     cefrLevel: cefrLevel ?? null,
   }).returning();
