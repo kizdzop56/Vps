@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { usersTable, submissionsTable, timeSessionsTable, assignmentsTable, friendshipsTable, voiceChatSessionsTable, voiceChatMessagesTable } from "@workspace/db";
 import { eq, and, or, sql, desc, isNull, inArray } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
+import { liveSessionMinutes, isSessionStale, wallMinutes } from "../lib/timeStats";
 
 async function areFriends(userIdA: number, userIdB: number): Promise<boolean> {
   const [friendship] = await db.select().from(friendshipsTable).where(
@@ -58,13 +59,13 @@ router.get("/users/:id", requireAuth, async (req, res) => {
   let averageScore: number | null = null;
 
   if (user.role === "student") {
-    // Add only the CURRENT open session (closed sessions are already in user.totalTimeMinutes)
+    // Add only the CURRENT open session (closed sessions are already in user.totalTimeMinutes).
+    // Открытая сессия ограничена последним heartbeat — брошенная вкладка не должна
+    // накручивать часы в профиле.
     const [openSession] = await db.select()
       .from(timeSessionsTable)
       .where(and(eq(timeSessionsTable.studentId, id), isNull(timeSessionsTable.endedAt)));
-    const openMinutes = openSession
-      ? Math.floor((Date.now() - openSession.startedAt.getTime()) / 60000)
-      : 0;
+    const openMinutes = openSession ? Math.floor(liveSessionMinutes(openSession)) : 0;
     totalTimeMinutes = (user.totalTimeMinutes ?? 0) + openMinutes;
 
     const submissions = await db.select({ score: submissionsTable.score })
@@ -103,12 +104,27 @@ router.get("/users/:id", requireAuth, async (req, res) => {
   });
 });
 
-// Heartbeat — updates lastSeenAt, used for online status
+// Heartbeat — updates lastSeenAt, used for online status.
+// Дополнительно продлевает открытую учебную сессию: durationMinutes работает
+// как отметка "досюда ученик точно был в приложении". Именно по ней сессия
+// закрывается, если клиент пропал без /time-tracking/end.
 router.post("/users/ping", requireAuth, async (req, res) => {
   const user = getUser(req);
   await db.update(usersTable)
     .set({ lastSeenAt: new Date() })
     .where(eq(usersTable.id, user.userId));
+
+  const [openSession] = await db.select().from(timeSessionsTable)
+    .where(and(eq(timeSessionsTable.studentId, user.userId), isNull(timeSessionsTable.endedAt)));
+
+  // Брошенную сессию ping НЕ воскрешает (иначе гонка "ping раньше start" вернула бы
+  // всё время отсутствия) — её закроет /time-tracking/start по старому heartbeat.
+  if (openSession && !isSessionStale(openSession)) {
+    await db.update(timeSessionsTable)
+      .set({ durationMinutes: Math.floor(wallMinutes(openSession)) })
+      .where(eq(timeSessionsTable.id, openSession.id));
+  }
+
   res.json({ ok: true });
 });
 
