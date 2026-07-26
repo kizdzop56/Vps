@@ -15,6 +15,14 @@
  * Всё, что позже последнего heartbeat + небольшой запас, временем занятия не
  * считается.
  *
+ * Второй заход по тому же багу: запас в HEARTBEAT_GRACE_MINUTES начислялся
+ * ЛЮБОЙ брошенной сессии, даже той, где heartbeat не подтвердил ни одной
+ * минуты. Плюс durationMinutes округлялся вверх (Math.round), и по этому
+ * округлённому значению задним числом ставился endedAt — 30-секундный заход
+ * превращался в полноценную минуту. В сумме на свежем входе «Сегодня»
+ * показывало 1 мин 29 с вместо нуля. Теперь запас не даётся вовсе: пропал
+ * клиент — засчитываем ровно то, что подтвердил heartbeat.
+ *
  * Модуль намеренно без внешних зависимостей (чистые функции) — так его проще
  * тестировать и переиспользовать в роутах.
  */
@@ -29,13 +37,18 @@ export type SessionLike = {
 export const HEARTBEAT_INTERVAL_MINUTES = 1;
 
 /**
- * Запас поверх последнего heartbeat. Прикрывает случай, когда пользователь
- * ушёл сразу после очередного пинга: до одной минуты мы ему всё же засчитываем.
+ * Запас поверх последнего heartbeat. Используется только как потолок для УЖЕ
+ * ЗАКРЫТЫХ сессий (страховка от старых «раздутых» строк). Открытым сессиям
+ * запас больше не начисляется — см. liveSessionMinutes.
  */
 export const HEARTBEAT_GRACE_MINUTES = 2;
 
-/** Если сессия молчит дольше — считаем её брошенной. */
-export const STALE_SESSION_GAP_MINUTES = HEARTBEAT_GRACE_MINUTES + 1;
+/**
+ * Если сессия молчит дольше — считаем её брошенной. Один пропущенный
+ * heartbeat (60 с) + минута на сетевые задержки: столько живой клиент
+ * молчать не должен.
+ */
+export const STALE_SESSION_GAP_MINUTES = HEARTBEAT_INTERVAL_MINUTES + 1;
 
 /** Жёсткий потолок на одну сессию (страховка от мусорных данных). */
 export const MAX_ORPHAN_MINUTES = 240;
@@ -77,20 +90,35 @@ export function isSessionStale(session: SessionLike, now: Date | number = Date.n
 
 /**
  * Сколько минут засчитывать ОТКРЫТОЙ сессии.
- * Живая сессия → реальное календарное время (heartbeat идёт следом).
- * Брошенная → время до последнего heartbeat + запас.
+ * Живая сессия (heartbeat свежий) → реальное календарное время: следующий ping
+ * его подтвердит.
+ * Брошенная → ровно то, что подтверждено heartbeat, без надбавок. Надбавка
+ * ломала счётчик «Сегодня»: любое возвращение в приложение дарило до двух
+ * минут занятия, которых не было.
  */
 export function liveSessionMinutes(session: SessionLike, now: Date | number = Date.now()): number {
-  const capped = Math.min(
-    wallMinutes(session, now),
-    heartbeatMinutes(session) + HEARTBEAT_GRACE_MINUTES,
-  );
-  return Math.max(0, Math.min(capped, MAX_ORPHAN_MINUTES));
+  const credited = isSessionStale(session, now)
+    ? heartbeatMinutes(session)
+    : wallMinutes(session, now);
+  return Math.max(0, Math.min(credited, MAX_ORPHAN_MINUTES));
 }
 
-/** Сколько минут записать брошенной сессии в момент её принудительного закрытия. */
+/**
+ * Точное (не округлённое) время брошенной сессии. Нужно для endedAt: если
+ * округлить, отчёты по таймстампам разойдутся с реальностью в большую сторону.
+ */
+export function orphanSessionMinutesExact(session: SessionLike, now: Date | number = Date.now()): number {
+  return liveSessionMinutes(session, now);
+}
+
+/**
+ * Сколько минут записать брошенной сессии в durationMinutes (целочисленное поле).
+ * Именно floor, а не round: округление вверх превращало 30-секундный заход в
+ * целую минуту, и «Сегодня» подрастало само по себе. floor совпадает с тем, как
+ * durationMinutes пишет /api/users/ping.
+ */
 export function orphanSessionMinutes(session: SessionLike, now: Date | number = Date.now()): number {
-  return Math.round(liveSessionMinutes(session, now));
+  return Math.floor(orphanSessionMinutesExact(session, now));
 }
 
 /**
@@ -98,7 +126,7 @@ export function orphanSessionMinutes(session: SessionLike, now: Date | number = 
  * ученик реально ушёл. Иначе endedAt - startedAt в отчётах снова даст часы.
  */
 export function orphanSessionEnd(session: SessionLike, now: Date | number = Date.now()): Date {
-  return new Date(session.startedAt.getTime() + orphanSessionMinutes(session, now) * MS_PER_MINUTE);
+  return new Date(session.startedAt.getTime() + orphanSessionMinutesExact(session, now) * MS_PER_MINUTE);
 }
 
 /**
