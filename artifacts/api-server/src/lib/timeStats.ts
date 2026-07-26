@@ -49,7 +49,7 @@ export const EARLY_BIRD_MIN_MINUTES = 5;
 
 /**
  * Часовой пояс приложения. В БД время хранится в UTC, а «сегодня» и «до 9 утра»
- * должны считаться по времени учеников, а не по времени сервера.
+ * должны считаться по времени учеников, а не по времени сервера (на Render это UTC).
  */
 export const APP_TIMEZONE = process.env["APP_TIMEZONE"] || "Europe/Minsk";
 
@@ -200,7 +200,7 @@ export function startOfLocalDay(now: Date | number = Date.now(), timeZone: strin
   return new Date(guess);
 }
 
-/** Чало локальной недели (в UTC). weekStartsOn: 0 — воскресенье, 1 — понедельник. */
+/** Начало локальной недели (в UTC). weekStartsOn: 0 — воскресенье, 1 — понедельник. */
 export function startOfLocalWeek(
   now: Date | number = Date.now(),
   timeZone: string = APP_TIMEZONE,
