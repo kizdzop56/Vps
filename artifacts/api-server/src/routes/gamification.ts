@@ -7,7 +7,7 @@ import {
   submissionsTable,
   timeSessionsTable,
 } from "@workspace/db";
-import { eq, and, sql, gte } from "drizzle-orm";
+import { eq, and, sql, gte, gt } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import {
   countEarlyBirdDays,
@@ -63,6 +63,13 @@ async function computeTimeStats(userId: number, persistedMinutes: number) {
   };
 }
 
+// Состоявшийся разговор с AI-тьютором = сессия, в которой был хотя бы один
+// обмен репликами (messageCount увеличивается на 2 за каждый обмен).
+// Пустые строки появляются сами: POST /voice-chat/sessions создаёт сессию уже
+// при открытии голосового чата. Раньше они считались наравне с реальными, и
+// награды voice_* выдавались за один только вход в раздел.
+const REAL_VOICE_SESSION = gt(voiceChatSessionsTable.messageCount, 0);
+
 // ── Серверная валидация наград ──────────────────────────────────────────────
 // Реальные статы пользователя, по которым проверяются условия наград.
 type ServerAchievementStats = {
@@ -83,7 +90,10 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
 
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
     .from(voiceChatSessionsTable)
-    .where(eq(voiceChatSessionsTable.studentId, userId));
+    .where(and(
+      eq(voiceChatSessionsTable.studentId, userId),
+      REAL_VOICE_SESSION,
+    ));
   const voiceChatSessions = voiceSessions[0]?.count ?? 0;
 
   const perfectSubs = await db.select({ count: sql<number>`count(*)::int` })
@@ -201,10 +211,13 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     return;
   }
 
-  // Voice chat sessions count
+  // Voice chat sessions count — только сессии с реальным разговором
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
     .from(voiceChatSessionsTable)
-    .where(eq(voiceChatSessionsTable.studentId, userId));
+    .where(and(
+      eq(voiceChatSessionsTable.studentId, userId),
+      REAL_VOICE_SESSION,
+    ));
   const voiceChatSessions = voiceSessions[0]?.count ?? 0;
 
   // Perfect score count — only graded submissions with score = 100
@@ -257,9 +270,14 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
       .where(and(eq(submissionsTable.studentId, userId), gte(submissionsTable.submittedAt, todayStart)));
     todayCompletions = todaySubs[0]?.count ?? 0;
 
+    // В ежедневной цели тоже учитываем только состоявшиеся разговоры.
     const todayVoice = await db.select({ count: sql<number>`count(*)::int` })
       .from(voiceChatSessionsTable)
-      .where(and(eq(voiceChatSessionsTable.studentId, userId), gte(voiceChatSessionsTable.createdAt, todayStart)));
+      .where(and(
+        eq(voiceChatSessionsTable.studentId, userId),
+        gte(voiceChatSessionsTable.createdAt, todayStart),
+        REAL_VOICE_SESSION,
+      ));
     todayVoiceSessions = todayVoice[0]?.count ?? 0;
   } catch { /* silent */ }
 
