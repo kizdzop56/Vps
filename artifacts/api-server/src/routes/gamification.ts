@@ -9,6 +9,12 @@ import {
 } from "@workspace/db";
 import { eq, and, sql, gte } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
+import {
+  countEarlyBirdDays,
+  liveSessionMinutes,
+  sessionMinutes,
+  startOfLocalDay,
+} from "../lib/timeStats";
 
 const router = Router();
 
@@ -28,6 +34,33 @@ function computeLevel(xp: number): number {
     else break;
   }
   return Math.min(level, 50);
+}
+
+// Время ученика по данным сессий. Считается в одном месте, чтобы условия наград
+// и цифры в профиле не расходились.
+// Важно: у открытой сессии засчитывается только время, подтверждённое heartbeat —
+// иначе брошенная вкладка дарит часы занятий (и вместе с ними награды).
+async function computeTimeStats(userId: number, persistedMinutes: number) {
+  const sessions = await db.select().from(timeSessionsTable)
+    .where(eq(timeSessionsTable.studentId, userId));
+
+  const openSession = sessions.find(s => s.endedAt === null);
+  const openMinutes = openSession ? Math.floor(liveSessionMinutes(openSession)) : 0;
+
+  const todayStart = startOfLocalDay();
+  const todayMinutes = Math.round(
+    sessions
+      .filter(s => s.startedAt >= todayStart)
+      .reduce((sum, s) => sum + sessionMinutes(s), 0)
+  );
+
+  return {
+    sessions,
+    todayMinutes,
+    totalTimeMinutes: persistedMinutes + openMinutes,
+    earlyBirdDays: countEarlyBirdDays(sessions),
+    todayStart,
+  };
 }
 
 // ── Серверная валидация наград ──────────────────────────────────────────────
@@ -70,15 +103,14 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
     ));
   const completedAssignments = completedSubs[0]?.count ?? 0;
 
+  // Те же цифры, что видит клиент в /gamification/stats — иначе клиент считает
+  // награду открытой, а сервер её отклоняет (и она не выдаётся никогда).
+  let totalTimeMinutes = userData.totalTimeMinutes ?? 0;
   let earlyBirdSessions = 0;
   try {
-    const earlySessions = await db.select({ count: sql<number>`count(*)::int` })
-      .from(timeSessionsTable)
-      .where(and(
-        eq(timeSessionsTable.studentId, userId),
-        sql`EXTRACT(HOUR FROM ${timeSessionsTable.startedAt}) < 9`
-      ));
-    earlyBirdSessions = earlySessions[0]?.count ?? 0;
+    const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
+    totalTimeMinutes = time.totalTimeMinutes;
+    earlyBirdSessions = time.earlyBirdDays;
   } catch {
     earlyBirdSessions = 0;
   }
@@ -86,7 +118,7 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
   return {
     completedAssignments,
     totalPoints: userData.totalPoints,
-    totalTimeMinutes: userData.totalTimeMinutes ?? 0,
+    totalTimeMinutes,
     voiceChatSessions,
     loginStreak: userData.loginStreak,
     perfectScoreCount,
@@ -98,6 +130,7 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
 // Условия для всех 50 наград. ДОЛЖНЫ соответствовать каталогу на клиенте
 // (english-learning/constants/achievements.ts). Награда записывается в БД
 // только если ЕЁ условие реально выполнено — клиенту доверять нельзя.
+// early_* считаются в УТРЕННИХ ДНЯХ (один день — максимум одно занятие).
 const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => boolean> = {
   // easy
   welcome:      () => true,
@@ -193,51 +226,24 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     ));
   const completedAssignments = completedSubs[0]?.count ?? 0;
 
-  // Early bird sessions (sessions started before 9am)
-  let earlyBirdSessions = 0;
-  try {
-    const earlySessions = await db.select({ count: sql<number>`count(*)::int` })
-      .from(timeSessionsTable)
-      .where(and(
-        eq(timeSessionsTable.studentId, userId),
-        sql`EXTRACT(HOUR FROM ${timeSessionsTable.startedAt}) < 9`
-      ));
-    earlyBirdSessions = earlySessions[0]?.count ?? 0;
-  } catch {
-    earlyBirdSessions = 0;
-  }
-
-  // Unlocked achievements from DB
-  const dbAchievements = await db.select().from(userAchievementsTable)
-    .where(eq(userAchievementsTable.userId, userId));
-
-  // Daily goal progress (today's time) — include elapsed time from the
-  // currently open session so the goal bar and timer stay in sync with
-  // the live client-side timer (open sessions have no durationMinutes yet).
+  // Время: сегодня, всего и утренние дни для награды «Жаворонок».
+  // Границы суток — по часовому поясу приложения (APP_TIMEZONE), а не по
+  // времени процесса: сервер живёт в UTC, из-за чего «сегодня» начиналось
+  // в 3 часа ночи по Минску.
   let todayMinutes = 0;
   let totalTimeMinutes = userData.totalTimeMinutes ?? 0;
+  let earlyBirdSessions = 0;
+  let todayStart = startOfLocalDay();
   try {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    const allSessions = await db.select().from(timeSessionsTable)
-      .where(eq(timeSessionsTable.studentId, userId));
-
-    const openSession = allSessions.find(s => s.endedAt === null);
-    const openMinutes = openSession
-      ? Math.floor((Date.now() - openSession.startedAt.getTime()) / 60000)
-      : 0;
-
-    const closedSessions = allSessions.filter(s => s.endedAt !== null);
-    todayMinutes = closedSessions
-      .filter(s => s.startedAt >= todayStart)
-      .reduce((sum, s) => sum + (s.durationMinutes || 0), 0)
-      + (openSession && openSession.startedAt >= todayStart ? openMinutes : 0);
-
-    totalTimeMinutes = (userData.totalTimeMinutes ?? 0) + openMinutes;
+    const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
+    todayMinutes = time.todayMinutes;
+    totalTimeMinutes = time.totalTimeMinutes;
+    earlyBirdSessions = time.earlyBirdDays;
+    todayStart = time.todayStart;
   } catch {
     todayMinutes = 0;
     totalTimeMinutes = userData.totalTimeMinutes ?? 0;
+    earlyBirdSessions = 0;
   }
 
   const xpLevel = computeLevel(userData.totalPoints);
@@ -246,8 +252,6 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   let todayCompletions = 0;
   let todayVoiceSessions = 0;
   try {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
     const todaySubs = await db.select({ count: sql<number>`count(*)::int` })
       .from(submissionsTable)
       .where(and(eq(submissionsTable.studentId, userId), gte(submissionsTable.submittedAt, todayStart)));
@@ -258,6 +262,10 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
       .where(and(eq(voiceChatSessionsTable.studentId, userId), gte(voiceChatSessionsTable.createdAt, todayStart)));
     todayVoiceSessions = todayVoice[0]?.count ?? 0;
   } catch { /* silent */ }
+
+  // Unlocked achievements from DB
+  const dbAchievements = await db.select().from(userAchievementsTable)
+    .where(eq(userAchievementsTable.userId, userId));
 
   res.json({
     totalPoints: userData.totalPoints,
