@@ -49,7 +49,7 @@ export const EARLY_BIRD_MIN_MINUTES = 5;
 
 /**
  * Часовой пояс приложения. В БД время хранится в UTC, а «сегодня» и «до 9 утра»
- * должны считаться по времени учеников, а не по времени сервера (на Render это UTC).
+ * должны считаться по времени учеников, а не по времени сервера.
  */
 export const APP_TIMEZONE = process.env["APP_TIMEZONE"] || "Europe/Minsk";
 
@@ -108,7 +108,11 @@ export function orphanSessionEnd(session: SessionLike, now: Date | number = Date
  */
 export function closedSessionMinutes(session: SessionLike): number {
   const span = wallMinutes(session, session.endedAt ?? Date.now());
-  if (session.durationMinutes === null || session.durationMinutes === undefined) return span;
+  if (session.durationMinutes === null || session.durationMinutes === undefined) {
+    // Legacy rows created before heartbeat tracking have no trustworthy end
+    // marker. Never replay the whole gap on the next login (for example, 1h29).
+    return Math.min(span, HEARTBEAT_GRACE_MINUTES);
+  }
   return Math.min(span, heartbeatMinutes(session) + HEARTBEAT_GRACE_MINUTES);
 }
 
@@ -196,7 +200,7 @@ export function startOfLocalDay(now: Date | number = Date.now(), timeZone: strin
   return new Date(guess);
 }
 
-/** Начало локальной недели (в UTC). weekStartsOn: 0 — воскресенье, 1 — понедельник. */
+/** Чало локальной недели (в UTC). weekStartsOn: 0 — воскресенье, 1 — понедельник. */
 export function startOfLocalWeek(
   now: Date | number = Date.now(),
   timeZone: string = APP_TIMEZONE,
