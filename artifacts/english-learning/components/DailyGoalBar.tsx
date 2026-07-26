@@ -37,6 +37,14 @@ interface DailyGoalBarProps {
 
 const TIME_GOAL_OPTIONS = [10, 15, 20, 30];
 
+function formatDurationMinutes(value: number): string {
+  const totalSeconds = Math.max(0, Math.round(value * 60));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds === 0) return `${minutes} мин`;
+  return `${minutes} мин ${seconds} с`;
+}
+
 interface GoalType {
   id: string;
   emoji: string;
@@ -63,8 +71,8 @@ const GOAL_TYPES: GoalType[] = [
     reward: "+20 XP",
     getTarget: (goalMinutes) => goalMinutes,
     getProgress: ({ todayMinutes }) => todayMinutes,
-    formatRemaining: (rem, target) => `Осталось ${rem} мин из ${target}`,
-    formatDone: (progress, target) => `${progress} из ${target} мин выполнено`,
+    formatRemaining: (rem, target) => `Осталось ${formatDurationMinutes(rem)} из ${target} мин`,
+    formatDone: (progress, target) => `${formatDurationMinutes(progress)} из ${target} мин выполнено`,
     isTimeType: true,
   },
   {
@@ -105,8 +113,8 @@ const GOAL_TYPES: GoalType[] = [
     reward: "+20 XP",
     getTarget: (goalMinutes) => goalMinutes,
     getProgress: ({ todayMinutes }) => todayMinutes,
-    formatRemaining: (rem, target) => `Осталось ${rem} мин из ${target}`,
-    formatDone: (progress, target) => `${progress} из ${target} мин выполнено`,
+    formatRemaining: (rem, target) => `Осталось ${formatDurationMinutes(rem)} из ${target} мин`,
+    formatDone: (progress, target) => `${formatDurationMinutes(progress)} из ${target} мин выполнено`,
     isTimeType: true,
   },
   {
@@ -133,8 +141,8 @@ const GOAL_TYPES: GoalType[] = [
     reward: "+20 XP",
     getTarget: (goalMinutes) => goalMinutes,
     getProgress: ({ todayMinutes }) => todayMinutes,
-    formatRemaining: (rem, target) => `Осталось ${rem} мин из ${target}`,
-    formatDone: (progress, target) => `${progress} из ${target} мин выполнено`,
+    formatRemaining: (rem, target) => `Осталось ${formatDurationMinutes(rem)} из ${target} мин`,
+    formatDone: (progress, target) => `${formatDurationMinutes(progress)} из ${target} мин выполнено`,
     isTimeType: true,
   },
   {
@@ -221,7 +229,7 @@ export function DailyGoalBar({
   return (
     <>
       {done ? (
-        <View style={[styles.doneContainer, { backgroundColor: "#6366f1" }]}>
+        <View style={[styles.doneContainer, { backgroundColor: "#6366f1" }]}> 
           <Animated.View
             style={[
               styles.doneShimmer,
@@ -244,31 +252,31 @@ export function DailyGoalBar({
           style={[styles.container, { backgroundColor: colors.card, borderColor: goalType.color + "30" }]}
         >
           {/* Day badge */}
-          <View style={[styles.dayBadge, { backgroundColor: bgColor }]}>
-            <Text style={[styles.dayBadgeText, { color: goalType.color }]}>
+          <View style={[styles.dayBadge, { backgroundColor: bgColor }]}> 
+            <Text style={[styles.dayBadgeText, { color: goalType.color }]}> 
               Цель дня
             </Text>
           </View>
 
           <View style={styles.header}>
-            <View style={[styles.iconBox, { backgroundColor: bgColor }]}>
+            <View style={[styles.iconBox, { backgroundColor: bgColor }]}> 
               <Text style={{ fontSize: 18 }}>{goalType.emoji}</Text>
             </View>
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={[styles.title, { color: colors.foreground }]}>{goalType.label}</Text>
-              <Text style={[styles.sub, { color: colors.mutedForeground }]}>
+              <Text style={[styles.sub, { color: colors.mutedForeground }]}> 
                 {goalType.formatRemaining(remaining, target)}
               </Text>
             </View>
-            <View style={[styles.rewardBadge, { backgroundColor: bgColor }]}>
-              <Text style={[styles.rewardText, { color: goalType.color }]}>
+            <View style={[styles.rewardBadge, { backgroundColor: bgColor }]}> 
+              <Text style={[styles.rewardText, { color: goalType.color }]}> 
                 {goalType.reward}
               </Text>
             </View>
           </View>
 
           {/* Progress bar */}
-          <View style={[styles.trackBg, { backgroundColor: colors.muted }]}>
+          <View style={[styles.trackBg, { backgroundColor: colors.muted }]}> 
             <Animated.View
               style={[
                 styles.trackFill,
@@ -282,7 +290,7 @@ export function DailyGoalBar({
 
           {/* Sub row */}
           {goalType.isTimeType && (
-            <Text style={[styles.hint, { color: colors.mutedForeground, marginTop: 8 }]}>
+            <Text style={[styles.hint, { color: colors.mutedForeground, marginTop: 8 }]}> 
               💡 Нажми, чтобы изменить цель
             </Text>
           )}
@@ -292,9 +300,9 @@ export function DailyGoalBar({
       {/* Goal Picker Modal — only for time goals */}
       <Modal visible={showPicker} transparent animationType="slide" onRequestClose={() => setShowPicker(false)}>
         <View style={styles.overlay}>
-          <View style={[styles.pickerSheet, { backgroundColor: colors.card }]}>
+          <View style={[styles.pickerSheet, { backgroundColor: colors.card }]}> 
             <Text style={[styles.pickerTitle, { color: colors.foreground }]}>Ежедневная цель</Text>
-            <Text style={[styles.pickerSub, { color: colors.mutedForeground }]}>
+            <Text style={[styles.pickerSub, { color: colors.mutedForeground }]}> 
               Сколько минут в день ты хочешь заниматься?
             </Text>
             {TIME_GOAL_OPTIONS.map((mins) => (
@@ -313,10 +321,10 @@ export function DailyGoalBar({
                   {mins <= 10 ? "🌱" : mins <= 15 ? "⭐" : mins <= 20 ? "🔥" : "🚀"}
                 </Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.goalMin, { color: mins === goalMinutes ? "#6366f1" : colors.foreground }]}>
+                  <Text style={[styles.goalMin, { color: mins === goalMinutes ? "#6366f1" : colors.foreground }]}> 
                     {mins} минут
                   </Text>
-                  <Text style={[styles.goalDesc, { color: colors.mutedForeground }]}>
+                  <Text style={[styles.goalDesc, { color: colors.mutedForeground }]}> 
                     {mins <= 10 ? "Лёгкий старт" : mins <= 15 ? "Хорошая привычка" : mins <= 20 ? "Активное обучение" : "Максимальный результат"}
                   </Text>
                 </View>
