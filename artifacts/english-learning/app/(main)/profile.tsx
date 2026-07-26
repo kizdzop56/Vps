@@ -64,17 +64,18 @@ function formatTime(minutes: number) {
   return `${h} ч ${m} мин`;
 }
 
+// Дневное время («Сегодня») показываем с явными единицами.
+// Раньше первые полчаса рисовались в формате mm:ss — "1:29" читалось как
+// «1 час 29 минут», и сразу после входа казалось, что счётчик накрутил
+// время, которого не было. Сама логика подсчёта здесь не участвует.
 function formatSessionTime(seconds: number) {
-  if (seconds < 1800) {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h === 0) return `${m} мин`;
-  if (m === 0) return `${h} ч`;
-  return `${h} ч ${m} мин`;
+  const totalMinutes = Math.floor(seconds / 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  const s = seconds % 60;
+  if (h > 0) return m === 0 ? `${h} ч` : `${h} ч ${m} мин`;
+  if (totalMinutes > 0) return `${m} мин ${String(s).padStart(2, "0")} с`;
+  return `${s} с`;
 }
 
 // Live in-app timer — only ticks while the user is actively in the app.
