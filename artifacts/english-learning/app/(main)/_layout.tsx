@@ -26,22 +26,25 @@ function StudentTimerManager() {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionActiveRef = useRef(false);
 
-  const rawPost = useCallback((path: string) => {
+  const rawPost = useCallback((path: string): Promise<void> => {
     const token = tokenRef.current;
-    if (!token) return;
-    fetch(`${BASE_URL}${path}`, {
+    if (!token) return Promise.resolve();
+    return fetch(`${BASE_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       keepalive: true,
-    }).catch(() => {});
+    }).then(() => undefined).catch(() => undefined);
   }, []);
 
   const startNow = useCallback(() => {
     if (sessionActiveRef.current) return;
     sessionActiveRef.current = true;
     AsyncStorage.setItem(SESSION_START_KEY, String(Date.now()));
-    rawPost("/api/time-tracking/start");
-    rawPost("/api/users/ping");
+    // ping уходит ТОЛЬКО после того, как новая сессия создана. Раньше оба
+    // запроса летели одновременно, ping мог обогнать /time-tracking/start,
+    // продлить heartbeat ПРЕДЫДУЩЕЙ (уже брошенной) сессии — и время
+    // отсутствия снова прилетало в «Сегодня».
+    void rawPost("/api/time-tracking/start").then(() => rawPost("/api/users/ping"));
   }, [rawPost]);
 
   const endNow = useCallback(() => {
