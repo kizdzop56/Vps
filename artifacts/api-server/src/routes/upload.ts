@@ -33,10 +33,15 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
-const serveFile = (req: any, filename: string) => {
-  const protocol = req.headers["x-forwarded-proto"] || "https";
-  const host = req.headers["host"] || "localhost";
-  return `${protocol}://${host}/api/uploads/${filename}`;
+// Return a RELATIVE url. The web frontend calls the API on the same origin, so
+// "/api/uploads/<file>" resolves correctly through the reverse proxy on every
+// environment. Building an absolute url from the "Host" header broke uploads in
+// production: the reverse proxy (scripts/prod-start.mjs / preview-proxy.mjs)
+// overwrites Host with "localhost:8080", which produced unreachable links like
+// https://localhost:8080/api/uploads/... — so avatars fell back to the plain
+// purple placeholder instead of the uploaded photo.
+const serveFile = (_req: any, filename: string) => {
+  return `/api/uploads/${filename}`;
 };
 
 router.post("/upload/image", requireAuth, upload.single("file"), (req, res) => {
