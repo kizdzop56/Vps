@@ -480,9 +480,14 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, user.userId));
   const stateByWord = new Map(states.map((s) => [s.wordId, s]));
 
-  // сколько новых слов уже введено сегодня (глобально) — для дневной нормы
+  // сколько новых слов уже введено сегодня В ЭТОЙ КОЛОДЕ — дневная норма
+  // считается отдельно для каждой колоды (не глобально), чтобы лимит одной
+  // колоды не блокировал изучение новых слов в других.
   const today = startOfToday().getTime();
-  const introducedToday = states.filter((s) => s.createdAt.getTime() >= today).length;
+  const deckWordIds = new Set(words.map((w) => w.id));
+  const introducedToday = states.filter(
+    (s) => s.createdAt.getTime() >= today && deckWordIds.has(s.wordId),
+  ).length;
   const remainingNew = Math.max(0, settings.dailyNewLimit - introducedToday);
 
   const now = Date.now();
