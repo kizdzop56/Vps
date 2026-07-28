@@ -8,6 +8,13 @@ import { useColors } from "@/hooks/useColors";
 import { fc } from "@/hooks/useFlashcards";
 import type { PlacementQuestion, PlacementResultResponse } from "@workspace/api-client-react";
 
+// подпись раздела вопроса на русском
+function sectionLabel(section: string): string {
+  if (section === "Grammar") return "Грамматика";
+  if (section === "Translation") return "Перевод слова";
+  return "Лексика";
+}
+
 export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse) => void }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -94,7 +101,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
           <View style={{ width: `${progress}%`, height: "100%", backgroundColor: colors.primary, borderRadius: 6 }} />
         </View>
         <Text style={{ marginTop: 8, color: colors.mutedForeground, fontSize: 12, fontWeight: "600" }}>
-          Вопрос {idx + 1} из {questions.length} · {q.section === "Grammar" ? "Грамматика" : "Лексика"}
+          Вопрос {idx + 1} из {questions.length} · {sectionLabel(q.section)}
         </Text>
       </View>
 
