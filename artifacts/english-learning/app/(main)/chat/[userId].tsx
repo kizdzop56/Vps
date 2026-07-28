@@ -21,6 +21,9 @@ async function apiFetch(path: string, opts?: RequestInit) {
   const token = await authStorage.getItem("auth_token");
   const res = await fetch(`${BASE}${path}`, {
     ...opts,
+    // Без no-store браузер на web отдаёт закэшированный ответ на повторные
+    // GET-запросы поллинга, и новые сообщения не появляются — чат "не работает".
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
