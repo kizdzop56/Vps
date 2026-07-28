@@ -1,11 +1,11 @@
 // Экран изучения колоды (в стиле DuoCards):
 //  • слайд-шоу-знакомство (для готовых колод при первом заходе): лицо → оборот → далее;
-//  • тренировка: ввод перевода → «Показать перевод» → оборот (перевод, транскрипция,
-//    пример EN+RU, аудио, верно/неверно) → свайп влево (не знаю) / вправо (знаю);
+//  • тренировка: «Показать перевод» → оборот (перевод, транскрипция,
+//    пример EN+RU, аудио) → свайп влево (не знаю) / вправо (знаю);
 //  • оценка уходит в интервальное повторение (fc.review).
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  View, Text, TextInput, TouchableOpacity, Animated, ActivityIndicator, Dimensions, Platform,
+  View, Text, TouchableOpacity, Animated, ActivityIndicator, Dimensions, Platform,
 } from "react-native";
 import { PanGestureHandler, State, type PanGestureHandlerStateChangeEvent } from "react-native-gesture-handler";
 import { Feather } from "@expo/vector-icons";
@@ -16,19 +16,6 @@ import type { StudyCard, StudyQueue } from "@workspace/api-client-react";
 
 const SWIPE_THRESHOLD = 110;
 const STUDY_BACKGROUND = "#F8F7FF";
-
-function normalize(s: string): string {
-  return s.toLowerCase().trim().replace(/[.,!?;:()"']/g, "").replace(/ё/g, "е");
-}
-function isCorrect(typed: string, translations: string[]): boolean {
-  const t = normalize(typed);
-  if (!t) return false;
-  // Разбиваем каждый перевод на варианты (по , ; /) ДО нормализации, чтобы
-  // перевод из нескольких значений в одной строке («идти, ехать») матчился по «идти».
-  return translations.some((tr) =>
-    tr.split(/[,;/]/).some((part) => normalize(part) === t)
-  );
-}
 
 // deckId — обычный режим (очередь колоды). loader — произвольный источник карточек
 // (например «Марафон слов»), тогда deckId не нужен. Указывайте что-то одно.
@@ -52,8 +39,6 @@ export function FlashcardStudy({
   const [phase, setPhase] = useState<"loading" | "intro" | "train" | "done">("loading");
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
-  const [typed, setTyped] = useState("");
-  const [answered, setAnswered] = useState<null | boolean>(null);
   const [known, setKnown] = useState(0);
   const [learning, setLearning] = useState(0);
 
@@ -83,8 +68,6 @@ export function FlashcardStudy({
     panX.setValue(0);
     flip.setValue(0);
     setFlipped(false);
-    setTyped("");
-    setAnswered(null);
   }, [panX, flip]);
 
   const cards: StudyCard[] = queue?.cards ?? [];
@@ -152,7 +135,6 @@ export function FlashcardStudy({
   const nopeOpacity = panX.interpolate({ inputRange: [-SWIPE_THRESHOLD, 0], outputRange: [1, 0], extrapolate: "clamp" });
 
   const isIntro = phase === "intro";
-  const correct = card ? isCorrect(typed, card.translationsRu) : false;
 
   const CardFaces = (
     <View style={{ width: "100%", height: cardHeight }}>
@@ -205,18 +187,6 @@ export function FlashcardStudy({
       >
         {card && (
           <View style={{ flex: 1 }}>
-            {!isIntro && answered !== null && (
-              <View style={{
-                alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6,
-                backgroundColor: (correct ? colors.success : colors.warning) + "22",
-                borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 10,
-              }}>
-                <Feather name={correct ? "check-circle" : "x-circle"} size={14} color={correct ? colors.success : colors.warning} />
-                <Text style={{ color: correct ? colors.success : colors.warning, fontWeight: "700", fontSize: 12 }}>
-                  {correct ? "Верно!" : "Пока неверно"}
-                </Text>
-              </View>
-            )}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <Text style={{ fontSize: 28, fontWeight: "900", color: colors.foreground }}>{card.translationsRu.join(", ")}</Text>
             </View>
@@ -291,7 +261,7 @@ export function FlashcardStudy({
         )}
       </View>
 
-      {/* низ: ввод/кнопки */}
+      {/* низ: кнопки */}
       <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) + 12, gap: 10 }}>
         {isIntro ? (
           <TouchableOpacity onPress={introNext} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
@@ -299,18 +269,8 @@ export function FlashcardStudy({
           </TouchableOpacity>
         ) : (
           <>
-            {!flipped && (
-              <TextInput
-                value={typed}
-                onChangeText={setTyped}
-                placeholder="Введите перевод…"
-                placeholderTextColor={colors.mutedForeground}
-                onSubmitEditing={() => { setAnswered(typed.trim() ? isCorrect(typed, card?.translationsRu ?? []) : null); doFlip(true); }}
-                style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.foreground }}
-              />
-            )}
             {!flipped ? (
-              <TouchableOpacity onPress={() => { setAnswered(typed.trim() ? isCorrect(typed, card?.translationsRu ?? []) : null); doFlip(true); }} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
+              <TouchableOpacity onPress={() => doFlip(true)} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
                 <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Показать перевод</Text>
               </TouchableOpacity>
             ) : (
