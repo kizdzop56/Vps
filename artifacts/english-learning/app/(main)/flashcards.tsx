@@ -106,18 +106,23 @@ function SectionTitle({ colors, title }: any) {
 }
 
 function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: any; onPress: () => void }) {
-  const pct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
+  // «начато» = слова, которые уже вводились (wordCount − новые). newCount с
+  // бэкенда = wordCount − introduced, поэтому introduced выводится обратно.
+  const introduced = Math.max(0, deck.wordCount - deck.newCount);
+  const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
+  const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}>
       <Text style={{ fontSize: 32 }}>{deck.emoji ?? "📘"}</Text>
       <View style={{ flex: 1 }}>
         <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
-          {deck.wordCount} слов · выучено {deck.learnedCount}
+          {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>
-        {/* прогресс-бар */}
+        {/* прогресс-бар: светлая заливка — начатые слова, насыщенная — выученные */}
         <View style={{ height: 6, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
-          <View style={{ width: `${pct}%`, height: "100%", backgroundColor: colors.success, borderRadius: 4 }} />
+          <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${startedPct}%`, backgroundColor: colors.success + "55", borderRadius: 4 }} />
+          <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${learnedPct}%`, backgroundColor: colors.success, borderRadius: 4 }} />
         </View>
       </View>
       <View style={{ alignItems: "flex-end", gap: 4 }}>
