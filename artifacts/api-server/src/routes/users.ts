@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { usersTable, submissionsTable, timeSessionsTable, assignmentsTable, friendshipsTable, voiceChatSessionsTable, voiceChatMessagesTable } from "@workspace/db";
+import { usersTable, submissionsTable, timeSessionsTable, assignmentsTable, friendshipsTable, voiceChatSessionsTable, voiceChatMessagesTable, parentChildrenTable } from "@workspace/db";
 import { eq, and, or, sql, desc, isNull, inArray } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import { liveSessionMinutes, isSessionStale, wallMinutes } from "../lib/timeStats";
@@ -16,6 +16,17 @@ async function areFriends(userIdA: number, userIdB: number): Promise<boolean> {
     )
   );
   return !!friendship;
+}
+
+// Родитель связан с учеником через parentChildrenTable (или через parentId в usersTable).
+async function isLinkedParent(parentId: number, studentId: number): Promise<boolean> {
+  const [link] = await db.select().from(parentChildrenTable).where(
+    and(eq(parentChildrenTable.parentId, parentId), eq(parentChildrenTable.studentId, studentId))
+  );
+  if (link) return true;
+  const [child] = await db.select({ id: usersTable.id }).from(usersTable)
+    .where(and(eq(usersTable.id, studentId), eq(usersTable.parentId, parentId)));
+  return !!child;
 }
 
 const router = Router();
@@ -225,7 +236,9 @@ router.get("/students/:id/submissions", requireAuth, async (req, res) => {
   const caller = getUser(req);
   const studentId = Number(req.params["id"]);
 
-  if (!isTeacher(caller.role) && caller.role !== "admin" && caller.userId !== studentId) {
+  const allowed = isTeacher(caller.role) || caller.role === "admin" || caller.userId === studentId
+    || (caller.role === "parent" && await isLinkedParent(caller.userId, studentId));
+  if (!allowed) {
     res.status(403).json({ error: "Forbidden" }); return;
   }
 

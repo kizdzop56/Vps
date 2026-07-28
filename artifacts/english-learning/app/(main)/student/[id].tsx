@@ -41,6 +41,7 @@ type Submission = {
   assignmentId: number; title: string; type: string; points: number;
 };
 type CategoryStat = { type: string; avgScore: number | null; count: number };
+type FlashcardStats = { totalLearned: number; totalWords: number; totalReviews: number; accuracy: number };
 
 
 export default function StudentDetailScreen() {
@@ -53,6 +54,7 @@ export default function StudentDetailScreen() {
   const [student, setStudent] = useState<any>(null);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
+  const [flashcardStats, setFlashcardStats] = useState<FlashcardStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -62,10 +64,12 @@ export default function StudentDetailScreen() {
       apiFetch(`/api/users/${studentId}`),
       apiFetch(`/api/students/${studentId}/submissions`).catch(() => []),
       apiFetch(`/api/students/${studentId}/category-stats`).catch(() => []),
-    ]).then(([s, subs, stats]) => {
+      apiFetch(`/api/flashcards/stats?studentId=${studentId}`).catch(() => null),
+    ]).then(([s, subs, stats, fcards]) => {
       setStudent(s);
       setSubmissions(subs ?? []);
       setCategoryStats(stats ?? []);
+      setFlashcardStats(fcards ?? null);
     }).finally(() => setIsLoading(false));
   }, [studentId]);
 
@@ -202,6 +206,35 @@ export default function StudentDetailScreen() {
           <Text style={styles.sectionTitle}>Навыки по областям</Text>
           <AssignmentRingsChart stats={categoryStats} colors={colors} />
         </View>
+
+        {/* Flashcards */}
+        {flashcardStats && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Флеш-карточки</Text>
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <Feather name="award" size={20} color="#22c55e" />
+                <Text style={styles.statValue}>{flashcardStats.totalLearned}</Text>
+                <Text style={styles.statLabel}>Выучено слов</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Feather name="book-open" size={20} color="#6366f1" />
+                <Text style={styles.statValue}>{flashcardStats.totalWords}</Text>
+                <Text style={styles.statLabel}>Слов в изучении</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Feather name="repeat" size={20} color="#ec4899" />
+                <Text style={styles.statValue}>{flashcardStats.totalReviews}</Text>
+                <Text style={styles.statLabel}>Повторений</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Feather name="target" size={20} color={colors.primary} />
+                <Text style={styles.statValue}>{flashcardStats.accuracy}%</Text>
+                <Text style={styles.statLabel}>Точность</Text>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Recent submissions */}
         <View style={styles.section}>
