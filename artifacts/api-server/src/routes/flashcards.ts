@@ -165,38 +165,33 @@ async function translateWithGoogle(english: string): Promise<string | null> {
 // ── Placement-тест (CEFR). Вопросы адаптированы, ответы держим на сервере. ────
 type PQ = { id: number; section: string; question: string; options: string[]; answer: number };
 const PLACEMENT_QUESTIONS: PQ[] = [
+  // Грамматика — предложения с пропуском (от простого к сложному).
   { id: 1, section: "Grammar", question: "She ___ a teacher.", options: ["is", "are", "am", "be"], answer: 0 },
   { id: 2, section: "Grammar", question: "They ___ football every weekend.", options: ["play", "plays", "playing", "is play"], answer: 0 },
   { id: 3, section: "Grammar", question: "I ___ to London last year.", options: ["go", "went", "gone", "going"], answer: 1 },
-  { id: 4, section: "Grammar", question: "There ___ any milk in the fridge.", options: ["isn't", "aren't", "wasn't", "not"], answer: 0 },
-  { id: 5, section: "Grammar", question: "He ___ TV when I called him.", options: ["watched", "was watching", "watches", "watch"], answer: 1 },
-  { id: 6, section: "Grammar", question: "If it rains, we ___ at home.", options: ["stay", "will stay", "stayed", "would stay"], answer: 1 },
-  { id: 7, section: "Grammar", question: "I have lived here ___ 2010.", options: ["since", "for", "from", "during"], answer: 0 },
-  { id: 8, section: "Grammar", question: "This book is ___ than that one.", options: ["interesting", "more interesting", "most interesting", "interestinger"], answer: 1 },
-  { id: 9, section: "Grammar", question: "She asked me where I ___.", options: ["live", "lived", "living", "do live"], answer: 1 },
-  { id: 10, section: "Grammar", question: "The report ___ by Friday.", options: ["must finish", "must be finished", "must finishing", "finished"], answer: 1 },
-  { id: 11, section: "Grammar", question: "He talks as if he ___ everything.", options: ["knows", "knew", "know", "is knowing"], answer: 1 },
-  { id: 12, section: "Grammar", question: "___ known earlier, I would have helped.", options: ["If I", "Had I", "Have I", "Should I"], answer: 1 },
-  { id: 13, section: "Vocabulary", question: "The opposite of 'cheap' is:", options: ["expensive", "free", "rich", "small"], answer: 0 },
-  { id: 14, section: "Vocabulary", question: "I'm looking ___ my keys.", options: ["for", "at", "after", "up"], answer: 0 },
-  { id: 15, section: "Vocabulary", question: "Choose the synonym of 'begin':", options: ["finish", "start", "stop", "close"], answer: 1 },
-  { id: 16, section: "Vocabulary", question: "We need to ___ a decision soon.", options: ["do", "make", "take", "get"], answer: 1 },
-  { id: 17, section: "Vocabulary", question: "She is very ___; she always shares.", options: ["selfish", "generous", "lazy", "rude"], answer: 1 },
-  { id: 18, section: "Vocabulary", question: "The weather was ___, so we cancelled the trip.", options: ["terrible", "delicious", "loud", "quiet"], answer: 0 },
-  { id: 19, section: "Vocabulary", question: "'To give up' most nearly means:", options: ["to continue", "to stop trying", "to win", "to begin"], answer: 1 },
-  { id: 20, section: "Vocabulary", question: "He was ___ for being late again.", options: ["praised", "blamed", "rewarded", "thanked"], answer: 1 },
-  { id: 21, section: "Vocabulary", question: "'Ambiguous' most closely means:", options: ["perfectly clear", "open to more than one meaning", "completely wrong", "very technical"], answer: 1 },
-  { id: 22, section: "Vocabulary", question: "The evidence was ___ to convince the jury.", options: ["insufficient", "sufficient", "superficial", "artificial"], answer: 1 },
-  { id: 23, section: "Vocabulary", question: "'Meticulous' most nearly means:", options: ["careless", "very careful and precise", "extremely fast", "lazy"], answer: 1 },
-  { id: 24, section: "Vocabulary", question: "Her ___ attitude made compromise impossible.", options: ["flexible", "cooperative", "intransigent", "friendly"], answer: 2 },
+  { id: 4, section: "Grammar", question: "If it rains, we ___ at home.", options: ["stay", "will stay", "stayed", "would stay"], answer: 1 },
+  { id: 5, section: "Grammar", question: "The report ___ by Friday.", options: ["must finish", "must be finished", "must finishing", "finished"], answer: 1 },
+  // Перевод слова — англ. слово и 4 варианта перевода на русский (от простого к сложному).
+  { id: 6, section: "Translation", question: "Перевод слова «apple»:", options: ["яблоко", "груша", "стол", "окно"], answer: 0 },
+  { id: 7, section: "Translation", question: "Перевод слова «dog»:", options: ["кошка", "собака", "птица", "рыба"], answer: 1 },
+  { id: 8, section: "Translation", question: "Перевод слова «to buy»:", options: ["продавать", "покупать", "терять", "искать"], answer: 1 },
+  { id: 9, section: "Translation", question: "Перевод слова «weather»:", options: ["время", "погода", "деньги", "дорога"], answer: 1 },
+  { id: 10, section: "Translation", question: "Перевод слова «to improve»:", options: ["ухудшать", "улучшать", "забывать", "повторять"], answer: 1 },
+  { id: 11, section: "Translation", question: "Перевод слова «achievement»:", options: ["поражение", "достижение", "обещание", "наказание"], answer: 1 },
+  // Лексика — синонимы и словосочетания (сложнее).
+  { id: 12, section: "Vocabulary", question: "The opposite of 'cheap' is:", options: ["expensive", "free", "rich", "small"], answer: 0 },
+  { id: 13, section: "Vocabulary", question: "Choose the synonym of 'begin':", options: ["finish", "start", "stop", "close"], answer: 1 },
+  { id: 14, section: "Vocabulary", question: "'To give up' most nearly means:", options: ["to continue", "to stop trying", "to win", "to begin"], answer: 1 },
+  { id: 15, section: "Vocabulary", question: "'Meticulous' most nearly means:", options: ["careless", "very careful and precise", "extremely fast", "lazy"], answer: 1 },
 ];
 
 function scoreToCefr(score: number): { level: string; message: string } {
-  if (score <= 4) return { level: "A1", message: "Начальный уровень — начинаем с основ." };
-  if (score <= 9) return { level: "A2", message: "Базовые знания — уверенное начало." };
-  if (score <= 14) return { level: "B1", message: "Средний уровень — хорошая база." };
-  if (score <= 19) return { level: "B2", message: "Уверенный уровень — свободнее в общении." };
-  if (score <= 22) return { level: "C1", message: "Продвинутый уровень." };
+  // Пороги пропорциональны общему числу вопросов (сейчас 15).
+  if (score <= 2) return { level: "A1", message: "Начальный уровень — начинаем с основ." };
+  if (score <= 6) return { level: "A2", message: "Базовые знания — уверенное начало." };
+  if (score <= 9) return { level: "B1", message: "Средний уровень — хорошая база." };
+  if (score <= 12) return { level: "B2", message: "Уверенный уровень — свободнее в общении." };
+  if (score <= 14) return { level: "C1", message: "Продвинутый уровень." };
   return { level: "C2", message: "Уровень, близкий к носителю." };
 }
 
