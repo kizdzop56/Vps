@@ -1,18 +1,28 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Platform,
+  ActivityIndicator, Platform, Modal,
 } from "react-native";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { ACHIEVEMENTS, getUnlockedAchievements, type AchievementStats } from "@/constants/achievements";
 import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
+import { fc, type DeckWithAssign, type FlashcardStatsWithLevel } from "@/hooks/useFlashcards";
+
+// Подписи уровня знаний (возрастной, из профиля) на русском.
+const KNOWLEDGE_LABELS: Record<string, string> = {
+  starter: "Стартовый",
+  beginner: "Начинающий",
+  elementary: "Элементарный",
+  intermediate: "Средний",
+  upper_intermediate: "Продвинутый",
+};
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -80,6 +90,17 @@ export default function FriendProfileScreen() {
   const onlinePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isStudent = user?.role === "student";
+  const isTeacherViewer = isTeacherOrAdmin(user?.role ?? "");
+
+  // Прогресс ученика по словам (флеш-карточки) + CEFR — видит учитель.
+  const [wordStats, setWordStats] = useState<FlashcardStatsWithLevel | null>(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+
+  useEffect(() => {
+    if (isTeacherViewer && profile?.role === "student" && friendId) {
+      fc.getStats(friendId).then(setWordStats).catch(() => setWordStats(null));
+    }
+  }, [isTeacherViewer, profile?.role, friendId]);
 
   const loadProfile = useCallback(async () => {
     if (!friendId) {
@@ -362,6 +383,59 @@ export default function FriendProfileScreen() {
           <AssignmentRingsChart stats={categoryStats} colors={colors} />
         </View>
 
+        {/* ── Учителю: уровень знаний, прогресс по словам, отправка колод ── */}
+        {isTeacherViewer && profile.role === "student" && (
+          <View style={{
+            backgroundColor: colors.card, borderRadius: 16, padding: 16,
+            borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+          }}>
+            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
+              Знания и слова
+            </Text>
+
+            {/* Уровни: возрастной (из профиля) + CEFR (из теста) */}
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+              <View style={{ flex: 1, backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>Уровень</Text>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.primary }}>
+                  {profile.knowledgeLevel ? (KNOWLEDGE_LABELS[profile.knowledgeLevel] ?? profile.knowledgeLevel) : "—"}
+                </Text>
+              </View>
+              <View style={{ flex: 1, backgroundColor: "#ec489912", borderRadius: 12, padding: 12 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: "#db2777" }}>
+                  {wordStats?.placementLevel ?? "не пройден"}
+                </Text>
+              </View>
+            </View>
+
+            {/* Прогресс по словам */}
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+              {[
+                { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
+                { value: wordStats?.totalWords ?? 0, label: "В изучении" },
+                { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
+              ].map((it) => (
+                <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setAssignOpen(true)}
+              style={{
+                backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+              }}
+            >
+              <Feather name="send" size={16} color="#fff" />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Отправить колоду</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <AchievementsShowcase
           unlocked={unlocked}
           showLocked={false}
@@ -369,7 +443,158 @@ export default function FriendProfileScreen() {
         />
 
       </ScrollView>
+
+      {isTeacherViewer && profile.role === "student" && (
+        <AssignDeckModal
+          visible={assignOpen}
+          onClose={() => setAssignOpen(false)}
+          studentId={friendId}
+          studentName={profile.name}
+          teacherId={user?.id ?? 0}
+          colors={colors}
+        />
+      )}
     </View>
+  );
+}
+
+// Модалка «Отправить колоду»: список собственных колод учителя с переключателем
+// «Отправлено/Отправить» для конкретного ученика.
+function AssignDeckModal({
+  visible, onClose, studentId, studentName, teacherId, colors,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  studentId: number;
+  studentName: string;
+  teacherId: number;
+  colors: any;
+}) {
+  const router = useRouter();
+  const [decks, setDecks] = useState<DeckWithAssign[]>([]);
+  const [assignedSet, setAssignedSet] = useState<Set<number>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const all = await fc.getDecks();
+      // только собственные колоды учителя (не системные)
+      const own = all.filter((d) => d.ownerId === teacherId && !d.isSystem);
+      setDecks(own);
+      // какие уже назначены этому ученику
+      const pairs = await Promise.all(
+        own.map(async (d) => [d.id, (await fc.getAssignees(d.id)).includes(studentId)] as const),
+      );
+      setAssignedSet(new Set(pairs.filter(([, on]) => on).map(([id]) => id)));
+    } catch {
+      setDecks([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [teacherId, studentId]);
+
+  useEffect(() => { if (visible) load(); }, [visible, load]);
+
+  const toggle = async (deckId: number) => {
+    setBusyId(deckId);
+    const isOn = assignedSet.has(deckId);
+    try {
+      if (isOn) {
+        await fc.unassignDeck(deckId, studentId);
+        setAssignedSet((prev) => { const n = new Set(prev); n.delete(deckId); return n; });
+      } else {
+        await fc.assignDeck(deckId, studentId);
+        setAssignedSet((prev) => new Set(prev).add(deckId));
+      }
+    } catch { /* silent */ } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" }}>
+        <View style={{
+          backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+          paddingHorizontal: 20, paddingTop: 16, paddingBottom: 32, maxHeight: "80%",
+        }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+            <Text style={{ flex: 1, fontSize: 18, fontWeight: "800", color: colors.foreground }}>
+              Отправить колоду
+            </Text>
+            <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
+              <Feather name="x" size={22} color={colors.mutedForeground} />
+            </TouchableOpacity>
+          </View>
+          <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 16 }}>
+            Ученику: {studentName}
+          </Text>
+
+          {loading ? (
+            <ActivityIndicator color={colors.primary} size="large" style={{ marginVertical: 40 }} />
+          ) : decks.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 30, gap: 12 }}>
+              <Text style={{ fontSize: 40 }}>📚</Text>
+              <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>У вас нет своих колод</Text>
+              <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+                Создайте колоду и добавьте слова, чтобы отправить её ученику.
+              </Text>
+              <TouchableOpacity
+                onPress={() => { onClose(); router.push("/(main)/flashcards/new-deck" as any); }}
+                style={{ marginTop: 8, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 12 }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Создать колоду</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <ScrollView>
+              {decks.map((d) => {
+                const on = assignedSet.has(d.id);
+                return (
+                  <View key={d.id} style={{
+                    flexDirection: "row", alignItems: "center", gap: 12,
+                    backgroundColor: colors.card, borderRadius: 14, padding: 14,
+                    borderWidth: 1, borderColor: colors.border, marginBottom: 10,
+                  }}>
+                    <Text style={{ fontSize: 26 }}>{d.emoji ?? "📕"}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }} numberOfLines={1}>
+                        {d.title}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+                        {d.wordCount ?? 0} слов
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => toggle(d.id)}
+                      disabled={busyId === d.id}
+                      style={{
+                        flexDirection: "row", alignItems: "center", gap: 6,
+                        backgroundColor: on ? colors.muted : colors.primary,
+                        borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, minWidth: 118, justifyContent: "center",
+                      }}
+                    >
+                      {busyId === d.id ? (
+                        <ActivityIndicator size={14} color={on ? colors.mutedForeground : "#fff"} />
+                      ) : (
+                        <>
+                          <Feather name={on ? "check" : "send"} size={14} color={on ? colors.mutedForeground : "#fff"} />
+                          <Text style={{ fontSize: 13, fontWeight: "700", color: on ? colors.mutedForeground : "#fff" }}>
+                            {on ? "Отправлено" : "Отправить"}
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
   );
 }
 
