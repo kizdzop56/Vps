@@ -30,7 +30,17 @@ function isCorrect(typed: string, translations: string[]): boolean {
   );
 }
 
-export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () => void }) {
+// deckId — обычный режим (очередь колоды). loader — произвольный источник карточек
+// (например «Марафон слов»), тогда deckId не нужен. Указывайте что-то одно.
+export function FlashcardStudy({
+  deckId,
+  loader,
+  onExit,
+}: {
+  deckId?: number;
+  loader?: () => Promise<StudyQueue>;
+  onExit: () => void;
+}) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const width = Dimensions.get("window").width;
@@ -51,14 +61,15 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
   const panX = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    fc.getStudyQueue(deckId)
+    const load = loader ?? (() => fc.getStudyQueue(deckId as number));
+    load()
       .then((q) => {
         setQueue(q);
         if (q.cards.length === 0) setPhase("done");
         else setPhase(q.needsIntro ? "intro" : "train");
       })
       .catch(() => setError("Не удалось загрузить карточки."));
-  }, [deckId]);
+  }, [deckId, loader]);
 
   const doFlip = useCallback((to: boolean) => {
     setFlipped(to);

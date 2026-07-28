@@ -58,10 +58,26 @@ export default function FlashcardsHome() {
       </View>
 
       {/* Действия */}
-      <View style={{ flexDirection: "row", gap: 12, marginBottom: 22 }}>
+      <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
         <ActionBtn colors={colors} icon="bar-chart-2" label="Статистика" onPress={() => router.push("/flashcards/stats")} />
         <ActionBtn colors={colors} icon="plus" label="Своя колода" onPress={() => router.push("/flashcards/new-deck")} />
       </View>
+
+      {/* Марафон слов — прогон всех слов уровня и переход на новый этап */}
+      <TouchableOpacity
+        onPress={() => router.push("/flashcards/marathon")}
+        activeOpacity={0.85}
+        style={{ flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.primary, borderRadius: 18, padding: 16, marginBottom: 22 }}
+      >
+        <Text style={{ fontSize: 30 }}>🏃</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>Марафон слов</Text>
+          <Text style={{ fontSize: 12, color: "#ffffffcc", marginTop: 2 }}>
+            Все слова уровня {level ?? "A1"} · дойди до 75% и переходи выше
+          </Text>
+        </View>
+        <Feather name="chevron-right" size={22} color="#fff" />
+      </TouchableOpacity>
 
       {decksQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />

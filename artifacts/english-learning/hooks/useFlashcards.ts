@@ -17,7 +17,24 @@ import type {
   ImportResult,
   CreateDeckRequest,
   AddWordRequest,
+  StudyCard,
 } from "@workspace/api-client-react";
+
+// «Марафон слов»: слова уровня пользователя + прогресс/точность и готовность
+// к переходу на следующий уровень. Тип объявлен здесь (эндпоинт добавлен вручную,
+// без кодогенерации Orval).
+export type MarathonQueue = {
+  level: string;
+  nextLevel?: string;
+  totalWords: number;
+  answeredWords: number;
+  seen: number;
+  correct: number;
+  accuracy: number;
+  threshold: number;
+  eligible: boolean;
+  cards: StudyCard[];
+};
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -52,6 +69,7 @@ export const fc = {
   importWords: (deckId: number, format: "csv" | "json", content: string) =>
     apiFetch<ImportResult>(`/api/flashcards/decks/${deckId}/import`, { method: "POST", body: JSON.stringify({ format, content }) }),
   getStudyQueue: (deckId: number) => apiFetch<StudyQueue>(`/api/flashcards/study/${deckId}`),
+  getMarathon: () => apiFetch<MarathonQueue>("/api/flashcards/marathon"),
   review: (wordId: number, result: "know" | "dont") =>
     apiFetch<ReviewResult>("/api/flashcards/review", { method: "POST", body: JSON.stringify({ wordId, result }) }),
   getPlacement: () => apiFetch<PlacementTest>("/api/flashcards/placement"),

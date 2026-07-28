@@ -601,4 +601,60 @@ router.get("/flashcards/stats", requireAuth, async (req, res) => {
   res.json({ totalLearned, totalWords, totalReviews, accuracy, daily: days });
 });
 
+// ── GET /flashcards/marathon ────────────────────────────────────────────────
+// «Марафон слов»: все слова из готовых (системных) колод, соответствующие
+// текущему уровню знаний пользователя. Считаем точность ответов именно по этим
+// словам; когда пройдены все слова уровня и точность ≥ порога — приложение
+// сообщает, что можно перейти на следующий уровень (подтверждается тестом).
+const MARATHON_PASS = 75; // порог точности (%) для перехода на новый уровень
+
+router.get("/flashcards/marathon", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const settings = await ensureSettings(user.userId);
+  const level = settings.placementLevel ?? "A1";
+  const idx = CEFR_ORDER.indexOf(level);
+  const nextLevel = idx >= 0 && idx < CEFR_ORDER.length - 1 ? CEFR_ORDER[idx + 1] : null;
+
+  // слова уровня только из готовых (системных) колод
+  const rows = await db
+    .select()
+    .from(wordsTable)
+    .innerJoin(decksTable, eq(wordsTable.deckId, decksTable.id))
+    .where(and(eq(decksTable.isSystem, true), eq(wordsTable.cefrLevel, level)));
+  const words = rows.map((r) => r.words);
+
+  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, user.userId));
+  const stateByWord = new Map(states.map((s) => [s.wordId, s]));
+
+  let seen = 0;
+  let correct = 0;
+  let answeredWords = 0; // сколько разных слов уровня пользователь уже отвечал
+  const cards = words.map((w) => {
+    const st = stateByWord.get(w.id);
+    if (st) {
+      seen += st.timesSeen;
+      correct += st.timesCorrect;
+      if (st.timesSeen > 0) answeredWords++;
+    }
+    return clean({
+      id: w.id, deckId: w.deckId, english: w.english, partOfSpeech: w.partOfSpeech ?? undefined,
+      translationsRu: w.translationsRu, ipa: w.ipa ?? undefined, exampleEn: w.exampleEn ?? undefined,
+      exampleRu: w.exampleRu ?? undefined, cefrLevel: w.cefrLevel ?? undefined,
+      memoryLevel: st?.memoryLevel ?? 0, introduced: st?.introduced ?? false, isNew: !st,
+    });
+  });
+  // сначала слабо усвоенные слова (низкий уровень памяти) — их важнее подтянуть
+  cards.sort((a: any, b: any) => (a.memoryLevel ?? 0) - (b.memoryLevel ?? 0));
+
+  const totalWords = words.length;
+  const accuracy = seen > 0 ? Math.round((correct / seen) * 100) : 0;
+  const eligible =
+    totalWords > 0 && answeredWords >= totalWords && accuracy >= MARATHON_PASS && nextLevel !== null;
+
+  res.json(clean({
+    level, nextLevel: nextLevel ?? undefined, totalWords, answeredWords,
+    seen, correct, accuracy, threshold: MARATHON_PASS, eligible, cards,
+  }));
+});
+
 export default router;
