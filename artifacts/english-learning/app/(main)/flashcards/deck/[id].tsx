@@ -1,6 +1,6 @@
 // Детальная страница колоды: прогресс, старт изучения, список слов.
 // Для собственных колод — добавление слова (с автозаполнением перевода).
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -63,11 +63,19 @@ export default function DeckDetail() {
 
   const [deleting, setDeleting] = useState(false);
 
+  // expo-router на web переиспользует экран deck/[id] для следующей колоды.
+  // Сбрасываем индикатор удаления при смене колоды, иначе спиннер «залипает»
+  // и кнопка удаления остаётся заблокированной для новой колоды.
+  useEffect(() => {
+    setDeleting(false);
+  }, [deckId]);
+
   const removeDeck = async () => {
     setDeleting(true);
     try {
       await fc.deleteDeck(deckId);
       qc.invalidateQueries({ queryKey: ["fc-decks"] });
+      setDeleting(false);
       router.back();
     } catch (e: any) {
       setDeleting(false);
