@@ -218,7 +218,10 @@ function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: 
             // not here — so an interrupted guide shows again next time.
             if (GUIDE_TABS.has(tabName)) {
               const seenKey = `${TAB_SEEN_PREFIX}${userId}_${tabName}`;
-              const seen = await AsyncStorage.getItem(seenKey);
+              // authStorage (localStorage on web) — persists across logout/login.
+              // Raw AsyncStorage on web is in-memory and was reset on every
+              // re-login, so guides kept reappearing.
+              const seen = await authStorage.getItem(seenKey);
               if (!seen) {
                 onFirstVisit(tabName, navigateToTab);
                 return;
@@ -306,7 +309,7 @@ function MainLayoutInner() {
     // Mark the guide as seen only after the user actually closed it (Понятно) —
     // so it is shown once per user per tab and never again afterwards.
     if (guideState.tabName && user?.id) {
-      AsyncStorage.setItem(`${TAB_SEEN_PREFIX}${user.id}_${guideState.tabName}`, "1").catch(() => {});
+      authStorage.setItem(`${TAB_SEEN_PREFIX}${user.id}_${guideState.tabName}`, "1").catch(() => {});
     }
     setGuideState({ visible: false, tabName: null, navigateFn: null });
     // Navigate after the modal begins to close
