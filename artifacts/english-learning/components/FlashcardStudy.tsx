@@ -164,6 +164,8 @@ export function FlashcardStudy({ deckId, onExit }: { deckId: number; onExit: () 
         <View style={{ alignItems: "center", maxWidth: "100%" }}>
           {!!card?.partOfSpeech && <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 10, textTransform: "capitalize" }}>{card.partOfSpeech}</Text>}
           <Text style={{ fontSize: 40, lineHeight: 48, fontWeight: "900", letterSpacing: -0.6, color: hasDisplayEnglish ? colors.foreground : colors.destructive, textAlign: "center" }}>{displayEnglish}</Text>
+          {/* Транскрипция на лицевой стороне — под словом */}
+          {hasDisplayEnglish && !!card?.ipa && <Text style={{ fontSize: 18, color: colors.mutedForeground, marginTop: 8, textAlign: "center" }}>{card.ipa}</Text>}
           {!hasDisplayEnglish && <Text style={{ color: colors.mutedForeground, textAlign: "center", marginTop: 10, lineHeight: 19 }}>Вернитесь в колоду и добавьте карточку заново.</Text>}
         </View>
         {speechAvailable() && hasDisplayEnglish && (
