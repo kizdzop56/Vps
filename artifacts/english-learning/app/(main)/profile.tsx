@@ -1057,8 +1057,11 @@ export default function ProfileScreen() {
         actions,
         { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: false }
       );
-      // Upload to GCS (persistent object storage) instead of stuffing a base64
-      // data URI into the users row — keeps the DB small and survives redeploy.
+      // Загружаем аватар через тот же multipart-роут, что и остальные файлы
+      // (POST /api/upload/image) — он проверен в бою и работает на VPS «из
+      // коробки» (multer -> локальный диск, отдача через /api/uploads/<file>
+      // с правильным Content-Type). Раньше использовался presigned-flow
+      // (request-upload-url + PUT), из-за которого аватар не отображался.
       const blobRes = await fetch(manipulated.uri);
       const blob = await blobRes.blob();
       if (blob.size > 500_000) {
@@ -1067,21 +1070,19 @@ export default function ProfileScreen() {
         return;
       }
       const token = await authStorage.getItem("auth_token");
-      const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
+      // Имя файла с расширением .jpg обязательно: сервер отдаёт файл через
+      // res.sendFile и определяет Content-Type по расширению — без него
+      // браузер не отрисует картинку.
+      const formData = new FormData();
+      formData.append("file", blob, "avatar.jpg");
+      const uploadRes = await fetch(`${BASE}/api/upload/image`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
-        body: JSON.stringify({ name: "avatar.jpg", size: blob.size, contentType: "image/jpeg" }),
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+        body: formData,
       });
-      const presignedData = await presignedRes.json();
-      if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
-      const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
-      const uploadRes = await fetch(uploadURL, {
-        method: "PUT",
-        headers: { "Content-Type": "image/jpeg" },
-        body: blob,
-      });
-      if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
-      const serveUrl = `${BASE}/api/storage${objectPath}?kind=image`;
+      const uploadData = await uploadRes.json().catch(() => ({}));
+      if (!uploadRes.ok) throw new Error(uploadData.error ?? "Ошибка загрузки файла на сервер");
+      const serveUrl = uploadData.url as string;
       setAvatarUrl(serveUrl);
       const ok = await saveProfile({ avatarUrl: serveUrl });
       if (!ok) {
@@ -1314,43 +1315,10 @@ export default function ProfileScreen() {
           </View>
 
           <Text style={s.name}>{user.name}</Text>
-          {editingUsername ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <TextInput
-                style={{
-                  fontSize: 14, color: colors.foreground, borderWidth: 1, borderColor: colors.primary,
-                  borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, minWidth: 140,
-                }}
-                value={usernameInput}
-                onChangeText={setUsernameInput}
-                autoFocus
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="никнейм"
-                placeholderTextColor={colors.mutedForeground}
-              />
-              {usernameSaving ? (
-                <ActivityIndicator size={16} color={colors.primary} />
-              ) : (
-                <>
-                  <TouchableOpacity onPress={handleUsernameSave}>
-                    <Feather name="check" size={18} color="#6366f1" />
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => { setUsernameInput(username); setEditingUsername(false); }}>
-                    <Feather name="x" size={18} color={colors.destructive} />
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}
-              onPress={() => { setUsernameInput(username); setEditingUsername(true); }}
-            >
-              <Text style={s.username}>@{username}</Text>
-              <Feather name="edit-2" size={12} color={colors.primary} />
-            </TouchableOpacity>
-          )}
+          {/* Псевдоним (@username) — только для чтения: редактирование убрано. */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
+            <Text style={s.username}>@{username}</Text>
+          </View>
 
           {/* Online status badge */}
           <View style={{
