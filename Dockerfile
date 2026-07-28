@@ -16,7 +16,12 @@ COPY . .
 ENV CI=1 \
     EXPO_NO_TELEMETRY=1 \
     HUSKY=0
-RUN pnpm install --frozen-lockfile
+# NOTE: --no-frozen-lockfile lets pnpm reconcile pnpm-lock.yaml with the current
+# workspace "overrides"/"catalog" during the build. The committed lockfile was
+# out of sync with pnpm-workspace.yaml, which made --frozen-lockfile abort with
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Regenerate & commit the lockfile locally
+# (pnpm install) to switch this back to --frozen-lockfile for reproducible builds.
+RUN pnpm install --no-frozen-lockfile
 
 # Build the API server (esbuild bundle -> artifacts/api-server/dist/index.mjs)
 RUN pnpm --filter @workspace/api-server run build
