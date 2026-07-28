@@ -428,6 +428,14 @@ function MainLayoutInner() {
         />
 
         <Tabs.Screen
+          name="friends"
+          options={{
+            title: "Друзья",
+            tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
+          }}
+        />
+
+        <Tabs.Screen
           name="profile"
           options={{
             title: "Профиль",

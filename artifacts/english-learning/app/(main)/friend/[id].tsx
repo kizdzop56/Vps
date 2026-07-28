@@ -240,6 +240,21 @@ export default function FriendProfileScreen() {
           <Feather name="arrow-left" size={22} color={colors.foreground} />
         </TouchableOpacity>
         <Text style={s.headerTitle}>Профиль ученика</Text>
+        {/* Кнопка чата — доступна учителю (связан с учеником) и ученикам-друзьям.
+            Сервер всё равно проверит связь; кнопку прячем, если чат недоступен. */}
+        {!isSelf && (!isStudent || friendStatus === "friends") && (
+          <TouchableOpacity
+            onPress={() => router.push(`/(main)/chat/${friendId}` as any)}
+            style={{
+              flexDirection: "row", alignItems: "center", gap: 6,
+              backgroundColor: colors.primary, borderRadius: 12,
+              paddingHorizontal: 12, paddingVertical: 8,
+            }}
+          >
+            <Feather name="message-circle" size={16} color="#fff" />
+            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Написать</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
