@@ -2,6 +2,7 @@
 // собственные колоды, переходы к статистике / созданию колоды / тесту уровня.
 import React from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -135,10 +136,21 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: a
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>
-        {/* прогресс-бар: светлая заливка — начатые слова, насыщенная — выученные */}
+        {/* прогресс-бар: светлая заливка — начатые слова, насыщенная — выученные.
+            Фиолетовый градиент — для лучшей видимости прогресса. */}
         <View style={{ height: 6, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
-          <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${startedPct}%`, backgroundColor: colors.success + "55", borderRadius: 4 }} />
-          <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${learnedPct}%`, backgroundColor: colors.success, borderRadius: 4 }} />
+          <LinearGradient
+            colors={["#C4B5FD", "#A78BFA"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${startedPct}%`, borderRadius: 4 }}
+          />
+          <LinearGradient
+            colors={["#A855F7", "#6D28D9"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${learnedPct}%`, borderRadius: 4 }}
+          />
         </View>
       </View>
       <View style={{ alignItems: "flex-end", gap: 4 }}>
