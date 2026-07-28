@@ -1,7 +1,7 @@
 // Детальная страница колоды: прогресс, старт изучения, список слов.
 // Для собственных колод — добавление слова (с автозаполнением) и импорт CSV/JSON.
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert } from "react-native";
+import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -65,6 +65,33 @@ export default function DeckDetail() {
     }
   };
 
+  const [deleting, setDeleting] = useState(false);
+
+  const removeDeck = async () => {
+    setDeleting(true);
+    try {
+      await fc.deleteDeck(deckId);
+      qc.invalidateQueries({ queryKey: ["fc-decks"] });
+      router.back();
+    } catch (e: any) {
+      setDeleting(false);
+      Alert.alert("Ошибка", e?.message ?? "Не удалось удалить колоду.");
+    }
+  };
+
+  // Подтверждение удаления: на web — window.confirm, на нативе — Alert.
+  const confirmDelete = () => {
+    const message = `Удалить колоду «${deck?.title ?? ""}»? Все слова и прогресс будут потеряны.`;
+    if (Platform.OS === "web") {
+      if ((globalThis as any).confirm?.(message)) removeDeck();
+      return;
+    }
+    Alert.alert("Удалить колоду", message, [
+      { text: "Отмена", style: "cancel" },
+      { text: "Удалить", style: "destructive", onPress: removeDeck },
+    ]);
+  };
+
   const runImport = async () => {
     if (!importText.trim()) return;
     setImporting(true);
@@ -91,6 +118,11 @@ export default function DeckDetail() {
             {words.length} слов{deck ? ` · выучено ${deck.learnedCount}` : ""}
           </Text>
         </View>
+        {isOwn && (
+          <TouchableOpacity onPress={confirmDelete} disabled={deleting} style={{ padding: 6 }}>
+            {deleting ? <ActivityIndicator color={colors.destructive} /> : <Feather name="trash-2" size={22} color={colors.destructive} />}
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* старт */}

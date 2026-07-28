@@ -355,6 +355,17 @@ router.post("/flashcards/decks", requireAuth, async (req, res) => {
   }));
 });
 
+// ── DELETE /flashcards/decks/:id (удалить свою колоду) ───────────────────────
+router.delete("/flashcards/decks/:id", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+  // Каскад в схеме удалит слова → состояния карточек → журнал повторений.
+  await db.delete(decksTable).where(eq(decksTable.id, deckId));
+  res.status(204).end();
+});
+
 // проверка, что колода принадлежит пользователю и не системная
 async function assertOwnDeck(deckId: number, userId: number): Promise<{ ok: boolean; status?: number; error?: string }> {
   const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));

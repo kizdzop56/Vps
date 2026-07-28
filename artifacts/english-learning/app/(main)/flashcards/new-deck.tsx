@@ -58,9 +58,6 @@ export default function NewDeckScreen() {
         style={{ backgroundColor: title.trim() ? colors.primary : colors.border, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
         {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Создать колоду</Text>}
       </TouchableOpacity>
-      <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", marginTop: 12 }}>
-        После создания добавишь слова вручную или импортом (CSV/JSON).
-      </Text>
     </ScrollView>
   );
 }

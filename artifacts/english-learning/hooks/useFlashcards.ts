@@ -45,6 +45,8 @@ export const fc = {
   getDeckWords: (deckId: number) => apiFetch<FlashcardWord[]>(`/api/flashcards/decks/${deckId}/words`),
   createDeck: (body: CreateDeckRequest) =>
     apiFetch<FlashcardDeck>("/api/flashcards/decks", { method: "POST", body: JSON.stringify(body) }),
+  deleteDeck: (deckId: number) =>
+    apiFetch<null>(`/api/flashcards/decks/${deckId}`, { method: "DELETE" }),
   addWord: (deckId: number, body: AddWordRequest) =>
     apiFetch<FlashcardWord>(`/api/flashcards/decks/${deckId}/words`, { method: "POST", body: JSON.stringify(body) }),
   importWords: (deckId: number, format: "csv" | "json", content: string) =>
