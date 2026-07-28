@@ -13,6 +13,7 @@ import connectionsRouter from "./connections";
 import calendarRouter from "./calendar";
 import gamificationRouter from "./gamification";
 import flashcardsRouter from "./flashcards";
+import messagingRouter from "./messaging";
 
 const router: IRouter = Router();
 
@@ -30,5 +31,6 @@ router.use(connectionsRouter);
 router.use(calendarRouter);
 router.use(gamificationRouter);
 router.use(flashcardsRouter);
+router.use(messagingRouter);
 
 export default router;
