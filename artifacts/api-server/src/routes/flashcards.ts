@@ -11,13 +11,40 @@ import {
   placementResultsTable,
   flashcardSettingsTable,
   reviewLogTable,
+  deckAssignmentsTable,
+  teacherStudentsTable,
+  parentChildrenTable,
 } from "@workspace/db";
 import { eq, and, or, isNull, inArray, lte, gte, sql } from "drizzle-orm";
-import { requireAuth, getUser } from "../lib/auth";
+import { requireAuth, getUser, isTeacher } from "../lib/auth";
 
 const router = Router();
 
-// ── Интервальное повторение ─────────────────────────────────────────────────
+// Может ли `viewer` смотреть данные ученика `studentId`: сам ученик, админ,
+// связанный учитель (accepted) или родитель ребёнка. Используется для чужой
+// статистики слов и назначения колод.
+async function canViewStudent(viewer: { userId: number; role: string }, studentId: number): Promise<boolean> {
+  if (viewer.userId === studentId) return true;
+  if (viewer.role === "admin") return true;
+  if (isTeacher(viewer.role)) {
+    const [ts] = await db.select({ id: teacherStudentsTable.id }).from(teacherStudentsTable).where(and(
+      eq(teacherStudentsTable.teacherId, viewer.userId),
+      eq(teacherStudentsTable.studentId, studentId),
+      eq(teacherStudentsTable.status, "accepted"),
+    ));
+    if (ts) return true;
+  }
+  if (viewer.role === "parent") {
+    const [pc] = await db.select({ id: parentChildrenTable.id }).from(parentChildrenTable).where(and(
+      eq(parentChildrenTable.parentId, viewer.userId),
+      eq(parentChildrenTable.studentId, studentId),
+    ));
+    if (pc) return true;
+  }
+  return false;
+}
+
+// ── Интервальное повторение ────────────────────────────────────────
 // Интервал (в минутах) до следующего показа по уровню запоминания 0–5.
 const INTERVAL_MIN: Record<number, number> = {
   0: 1,        // только что не знал → повтор почти сразу
@@ -203,7 +230,7 @@ function levelsUpTo(level: string | null | undefined): string[] {
   return CEFR_ORDER.slice(0, Math.min(CEFR_ORDER.length, top + 1));
 }
 
-// ── Настройки (создаём строку при первом обращении) ─────────────────────────
+// ── Настройки (создаём строку при первом обращении) ─────────────────────
 async function ensureSettings(userId: number) {
   const [existing] = await db.select().from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, userId));
   if (existing) return existing;
@@ -213,14 +240,14 @@ async function ensureSettings(userId: number) {
   return again!;
 }
 
-// ── GET /flashcards/settings ────────────────────────────────────────────────
+// ── GET /flashcards/settings ───────────────────────────────────────────
 router.get("/flashcards/settings", requireAuth, async (req, res) => {
   const user = getUser(req);
   const s = await ensureSettings(user.userId);
   res.json(clean({ dailyNewLimit: s.dailyNewLimit, placementLevel: s.placementLevel, placementDone: s.placementDone }));
 });
 
-// ── PATCH /flashcards/settings ──────────────────────────────────────────────
+// ── PATCH /flashcards/settings ────────────────────────────────────────
 router.patch("/flashcards/settings", requireAuth, async (req, res) => {
   const user = getUser(req);
   await ensureSettings(user.userId);
@@ -232,7 +259,7 @@ router.patch("/flashcards/settings", requireAuth, async (req, res) => {
   res.json(clean({ dailyNewLimit: s.dailyNewLimit, placementLevel: s.placementLevel, placementDone: s.placementDone }));
 });
 
-// ── GET /flashcards/placement ───────────────────────────────────────────────
+// ── GET /flashcards/placement ────────────────────────────────────────
 router.get("/flashcards/placement", requireAuth, async (_req, res) => {
   res.json({
     total: PLACEMENT_QUESTIONS.length,
@@ -240,7 +267,7 @@ router.get("/flashcards/placement", requireAuth, async (_req, res) => {
   });
 });
 
-// ── POST /flashcards/placement ──────────────────────────────────────────────
+// ── POST /flashcards/placement ──────────────────────────────────────
 router.post("/flashcards/placement", requireAuth, async (req, res) => {
   const user = getUser(req);
   const { answers } = req.body as { answers: { id: number; choice: number }[] };
@@ -268,12 +295,31 @@ router.post("/flashcards/placement", requireAuth, async (req, res) => {
   res.json({ score, total: PLACEMENT_QUESTIONS.length, cefrLevel: level, message });
 });
 
-// ── GET /flashcards/decks ───────────────────────────────────────────────────
+// ── GET /flashcards/decks ────────────────────────────────────────────
 router.get("/flashcards/decks", requireAuth, async (req, res) => {
   const user = getUser(req);
 
-  const decks = await db.select().from(decksTable)
-    .where(or(isNull(decksTable.ownerId), eq(decksTable.ownerId, user.userId)));
+  // Колоды, назначенные этому пользователю учителем (отправленные ученику).
+  const myAssignments = await db.select().from(deckAssignmentsTable)
+    .where(eq(deckAssignmentsTable.studentId, user.userId));
+  const assignedDeckIds = new Set(myAssignments.map((a) => a.deckId));
+
+  // Системные + собственные + назначенные пользователю.
+  const decks = await db.select().from(decksTable).where(or(
+    isNull(decksTable.ownerId),
+    eq(decksTable.ownerId, user.userId),
+    assignedDeckIds.size > 0 ? inArray(decksTable.id, [...assignedDeckIds]) : sql`false`,
+  ));
+
+  // Для колод, которыми владеет пользователь (учитель), — скольким ученикам они
+  // назначены. Показываем это в UI конструктора.
+  const ownedIds = decks.filter((d) => d.ownerId === user.userId).map((d) => d.id);
+  const assignedCountByDeck = new Map<number, number>();
+  if (ownedIds.length > 0) {
+    const rows = await db.select({ deckId: deckAssignmentsTable.deckId })
+      .from(deckAssignmentsTable).where(inArray(deckAssignmentsTable.deckId, ownedIds));
+    for (const r of rows) assignedCountByDeck.set(r.deckId, (assignedCountByDeck.get(r.deckId) ?? 0) + 1);
+  }
 
   const allWords = await db.select({ id: wordsTable.id, deckId: wordsTable.deckId }).from(wordsTable);
   const wordCountByDeck = new Map<number, number>();
@@ -313,6 +359,10 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
         learnedCount: learnedByDeck.get(d.id) ?? 0,
         dueCount: dueByDeck.get(d.id) ?? 0,
         newCount: Math.max(0, wordCount - introduced),
+        // назначена ли эта колода текущему пользователю (ученику) учителем
+        assigned: assignedDeckIds.has(d.id) || undefined,
+        // скольким ученикам колода назначена (для владельца-учителя)
+        assignedCount: assignedCountByDeck.get(d.id) || undefined,
       });
     })
     .sort((a, b) => Number(b.isSystem) - Number(a.isSystem));
@@ -320,7 +370,7 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
   res.json(result);
 });
 
-// ── GET /flashcards/decks/:id/words ─────────────────────────────────────────
+// ── GET /flashcards/decks/:id/words ────────────────────────────────────
 router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   const deckId = Number(req.params["id"]);
   const words = await db.select().from(wordsTable).where(eq(wordsTable.deckId, deckId));
@@ -331,7 +381,7 @@ router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   })));
 });
 
-// ── POST /flashcards/decks (своя колода) ────────────────────────────────────
+// ── POST /flashcards/decks (своя колода) ───────────────────────────────
 router.post("/flashcards/decks", requireAuth, async (req, res) => {
   const user = getUser(req);
   const { title, theme, emoji, description } = req.body as { title: string; theme?: string; emoji?: string; description?: string };
@@ -350,7 +400,7 @@ router.post("/flashcards/decks", requireAuth, async (req, res) => {
   }));
 });
 
-// ── DELETE /flashcards/decks/:id (удалить свою колоду) ───────────────────────
+// ── DELETE /flashcards/decks/:id (удалить свою колоду) ──────────────────────
 router.delete("/flashcards/decks/:id", requireAuth, async (req, res) => {
   const user = getUser(req);
   const deckId = Number(req.params["id"]);
@@ -359,6 +409,50 @@ router.delete("/flashcards/decks/:id", requireAuth, async (req, res) => {
   // Каскад в схеме удалит слова → состояния карточек → журнал повторений.
   await db.delete(decksTable).where(eq(decksTable.id, deckId));
   res.status(204).end();
+});
+
+// ── POST /flashcards/decks/:id/assign (учитель → отправить колоду ученику) ────
+router.post("/flashcards/decks/:id/assign", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const { studentId } = req.body as { studentId?: number };
+  if (!studentId || typeof studentId !== "number") { res.status(400).json({ error: "studentId required" }); return; }
+
+  // Назначать может только владелец своей (не системной) колоды.
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  // И только своему ученику (связь teacher↔student, accepted) — или админ.
+  const allowed = await canViewStudent(user, studentId);
+  if (!allowed) { res.status(403).json({ error: "Можно отправлять колоды только своим ученикам" }); return; }
+
+  await db.insert(deckAssignmentsTable)
+    .values({ deckId, studentId, assignedBy: user.userId })
+    .onConflictDoNothing();
+  res.status(201).json({ deckId, studentId });
+});
+
+// ── DELETE /flashcards/decks/:id/assign/:studentId (отозвать колоду) ──────────
+router.delete("/flashcards/decks/:id/assign/:studentId", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const studentId = Number(req.params["studentId"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+  await db.delete(deckAssignmentsTable)
+    .where(and(eq(deckAssignmentsTable.deckId, deckId), eq(deckAssignmentsTable.studentId, studentId)));
+  res.status(204).end();
+});
+
+// ── GET /flashcards/decks/:id/assignees (кому назначена колода) ─────────────
+router.get("/flashcards/decks/:id/assignees", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+  const rows = await db.select({ studentId: deckAssignmentsTable.studentId }).from(deckAssignmentsTable)
+    .where(eq(deckAssignmentsTable.deckId, deckId));
+  res.json(rows.map((r) => r.studentId));
 });
 
 // проверка, что колода принадлежит пользователю и не системная
@@ -415,7 +509,7 @@ router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   }));
 });
 
-// ── POST /flashcards/decks/:id/import (CSV/JSON) ────────────────────────────
+// ── POST /flashcards/decks/:id/import (CSV/JSON) ──────────────────────────
 router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
   const user = getUser(req);
   const deckId = Number(req.params["id"]);
@@ -474,7 +568,7 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
   res.json({ added, skipped: rows.length - added });
 });
 
-// ── GET /flashcards/study/:deckId ───────────────────────────────────────────
+// ── GET /flashcards/study/:deckId ────────────────────────────────────
 router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   const user = getUser(req);
   const deckId = Number(req.params["deckId"]);
@@ -525,7 +619,7 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   }));
 });
 
-// ── POST /flashcards/review ─────────────────────────────────────────────────
+// ── POST /flashcards/review ────────────────────────────────────────
 router.post("/flashcards/review", requireAuth, async (req, res) => {
   const user = getUser(req);
   const { wordId, result } = req.body as { wordId: number; result: "know" | "dont" };
@@ -561,11 +655,26 @@ router.post("/flashcards/review", requireAuth, async (req, res) => {
   res.json({ wordId, memoryLevel: level, dueAt: dueAt.toISOString() });
 });
 
-// ── GET /flashcards/stats ───────────────────────────────────────────────────
+// ── GET /flashcards/stats ────────────────────────────────────────────
 router.get("/flashcards/stats", requireAuth, async (req, res) => {
   const user = getUser(req);
-  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, user.userId));
-  const logs = await db.select().from(reviewLogTable).where(eq(reviewLogTable.userId, user.userId));
+
+  // По умолчанию — статистика самого пользователя. Учитель/родитель/админ может
+  // запросить статистику ученика через ?studentId= (раньше параметр игнорировался,
+  // и на профиле ученика показывалась статистика самого смотрящего).
+  const requested = Number(req.query["studentId"]);
+  const targetId = Number.isFinite(requested) && requested > 0 ? requested : user.userId;
+  if (targetId !== user.userId) {
+    const allowed = await canViewStudent(user, targetId);
+    if (!allowed) { res.status(403).json({ error: "Нет доступа к статистике этого ученика" }); return; }
+  }
+
+  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, targetId));
+  const logs = await db.select().from(reviewLogTable).where(eq(reviewLogTable.userId, targetId));
+
+  // CEFR-уровень из placement-теста (для отображения учителю/родителю).
+  const [settings] = await db.select().from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, targetId));
+  const placementLevel = settings?.placementLevel ?? null;
 
   const totalWords = states.length;
   const totalLearned = states.filter((s) => s.memoryLevel >= LEARNED_LEVEL).length;
@@ -593,10 +702,10 @@ router.get("/flashcards/stats", requireAuth, async (req, res) => {
     days.push({ date: key, learned: e.learned, reviews: e.reviews, correct: e.correct });
   }
 
-  res.json({ totalLearned, totalWords, totalReviews, accuracy, daily: days });
+  res.json({ totalLearned, totalWords, totalReviews, accuracy, daily: days, placementLevel });
 });
 
-// ── GET /flashcards/marathon ────────────────────────────────────────────────
+// ── GET /flashcards/marathon ────────────────────────────────────────
 // «Марафон слов»: все слова из готовых (системных) колод, соответствующие
 // текущему уровню знаний пользователя. Считаем точность ответов именно по этим
 // словам; когда пройдены все слова уровня и точность ≥ порога — приложение
