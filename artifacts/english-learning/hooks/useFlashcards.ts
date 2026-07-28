@@ -36,6 +36,14 @@ export type MarathonQueue = {
   cards: StudyCard[];
 };
 
+// Колода с прогрессом + поля назначения (эндпоинт расширен вручную, без Orval):
+//   assigned      — колода назначена текущему ученику учителем
+//   assignedCount — скольким ученикам колода назначена (видит владелец-учитель)
+export type DeckWithAssign = DeckWithProgress & { assigned?: boolean; assignedCount?: number };
+
+// Статистика слов + CEFR-уровень из placement-теста (добавлен вручную).
+export type FlashcardStatsWithLevel = FlashcardStats & { placementLevel?: string | null };
+
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
@@ -58,7 +66,7 @@ async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T
 }
 
 export const fc = {
-  getDecks: () => apiFetch<DeckWithProgress[]>("/api/flashcards/decks"),
+  getDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks"),
   getDeckWords: (deckId: number) => apiFetch<FlashcardWord[]>(`/api/flashcards/decks/${deckId}/words`),
   createDeck: (body: CreateDeckRequest) =>
     apiFetch<FlashcardDeck>("/api/flashcards/decks", { method: "POST", body: JSON.stringify(body) }),
@@ -75,7 +83,18 @@ export const fc = {
   getPlacement: () => apiFetch<PlacementTest>("/api/flashcards/placement"),
   submitPlacement: (answers: PlacementAnswer[]) =>
     apiFetch<PlacementResultResponse>("/api/flashcards/placement", { method: "POST", body: JSON.stringify({ answers }) }),
-  getStats: () => apiFetch<FlashcardStats>("/api/flashcards/stats"),
+  // studentId — статистика конкретного ученика (для учителя/родителя); без него
+  // возвращается статистика самого пользователя.
+  getStats: (studentId?: number) =>
+    apiFetch<FlashcardStatsWithLevel>(`/api/flashcards/stats${studentId ? `?studentId=${studentId}` : ""}`),
+  // Назначение колод ученику (учитель).
+  assignDeck: (deckId: number, studentId: number) =>
+    apiFetch<{ deckId: number; studentId: number }>(`/api/flashcards/decks/${deckId}/assign`, {
+      method: "POST", body: JSON.stringify({ studentId }),
+    }),
+  unassignDeck: (deckId: number, studentId: number) =>
+    apiFetch<null>(`/api/flashcards/decks/${deckId}/assign/${studentId}`, { method: "DELETE" }),
+  getAssignees: (deckId: number) => apiFetch<number[]>(`/api/flashcards/decks/${deckId}/assignees`),
   getSettings: () => apiFetch<FlashcardSettings>("/api/flashcards/settings"),
   updateSettings: (dailyNewLimit: number) =>
     apiFetch<FlashcardSettings>("/api/flashcards/settings", { method: "PATCH", body: JSON.stringify({ dailyNewLimit }) }),
