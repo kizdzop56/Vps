@@ -1,5 +1,5 @@
 // Детальная страница колоды: прогресс, старт изучения, список слов.
-// Для собственных колод — добавление слова (с автозаполнением) и импорт CSV/JSON.
+// Для собственных колод — добавление слова (с автозаполнением перевода).
 import React, { useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -30,10 +30,6 @@ export default function DeckDetail() {
   const [newRu, setNewRu] = useState("");
   const [adding, setAdding] = useState(false);
   const [addNotice, setAddNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [showImport, setShowImport] = useState(false);
-  const [importText, setImportText] = useState("");
-  const [importFormat, setImportFormat] = useState<"csv" | "json">("csv");
-  const [importing, setImporting] = useState(false);
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["fc-words", deckId] });
@@ -92,20 +88,6 @@ export default function DeckDetail() {
     ]);
   };
 
-  const runImport = async () => {
-    if (!importText.trim()) return;
-    setImporting(true);
-    try {
-      const r = await fc.importWords(deckId, importFormat, importText);
-      Alert.alert("Импорт завершён", `Добавлено: ${r.added}, пропущено: ${r.skipped}`);
-      setImportText(""); setShowImport(false); refresh();
-    } catch (e: any) {
-      Alert.alert("Ошибка импорта", e?.message ?? "Проверьте формат данных.");
-    } finally {
-      setImporting(false);
-    }
-  };
-
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: 120 }}>
       {/* шапка */}
@@ -155,37 +137,10 @@ export default function DeckDetail() {
               <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: addNotice.type === "success" ? colors.success : colors.destructive }}>{addNotice.text}</Text>
             </View>
           )}
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <TouchableOpacity onPress={addWord} disabled={adding || !newEn.trim()} activeOpacity={0.85}
-              style={{ flex: 1, backgroundColor: newEn.trim() ? colors.primary : colors.border, borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
-              {adding ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>Добавить слово</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowImport((v) => !v)} activeOpacity={0.85}
-              style={{ backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center", justifyContent: "center" }}>
-              <Text style={{ color: colors.primary, fontWeight: "800" }}>Импорт</Text>
-            </TouchableOpacity>
-          </View>
-
-          {showImport && (
-            <View style={{ marginTop: 12 }}>
-              <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
-                {(["csv", "json"] as const).map((f) => (
-                  <TouchableOpacity key={f} onPress={() => setImportFormat(f)} style={{ paddingHorizontal: 14, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: importFormat === f ? colors.primary : colors.border, backgroundColor: importFormat === f ? colors.primary + "18" : "transparent" }}>
-                    <Text style={{ color: importFormat === f ? colors.primary : colors.mutedForeground, fontWeight: "700" }}>{f.toUpperCase()}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 6 }}>
-                {importFormat === "csv" ? "Формат: english,перевод[,транскрипция,пример EN,пример RU] — по строке на слово" : 'Формат: [{"english":"...","translationsRu":["..."]}]'}
-              </Text>
-              <TextInput value={importText} onChangeText={setImportText} multiline placeholder={importFormat === "csv" ? "cat,кошка\napple,яблоко" : '[{"english":"cat","translationsRu":["кошка"]}]'} placeholderTextColor={colors.mutedForeground}
-                style={{ minHeight: 90, backgroundColor: colors.background === "transparent" ? "#fff" : colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12, color: colors.foreground, textAlignVertical: "top" }} />
-              <TouchableOpacity onPress={runImport} disabled={importing || !importText.trim()} activeOpacity={0.85}
-                style={{ marginTop: 8, backgroundColor: importText.trim() ? colors.primary : colors.border, borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
-                {importing ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>Импортировать</Text>}
-              </TouchableOpacity>
-            </View>
-          )}
+          <TouchableOpacity onPress={addWord} disabled={adding || !newEn.trim()} activeOpacity={0.85}
+            style={{ backgroundColor: newEn.trim() ? colors.primary : colors.border, borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
+            {adding ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>Добавить слово</Text>}
+          </TouchableOpacity>
         </View>
       )}
 
