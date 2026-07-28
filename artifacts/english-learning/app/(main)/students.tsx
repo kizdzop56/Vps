@@ -562,7 +562,7 @@ export default function StudentsScreen() {
                 </Text>
               )}
               {items.map((item) => (
-                <UserCard key={item.id} item={item} colors={colors} onRemove={() => handleRemove(item)} onPress={() => router.push(`/(main)/friend/${item.id}` as any)} />
+                <UserCard key={item.id} item={item} colors={colors} onRemove={() => handleRemove(item)} onPress={() => router.push(`/(main)/${isParent ? "student" : "friend"}/${item.id}` as any)} />
               ))}
             </>
           )}

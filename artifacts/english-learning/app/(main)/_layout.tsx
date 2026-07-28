@@ -149,6 +149,7 @@ function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: 
     "submission-review/[id]",
     "flashcards/study/[deckId]",
     "flashcards/placement",
+    "chat/[userId]",
   ].includes(currentRouteName);
   if (hideTabBar) return null;
 
@@ -434,6 +435,7 @@ function MainLayoutInner() {
           }}
         />
 
+        <Tabs.Screen name="chat/[userId]" options={{ href: null }} />
         <Tabs.Screen name="student/[id]" options={{ href: null }} />
         <Tabs.Screen name="assignment/[id]" options={{ href: null }} />
         <Tabs.Screen name="create-assignment" options={{ href: null }} />
