@@ -161,7 +161,9 @@ export function AchievementsShowcase({
 }: AchievementsShowcaseProps) {
   const colors = useColors();
   const [selected, setSelected] = useState<{ achievement: Achievement; isLocked: boolean } | null>(null);
-  const [lockedVisible, setLockedVisible] = useState(false);
+  // Не полученные награды показываем сразу (не по частям): по умолчанию
+  // секция раскрыта, когда showLocked=true, чтобы все медали прогрузились разом.
+  const [lockedVisible, setLockedVisible] = useState(showLocked);
 
   const total = unlocked.length + locked.length;
 
