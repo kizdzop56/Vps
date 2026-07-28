@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Platform, Alert, TextInput, Image,
+  ActivityIndicator, Platform, Alert, TextInput, Image, Animated,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
@@ -128,6 +128,9 @@ export default function AssignmentDetailScreen() {
   // Step-by-step navigation
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [readingExpanded, setReadingExpanded] = useState(false);
+
+  // Плавная анимация полосы прогресса — заполняется ПОСЛЕ ответа на вопрос.
+  const progressAnim = useRef(new Animated.Value(0)).current;
 
   // Free-form
   const [freeFormText, setFreeFormText] = useState("");
@@ -304,6 +307,20 @@ export default function AssignmentDetailScreen() {
       handleSubmit(answersRef.current);
     }
   }, [timerExpired]);
+
+  // Плавно догоняем полосу прогресса до текущего значения. Значение зависит от
+  // числа отвеченных вопросов, поэтому эффект срабатывает ПОСЛЕ ответа (когда
+  // меняется answers) — полоса растёт после ответа, а не до него.
+  useEffect(() => {
+    const qs = assignment?.questions ?? [];
+    const answered = qs.filter(q => !!answers[q.id]?.trim()).length;
+    const pct = submitted ? 100 : qs.length > 0 ? (answered / qs.length) * 100 : 0;
+    Animated.timing(progressAnim, {
+      toValue: pct,
+      duration: 450,
+      useNativeDriver: false, // анимируем width (layout-свойство)
+    }).start();
+  }, [assignment, answers, submitted, progressAnim]);
 
   // ─── Loading ──────────────────────────────────────────────────────────────
   if (isLoading) {
@@ -921,16 +938,6 @@ export default function AssignmentDetailScreen() {
             }
           </TouchableOpacity>
         )}
-
-        {/* "Skip to end" when on last question and some unanswered */}
-        {!isFreeForm && !isLastStep && currentAnswered && (
-          <TouchableOpacity
-            style={{ alignSelf: "center", marginTop: 8, paddingVertical: 6, paddingHorizontal: 12 }}
-            onPress={() => { setCurrentQuestionIndex(questions.length - 1); }}
-          >
-            <Text style={{ fontSize: 13, color: TEXT_MUTED, fontWeight: "500" }}>Перейти к последнему</Text>
-          </TouchableOpacity>
-        )}
       </ScrollView>
 
       {/* ── Progress bubble ── */}
@@ -950,7 +957,15 @@ export default function AssignmentDetailScreen() {
             <Text style={s.progressPct}>{Math.round(progressPct)}%</Text>
           </View>
           <View style={s.progressTrack}>
-            <View style={[s.progressFill, { width: `${progressPct}%` }]} />
+            {/* Плавно анимируемая заливка — растёт после ответа на вопрос */}
+            <Animated.View
+              style={[s.progressFill, {
+                width: progressAnim.interpolate({
+                  inputRange: [0, 100],
+                  outputRange: ["0%", "100%"],
+                }),
+              }]}
+            />
           </View>
         </View>
       </View>
@@ -1054,7 +1069,7 @@ const s = StyleSheet.create({
   },
   progressLabel: { fontSize: 12, fontWeight: "600", color: TEXT_MID, maxWidth: 200 },
   progressPct: { fontSize: 12, fontWeight: "700", color: PRIMARY },
-  progressTrack: { height: 8, borderRadius: 4, backgroundColor: "#ede9fe" },
+  progressTrack: { height: 8, borderRadius: 4, backgroundColor: "#ede9fe", overflow: "hidden" },
   progressFill: {
     height: "100%", borderRadius: 4,
     backgroundColor: ORANGE,
