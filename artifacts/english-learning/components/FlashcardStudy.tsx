@@ -261,7 +261,7 @@ export function FlashcardStudy({
         )}
       </View>
 
-      {/* низ: кнопки */}
+      {/* низ: показать перевод / подсказка по свайпу (оценка «знаю/не знаю» — свайпом) */}
       <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) + 12, gap: 10 }}>
         {isIntro ? (
           <TouchableOpacity onPress={introNext} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
@@ -274,15 +274,12 @@ export function FlashcardStudy({
                 <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Показать перевод</Text>
               </TouchableOpacity>
             ) : (
-              <View style={{ flexDirection: "row", gap: 12 }}>
-                <TouchableOpacity onPress={() => commit("dont")} activeOpacity={0.85} style={{ flex: 1, backgroundColor: colors.warning + "1e", borderWidth: 1.5, borderColor: colors.warning, borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 6 }}>
-                  <Feather name="rotate-ccw" size={18} color={colors.warning} />
-                  <Text style={{ color: colors.warning, fontWeight: "800", fontSize: 15 }}>Не знаю</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => commit("know")} activeOpacity={0.85} style={{ flex: 1, backgroundColor: colors.success + "1e", borderWidth: 1.5, borderColor: colors.success, borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 6 }}>
-                  <Feather name="check" size={18} color={colors.success} />
-                  <Text style={{ color: colors.success, fontWeight: "800", fontSize: 15 }}>Знаю</Text>
-                </TouchableOpacity>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15 }}>
+                <Feather name="rotate-ccw" size={16} color={colors.warning} />
+                <Text style={{ color: colors.mutedForeground, fontWeight: "700", fontSize: 13 }}>Свайп влево — не знаю</Text>
+                <Text style={{ color: colors.border, fontWeight: "700", fontSize: 13 }}>·</Text>
+                <Text style={{ color: colors.mutedForeground, fontWeight: "700", fontSize: 13 }}>вправо — знаю</Text>
+                <Feather name="check" size={16} color={colors.success} />
               </View>
             )}
           </>
