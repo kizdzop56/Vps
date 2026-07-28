@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Platform,
+  ActivityIndicator, Platform, Modal, Image,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -26,6 +26,14 @@ async function apiFetch(path: string) {
   return data;
 }
 
+// Ссылка на загруженный файл может быть относительной («/uploads/..») —
+// достраиваем до абсолютной для <Image>/открытия.
+function absUrl(u?: string | null): string | null {
+  if (!u) return null;
+  if (/^https?:\/\//.test(u)) return u;
+  return `${BASE_URL}${u.startsWith("/") ? "" : "/"}${u}`;
+}
+
 const TYPE_COLORS: Record<string, string> = {
   text_test: "#8b5cf6", audio: "#6366f1", reading: "#6366f1", video: "#ec4899", free_form: "#ec4899",
 };
@@ -35,13 +43,22 @@ const TYPE_LABELS: Record<string, string> = {
 const TYPE_ICONS: Record<string, any> = {
   text_test: "edit-3", audio: "headphones", reading: "book", video: "video", free_form: "file-text",
 };
+// Подписи возрастного уровня знаний (из профиля) на русском.
+const KNOWLEDGE_LABELS: Record<string, string> = {
+  starter: "Стартовый", beginner: "Начинающий", elementary: "Элементарный",
+  intermediate: "Средний", upper_intermediate: "Продвинутый",
+};
 type Submission = {
   submissionId: number; score: number; correctCount: number;
   totalQuestions: number; pointsEarned: number; submittedAt: string;
   assignmentId: number; title: string; type: string; points: number;
+  attachmentUrl?: string | null; recordingUrl?: string | null; textAnswer?: string | null;
 };
 type CategoryStat = { type: string; avgScore: number | null; count: number };
-type FlashcardStats = { totalLearned: number; totalWords: number; totalReviews: number; accuracy: number };
+type FlashcardStats = {
+  totalLearned: number; totalWords: number; totalReviews: number; accuracy: number;
+  placementLevel?: string | null;
+};
 
 
 export default function StudentDetailScreen() {
@@ -56,6 +73,8 @@ export default function StudentDetailScreen() {
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
   const [flashcardStats, setFlashcardStats] = useState<FlashcardStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Просмотр картинки-ответа ученика в полноэкранной модалке.
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!studentId) return;
@@ -177,11 +196,24 @@ export default function StudentDetailScreen() {
             avatarUrl={student.avatarUrl}
           />
           <Text style={styles.name}>{student.name} ({student.username})</Text>
-          {student.age && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{student.age} лет</Text>
+          <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+            {student.age && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{student.age} лет</Text>
+              </View>
+            )}
+            {student.knowledgeLevel && KNOWLEDGE_LABELS[student.knowledgeLevel] && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>Уровень: {KNOWLEDGE_LABELS[student.knowledgeLevel]}</Text>
+              </View>
+            )}
+            {/* CEFR из placement-теста карточек */}
+            <View style={[styles.badge, { backgroundColor: colors.primary + "1a" }]}>
+              <Text style={[styles.badgeText, { color: colors.primary, fontWeight: "700" }]}>
+                CEFR: {flashcardStats?.placementLevel ?? "тест не пройден"}
+              </Text>
             </View>
-          )}
+          </View>
           {student.bio ? (
             <Text style={{ fontSize: 13, color: colors.mutedForeground, marginTop: 8, textAlign: "center" }}>
               {student.bio}
@@ -259,8 +291,15 @@ export default function StudentDetailScreen() {
             submissions.slice(0, 10).map((sub) => {
               const scoreColor = sub.score >= 70 ? colors.success : sub.score >= 40 ? "#ec4899" : colors.destructive;
               const color = TYPE_COLORS[sub.type] ?? colors.primary;
+              const imgUrl = absUrl(sub.attachmentUrl);
               return (
-                <View key={sub.submissionId} style={styles.subCard}>
+                <TouchableOpacity
+                  key={sub.submissionId}
+                  activeOpacity={imgUrl ? 0.7 : 1}
+                  disabled={!imgUrl}
+                  onPress={() => imgUrl && setViewerUrl(imgUrl)}
+                  style={styles.subCard}
+                >
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
                     <Feather name={TYPE_ICONS[sub.type] ?? "edit-3"} size={15} color={color} />
                     <Text style={{ flex: 1, fontSize: 14, fontWeight: "600", color: colors.foreground }} numberOfLines={1}>
@@ -281,13 +320,38 @@ export default function StudentDetailScreen() {
                       {new Date(sub.submittedAt).toLocaleDateString("ru-RU")}
                     </Text>
                   </View>
-                </View>
+                  {/* Превью прикреплённой картинки-ответа + подсказка «нажмите» */}
+                  {imgUrl && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 }}>
+                      <Image source={{ uri: imgUrl }} style={{ width: 48, height: 48, borderRadius: 8, backgroundColor: colors.muted }} />
+                      <Text style={{ fontSize: 12, color: colors.primary, fontWeight: "600" }}>
+                        Открыть фото ответа
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
               );
             })
           )}
         </View>
 
       </ScrollView>
+
+      {/* Полноэкранный просмотр картинки-ответа */}
+      <Modal visible={!!viewerUrl} transparent animationType="fade" onRequestClose={() => setViewerUrl(null)}>
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setViewerUrl(null)}
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.92)", justifyContent: "center", alignItems: "center", padding: 16 }}
+        >
+          {viewerUrl && (
+            <Image source={{ uri: viewerUrl }} style={{ width: "100%", height: "80%" }} resizeMode="contain" />
+          )}
+          <View style={{ position: "absolute", top: insets.top + 12, right: 20 }}>
+            <Feather name="x" size={30} color="#fff" />
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
