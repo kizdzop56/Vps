@@ -314,9 +314,9 @@ export default function LeaderboardScreen() {
           <DarkVeil scanlineIntensity={0.03} speed={1} scanlineFrequency={1.7} warpAmount={1.1} />
         </View>
 
-        {/* Title */}
-        <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
-          <Text style={{ fontSize: 26, fontWeight: "900", color: "#fff" }}>Рейтинг</Text>
+        {/* Title — centered at the top */}
+        <View style={{ paddingHorizontal: 20, marginBottom: 16, alignItems: "center" }}>
+          <Text style={{ fontSize: 26, fontWeight: "900", color: "#fff", textAlign: "center" }}>Рейтинг</Text>
         </View>
 
         {/* Scope segmented control (full width) */}
@@ -347,8 +347,11 @@ export default function LeaderboardScreen() {
         </View>
 
         {/* Category segmented control (full width) */}
+        {/* Extra bottom margin lifts the categories away from the podium so the
+            winner's crown (rendered at top: -26 above the center avatar) never
+            overlaps the category chips. */}
         <View style={{
-          marginHorizontal: 20, marginBottom: 20,
+          marginHorizontal: 20, marginBottom: 34,
           flexDirection: "row", backgroundColor: "rgba(255,255,255,0.12)",
           borderRadius: 24, padding: 4,
         }}>
