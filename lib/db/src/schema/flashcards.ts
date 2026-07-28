@@ -90,6 +90,18 @@ export const reviewLogTable = pgTable("review_log", {
   reviewedAt: timestamp("reviewed_at").notNull().defaultNow(),
 });
 
+// Назначение колоды ученику учителем. Учитель создаёт свою колоду (ownerId =
+// учитель) и «отправляет» её ученику — появляется строка здесь. Ученик видит
+// назначенные колоды в своём списке наравне с системными/собственными.
+// assignedBy храним отдельно от owner — на будущее (кто именно назначил).
+export const deckAssignmentsTable = pgTable("deck_assignments", {
+  id: serial("id").primaryKey(),
+  deckId: integer("deck_id").notNull().references(() => decksTable.id, { onDelete: "cascade" }),
+  studentId: integer("student_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  assignedBy: integer("assigned_by").references(() => usersTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [unique("deck_assignment_unique").on(t.deckId, t.studentId)]);
+
 export const insertDeckSchema = createInsertSchema(decksTable).omit({ id: true, createdAt: true });
 export const insertWordSchema = createInsertSchema(wordsTable).omit({ id: true, createdAt: true });
 export type InsertDeck = z.infer<typeof insertDeckSchema>;
@@ -100,3 +112,4 @@ export type UserCardState = typeof userCardStateTable.$inferSelect;
 export type PlacementResult = typeof placementResultsTable.$inferSelect;
 export type FlashcardSettings = typeof flashcardSettingsTable.$inferSelect;
 export type ReviewLog = typeof reviewLogTable.$inferSelect;
+export type DeckAssignment = typeof deckAssignmentsTable.$inferSelect;
