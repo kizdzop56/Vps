@@ -167,12 +167,6 @@ export function FlashcardStudy({
             <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
           </TouchableOpacity>
         )}
-        {!isIntro && (
-          <View style={{ position: "absolute", bottom: 18, flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Feather name="move" size={14} color={colors.mutedForeground} />
-            <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>Свайп: не знаю ←   знаю →</Text>
-          </View>
-        )}
       </Animated.View>
 
       {/* ОБОРОТ */}
@@ -261,7 +255,7 @@ export function FlashcardStudy({
         )}
       </View>
 
-      {/* низ: показать перевод / подсказка по свайпу (оценка «знаю/не знаю» — свайпом) */}
+      {/* низ: показать перевод (оценка «знаю/не знаю» — свайпом) */}
       <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) + 12, gap: 10 }}>
         {isIntro ? (
           <TouchableOpacity onPress={introNext} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
@@ -273,15 +267,7 @@ export function FlashcardStudy({
               <TouchableOpacity onPress={() => doFlip(true)} activeOpacity={0.85} style={{ backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}>
                 <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Показать перевод</Text>
               </TouchableOpacity>
-            ) : (
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15 }}>
-                <Feather name="rotate-ccw" size={16} color={colors.warning} />
-                <Text style={{ color: colors.mutedForeground, fontWeight: "700", fontSize: 13 }}>Свайп влево — не знаю</Text>
-                <Text style={{ color: colors.border, fontWeight: "700", fontSize: 13 }}>·</Text>
-                <Text style={{ color: colors.mutedForeground, fontWeight: "700", fontSize: 13 }}>вправо — знаю</Text>
-                <Feather name="check" size={16} color={colors.success} />
-              </View>
-            )}
+            ) : null}
           </>
         )}
       </View>
