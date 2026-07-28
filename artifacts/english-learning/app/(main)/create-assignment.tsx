@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
+import { fc } from "@/hooks/useFlashcards";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -37,6 +38,14 @@ const TYPES = [
   { key: "free_form", label: "Свободный ответ", icon: "message-square" },
 ] as const;
 type AssignmentType = typeof TYPES[number]["key"];
+
+// Что создаёт учитель: обычное задание или колоду слов. Колода после создания
+// доступна ученикам в разделе «Слова» (у ученика — только там, не в заданиях).
+type CreateMode = "assignment" | "deck";
+
+// Набор иконок для колоды — совпадает с экраном flashcards/new-deck, чтобы
+// колоды, созданные из этой вкладки, выглядели одинаково.
+const DECK_EMOJI = ["📕", "📗", "📘", "📙", "🧠", "⭐", "🔤", "🌍", "🎯", "💡"];
 
 type QuestionFormat = "open" | "choice";
 type QuestionDraft = {
@@ -79,11 +88,20 @@ export default function CreateAssignmentScreen() {
   const audioInputRef = useRef<any>(null);
   const videoInputRef = useRef<any>(null);
 
+  // Режим экрана + состояние формы колоды (простая: название + иконка). Слова
+  // добавляются уже на странице колоды после создания.
+  const [mode, setMode] = useState<CreateMode>("assignment");
+  const [deckTitle, setDeckTitle] = useState("");
+  const [deckEmoji, setDeckEmoji] = useState("📕");
+  const [deckSaving, setDeckSaving] = useState(false);
+  const [deckError, setDeckError] = useState("");
+
   const set = <K extends keyof ReturnType<typeof FRESH>>(k: K, v: ReturnType<typeof FRESH>[K]) =>
     setSt(prev => ({ ...prev, [k]: v }));
 
   useFocusEffect(useCallback(() => {
     setSt(FRESH()); setUploading(null); setSaving(false);
+    setMode("assignment"); setDeckTitle(""); setDeckEmoji("📕"); setDeckSaving(false); setDeckError("");
   }, []));
 
   const { type, title, description, ageMin, ageMax, content,
@@ -110,6 +128,23 @@ export default function CreateAssignmentScreen() {
       const next = q.options.filter((_, j) => j !== oi);
       return { ...q, options: next, correctIndex: q.correctIndex >= next.length ? next.length - 1 : q.correctIndex };
     }) }));
+
+  // ── Создание колоды ─────────────────────────────────────────────────
+  // Переиспользуем тот же API, что и экран flashcards/new-deck. После создания
+  // переходим на страницу колоды, где учитель добавляет слова и назначает её
+  // ученикам — так колода появляется у ученика в разделе «Слова».
+  const handleCreateDeck = async () => {
+    setDeckError("");
+    if (!deckTitle.trim()) { setDeckError("Введите название колоды"); return; }
+    setDeckSaving(true);
+    try {
+      const deck = await fc.createDeck({ title: deckTitle.trim(), emoji: deckEmoji });
+      router.replace(`/flashcards/deck/${deck.id}`);
+    } catch (e: any) {
+      setDeckError(e?.message ?? "Не удалось создать колоду");
+      setDeckSaving(false);
+    }
+  };
 
   // ── File upload (GCS presigned URL — persistent, survives redeploy) ──
   const handleUpload = async (file: File, kind: "audio" | "video" | "image") => {
@@ -283,6 +318,21 @@ export default function CreateAssignmentScreen() {
     typeBtnActive: { borderColor: colors.primary, backgroundColor: colors.primary + "12" },
     typeBtnText: { fontSize: 13, fontWeight: "600", color: colors.mutedForeground },
     typeBtnTextActive: { color: colors.primary },
+    // Переключатель «Задание / Колода» — крупные вкладки вверху экрана.
+    modeRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
+    modeBtn: {
+      flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
+      gap: 8, paddingVertical: 12, borderRadius: 14,
+      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
+    },
+    modeBtnActive: { borderColor: colors.primary, backgroundColor: colors.primary + "12" },
+    modeBtnText: { fontSize: 15, fontWeight: "700", color: colors.mutedForeground },
+    modeBtnTextActive: { color: colors.primary },
+    emojiGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 20 },
+    emojiBtn: {
+      width: 48, height: 48, borderRadius: 12, alignItems: "center", justifyContent: "center",
+      borderWidth: 2,
+    },
     label: { fontSize: 14, fontWeight: "600", color: colors.foreground, marginBottom: 6 },
     input: {
       backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
@@ -366,7 +416,7 @@ export default function CreateAssignmentScreen() {
   const renderMediaSection = (
     kind: "audio" | "video" | "image",
     urlVal: string, setUrl: (v: string) => void,
-    modeVal: "url" | "file", setMode: (v: "url" | "file") => void,
+    modeVal: "url" | "file", setModeVal: (v: "url" | "file") => void,
     uploadedName: string, clearUploaded: () => void,
     inputRef: React.RefObject<any>,
     accentColor: string,
@@ -378,16 +428,16 @@ export default function CreateAssignmentScreen() {
     <View style={s.section}>
       <Text style={s.sectionTitle}>{sectionLabel}</Text>
       <View style={s.mediaToggle}>
-        {(["url", "file"] as const).map(mode => {
-          const active = modeVal === mode;
+        {(["url", "file"] as const).map(m => {
+          const active = modeVal === m;
           return (
-            <TouchableOpacity key={mode}
+            <TouchableOpacity key={m}
               style={[s.mediaBtn, { borderColor: active ? accentColor : colors.border, backgroundColor: active ? accentColor + "12" : colors.background }]}
-              onPress={() => setMode(mode)}
+              onPress={() => setModeVal(m)}
             >
-              <Feather name={mode === "url" ? "link" : "upload"} size={14} color={active ? accentColor : colors.mutedForeground} />
+              <Feather name={m === "url" ? "link" : "upload"} size={14} color={active ? accentColor : colors.mutedForeground} />
               <Text style={[s.mediaBtnText, { color: active ? accentColor : colors.mutedForeground }]}>
-                {mode === "url" ? "По ссылке" : "Загрузить файл"}
+                {m === "url" ? "По ссылке" : "Загрузить файл"}
               </Text>
             </TouchableOpacity>
           );
@@ -498,11 +548,79 @@ export default function CreateAssignmentScreen() {
         <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
           <Feather name="arrow-left" size={22} color={colors.foreground} />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Создать задание</Text>
+        <Text style={s.headerTitle}>{mode === "deck" ? "Создать колоду" : "Создать задание"}</Text>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
 
+        {/* Что создаём: задание или колода слов */}
+        <View style={s.modeRow}>
+          {([
+            { key: "assignment" as CreateMode, label: "Задание", icon: "book-open" },
+            { key: "deck" as CreateMode, label: "Колода", icon: "layers" },
+          ]).map((m) => {
+            const active = mode === m.key;
+            return (
+              <TouchableOpacity key={m.key}
+                style={[s.modeBtn, active && s.modeBtnActive]}
+                onPress={() => setMode(m.key)}
+              >
+                <Feather name={m.icon as any} size={18} color={active ? colors.primary : colors.mutedForeground} />
+                <Text style={[s.modeBtnText, active && s.modeBtnTextActive]}>{m.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {mode === "deck" ? (
+          // ── Форма колоды ──────────────────────────────────────────────
+          <>
+            <View style={{ backgroundColor: "#ede9fe", borderRadius: 14, padding: 14, marginBottom: 20, borderWidth: 1, borderColor: "#8b5cf640", flexDirection: "row", gap: 10 }}>
+              <Feather name="info" size={18} color="#7c3aed" style={{ marginTop: 1 }} />
+              <Text style={{ fontSize: 13, color: "#5b21b6", flex: 1, lineHeight: 19 }}>
+                Создайте колоду и добавьте в неё слова. Затем назначьте её ученикам — она появится у них в разделе «Слова».
+              </Text>
+            </View>
+
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>Название колоды</Text>
+              <TextInput
+                style={s.input} value={deckTitle} onChangeText={setDeckTitle}
+                placeholder="Например: Слова из урока 5" placeholderTextColor={colors.mutedForeground}
+              />
+            </View>
+
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>Иконка</Text>
+              <View style={s.emojiGrid}>
+                {DECK_EMOJI.map((e) => (
+                  <TouchableOpacity key={e} onPress={() => setDeckEmoji(e)}
+                    style={[s.emojiBtn, {
+                      borderColor: deckEmoji === e ? colors.primary : colors.border,
+                      backgroundColor: deckEmoji === e ? colors.primary + "18" : colors.card,
+                    }]}
+                  >
+                    <Text style={{ fontSize: 24 }}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {!!deckError && (
+              <View style={{ backgroundColor: "#fff1f2", borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "#fda4af" }}>
+                <Text style={{ color: colors.destructive, fontSize: 14, fontWeight: "600" }}>{deckError}</Text>
+              </View>
+            )}
+
+            <TouchableOpacity style={s.submitBtn} onPress={handleCreateDeck} disabled={deckSaving}>
+              {deckSaving ? <ActivityIndicator color="#fff" />
+                : <><Feather name="check" size={18} color="#fff" /><Text style={s.submitText}>Создать колоду</Text></>
+              }
+            </TouchableOpacity>
+          </>
+        ) : (
+          // ── Форма задания ─────────────────────────────────────────────
+          <>
         {/* Тип задания */}
         <View style={s.section}>
           <Text style={s.sectionTitle}>Тип задания</Text>
@@ -763,6 +881,8 @@ export default function CreateAssignmentScreen() {
             : <><Feather name="check" size={18} color="#fff" /><Text style={s.submitText}>Создать задание</Text></>
           }
         </TouchableOpacity>
+          </>
+        )}
 
       </ScrollView>
     </View>
