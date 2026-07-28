@@ -14,7 +14,7 @@ export default function StatsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const statsQ = useQuery({ queryKey: ["fc-stats"], queryFn: fc.getStats });
+  const statsQ = useQuery({ queryKey: ["fc-stats"], queryFn: () => fc.getStats() });
 
   const s = statsQ.data;
   const screenW = Dimensions.get("window").width;
