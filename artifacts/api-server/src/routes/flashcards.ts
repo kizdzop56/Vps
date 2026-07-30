@@ -15,7 +15,7 @@ import {
   teacherStudentsTable,
   parentChildrenTable,
 } from "@workspace/db";
-import { eq, and, or, isNull, inArray, lte, gte, sql } from "drizzle-orm";
+import { eq, and, or, isNull, inArray, lte, gte, ne, asc, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import {
   LEARNED_LEVEL,
@@ -41,6 +41,16 @@ import {
   interleaveQueue,
   type WordLike,
 } from "../lib/wordExercise";
+import {
+  BULK_WORD_LIMIT,
+  MANUAL_WORD_LIMIT,
+  chunked,
+  orderByRequestedIds,
+  planCatalogCopy,
+  wordKey,
+  wordKeySet,
+  type WordInsertRow,
+} from "../lib/deckWords";
 
 const router = Router();
 
@@ -529,7 +539,10 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
 // ── GET /flashcards/decks/:id/words ────────────────────────────────────
 router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   const deckId = Number(req.params["id"]);
-  const words = await db.select().from(wordsTable).where(eq(wordsTable.deckId, deckId));
+  // Порядок явный: слова своей колоды показываем так, как их собирал учитель
+  // (sortOrder проставляется при добавлении), иначе список «плавал» бы.
+  const words = await db.select().from(wordsTable).where(eq(wordsTable.deckId, deckId))
+    .orderBy(asc(wordsTable.sortOrder), asc(wordsTable.id));
   res.json(words.map((w) => clean({
     id: w.id, deckId: w.deckId, english: w.english, partOfSpeech: w.partOfSpeech ?? undefined,
     translationsRu: w.translationsRu, ipa: w.ipa ?? undefined, exampleEn: w.exampleEn ?? undefined,
@@ -555,6 +568,109 @@ router.post("/flashcards/decks", requireAuth, async (req, res) => {
     description: row!.description ?? undefined, emoji: row!.emoji ?? undefined, isSystem: row!.isSystem,
     cefrLevel: row!.cefrLevel ?? undefined, wordCount: 0,
   }));
+});
+
+// ── PATCH /flashcards/decks/:id (переименовать свою колоду) ─────────────────
+// Сохранённую колоду учитель дорабатывает: меняет название, иконку, описание.
+router.patch("/flashcards/decks/:id", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const b = req.body as { title?: string; emoji?: string; description?: string };
+  const patch: { title?: string; emoji?: string; description?: string | null } = {};
+
+  if (b.title !== undefined) {
+    const title = String(b.title).trim();
+    if (!title) { res.status(400).json({ error: "Название колоды не может быть пустым." }); return; }
+    if (title.length > 120) { res.status(400).json({ error: "Название колоды слишком длинное." }); return; }
+    patch.title = title;
+  }
+  if (b.emoji !== undefined) patch.emoji = String(b.emoji).slice(0, 8) || "📕";
+  if (b.description !== undefined) {
+    const description = String(b.description).trim();
+    patch.description = description ? description.slice(0, 500) : null;
+  }
+
+  if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Нет полей для изменения." }); return; }
+
+  const [row] = await db.update(decksTable).set(patch).where(eq(decksTable.id, deckId)).returning();
+  res.json(clean({
+    id: row!.id, ownerId: row!.ownerId ?? undefined, title: row!.title, theme: row!.theme ?? undefined,
+    description: row!.description ?? undefined, emoji: row!.emoji ?? undefined, isSystem: row!.isSystem,
+    cefrLevel: row!.cefrLevel ?? undefined,
+  }));
+});
+
+// ── GET /flashcards/catalog/words ───────────────────────────────────────────
+// Каталог слов для конструктора колоды: учитель ищет слова по написанию или по
+// переводу и фильтрует по теме и уровню CEFR, а затем отмечает нужные. Источник —
+// готовые (системные) колоды и, по желанию, собственные колоды пользователя:
+// свои слова тоже удобно переиспользовать в новой подборке.
+//
+// Параметры: q (поиск по english и по переводу), theme, level (CEFR),
+// deckId (только из одной колоды), excludeDeckId (не показывать слова
+// собираемой колоды), includeOwn=1, limit, offset.
+router.get("/flashcards/catalog/words", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const q = String(req.query["q"] ?? "").trim();
+  const theme = String(req.query["theme"] ?? "").trim();
+  const level = String(req.query["level"] ?? "").trim();
+  const deckIdParam = Number(req.query["deckId"]);
+  const excludeDeckId = Number(req.query["excludeDeckId"]);
+  const includeOwn = String(req.query["includeOwn"] ?? "") === "1";
+  const limit = Math.min(Math.max(Number(req.query["limit"]) || 60, 1), 200);
+  const offset = Math.max(Number(req.query["offset"]) || 0, 0);
+
+  // Какие колоды считаем источником каталога.
+  const sourceFilters = [eq(decksTable.isSystem, true)];
+  if (includeOwn) sourceFilters.push(eq(decksTable.ownerId, user.userId));
+  const deckFilters = [or(...sourceFilters)!];
+  if (Number.isFinite(deckIdParam) && deckIdParam > 0) deckFilters.push(eq(decksTable.id, deckIdParam));
+  if (Number.isFinite(excludeDeckId) && excludeDeckId > 0) deckFilters.push(ne(decksTable.id, excludeDeckId));
+  if (theme) deckFilters.push(eq(decksTable.theme, theme));
+
+  const sourceDecks = await db.select({
+    id: decksTable.id, title: decksTable.title, theme: decksTable.theme, emoji: decksTable.emoji,
+  }).from(decksTable).where(and(...deckFilters));
+
+  if (sourceDecks.length === 0) { res.json({ total: 0, words: [] }); return; }
+
+  const deckById = new Map(sourceDecks.map((d) => [d.id, d]));
+  const wordFilters = [inArray(wordsTable.deckId, [...deckById.keys()])];
+  if (level) wordFilters.push(eq(wordsTable.cefrLevel, level));
+  if (q) {
+    const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    // Ищем и по английскому, и по переводу: учителю удобно набрать «яблоко».
+    // translations_ru — jsonb-массив, поэтому сравниваем его текстовое представление.
+    wordFilters.push(or(
+      sql`${wordsTable.english} ILIKE ${like}`,
+      sql`${wordsTable.translationsRu}::text ILIKE ${like}`,
+    )!);
+  }
+  const where = and(...wordFilters);
+
+  const [{ total } = { total: 0 }] = await db
+    .select({ total: sql<number>`count(*)::int` }).from(wordsTable).where(where);
+
+  const rows = await db.select().from(wordsTable).where(where)
+    .orderBy(asc(wordsTable.deckId), asc(wordsTable.sortOrder), asc(wordsTable.id))
+    .limit(limit).offset(offset);
+
+  res.json({
+    total,
+    words: rows.map((w) => {
+      const deck = deckById.get(w.deckId);
+      return clean({
+        id: w.id, deckId: w.deckId, english: w.english, partOfSpeech: w.partOfSpeech ?? undefined,
+        translationsRu: w.translationsRu, ipa: w.ipa ?? undefined, exampleEn: w.exampleEn ?? undefined,
+        exampleRu: w.exampleRu ?? undefined, cefrLevel: w.cefrLevel ?? undefined, emoji: w.emoji ?? undefined,
+        // откуда слово — показываем в подписи под словом в конструкторе
+        deckTitle: deck?.title ?? undefined, theme: deck?.theme ?? undefined,
+      });
+    }),
+  });
 });
 
 // ── DELETE /flashcards/decks/:id (удалить свою колоду) ──────────────────────
@@ -587,6 +703,62 @@ router.post("/flashcards/decks/:id/assign", requireAuth, async (req, res) => {
     .values({ deckId, studentId, assignedBy: user.userId })
     .onConflictDoNothing();
   res.status(201).json({ deckId, studentId });
+});
+
+// ── POST /flashcards/decks/:id/assign/bulk ───────────────────────────────────
+// Отправить колоду сразу нескольким ученикам. Этим же вызовом управляется список
+// получателей: при replace = true колода остаётся назначенной ровно тем ученикам,
+// которые переданы в studentIds, а лишние назначения снимаются.
+//
+// Ученики, которые учителю не привязаны (нет accepted-связи), не назначаются и
+// возвращаются в rejected — запрос при этом не падает целиком.
+router.post("/flashcards/decks/:id/assign/bulk", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const b = req.body as { studentIds?: unknown; replace?: unknown };
+  if (!Array.isArray(b.studentIds)) { res.status(400).json({ error: "studentIds required" }); return; }
+  const studentIds = [...new Set(b.studentIds.map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  const replace = b.replace === true;
+
+  if (studentIds.length === 0 && !replace) {
+    res.status(400).json({ error: "Не выбрано ни одного ученика." });
+    return;
+  }
+
+  // Назначать можно только своим ученикам.
+  const allowed: number[] = [];
+  const rejected: number[] = [];
+  for (const studentId of studentIds) {
+    if (await canViewStudent(user, studentId)) allowed.push(studentId);
+    else rejected.push(studentId);
+  }
+
+  if (allowed.length > 0) {
+    await db.insert(deckAssignmentsTable)
+      .values(allowed.map((studentId) => ({ deckId, studentId, assignedBy: user.userId })))
+      .onConflictDoNothing();
+  }
+
+  // Синхронизация списка получателей: снимаем всё, чего нет в allowed.
+  let revoked = 0;
+  if (replace) {
+    const current = await db.select({ studentId: deckAssignmentsTable.studentId })
+      .from(deckAssignmentsTable).where(eq(deckAssignmentsTable.deckId, deckId));
+    const keep = new Set(allowed);
+    const toRevoke = current.map((r) => r.studentId).filter((id) => !keep.has(id));
+    if (toRevoke.length > 0) {
+      await db.delete(deckAssignmentsTable).where(and(
+        eq(deckAssignmentsTable.deckId, deckId),
+        inArray(deckAssignmentsTable.studentId, toRevoke),
+      ));
+      revoked = toRevoke.length;
+    }
+  }
+
+  res.status(201).json({ deckId, assigned: allowed.length, revoked, rejected });
 });
 
 // ── DELETE /flashcards/decks/:id/assign/:studentId (отозвать колоду) ──────────
@@ -664,6 +836,139 @@ router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
     translationsRu: row!.translationsRu, ipa: row!.ipa ?? undefined, exampleEn: row!.exampleEn ?? undefined,
     exampleRu: row!.exampleRu ?? undefined, cefrLevel: row!.cefrLevel ?? undefined, audioUrl: row!.audioUrl ?? undefined,
   }));
+});
+
+// ── POST /flashcards/decks/:id/words/bulk ───────────────────────────────────
+// Массовое добавление слов в свою колоду — то, чем сохраняется собранная в
+// конструкторе подборка. Два источника в одном запросе:
+//
+//   wordIds — слова, отмеченные в каталоге; копируются вместе с транскрипцией,
+//             примерами, уровнем и эмодзи (см. lib/deckWords.ts, почему копия);
+//   words   — слова, которые учитель ввёл руками: те же проверка написания и
+//             автоперевод, что и в одиночном POST .../words.
+//
+// Ответ всегда перечисляет, что не прошло (failed), чтобы конструктор показал
+// причину по каждому слову и не терял остальную подборку.
+router.post("/flashcards/decks/:id/words/bulk", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const b = req.body as {
+    wordIds?: unknown;
+    words?: Array<{ english?: unknown; translationsRu?: unknown }>;
+  };
+
+  const wordIds = Array.isArray(b.wordIds)
+    ? [...new Set(b.wordIds.map(Number).filter((n) => Number.isFinite(n) && n > 0))]
+    : [];
+  const manual = Array.isArray(b.words) ? b.words.slice(0, MANUAL_WORD_LIMIT) : [];
+
+  if (wordIds.length === 0 && manual.length === 0) {
+    res.status(400).json({ error: "Не выбрано ни одного слова." });
+    return;
+  }
+  if (wordIds.length > BULK_WORD_LIMIT) {
+    res.status(400).json({ error: `За один раз можно добавить не больше ${BULK_WORD_LIMIT} слов.` });
+    return;
+  }
+
+  // Слова, уже лежащие в колоде, и текущий порядок — чтобы не плодить дубликаты
+  // и дописывать новые слова в конец списка.
+  const present = await db.select({ english: wordsTable.english, sortOrder: wordsTable.sortOrder })
+    .from(wordsTable).where(eq(wordsTable.deckId, deckId));
+  const existing = wordKeySet(present);
+  const nextSortOrder = present.reduce((max, w) => Math.max(max, w.sortOrder), -1) + 1;
+
+  const failed: Array<{ english: string; reason: string }> = [];
+  let skipped = 0;
+
+  // ── 1. Копии из каталога ────────────────────────────────────────────────
+  let catalogRows: WordInsertRow[] = [];
+  if (wordIds.length > 0) {
+    // Брать можно только из готовых колод и из своих собственных — чужая
+    // приватная колода другого учителя источником быть не должна.
+    const allowedDecks = await db.select({ id: decksTable.id }).from(decksTable).where(or(
+      eq(decksTable.isSystem, true),
+      eq(decksTable.ownerId, user.userId),
+    ));
+    const allowedDeckIds = new Set(allowedDecks.map((d) => d.id));
+
+    const found = await db.select().from(wordsTable).where(inArray(wordsTable.id, wordIds));
+    const visible = found.filter((w) => allowedDeckIds.has(w.deckId));
+    const { ordered, missingIds } = orderByRequestedIds(visible, wordIds);
+    skipped += missingIds.length;
+
+    const planned = planCatalogCopy(deckId, ordered, existing, nextSortOrder);
+    catalogRows = planned.rows;
+    skipped += planned.skipped;
+    for (const row of catalogRows) existing.add(wordKey(row.english));
+  }
+
+  // ── 2. Ручной ввод ──────────────────────────────────────────────────────
+  const manualRows: typeof catalogRows = [];
+  for (const item of manual) {
+    const raw = typeof item?.english === "string" ? item.english : "";
+    const english = normalizeEnglishInput(raw);
+    if (!english) { failed.push({ english: String(raw).trim(), reason: "Пустое слово." }); continue; }
+    if (existing.has(wordKey(english))) { skipped++; continue; }
+
+    const checked = await validateEnglishWord(english);
+    if (!checked.ok) {
+      failed.push({ english, reason: validationErrorMessage(english, checked) });
+      continue;
+    }
+    if (existing.has(wordKey(checked.normalized))) { skipped++; continue; }
+
+    let ru = Array.isArray(item.translationsRu)
+      ? item.translationsRu.map((t) => String(t).trim()).filter(Boolean)
+      : [];
+    if (ru.length === 0) {
+      const translated = await translateWithGoogle(checked.normalized);
+      if (!translated) {
+        failed.push({ english: checked.normalized, reason: "Не удалось получить перевод. Укажите его вручную." });
+        continue;
+      }
+      ru = [translated];
+    }
+
+    existing.add(wordKey(checked.normalized));
+    manualRows.push({
+      deckId, english: checked.normalized, partOfSpeech: null, translationsRu: ru,
+      ipa: checked.ipa ?? null, exampleEn: null, exampleRu: null, cefrLevel: null, emoji: null,
+      sortOrder: nextSortOrder + catalogRows.length + manualRows.length,
+    });
+  }
+
+  // ── 3. Вставка партиями ─────────────────────────────────────────────────
+  const toInsert = [...catalogRows, ...manualRows];
+  let added = 0;
+  for (const chunk of chunked(toInsert)) {
+    if (chunk.length === 0) continue;
+    await db.insert(wordsTable).values(chunk);
+    added += chunk.length;
+  }
+
+  res.status(added > 0 ? 201 : 200).json({ added, skipped, failed });
+});
+
+// ── DELETE /flashcards/decks/:id/words/:wordId ──────────────────────────────
+// Убрать слово из своей колоды. Каскад в схеме снимет состояния карточек и
+// записи журнала повторений по этому слову.
+router.delete("/flashcards/decks/:id/words/:wordId", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const wordId = Number(req.params["wordId"]);
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const [word] = await db.select({ id: wordsTable.id }).from(wordsTable)
+    .where(and(eq(wordsTable.id, wordId), eq(wordsTable.deckId, deckId)));
+  if (!word) { res.status(404).json({ error: "Слово не найдено в этой колоде." }); return; }
+
+  await db.delete(wordsTable).where(eq(wordsTable.id, wordId));
+  res.status(204).end();
 });
 
 // ── POST /flashcards/decks/:id/import (CSV/JSON) ──────────────────────────
