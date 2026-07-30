@@ -26,7 +26,14 @@ export default function NewDeckScreen() {
     setSaving(true);
     try {
       const deck = await fc.createDeck({ title: title.trim(), emoji });
+      // Кладём колоду в кэш, чтобы её страница открылась с готовым названием и
+      // формой добавления слов, а не ждала загрузки общего списка колод.
+      qc.setQueryData(["fc-deck", deck.id], {
+        ...deck, wordCount: 0, learnedCount: 0, dueCount: 0, newCount: 0, canEdit: true,
+      });
+      qc.setQueryData(["fc-words", deck.id], []);
       qc.invalidateQueries({ queryKey: ["fc-decks"] });
+      qc.invalidateQueries({ queryKey: ["fc-my-decks"] });
       router.replace(`/flashcards/deck/${deck.id}`);
     } catch (e: any) {
       Alert.alert("Ошибка", e?.message ?? "Не удалось создать колоду.");

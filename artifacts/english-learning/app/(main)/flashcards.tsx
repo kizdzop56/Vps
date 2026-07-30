@@ -173,6 +173,21 @@ export default function FlashcardsHome() {
 
       {decksQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+      ) : decksQ.isError ? (
+        /* Раньше ошибка загрузки колод не показывалась вообще: экран просто
+           оставался пустым, и было не понять, сломалась сеть или колод нет. */
+        <View style={{ marginTop: 24, backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: 16, padding: 16, gap: 10 }}>
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Колоды не загрузились</Text>
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.destructive }}>
+            {(decksQ.error as any)?.message ?? "Проверьте соединение и попробуйте ещё раз."}
+          </Text>
+          <TouchableOpacity
+            onPress={() => { decksQ.refetch(); settingsQ.refetch(); statsQ.refetch(); }}
+            style={{ alignSelf: "flex-start", backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 11 }}
+          >
+            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Повторить</Text>
+          </TouchableOpacity>
+        </View>
       ) : (
         <>
           {myDecks.length > 0 && (
