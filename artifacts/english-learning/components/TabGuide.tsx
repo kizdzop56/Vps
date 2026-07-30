@@ -12,7 +12,8 @@ export type TabGuideTab =
   | "calendar"
   | "profile"
   | "students"
-  | "analysis";
+  | "analysis"
+  | "progress";
 
 interface TabGuideInfo {
   tab: TabGuideTab;
@@ -63,6 +64,13 @@ export const TAB_GUIDE_CONTENT: Record<TabGuideTab, TabGuideInfo> = {
     title: "Анализ",
     description:
       "Детальная аналитика по всем ученикам: успеваемость, выполнение заданий и прогресс по времени. Принимай решения на основе данных!",
+  },
+  progress: {
+    tab: "progress",
+    emoji: "📈",
+    title: "Успеваемость",
+    description:
+      "Полная картина по вашему ребёнку: средний балл и его динамика, успеваемость по всем шкалам, история выполненных заданий, словарный запас и время в приложении. Всё, что нужно знать об учёбе — на одном экране.",
   },
 };
 
