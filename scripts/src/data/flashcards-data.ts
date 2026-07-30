@@ -650,3 +650,63 @@ export const SEED_DECKS: SeedDeck[] = [
   },
 ];
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Картинки-подсказки для младших учеников.
+//
+// Слово + картинка запоминаются заметно лучше, чем слово + перевод, но тянуть в
+// офлайн-датасет настоящие изображения незачем: эмодзи рисуется системой, ничего
+// не грузится по сети и работает и на web, и на нативе. Значение попадает в
+// words.emoji при сидинге (seed-flashcards.ts) и показывается на лице карточки.
+//
+// Ключ — английское слово из датасета в нижнем регистре. Абстрактные слова
+// намеренно оставлены без картинки: плохая картинка хуже отсутствия картинки.
+// Проверяется scripts/validate-flashcards.mjs (pnpm validate:flashcards).
+// ─────────────────────────────────────────────────────────────────────────────
+export const WORD_EMOJI: Record<string, string> = {
+  // еда и напитки
+  apple: "🍎", bread: "🍞", water: "💧", milk: "🥛", cheese: "🧀", egg: "🥚",
+  meat: "🥩", vegetable: "🥕", fruit: "🍇", breakfast: "🥣", dinner: "🍝",
+  meal: "🍲", sugar: "🍬", salt: "🧂", delicious: "😋", hungry: "🤤",
+  // животные
+  dog: "🐶", cat: "🐱", horse: "🐴", bird: "🐦", fish: "🐟", cow: "🐮",
+  sheep: "🐑", bear: "🐻", lion: "🦁", elephant: "🐘", mouse: "🐭",
+  rabbit: "🐰", snake: "🐍", insect: "🐞", wild: "🐅",
+  // транспорт и путешествия
+  car: "🚗", bus: "🚌", train: "🚆", plane: "✈️", ship: "🚢", bicycle: "🚲",
+  taxi: "🚕", station: "🚉", airport: "🛫", ticket: "🎫", road: "🛣️",
+  luggage: "🧳", passport: "🛂", hotel: "🏨", map: "🗺️", trip: "🚙",
+  vacation: "🏝️", beach: "🏖️", tourist: "📸", arrive: "🛬",
+  // семья и люди
+  mother: "👩", father: "👨", sister: "👧", brother: "👦", son: "🧑",
+  daughter: "👧", parents: "👨‍👩‍👦", grandmother: "👵", child: "🧒",
+  friend: "👫", people: "👥", wife: "👰", husband: "🤵", married: "💍",
+  doctor: "👩‍⚕️", manager: "🧑‍💼",
+  // дом
+  house: "🏠", room: "🛋️", door: "🚪", window: "🪟", table: "🍽️",
+  chair: "🪑", bed: "🛏️", kitchen: "🍳", floor: "🧹", wall: "🧱",
+  garden: "🌷", furniture: "🛋️", comfortable: "🛋️", clean: "🧼",
+  // тело и здоровье
+  head: "🙂", hand: "✋", leg: "🦵", eye: "👁️", tooth: "🦷", heart: "❤️",
+  medicine: "💊", healthy: "🥗", sick: "🤒", tired: "🥱", sleep: "😴",
+  // природа и погода
+  tree: "🌳", flower: "🌸", forest: "🌲", river: "🏞️", sea: "🌊",
+  mountain: "⛰️", sky: "☁️", sun: "☀️", rain: "🌧️", snow: "❄️", wind: "💨",
+  weather: "🌤️",
+  // техника
+  computer: "💻", phone: "📱", screen: "🖥️", keyboard: "⌨️", internet: "🌐",
+  password: "🔑", message: "💬", download: "⬇️",
+  // школа, работа, город
+  book: "📕", school: "🏫", city: "🏙️", office: "🏢", job: "💼", work: "🛠️",
+  money: "💰", meeting: "📋", interview: "🎤", time: "⏰", learn: "📚",
+  // действия и оценки
+  write: "✍️", speak: "🗣️", see: "👀", think: "🤔", remember: "🧠",
+  help: "🤝", give: "🎁", buy: "🛒", find: "🔍", make: "🔨", go: "🚶",
+  taste: "👅", happy: "😀", good: "👍", important: "❗", new: "🆕",
+  beautiful: "😍", smart: "🤓",
+};
+
+/** Картинка-подсказка для английского слова (или undefined, если её нет). */
+export function emojiFor(english: string): string | undefined {
+  return WORD_EMOJI[english.trim().toLowerCase()];
+}

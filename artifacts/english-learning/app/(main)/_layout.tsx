@@ -469,6 +469,10 @@ function MainLayoutInner() {
         <Tabs.Screen name="teacher-results/[id]" options={{ href: null }} />
         <Tabs.Screen name="submission-review/[id]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/study/[deckId]" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/session" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/hard" options={{ href: null }} />
+        {/* марафон раньше не был объявлен — экран попадал в нижнюю панель */}
+        <Tabs.Screen name="flashcards/marathon" options={{ href: null }} />
         <Tabs.Screen name="flashcards/placement" options={{ href: null }} />
         <Tabs.Screen name="flashcards/stats" options={{ href: null }} />
         <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />

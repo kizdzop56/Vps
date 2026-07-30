@@ -32,12 +32,32 @@ export default function StatsScreen() {
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       ) : (
         <>
+          {/* Сегодняшний срез: цель дня в словах и что уже сделано. */}
+          <TodayCard colors={colors} stats={s} />
+
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
             <StatCard colors={colors} value={s.totalLearned} label="Выучено слов" icon="check-circle" />
             <StatCard colors={colors} value={s.totalWords} label="В изучении" icon="book" />
             <StatCard colors={colors} value={s.totalReviews} label="Повторений" icon="refresh-cw" />
             <StatCard colors={colors} value={`${s.accuracy}%`} label="Правильных" icon="target" />
           </View>
+
+          {(s.hardCount ?? 0) > 0 && (
+            <TouchableOpacity
+              onPress={() => router.push("/flashcards/hard")}
+              activeOpacity={0.85}
+              style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.warning + "14", borderColor: colors.warning + "55", borderWidth: 1, borderRadius: 16, padding: 14, marginBottom: 20 }}
+            >
+              <Text style={{ fontSize: 22 }}>🔁</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Сложные слова: {s.hardCount}</Text>
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                  Слова с ошибками и срывами — потренируй их отдельно
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+            </TouchableOpacity>
+          )}
 
           <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 12 }}>
             Повторения за 14 дней
@@ -58,6 +78,34 @@ export default function StatsScreen() {
         </>
       )}
     </ScrollView>
+  );
+}
+
+// Прогресс к цели дня в словах + что сделано сегодня. Раньше цель была только по
+// минутам в приложении, и «сколько слов за день» ученик нигде не видел.
+function TodayCard({ colors, stats }: any) {
+  const goal = stats.dailyWordGoal ?? 10;
+  const done = stats.wordsToday ?? 0;
+  const pct = goal > 0 ? Math.min(100, Math.round((done / goal) * 100)) : 0;
+  const reached = done >= goal;
+  return (
+    <View style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 16 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+          <Feather name={reached ? "check-circle" : "target"} size={16} color={reached ? colors.success : colors.primary} />
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Сегодня</Text>
+        </View>
+        <Text style={{ fontSize: 13, fontWeight: "800", color: reached ? colors.success : colors.primary }}>
+          {done} / {goal} слов
+        </Text>
+      </View>
+      <View style={{ height: 9, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.14)", marginTop: 10, overflow: "hidden" }}>
+        <View style={{ width: `${pct}%`, height: "100%", borderRadius: 999, backgroundColor: reached ? colors.success : colors.primary }} />
+      </View>
+      <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 10 }}>
+        Повторений сегодня: {stats.reviewsToday ?? 0} · выучено новых: {stats.learnedToday ?? 0}
+      </Text>
+    </View>
   );
 }
 

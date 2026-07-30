@@ -6,11 +6,12 @@
 // Вызывается из seed.ts (pnpm seed) и может запускаться самостоятельно.
 import { db, decksTable, wordsTable } from "@workspace/db";
 import { and, eq, isNull, inArray } from "drizzle-orm";
-import { SEED_DECKS } from "./data/flashcards-data";
+import { SEED_DECKS, emojiFor } from "./data/flashcards-data";
 
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
+  let emojiFilled = 0;
 
   for (let i = 0; i < SEED_DECKS.length; i++) {
     const d = SEED_DECKS[i]!;
@@ -59,10 +60,21 @@ export async function seedFlashcards(): Promise<void> {
 
     // Какие слова уже есть в колоде — не дублируем
     const present = await db
-      .select({ english: wordsTable.english })
+      .select({ id: wordsTable.id, english: wordsTable.english, emoji: wordsTable.emoji })
       .from(wordsTable)
       .where(eq(wordsTable.deckId, deckId));
     const have = new Set(present.map((w) => w.english.toLowerCase()));
+
+    // Картинки-подсказки для слов, которые уже лежат в базе: карта эмодзи
+    // появилась позже самих слов, поэтому на работающей базе (Render) их нужно
+    // дозаполнить — иначе картинку увидят только новые колоды. Сами слова и
+    // прогресс учеников (user_card_state) при этом не трогаются.
+    for (const row of present) {
+      const emoji = emojiFor(row.english);
+      if (!emoji || row.emoji === emoji) continue;
+      await db.update(wordsTable).set({ emoji }).where(eq(wordsTable.id, row.id));
+      emojiFilled++;
+    }
 
     const toInsert = d.words
       .filter((w) => !have.has(w.en.toLowerCase()))
@@ -75,6 +87,7 @@ export async function seedFlashcards(): Promise<void> {
         exampleEn: w.exEn,
         exampleRu: w.exRu,
         cefrLevel: w.cefr,
+        emoji: emojiFor(w.en) ?? null,
         sortOrder: idx,
       }));
 
@@ -87,5 +100,5 @@ export async function seedFlashcards(): Promise<void> {
     }
   }
 
-  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded} (всего колод в датасете ${SEED_DECKS.length}).`);
+  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled} (всего колод в датасете ${SEED_DECKS.length}).`);
 }

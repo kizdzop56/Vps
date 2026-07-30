@@ -19,18 +19,49 @@ const CEFR = ["A1", "A2", "B1", "B2", "C1", "C2"];
 const PHRASE_POS = new Set(["phrase", "idiom", "collocation", "phrasal verb"]);
 const MIN_DECKS_PER_LEVEL = 2;
 
-// ── загрузка датасета без tsc/tsx: вырезаем литерал массива ────────────
+// ── загрузка датасета без tsc/tsx: вырезаем литерал по балансу скобок ──────
+// Раньше конец массива искался как последний "];" в файле. После появления в
+// том же файле других объявлений (карта картинок и функция emojiFor) такой
+// поиск ловил чужую строку, поэтому границы литерала считаем по скобкам,
+// пропуская строки и комментарии.
+function extractLiteral(src, name, openChar) {
+  const closeChar = openChar === "[" ? "]" : "}";
+  const start = src.indexOf(`const ${name}`);
+  if (start === -1) throw new Error(`в файле нет ${name}`);
+  // Литерал начинается после «=», иначе за начало массива можно принять скобки
+  // из аннотации типа (SeedDeck[]).
+  const eq = src.indexOf("=", start);
+  const open = eq === -1 ? -1 : src.indexOf(openChar, eq);
+  if (open === -1) throw new Error(`не найдено начало литерала ${name}`);
+
+  let depth = 0;
+  let quote = null;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    const prev = src[i - 1];
+    if (quote) {
+      if (ch === quote && prev !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+    if (ch === "/" && src[i + 1] === "/") { i = src.indexOf("\n", i); if (i === -1) break; continue; }
+    if (ch === openChar) depth++;
+    else if (ch === closeChar) {
+      depth--;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  throw new Error(`не закрыт литерал ${name}`);
+}
+
+// Литералы — наш собственный файл в репозитории, в них только строки, массивы
+// и объекты, поэтому вычисляем их напрямую.
 function loadDecks() {
-  const src = readFileSync(FILE, "utf8");
-  const start = src.indexOf("SEED_DECKS");
-  if (start === -1) throw new Error("в файле нет SEED_DECKS");
-  const open = src.indexOf("[", start);
-  const close = src.lastIndexOf("];");
-  if (open === -1 || close === -1 || close < open) throw new Error("не найден литерал массива SEED_DECKS");
-  const literal = src.slice(open, close + 1);
-  // Литерал — наш собственный файл в репозитории и содержит только строки,
-  // массивы и объекты, поэтому вычисляем его напрямую.
-  return new Function(`return ${literal};`)();
+  return new Function(`return ${extractLiteral(readFileSync(FILE, "utf8"), "SEED_DECKS", "[")};`)();
+}
+
+function loadEmojiLiteral() {
+  return extractLiteral(readFileSync(FILE, "utf8"), "WORD_EMOJI", "{");
 }
 
 const errors = [];
@@ -138,6 +169,46 @@ for (const d of decks) {
   if (phrasesHere === 0) err(`${D}: нет ни одного словосочетания/фразеологизма`);
 }
 
+// ── карта картинок-подсказок (WORD_EMOJI) ─────────────────────────────────
+// Картинка показывается на лице карточки, поэтому ключ обязан совпадать со
+// словом из датасета: опечатка в ключе — молча потерянная картинка.
+const allWords = new Set();
+for (const d of decks) for (const w of d.words ?? []) if (w?.en) allWords.add(w.en.toLowerCase());
+
+let emojiCount = 0;
+try {
+  const literal = loadEmojiLiteral();
+  const map = new Function(`return ${literal};`)();
+  const keys = Object.keys(map);
+  emojiCount = keys.length;
+
+  // Дубликат ключа в объекте JS молча перетирается — ловим по тексту литерала.
+  const declared = (literal.match(/(^|[\s{,])([a-z][a-z'\- ]*)\s*:/gi) ?? []).length;
+  if (declared !== keys.length) {
+    err(`WORD_EMOJI: объявлено ${declared} ключей, уникальных ${keys.length} — есть дубликат ключа`);
+  }
+
+  if (emojiCount < 20) err(`WORD_EMOJI: всего ${emojiCount} картинок — карта почти пуста`);
+
+  const usage = new Map();
+  for (const [key, value] of Object.entries(map)) {
+    const K = `WORD_EMOJI["${key}"]`;
+    if (key !== key.trim().toLowerCase()) err(`${K}: ключ должен быть словом в нижнем регистре без пробелов по краям`);
+    if (!allWords.has(key)) err(`${K}: такого слова нет в датасете — картинка никогда не покажется`);
+    if (typeof value !== "string" || value.length === 0) { err(`${K}: пустая картинка`); continue; }
+    if (LATIN.test(value) || CYRILLIC.test(value)) err(`${K}: в картинке буквы → ${JSON.stringify(value)}`);
+    // Эмодзи бывает составным (флаги, семьи, модификаторы), но не текстом.
+    if ([...value].length > 8) err(`${K}: слишком длинная картинка → ${JSON.stringify(value)}`);
+    usage.set(value, (usage.get(value) ?? 0) + 1);
+  }
+
+  for (const [value, n] of usage) {
+    if (n >= 4) warn(`картинка ${value} повторяется у ${n} слов — ребёнку будет сложно их различать`);
+  }
+} catch (e) {
+  err(`WORD_EMOJI: не удалось разобрать карту картинок — ${e.message}`);
+}
+
 // Каждый уровень CEFR должен предлагать колоды: placement-тест умеет выдать
 // любой уровень вплоть до C2, и ученик не должен попасть в пустой раздел.
 for (const level of CEFR) {
@@ -150,6 +221,7 @@ for (const level of CEFR) {
 console.log(`Колод: ${decks.length}`);
 console.log(`Карточек: ${totalEntries} (из них словосочетаний/фразеологизмов: ${totalPhrases})`);
 console.log(`Колод по уровням: ${CEFR.map((l) => `${l}:${decksByLevel.get(l) ?? 0}`).join("  ")}`);
+console.log(`Картинок-подсказок: ${emojiCount}`);
 
 for (const w of warnings) console.log(`⚠️  ${w}`);
 

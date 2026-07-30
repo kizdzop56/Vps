@@ -8,7 +8,7 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, speak, speechAvailable } from "@/hooks/useFlashcards";
-import type { DeckWithProgress, FlashcardWord } from "@workspace/api-client-react";
+import type { DeckWithProgress } from "@workspace/api-client-react";
 
 export default function DeckDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -159,8 +159,9 @@ export default function DeckDetail() {
       ) : words.length === 0 ? (
         <Text style={{ color: colors.mutedForeground }}>Пока нет слов.</Text>
       ) : (
-        words.map((w: FlashcardWord) => (
+        words.map((w) => (
           <View key={w.id} style={{ backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 }}>
+            {!!w.emoji && <Text style={{ fontSize: 24 }}>{w.emoji}</Text>}
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{w.english}</Text>

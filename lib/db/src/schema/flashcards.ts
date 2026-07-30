@@ -40,6 +40,7 @@ export const wordsTable = pgTable("words", {
   exampleRu: text("example_ru"),
   cefrLevel: text("cefr_level"),
   audioUrl: text("audio_url"),             // обычно null → озвучка через Web Speech API
+  emoji: text("emoji"),                    // картинка-подсказка для младших: 🍎 к apple
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -55,6 +56,9 @@ export const userCardStateTable = pgTable("user_card_state", {
   introduced: boolean("introduced").notNull().default(false), // прошло ли знакомство/ввод в обучение
   timesSeen: integer("times_seen").notNull().default(0),
   timesCorrect: integer("times_correct").notNull().default(0),
+  // Сколько раз ребёнок «терял» уже закреплённое слово (ошибка на уровне ≥ 2).
+  // По этому счётчику собирается подборка «Сложные слова».
+  lapses: integer("lapses").notNull().default(0),
   lastResult: text("last_result"),         // "know" | "dont"
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -75,6 +79,8 @@ export const placementResultsTable = pgTable("placement_results", {
 export const flashcardSettingsTable = pgTable("flashcard_settings", {
   userId: integer("user_id").primaryKey().references(() => usersTable.id, { onDelete: "cascade" }),
   dailyNewLimit: integer("daily_new_limit").notNull().default(12),
+  // Цель дня в словах (раньше цель была только по минутам в приложении).
+  dailyWordGoal: integer("daily_word_goal").notNull().default(10),
   placementLevel: text("placement_level"), // текущий CEFR-уровень (кэш последнего теста)
   placementDone: boolean("placement_done").notNull().default(false),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

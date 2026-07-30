@@ -10,8 +10,8 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc } from "@/hooks/useFlashcards";
-import { FlashcardStudy } from "@/components/FlashcardStudy";
-import type { StudyQueue } from "@workspace/api-client-react";
+import type { TrainerQueue } from "@/hooks/useFlashcards";
+import { WordTrainer } from "@/components/WordTrainer";
 
 export default function MarathonScreen() {
   const colors = useColors();
@@ -34,9 +34,9 @@ export default function MarathonScreen() {
     else Alert.alert("Новый уровень доступен 🎉", msg);
   }, [started, data?.eligible, data?.nextLevel, data?.accuracy, data?.level]);
 
-  // Стабильный загрузчик карточек для FlashcardStudy: тянет свежий марафон и
-  // приводит его к форме StudyQueue (без «знакомства» — сразу тренировка).
-  const loadQueue = React.useCallback(async (): Promise<StudyQueue> => {
+  // Стабильный загрузчик карточек для тренажёра: тянет свежий марафон и
+  // приводит его к форме очереди (без «знакомства» — сразу тренировка).
+  const loadQueue = React.useCallback(async (): Promise<TrainerQueue> => {
     const m = await fc.getMarathon();
     return {
       deckId: -1,
@@ -45,6 +45,9 @@ export default function MarathonScreen() {
       needsIntro: false,
       newCount: m.cards.filter((c) => c.isNew).length,
       reviewCount: m.cards.filter((c) => !c.isNew).length,
+      wordsToday: m.wordsToday,
+      dailyWordGoal: m.dailyWordGoal,
+      goalReached: m.goalReached,
       cards: m.cards,
     };
   }, []);
@@ -52,13 +55,16 @@ export default function MarathonScreen() {
   if (started) {
     return (
       <View style={{ flex: 1 }}>
-        <FlashcardStudy
+        <WordTrainer
           loader={loadQueue}
+          title={`Марафон ${data?.level ?? ""}`.trim()}
           onExit={() => {
             setStarted(false);
             notifiedRef.current = false; // после сессии снова разрешаем уведомление
             q.refetch();
             qc.invalidateQueries({ queryKey: ["fc-decks"] });
+            qc.invalidateQueries({ queryKey: ["fc-stats"] });
+            qc.invalidateQueries({ queryKey: ["gamification-stats"] });
           }}
         />
       </View>

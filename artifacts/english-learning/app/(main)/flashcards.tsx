@@ -1,5 +1,6 @@
-// Главный экран раздела «Слова»: уровень пользователя, библиотека готовых колод,
-// собственные колоды, переходы к статистике / созданию колоды / тесту уровня.
+// Главный экран раздела «Слова»: одна кнопка «Учить слова» (сквозная сессия по
+// всем колодам), цель дня в словах, отработка сложных слов, библиотека готовых
+// колод, собственные колоды и переходы к статистике / созданию колоды / тесту.
 //
 // Готовые колоды показываются двумя блоками:
 //   • «Колоды по уровням» — колоды с заданным cefrLevel, сгруппированные по A1..C2.
@@ -27,11 +28,14 @@ export default function FlashcardsHome() {
 
   const decksQ = useQuery({ queryKey: ["fc-decks"], queryFn: fc.getDecks });
   const settingsQ = useQuery({ queryKey: ["fc-settings"], queryFn: fc.getSettings });
+  // Статистика нужна на главной для цели дня и числа сложных слов.
+  const statsQ = useQuery({ queryKey: ["fc-stats"], queryFn: () => fc.getStats() });
 
   useFocusEffect(
     React.useCallback(() => {
       decksQ.refetch();
       settingsQ.refetch();
+      statsQ.refetch();
     }, [])
   );
 
@@ -57,10 +61,18 @@ export default function FlashcardsHome() {
   const totalDue = decks.reduce((s, d) => s + d.dueCount, 0);
   const totalNew = decks.reduce((s, d) => s + d.newCount, 0);
 
+  // Цель дня по словам и «сложные слова» приходят из статистики.
+  const stats = statsQ.data;
+  const wordsToday = stats?.wordsToday ?? 0;
+  const dailyWordGoal = stats?.dailyWordGoal ?? settingsQ.data?.dailyWordGoal ?? 10;
+  const goalPct = dailyWordGoal > 0 ? Math.min(100, Math.round((wordsToday / dailyWordGoal) * 100)) : 0;
+  const goalReached = wordsToday >= dailyWordGoal;
+  const hardCount = stats?.hardCount ?? 0;
+
   return (
     <ScrollView
       contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12, paddingBottom: 120 }}
-      refreshControl={<RefreshControl refreshing={decksQ.isRefetching} onRefresh={() => { decksQ.refetch(); settingsQ.refetch(); }} />}
+      refreshControl={<RefreshControl refreshing={decksQ.isRefetching} onRefresh={() => { decksQ.refetch(); settingsQ.refetch(); statsQ.refetch(); }} />}
     >
       {/* Заголовок + уровень */}
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
@@ -75,11 +87,67 @@ export default function FlashcardsHome() {
         </TouchableOpacity>
       </View>
 
-      {/* Сводка на сегодня */}
-      <View style={{ flexDirection: "row", gap: 12, marginBottom: 18 }}>
-        <SummaryPill colors={colors} icon="refresh-cw" value={totalDue} label="к повторению" />
-        <SummaryPill colors={colors} icon="plus-circle" value={totalNew} label="новых" />
+      {/* Главное действие: одна кнопка на всё — повторения и новые слова из всех
+          колод в одной очереди. Раньше приходилось выбирать колоду вручную. */}
+      <TouchableOpacity
+        onPress={() => router.push("/flashcards/session")}
+        activeOpacity={0.9}
+        style={{ borderRadius: 20, overflow: "hidden", marginBottom: 12 }}
+      >
+        <LinearGradient
+          colors={["#7C3AED", "#4F46E5"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ padding: 18, flexDirection: "row", alignItems: "center", gap: 14 }}
+        >
+          <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
+            <Feather name="play" size={24} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 19, fontWeight: "900", color: "#fff" }}>Учить слова</Text>
+            <Text style={{ fontSize: 13, color: "#ffffffdd", marginTop: 3 }}>
+              {totalDue > 0 || totalNew > 0
+                ? `${totalDue} к повторению · ${totalNew} новых`
+                : "Все слова повторены — загляни позже"}
+            </Text>
+          </View>
+          <Feather name="chevron-right" size={24} color="#fff" />
+        </LinearGradient>
+      </TouchableOpacity>
+
+      {/* Цель дня в словах: понятный ребёнку ориентир «сколько ещё осталось». */}
+      <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+            <Feather name={goalReached ? "check-circle" : "target"} size={15} color={goalReached ? colors.success : colors.primary} />
+            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
+          </View>
+          <Text style={{ fontSize: 13, fontWeight: "800", color: goalReached ? colors.success : colors.primary }}>
+            {wordsToday} / {dailyWordGoal} слов
+          </Text>
+        </View>
+        <View style={{ height: 8, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.14)", marginTop: 10, overflow: "hidden" }}>
+          <View style={{ width: `${goalPct}%`, height: "100%", borderRadius: 999, backgroundColor: goalReached ? colors.success : colors.primary }} />
+        </View>
       </View>
+
+      {/* Сложные слова — появляются, когда есть что подтягивать */}
+      {hardCount > 0 && (
+        <TouchableOpacity
+          onPress={() => router.push("/flashcards/hard")}
+          activeOpacity={0.85}
+          style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.warning + "14", borderColor: colors.warning + "55", borderWidth: 1, borderRadius: 16, padding: 14, marginBottom: 12 }}
+        >
+          <Text style={{ fontSize: 24 }}>🔁</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Сложные слова</Text>
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+              {hardCount} {pluralRu(hardCount, "слово", "слова", "слов")} с ошибками — потренируй отдельно
+            </Text>
+          </View>
+          <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+        </TouchableOpacity>
+      )}
 
       {/* Действия */}
       <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
@@ -138,16 +206,6 @@ export default function FlashcardsHome() {
         </>
       )}
     </ScrollView>
-  );
-}
-
-function SummaryPill({ colors, icon, value, label }: any) {
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, alignItems: "center" }}>
-      <Feather name={icon} size={16} color={colors.primary} />
-      <Text style={{ fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 4 }}>{value}</Text>
-      <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{label}</Text>
-    </View>
   );
 }
 
