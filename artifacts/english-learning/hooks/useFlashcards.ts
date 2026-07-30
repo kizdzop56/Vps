@@ -50,23 +50,72 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
 
 async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
   const token = await authStorage.getItem("auth_token");
-  const res = await fetch(`${BASE_URL}${path}`, {
-    cache: "no-store",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options?.headers ?? {}),
-    },
-  });
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      cache: "no-store",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options?.headers ?? {}),
+      },
+    });
+  } catch {
+    throw new Error("Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.");
+  }
+
   if (res.status === 204) return null as T;
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error ?? "Ошибка сервера");
+
+  // Тело читаем текстом и разбираем вручную. Если вызвать res.json() на не-JSON
+  // (например, на HTML-странице ошибки), браузер бросит собственную ошибку
+  // парсера — в Safari это «The string did not match the expected pattern.» —
+  // и настоящая причина сбоя до пользователя не дойдёт.
+  const raw = await res.text().catch(() => "");
+  let data: any = null;
+  if (raw.trim()) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = null;
+    }
+  }
+
+  if (!res.ok) {
+    const fromServer = [data?.message, data?.error].find(
+      (v) => typeof v === "string" && v.trim(),
+    ) as string | undefined;
+    if (fromServer) throw new Error(fromServer.trim());
+    throw new Error(
+      res.status === 401
+        ? "Сессия истекла — войдите заново"
+        : `Ошибка сервера (HTTP ${res.status})`,
+    );
+  }
+
+  if (data === null) throw new Error(`Сервер вернул неожиданный ответ (HTTP ${res.status})`);
   return data as T;
 }
 
+// Ученик учителя — нужен на экране колоды, чтобы отправить её конкретным
+// ученикам. Эндпоинт относится к разделу connections, но используется здесь.
+export type MyStudent = {
+  id: number;
+  name: string;
+  surname?: string | null;
+  username: string;
+  avatarEmoji?: string | null;
+  avatarColor?: string | null;
+  avatarUrl?: string | null;
+  isOnline?: boolean;
+};
+
 export const fc = {
   getDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks"),
+  // Одна колода с прогрессом. Экран колоды использует именно её, чтобы не
+  // зависеть от загрузки всего списка колод.
+  getDeck: (deckId: number) => apiFetch<DeckWithAssign>(`/api/flashcards/decks/${deckId}`),
   getDeckWords: (deckId: number) => apiFetch<FlashcardWord[]>(`/api/flashcards/decks/${deckId}/words`),
   createDeck: (body: CreateDeckRequest) =>
     apiFetch<FlashcardDeck>("/api/flashcards/decks", { method: "POST", body: JSON.stringify(body) }),
@@ -95,6 +144,8 @@ export const fc = {
   unassignDeck: (deckId: number, studentId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}/assign/${studentId}`, { method: "DELETE" }),
   getAssignees: (deckId: number) => apiFetch<number[]>(`/api/flashcards/decks/${deckId}/assignees`),
+  // Список своих учеников (accepted-связи). Используется на экране колоды.
+  getMyStudents: () => apiFetch<MyStudent[]>("/api/connections/teacher/students"),
   getSettings: () => apiFetch<FlashcardSettings>("/api/flashcards/settings"),
   updateSettings: (dailyNewLimit: number) =>
     apiFetch<FlashcardSettings>("/api/flashcards/settings", { method: "PATCH", body: JSON.stringify({ dailyNewLimit }) }),

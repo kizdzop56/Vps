@@ -370,6 +370,83 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
   res.json(result);
 });
 
+// ── GET /flashcards/decks/:id (одна колода с прогрессом) ───────────────
+// Экран колоды раньше искал её в общем списке /flashcards/decks. Из-за этого он
+// полностью терял работоспособность, когда список не загружался: колода
+// «не находилась», isOwn становился false, и инструменты владельца (форма
+// добавления слова, отправка ученикам) просто не отрисовывались — выглядело как
+// «функционал не реализован». Отдельный эндпоинт убирает эту зависимость.
+router.get("/flashcards/decks/:id", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  if (!Number.isInteger(deckId)) {
+    res.status(400).json({ error: "Некорректный id колоды" });
+    return;
+  }
+
+  const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));
+  if (!deck) { res.status(404).json({ error: "Колода не найдена" }); return; }
+
+  const isOwner = deck.ownerId === user.userId;
+
+  // Видеть колоду можно, если она системная, своя или назначена учителем.
+  let assigned = false;
+  if (!deck.isSystem && !isOwner) {
+    const [row] = await db.select({ id: deckAssignmentsTable.id }).from(deckAssignmentsTable).where(and(
+      eq(deckAssignmentsTable.deckId, deckId),
+      eq(deckAssignmentsTable.studentId, user.userId),
+    ));
+    assigned = Boolean(row);
+    if (!assigned && user.role !== "admin") {
+      res.status(403).json({ error: "Нет доступа к этой колоде" });
+      return;
+    }
+  }
+
+  const words = await db.select({ id: wordsTable.id }).from(wordsTable).where(eq(wordsTable.deckId, deckId));
+  const wordIds = words.map((w) => w.id);
+
+  const states = wordIds.length > 0
+    ? await db.select().from(userCardStateTable).where(and(
+        eq(userCardStateTable.userId, user.userId),
+        inArray(userCardStateTable.wordId, wordIds),
+      ))
+    : [];
+
+  const now = Date.now();
+  let learnedCount = 0;
+  let dueCount = 0;
+  for (const st of states) {
+    if (st.memoryLevel >= LEARNED_LEVEL) learnedCount++;
+    if (st.dueAt.getTime() <= now) dueCount++;
+  }
+
+  // Скольким ученикам колода отправлена — нужно владельцу в интерфейсе.
+  let assignedCount: number | undefined;
+  if (isOwner && !deck.isSystem) {
+    const rows = await db.select({ studentId: deckAssignmentsTable.studentId })
+      .from(deckAssignmentsTable).where(eq(deckAssignmentsTable.deckId, deckId));
+    assignedCount = rows.length;
+  }
+
+  res.json(clean({
+    id: deck.id,
+    ownerId: deck.ownerId ?? undefined,
+    title: deck.title,
+    theme: deck.theme ?? undefined,
+    description: deck.description ?? undefined,
+    emoji: deck.emoji ?? undefined,
+    isSystem: deck.isSystem,
+    cefrLevel: deck.cefrLevel ?? undefined,
+    wordCount: wordIds.length,
+    learnedCount,
+    dueCount,
+    newCount: Math.max(0, wordIds.length - states.length),
+    assigned: assigned || undefined,
+    assignedCount,
+  }));
+});
+
 // ── GET /flashcards/decks/:id/words ────────────────────────────────────
 router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   const deckId = Number(req.params["id"]);
