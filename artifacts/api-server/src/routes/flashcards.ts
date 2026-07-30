@@ -15,8 +15,18 @@ import {
   teacherStudentsTable,
   parentChildrenTable,
 } from "@workspace/db";
-import { eq, and, or, isNull, inArray, lte, gte, sql } from "drizzle-orm";
+import { eq, and, or, ne, asc, isNull, inArray, lte, gte, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
+import {
+  BULK_WORD_LIMIT,
+  MANUAL_WORD_LIMIT,
+  chunked,
+  orderByRequestedIds,
+  planCatalogCopy,
+  wordKey,
+  wordKeySet,
+  type WordInsertRow,
+} from "../lib/deckWords";
 import {
   LEARNED_LEVEL,
   awardablePoints,
@@ -645,6 +655,75 @@ router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   })));
 });
 
+// ── GET /flashcards/catalog/words (каталог слов для конструктора колоды) ──────
+//
+// Учитель набирал слова только руками — по одному или списком. При этом в базе
+// уже лежит готовый каталог: системные колоды по темам и уровням A1–C2. Здесь он
+// отдаётся с фильтрами и поиском, чтобы слова можно было отмечать галочками.
+//
+// Источник каталога — системные колоды (плюс свои, если includeOwn=1). Чужая
+// приватная колода другого учителя источником быть не должна.
+router.get("/flashcards/catalog/words", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const q = String(req.query["q"] ?? "").trim();
+  const theme = String(req.query["theme"] ?? "").trim();
+  const level = String(req.query["level"] ?? "").trim();
+  const deckIdParam = Number(req.query["deckId"]);
+  const excludeDeckId = Number(req.query["excludeDeckId"]);
+  const includeOwn = String(req.query["includeOwn"] ?? "") === "1";
+  const limit = Math.min(Math.max(Number(req.query["limit"]) || 60, 1), 200);
+  const offset = Math.max(Number(req.query["offset"]) || 0, 0);
+
+  // Какие колоды считаем источником каталога.
+  const sourceFilters = [eq(decksTable.isSystem, true)];
+  if (includeOwn) sourceFilters.push(eq(decksTable.ownerId, user.userId));
+  const deckFilters = [or(...sourceFilters)!];
+  if (Number.isFinite(deckIdParam) && deckIdParam > 0) deckFilters.push(eq(decksTable.id, deckIdParam));
+  if (Number.isFinite(excludeDeckId) && excludeDeckId > 0) deckFilters.push(ne(decksTable.id, excludeDeckId));
+  if (theme) deckFilters.push(eq(decksTable.theme, theme));
+
+  const sourceDecks = await db.select({
+    id: decksTable.id, title: decksTable.title, theme: decksTable.theme, emoji: decksTable.emoji,
+  }).from(decksTable).where(and(...deckFilters));
+
+  if (sourceDecks.length === 0) { res.json({ total: 0, words: [] }); return; }
+
+  const deckById = new Map(sourceDecks.map((d) => [d.id, d]));
+  const wordFilters = [inArray(wordsTable.deckId, [...deckById.keys()])];
+  if (level) wordFilters.push(eq(wordsTable.cefrLevel, level));
+  if (q) {
+    const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    // Ищем и по английскому, и по переводу: учителю удобно набрать «яблоко».
+    // translations_ru — jsonb-массив, поэтому сравниваем его текстовое представление.
+    wordFilters.push(or(
+      sql`${wordsTable.english} ILIKE ${like}`,
+      sql`${wordsTable.translationsRu}::text ILIKE ${like}`,
+    )!);
+  }
+  const where = and(...wordFilters);
+
+  const [{ total } = { total: 0 }] = await db
+    .select({ total: sql<number>`count(*)::int` }).from(wordsTable).where(where);
+
+  const rows = await db.select().from(wordsTable).where(where)
+    .orderBy(asc(wordsTable.deckId), asc(wordsTable.sortOrder), asc(wordsTable.id))
+    .limit(limit).offset(offset);
+
+  res.json({
+    total,
+    words: rows.map((w) => {
+      const deck = deckById.get(w.deckId);
+      return clean({
+        id: w.id, deckId: w.deckId, english: w.english, partOfSpeech: w.partOfSpeech ?? undefined,
+        translationsRu: w.translationsRu, ipa: w.ipa ?? undefined, exampleEn: w.exampleEn ?? undefined,
+        exampleRu: w.exampleRu ?? undefined, cefrLevel: w.cefrLevel ?? undefined, emoji: w.emoji ?? undefined,
+        // откуда слово — показываем подписью под словом в конструкторе
+        deckTitle: deck?.title ?? undefined, theme: deck?.theme ?? undefined,
+      });
+    }),
+  });
+});
+
 // ── POST /flashcards/decks (своя колода) ───────────────────────────────
 router.post("/flashcards/decks", requireAuth, async (req, res) => {
   const user = getUser(req);
@@ -818,6 +897,123 @@ router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
     exampleRu: row!.exampleRu ?? undefined, cefrLevel: row!.cefrLevel ?? undefined, audioUrl: row!.audioUrl ?? undefined,
     emoji: row!.emoji ?? undefined,
   }));
+});
+
+// ── POST /flashcards/decks/:id/words/bulk (подборка из каталога + свои слова) ─
+//
+// Одним вызовом кладём в колоду то, что учитель отметил в каталоге (wordIds), и
+// то, что дописал руками (words). Отвечаем разбором: added / skipped / failed —
+// одно плохое слово не должно рушить всю собранную подборку.
+//
+// Слова каталога копируются, а не связываются ссылкой: words.deckId NOT NULL, а
+// прогресс ученика висит на word_id, поэтому у колоды учителя свой независимый
+// набор карточек (подробнее — в lib/deckWords.ts).
+router.post("/flashcards/decks/:id/words/bulk", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  if (!Number.isInteger(deckId) || deckId <= 0) {
+    res.status(400).json({ error: "Некорректный номер колоды" });
+    return;
+  }
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const b = req.body as {
+    wordIds?: unknown;
+    words?: Array<{ english?: unknown; translationsRu?: unknown }>;
+  };
+
+  const wordIds = Array.isArray(b.wordIds)
+    ? [...new Set(b.wordIds.map(Number).filter((n) => Number.isFinite(n) && n > 0))]
+    : [];
+  const manual = Array.isArray(b.words) ? b.words.slice(0, MANUAL_WORD_LIMIT) : [];
+
+  if (wordIds.length === 0 && manual.length === 0) {
+    res.status(400).json({ error: "Не выбрано ни одного слова." });
+    return;
+  }
+  if (wordIds.length > BULK_WORD_LIMIT) {
+    res.status(400).json({ error: `За один раз можно добавить не больше ${BULK_WORD_LIMIT} слов.` });
+    return;
+  }
+
+  // Слова, уже лежащие в колоде, и текущий порядок — чтобы не плодить дубликаты
+  // и дописывать новые слова в конец списка.
+  const present = await db.select({ english: wordsTable.english, sortOrder: wordsTable.sortOrder })
+    .from(wordsTable).where(eq(wordsTable.deckId, deckId));
+  const existing = wordKeySet(present);
+  const nextSortOrder = present.reduce((max, w) => Math.max(max, w.sortOrder), -1) + 1;
+
+  const failed: Array<{ english: string; reason: string }> = [];
+  let skipped = 0;
+
+  // ── 1. Копии из каталога ────────────────────────────────────────────────
+  let catalogRows: WordInsertRow[] = [];
+  if (wordIds.length > 0) {
+    // Брать можно только из готовых колод и из своих собственных — чужая
+    // приватная колода другого учителя источником быть не должна.
+    const allowedDecks = await db.select({ id: decksTable.id }).from(decksTable).where(or(
+      eq(decksTable.isSystem, true),
+      eq(decksTable.ownerId, user.userId),
+    ));
+    const allowedDeckIds = new Set(allowedDecks.map((d) => d.id));
+
+    const found = await db.select().from(wordsTable).where(inArray(wordsTable.id, wordIds));
+    const visible = found.filter((w) => allowedDeckIds.has(w.deckId));
+    const { ordered, missingIds } = orderByRequestedIds(visible, wordIds);
+    skipped += missingIds.length;
+
+    const planned = planCatalogCopy(deckId, ordered, existing, nextSortOrder);
+    catalogRows = planned.rows;
+    skipped += planned.skipped;
+    for (const row of catalogRows) existing.add(wordKey(row.english));
+  }
+
+  // ── 2. Ручной ввод ──────────────────────────────────────────────────────
+  const manualRows: WordInsertRow[] = [];
+  for (const item of manual) {
+    const raw = typeof item?.english === "string" ? item.english : "";
+    const english = normalizeEnglishInput(raw);
+    if (!english) { failed.push({ english: String(raw).trim(), reason: "Пустое слово." }); continue; }
+    if (existing.has(wordKey(english))) { skipped++; continue; }
+
+    const checked = await validateEnglishWord(english);
+    if (!checked.ok) {
+      failed.push({ english, reason: validationErrorMessage(english, checked) });
+      continue;
+    }
+    if (existing.has(wordKey(checked.normalized))) { skipped++; continue; }
+
+    let ru = Array.isArray(item.translationsRu)
+      ? item.translationsRu.map((t) => String(t).trim()).filter(Boolean)
+      : [];
+    if (ru.length === 0) {
+      const translated = await translateWithGoogle(checked.normalized);
+      if (!translated) {
+        failed.push({ english: checked.normalized, reason: "Не удалось получить перевод. Укажите его вручную." });
+        continue;
+      }
+      ru = [translated];
+    }
+
+    existing.add(wordKey(checked.normalized));
+    manualRows.push({
+      deckId, english: checked.normalized, partOfSpeech: null, translationsRu: ru,
+      ipa: checked.ipa ?? null, exampleEn: null, exampleRu: null, cefrLevel: null, emoji: null,
+      sortOrder: nextSortOrder + catalogRows.length + manualRows.length,
+    });
+  }
+
+  // ── 3. Вставка партиями ─────────────────────────────────────────────────
+  const toInsert = [...catalogRows, ...manualRows];
+  let added = 0;
+  for (const chunk of chunked(toInsert)) {
+    if (chunk.length === 0) continue;
+    await db.insert(wordsTable).values(chunk);
+    added += chunk.length;
+  }
+
+  res.status(added > 0 ? 201 : 200).json({ added, skipped, failed });
 });
 
 // Строка вида «word — перевод» из массового добавления. Разделителем считаем

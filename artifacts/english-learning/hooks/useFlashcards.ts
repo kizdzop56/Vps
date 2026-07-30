@@ -129,6 +129,40 @@ export type FlashcardSettingsWithGoal = FlashcardSettings & { dailyWordGoal?: nu
 // Слово колоды + картинка-подсказка (поле добавлено вручную, без Orval).
 export type FlashcardWordWithEmoji = FlashcardWord & { emoji?: string };
 
+// ── Каталог слов для конструктора колоды (эндпоинты добавлены вручную, без Orval) ──
+
+// Слово из каталога: то же слово колоды + откуда оно взято. deckTitle и theme
+// показываем подписью в конструкторе, чтобы учитель видел источник слова.
+export type CatalogWord = FlashcardWordWithEmoji & { deckTitle?: string; theme?: string };
+
+/** Страница каталога: total — сколько всего слов подошло под фильтры. */
+export type CatalogPage = { total: number; words: CatalogWord[] };
+
+/** Фильтры каталога. q ищет и по английскому, и по переводу. */
+export type CatalogQuery = {
+  q?: string;
+  theme?: string;
+  level?: string;
+  /** только из одной колоды */
+  deckId?: number;
+  /** не показывать слова колоды, которую сейчас наполняем */
+  excludeDeckId?: number;
+  /** добавить к каталогу собственные колоды пользователя */
+  includeOwn?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
+/** Слово, введённое учителем руками: перевод необязателен (подберёт сервер). */
+export type ManualWordInput = { english: string; translationsRu?: string[] };
+
+/** Итог массового добавления: что добавилось, что пропущено и что не прошло проверку. */
+export type BulkAddResult = {
+  added: number;
+  skipped: number;
+  failed: Array<{ english: string; reason: string }>;
+};
+
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
@@ -172,6 +206,24 @@ export const fc = {
   // руками, не возясь с CSV. Перевод можно не писать, тогда его подберёт сервер.
   importWords: (deckId: number, format: "csv" | "json" | "lines", content: string) =>
     apiFetch<ImportResultWithSkipped>(`/api/flashcards/decks/${deckId}/import`, { method: "POST", body: JSON.stringify({ format, content }) }),
+  // Каталог готовых слов: учитель отмечает нужные вместо набора руками.
+  searchCatalog: (query: CatalogQuery = {}) => {
+    const p = new URLSearchParams();
+    if (query.q) p.set("q", query.q);
+    if (query.theme) p.set("theme", query.theme);
+    if (query.level) p.set("level", query.level);
+    if (query.deckId) p.set("deckId", String(query.deckId));
+    if (query.excludeDeckId) p.set("excludeDeckId", String(query.excludeDeckId));
+    if (query.includeOwn) p.set("includeOwn", "1");
+    if (query.limit) p.set("limit", String(query.limit));
+    if (query.offset) p.set("offset", String(query.offset));
+    const qs = p.toString();
+    return apiFetch<CatalogPage>(`/api/flashcards/catalog/words${qs ? `?${qs}` : ""}`);
+  },
+  // Записать подборку: отмеченные слова каталога (wordIds) и свои слова (words)
+  // одним запросом. Ответ разбирает итог: added / skipped / failed.
+  addWordsBulk: (deckId: number, body: { wordIds?: number[]; words?: ManualWordInput[] }) =>
+    apiFetch<BulkAddResult>(`/api/flashcards/decks/${deckId}/words/bulk`, { method: "POST", body: JSON.stringify(body) }),
   getStudyQueue: (deckId: number) => apiFetch<TrainerQueue>(`/api/flashcards/study/${deckId}`),
   // Сквозная сессия по всем колодам: сначала повторения, между ними новые слова.
   getSession: () => apiFetch<TrainerQueue>("/api/flashcards/session"),

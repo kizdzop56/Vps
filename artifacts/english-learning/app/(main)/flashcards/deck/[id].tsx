@@ -21,7 +21,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc, apiFetch, speak, speechAvailable } from "@/hooks/useFlashcards";
+import { fc, apiFetch, speak, speechAvailable, type ManualWordInput } from "@/hooks/useFlashcards";
+import WordPicker from "@/components/WordPicker";
 
 type StudentItem = { id: number; name: string; surname?: string | null; username: string };
 
@@ -172,6 +173,7 @@ export default function DeckDetail() {
   };
 
   const [sendOpen, setSendOpen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   // ── экран ошибки: раньше вместо него был спиннер без конца ───────────────
   if (!validId) {
@@ -274,6 +276,24 @@ export default function DeckDetail() {
       {/* добавление слов — только в своей колоде */}
       {canEdit && (
         <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 18 }}>
+          {/* Основной способ наполнить колоду — отметить готовые слова в каталоге
+              (системные колоды по темам и уровням A1–C2). Раньше слова можно было
+              только набирать руками, поэтому колода собиралась долго. */}
+          <TouchableOpacity
+            onPress={() => setCatalogOpen(true)}
+            activeOpacity={0.85}
+            style={{
+              flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+              backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 13, marginBottom: 10,
+            }}
+          >
+            <Feather name="grid" size={17} color="#fff" />
+            <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Выбрать слова из каталога</Text>
+          </TouchableOpacity>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", marginBottom: 12 }}>
+            или наберите свои слова
+          </Text>
+
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
             {([["one", "Одно слово"], ["many", "Списком"]] as const).map(([key, label]) => {
               const active = addMode === key;
@@ -423,6 +443,17 @@ export default function DeckDetail() {
       )}
 
       {canEdit && (
+        <CatalogPickerModal
+          visible={catalogOpen}
+          onClose={() => setCatalogOpen(false)}
+          deckId={deckId}
+          alreadyIn={words.map((w) => w.english)}
+          colors={colors}
+          onSaved={(text, type) => { setNotice({ type, text }); refresh(); }}
+        />
+      )}
+
+      {canEdit && (
         <SendDeckModal
           visible={sendOpen}
           onClose={() => { setSendOpen(false); qc.invalidateQueries({ queryKey: ["fc-deck", deckId] }); }}
@@ -492,6 +523,126 @@ function ErrorScreen({ colors, insets, title, text, onBack, onRetry }: {
         )}
       </View>
     </View>
+  );
+}
+
+// ── «Выбрать слова из каталога» ────────────────────────────────────────────
+// Обёртка над WordPicker: сам компонент только ведёт выбор, записывает подборку
+// этот экран одним запросом words/bulk. Слова каталога копируются в колоду
+// учителя — прогресс ученика висит на конкретной карточке, поэтому у колоды
+// должен быть свой независимый набор слов (см. api-server/src/lib/deckWords.ts).
+function CatalogPickerModal({ visible, onClose, deckId, alreadyIn, colors, onSaved }: {
+  visible: boolean;
+  onClose: () => void;
+  deckId: number;
+  alreadyIn: string[];
+  colors: any;
+  onSaved: (text: string, type: "success" | "error") => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [manualWords, setManualWords] = useState<ManualWordInput[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // При каждом открытии начинаем с чистой подборки.
+  useEffect(() => {
+    if (visible) { setSelectedIds([]); setManualWords([]); setError(null); }
+  }, [visible]);
+
+  const total = selectedIds.length + manualWords.length;
+
+  const save = async () => {
+    if (total === 0) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await fc.addWordsBulk(deckId, {
+        wordIds: selectedIds.length ? selectedIds : undefined,
+        words: manualWords.length ? manualWords : undefined,
+      });
+      // Частичный успех — не ошибка: сообщаем, что именно не прошло, но
+      // добавленное остаётся в колоде.
+      const parts: string[] = [];
+      if (result.added > 0) parts.push(`Добавлено слов: ${result.added}.`);
+      if (result.skipped > 0) parts.push(`Пропущено (уже в колоде): ${result.skipped}.`);
+      if (result.failed.length > 0) {
+        parts.push(`Не добавились: ${result.failed.map((f) => `${f.english} — ${f.reason}`).join("; ")}`);
+      }
+      if (result.added === 0) {
+        setError(parts.join(" ") || "Ни одно слово не добавилось.");
+        setSaving(false);
+        return;
+      }
+      onSaved(parts.join(" "), "success");
+      onClose();
+    } catch (e: any) {
+      setError(e?.message ?? "Не удалось добавить слова.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" }}>
+        <View style={{
+          backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
+          borderTopLeftRadius: 24, borderTopRightRadius: 24,
+          paddingHorizontal: 20, paddingTop: 16, paddingBottom: 24, height: "92%",
+        }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground }}>Слова для колоды</Text>
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                Отметьте готовые слова или добавьте свои
+              </Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
+              <Feather name="x" size={22} color={colors.mutedForeground} />
+            </TouchableOpacity>
+          </View>
+
+          {/* WordPicker не скроллится сам — оборачиваем в свой ScrollView. */}
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }} keyboardShouldPersistTaps="handled">
+            <WordPicker
+              selectedIds={selectedIds}
+              onChangeSelected={(ids) => { setSelectedIds(ids); setError(null); }}
+              manualWords={manualWords}
+              onChangeManual={(w) => { setManualWords(w); setError(null); }}
+              excludeDeckId={deckId}
+              alreadyIn={alreadyIn}
+            />
+          </ScrollView>
+
+          {error && (
+            <View style={{
+              flexDirection: "row", gap: 8, alignItems: "flex-start", marginBottom: 10,
+              backgroundColor: colors.destructive + "14", borderWidth: 1,
+              borderColor: colors.destructive + "45", borderRadius: 12, padding: 10,
+            }}>
+              <Feather name="alert-circle" size={16} color={colors.destructive} style={{ marginTop: 1 }} />
+              <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: colors.destructive }}>{error}</Text>
+            </View>
+          )}
+
+          <TouchableOpacity
+            onPress={save}
+            disabled={saving || total === 0}
+            activeOpacity={0.85}
+            style={{
+              borderRadius: 14, paddingVertical: 14, alignItems: "center",
+              backgroundColor: total === 0 ? colors.border : colors.primary,
+            }}
+          >
+            {saving
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>
+                {total === 0 ? "Выберите слова" : `Добавить в колоду (${total})`}
+              </Text>}
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
