@@ -455,6 +455,55 @@ router.get("/flashcards/decks/:id/assignees", requireAuth, async (req, res) => {
   res.json(rows.map((r) => r.studentId));
 });
 
+// ── PUT /flashcards/decks/:id/assignees (назначить колоду сразу нескольким) ───
+// Раньше учитель мог выдать колоду только по одному ученику из его карточки:
+// на группу из десяти человек это десять переходов и десять запросов. Здесь
+// присылается итоговый список — сервер сам добавит новых и снимет лишних.
+router.put("/flashcards/decks/:id/assignees", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const deckId = Number(req.params["id"]);
+  const { studentIds } = req.body as { studentIds?: unknown };
+
+  if (!Array.isArray(studentIds) || studentIds.some((id) => typeof id !== "number" || !Number.isFinite(id))) {
+    res.status(400).json({ error: "studentIds must be an array of numbers" }); return;
+  }
+
+  const chk = await assertOwnDeck(deckId, user.userId);
+  if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
+
+  const wanted = [...new Set(studentIds as number[])];
+
+  // Проверяем всех разом: если хоть один не свой ученик — не применяем ничего,
+  // иначе учитель увидит половину сохранённого списка и не поймёт, что не так.
+  const checks = await Promise.all(wanted.map(async (id) => ({ id, ok: await canViewStudent(user, id) })));
+  const forbidden = checks.filter((c) => !c.ok).map((c) => c.id);
+  if (forbidden.length > 0) {
+    res.status(403).json({ error: "Можно отправлять колоды только своим ученикам", studentIds: forbidden }); return;
+  }
+
+  const current = await db.select({ studentId: deckAssignmentsTable.studentId })
+    .from(deckAssignmentsTable).where(eq(deckAssignmentsTable.deckId, deckId));
+  const currentSet = new Set(current.map((r) => r.studentId));
+  const wantedSet = new Set(wanted);
+
+  const toAdd = wanted.filter((id) => !currentSet.has(id));
+  const toRemove = [...currentSet].filter((id) => !wantedSet.has(id));
+
+  if (toAdd.length > 0) {
+    await db.insert(deckAssignmentsTable)
+      .values(toAdd.map((studentId) => ({ deckId, studentId, assignedBy: user.userId })))
+      .onConflictDoNothing();
+  }
+  if (toRemove.length > 0) {
+    await db.delete(deckAssignmentsTable).where(and(
+      eq(deckAssignmentsTable.deckId, deckId),
+      inArray(deckAssignmentsTable.studentId, toRemove),
+    ));
+  }
+
+  res.json({ deckId, studentIds: wanted, added: toAdd.length, removed: toRemove.length });
+});
+
 // проверка, что колода принадлежит пользователю и не системная
 async function assertOwnDeck(deckId: number, userId: number): Promise<{ ok: boolean; status?: number; error?: string }> {
   const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));

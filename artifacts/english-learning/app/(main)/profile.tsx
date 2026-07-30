@@ -802,9 +802,12 @@ export default function ProfileScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Fetch pending friend requests + teacher requests count for badge
+  // Fetch pending friend requests + teacher requests count for badge.
+  // Учителю тоже нужен счётчик: вкладка «Друзья» из таб-бара убрана, и заявки
+  // в друзья теперь принимаются здесь, в профиле. Заявки от учителей
+  // (teacher-requests) — история ученика, для учителя её не запрашиваем.
   useEffect(() => {
-    if (!isStudent) return;
+    if (!isStudent && !isTeacher) return;
     const baseUrl = process.env["EXPO_PUBLIC_DOMAIN"]
       ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
       : "";
@@ -813,25 +816,23 @@ export default function ProfileScreen() {
         const token = await authStorage.getItem("auth_token");
         const headers = { Authorization: `Bearer ${token}` };
 
-        const [friendsRes, teacherRes] = await Promise.all([
-          fetch(`${baseUrl}/api/connections/friends`, { headers }),
-          fetch(`${baseUrl}/api/connections/student/teacher-requests`, { headers }),
-        ]);
-
+        const friendsRes = await fetch(`${baseUrl}/api/connections/friends`, { headers });
         if (friendsRes.ok) {
           const data: Array<{ status: string; direction: string }> = await friendsRes.json();
           const count = data.filter((f) => f.status === "pending" && f.direction === "received").length;
           setPendingCount(count);
         }
-        if (teacherRes.ok) {
-          setTeacherRequests(await teacherRes.json());
+
+        if (isStudent) {
+          const teacherRes = await fetch(`${baseUrl}/api/connections/student/teacher-requests`, { headers });
+          if (teacherRes.ok) setTeacherRequests(await teacherRes.json());
         }
       } catch { /* silent */ }
     };
     load();
     const interval = setInterval(load, 30_000);
     return () => clearInterval(interval);
-  }, [isStudent]);
+  }, [isStudent, isTeacher]);
 
   const { data: submissions } = useGetStudentSubmissions(
     user?.id || 0,
@@ -1270,7 +1271,7 @@ export default function ProfileScreen() {
         currentColor={avatarColor}
         onSave={handleAvatarSave}
       />
-      {isStudent && (
+      {(isStudent || isTeacher) && (
         <FriendsModal
           visible={friendsOpen}
           onClose={() => setFriendsOpen(false)}
@@ -1590,6 +1591,46 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
           </>
+        )}
+
+        {/* ── Друзья (учитель) ──
+            Вкладку «Друзья» из нижней панели убрали: чат с учеником открывается
+            из «Ученики» → ученик → «Написать», а список друзей и входящие заявки
+            переехали сюда — так же, как это давно сделано для ученика. */}
+        {isTeacher && (
+          <View style={s.section}>
+            <Text style={s.sectionTitle}>Друзья</Text>
+            <TouchableOpacity
+              style={{
+                backgroundColor: colors.card, borderRadius: 16, padding: 16,
+                borderWidth: 1, borderColor: colors.border,
+                flexDirection: "row", alignItems: "center", gap: 14,
+              }}
+              onPress={() => setFriendsOpen(true)}
+            >
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#ec489918", justifyContent: "center", alignItems: "center" }}>
+                <Feather name="users" size={20} color="#ec4899" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>Друзья и заявки</Text>
+                <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+                  {pendingCount > 0
+                    ? `Новых заявок: ${pendingCount}`
+                    : "Список друзей и добавление по коду"}
+                </Text>
+              </View>
+              {pendingCount > 0 && (
+                <View style={{
+                  minWidth: 22, height: 22, borderRadius: 11,
+                  backgroundColor: "#e11d48", justifyContent: "center", alignItems: "center",
+                  paddingHorizontal: 5,
+                }}>
+                  <Text style={{ fontSize: 12, fontWeight: "800", color: "#fff" }}>{pendingCount}</Text>
+                </View>
+              )}
+              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+            </TouchableOpacity>
+          </View>
         )}
 
         {/* ── Быстрые действия ── */}

@@ -37,7 +37,10 @@ export default function FlashcardsHome() {
 
   const decks = decksQ.data ?? [];
   const systemDecks = decks.filter((d) => d.isSystem);
-  const myDecks = decks.filter((d) => !d.isSystem);
+  // Колоды учителя показываем отдельным блоком: раньше они попадали в «Мои
+  // колоды» вперемешку с собственными, и ученик не понимал, что это задание.
+  const assignedDecks = decks.filter((d) => !d.isSystem && d.assigned);
+  const myDecks = decks.filter((d) => !d.isSystem && !d.assigned);
   const level = settingsQ.data?.placementLevel;
 
   // Уровневые колоды vs тематические (без cefrLevel) — см. комментарий к файлу.
@@ -107,6 +110,28 @@ export default function FlashcardsHome() {
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       ) : (
         <>
+          {assignedDecks.length > 0 && (
+            <>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                  От учителя
+                </Text>
+                <View style={{ backgroundColor: colors.primary, borderRadius: 9, paddingHorizontal: 7, paddingVertical: 2 }}>
+                  <Text style={{ fontSize: 10, fontWeight: "900", color: "#fff" }}>{assignedDecks.length}</Text>
+                </View>
+              </View>
+              {assignedDecks.map((d) => (
+                <DeckCard
+                  key={d.id}
+                  deck={d}
+                  colors={colors}
+                  fromTeacher
+                  onPress={() => router.push(`/flashcards/deck/${d.id}`)}
+                />
+              ))}
+              <View style={{ height: 10 }} />
+            </>
+          )}
           {myDecks.length > 0 && (
             <>
               <SectionTitle colors={colors} title="Мои колоды" />
@@ -249,17 +274,39 @@ function LevelGroup({
   );
 }
 
-function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: any; onPress: () => void }) {
+function DeckCard({ deck, colors, onPress, fromTeacher = false }: {
+  deck: DeckWithProgress; colors: any; onPress: () => void;
+  /** Колода выдана учителем — подсвечиваем рамкой и подписью. */
+  fromTeacher?: boolean;
+}) {
   // «начато» = слова, которые уже вводились (wordCount − новые). newCount с
   // бэкенда = wordCount − introduced, поэтому introduced выводится обратно.
   const introduced = Math.max(0, deck.wordCount - deck.newCount);
   const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={{
+        backgroundColor: fromTeacher ? colors.primary + "0C" : colors.card,
+        borderRadius: 18,
+        borderWidth: fromTeacher ? 1.5 : 1,
+        borderColor: fromTeacher ? colors.primary + "55" : colors.border,
+        padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14,
+      }}
+    >
       <Text style={{ fontSize: 32 }}>{deck.emoji ?? "📘"}</Text>
       <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+          {fromTeacher && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: colors.primary + "1F", borderRadius: 7, paddingHorizontal: 6, paddingVertical: 2 }}>
+              <Feather name="user-check" size={9} color={colors.primary} />
+              <Text style={{ fontSize: 9.5, fontWeight: "800", color: colors.primary }}>от учителя</Text>
+            </View>
+          )}
+        </View>
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>

@@ -13,7 +13,8 @@ export type TabGuideTab =
   | "profile"
   | "students"
   | "analysis"
-  | "progress";
+  | "progress"
+  | "decks";
 
 interface TabGuideInfo {
   tab: TabGuideTab;
@@ -63,7 +64,14 @@ export const TAB_GUIDE_CONTENT: Record<TabGuideTab, TabGuideInfo> = {
     emoji: "📊",
     title: "Анализ",
     description:
-      "Детальная аналитика по всем ученикам: успеваемость, выполнение заданий и прогресс по времени. Принимай решения на основе данных!",
+      "По каждому ученику — актуальное состояние учёбы и готовый список того, что разобрать на следующем уроке. Главное правило: сначала смотрите плашку активности. Если ученик давно не заходил, проценты описывают прошлое, а не сегодняшний уровень. Блок «Фокус» уже отсортирован по важности — срочное сверху. У каждого блока есть подсказка «i»: там написано, какие работы попадают в процент и как считается динамика.",
+  },
+  decks: {
+    tab: "decks",
+    emoji: "🗂️",
+    title: "Колоды",
+    description:
+      "Здесь вы собираете свои наборы слов и выдаёте их ученикам. Создайте колоду, добавьте слова — перевод, транскрипция и пример подставятся автоматически — и отправьте сразу нескольким ученикам. У них колода появится на вкладке «Слова» в разделе «От учителя» и будет повторяться по интервальному алгоритму.",
   },
   progress: {
     tab: "progress",
@@ -77,14 +85,19 @@ export const TAB_GUIDE_CONTENT: Record<TabGuideTab, TabGuideInfo> = {
 interface TabGuideProps {
   tabName: TabGuideTab | null;
   visible: boolean;
-  mascotName?: string;
+  /**
+   * Имя маскота над подсказкой. Передавайте null/undefined там, где маскота
+   * представлять не нужно — например учителю: раньше здесь стоял дефолт
+   * «Снежа», и учитель видел имя ученического маскота в своих подсказках.
+   */
+  mascotName?: string | null;
   onClose: () => void;
 }
 
 export function TabGuide({
   tabName,
   visible,
-  mascotName = "Снежа",
+  mascotName,
   onClose,
 }: TabGuideProps) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
@@ -129,21 +142,25 @@ export function TabGuide({
             <WavingMascot width={mascotW} height={mascotH} />
           </View>
 
-          {/* Name */}
-          <Text
-            style={[
-              styles.nameLabel,
-              {
-                // @ts-ignore web
-                backgroundImage: "linear-gradient(90deg, #a78bfa, #c084fc, #e879f9)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-                backgroundClip: "text",
-              },
-            ]}
-          >
-            {mascotName}
-          </Text>
+          {/* Name — только если маскот действительно кому-то принадлежит. */}
+          {mascotName ? (
+            <Text
+              style={[
+                styles.nameLabel,
+                {
+                  // @ts-ignore web
+                  backgroundImage: "linear-gradient(90deg, #a78bfa, #c084fc, #e879f9)",
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                  backgroundClip: "text",
+                },
+              ]}
+            >
+              {mascotName}
+            </Text>
+          ) : (
+            <View style={{ height: 16 }} />
+          )}
 
           {/* Title */}
           <Text style={styles.title}>

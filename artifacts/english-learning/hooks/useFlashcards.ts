@@ -95,6 +95,13 @@ export const fc = {
   unassignDeck: (deckId: number, studentId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}/assign/${studentId}`, { method: "DELETE" }),
   getAssignees: (deckId: number) => apiFetch<number[]>(`/api/flashcards/decks/${deckId}/assignees`),
+  // Назначить колоду сразу списку учеников: присылаем итоговый состав, сервер
+  // сам добавит новых и снимет лишних. Одним запросом вместо N.
+  setAssignees: (deckId: number, studentIds: number[]) =>
+    apiFetch<{ deckId: number; studentIds: number[]; added: number; removed: number }>(
+      `/api/flashcards/decks/${deckId}/assignees`,
+      { method: "PUT", body: JSON.stringify({ studentIds }) },
+    ),
   getSettings: () => apiFetch<FlashcardSettings>("/api/flashcards/settings"),
   updateSettings: (dailyNewLimit: number) =>
     apiFetch<FlashcardSettings>("/api/flashcards/settings", { method: "PATCH", body: JSON.stringify({ dailyNewLimit }) }),

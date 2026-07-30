@@ -432,6 +432,17 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Конструктор колод со словами — только учителю. Раньше свои колоды
+            можно было создать лишь из карточки ученика (модалка «Отправить
+            колоду»), поэтому функцию никто не находил. */}
+        <Tabs.Screen
+          name="decks"
+          options={isTeacher
+            ? { title: "Колоды", tabBarIcon: ({ color }) => <Feather name="layers" size={22} color={color} /> }
+            : { href: null }
+          }
+        />
+
         <Tabs.Screen
           name="calendar"
           options={(isTeacher || isStudent)
@@ -440,18 +451,11 @@ function MainLayoutInner() {
           }
         />
 
-        {/* Ученику и родителю «Друзья» в таб-баре не нужны — список друзей,
-            заявки и добавление по коду остались на вкладке «Профиль». */}
-        <Tabs.Screen
-          name="friends"
-          options={isTeacher
-            ? {
-                title: "Друзья",
-                tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
-              }
-            : { href: null }
-          }
-        />
+        {/* «Друзья» больше нет в таб-баре ни у одной роли — список друзей,
+            заявки и добавление по коду живут на вкладке «Профиль».
+            Учителю чат с учеником доступен через «Ученики» → ученик →
+            «Написать», поэтому переписка от удаления вкладки не страдает. */}
+        <Tabs.Screen name="friends" options={{ href: null }} />
 
         <Tabs.Screen
           name="profile"
@@ -485,7 +489,7 @@ function MainLayoutInner() {
       <TabGuide
         tabName={guideState.tabName}
         visible={guideState.visible}
-        mascotName={isStudent ? "Снежа" : undefined}
+        mascotName={isStudent ? "Снежа" : null}
         onClose={handleGuideClose}
       />
     </>
