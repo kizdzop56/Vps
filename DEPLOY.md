@@ -58,9 +58,16 @@ Log in as teacher in one browser window and student in an incognito window.
   then verify from the Render Shell:
   `node scripts/storage-check.mjs --origin https://your-app.onrender.com`.
   Full walkthrough: [`deploy-vps/STORAGE.md`](./deploy-vps/STORAGE.md).
-- **Email (Resend) and voice chat (OpenAI)** are optional: set `RESEND_API_KEY`
-  / `OPENAI_API_KEY` in the Render dashboard (Environment) to enable them.
-  Login works without email verification (the server auto-verifies users).
+- **Email (Resend)** — needed for the sign-up confirmation code and password
+  reset. Set `RESEND_API_KEY` in the Render dashboard (Environment), plus
+  `APP_URL=https://your-app.onrender.com` so reset links resolve. The sender
+  domain must be **verified** in Resend (Domains → Verify), otherwise every
+  send fails with `domain is not verified` even with a valid key; override the
+  sender with `EMAIL_FROM` if you use a different domain.
+  Accounts **without** an email address (students created by a teacher) are
+  auto-verified on boot; accounts that registered with an email must enter the
+  code from the message.
+- **Voice chat (OpenAI)** is optional: set `OPENAI_API_KEY` to enable it.
 - **Automatic flashcard translations:** add `GOOGLE_TRANSLATE_API_KEY` in the
   Render dashboard under **Environment**. Create the key in a Google Cloud project
   with **Cloud Translation API** enabled, and restrict the key to that API. The

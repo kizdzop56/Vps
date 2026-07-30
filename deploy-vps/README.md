@@ -203,7 +203,7 @@ Encrypt, добавляет HSTS/Referrer-Policy/X-Content-Type-Options, gzip+zs
 | Модуль | Работает на VPS? | Условие |
 |---|---|---|
 | Регистрация/логин (JWT, без cookies) | ✅ | `SESSION_SECRET` |
-| Email-верификация | ✅ (или авто-верификация без ключа) | `RESEND_API_KEY` опционален |
+| Email-верификация при регистрации | ✅ | `RESEND_API_KEY` + `APP_URL` + подтверждённый домен в Resend |
 | Задания / сабмишены / вопросы | ✅ | Postgres |
 | Аватары / фото / аудио / видео / записи | ✅ | **нужно S3-совместимое хранилище** |
 | Voice chat (OpenAI, обычный REST, не WebSocket) | ✅ | `OPENAI_API_KEY` |
