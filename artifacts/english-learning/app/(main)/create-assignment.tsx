@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
-import { fc } from "@/hooks/useFlashcards";
+import { fc, type DeckWithAssign } from "@/hooks/useFlashcards";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -96,13 +96,35 @@ export default function CreateAssignmentScreen() {
   const [deckSaving, setDeckSaving] = useState(false);
   const [deckError, setDeckError] = useState("");
 
+  // Свои колоды учителя. У учителя нет вкладки «Слова» (она только у ученика),
+  // поэтому без этого списка уже созданную колоду было невозможно найти снова:
+  // ни добавить в неё слова, ни отправить ученикам.
+  const [myDecks, setMyDecks] = useState<DeckWithAssign[] | null>(null);
+  const [myDecksError, setMyDecksError] = useState("");
+
+  const loadMyDecks = useCallback(async () => {
+    if (!user) return;
+    setMyDecksError("");
+    try {
+      const all = await fc.getDecks();
+      setMyDecks(all.filter((d) => !d.isSystem && d.ownerId === user.id));
+    } catch (e: any) {
+      setMyDecks([]);
+      setMyDecksError(e?.message ?? "Не удалось загрузить список колод");
+    }
+  }, [user]);
+
   const set = <K extends keyof ReturnType<typeof FRESH>>(k: K, v: ReturnType<typeof FRESH>[K]) =>
     setSt(prev => ({ ...prev, [k]: v }));
 
   useFocusEffect(useCallback(() => {
     setSt(FRESH()); setUploading(null); setSaving(false);
     setMode("assignment"); setDeckTitle(""); setDeckEmoji("📕"); setDeckSaving(false); setDeckError("");
-  }, []));
+    // Список своих колод обновляем при каждом возврате на экран: учитель мог
+    // только что добавить слова или отправить колоду ученикам.
+    setMyDecks(null);
+    loadMyDecks();
+  }, [loadMyDecks]));
 
   const { type, title, description, ageMin, ageMax, content,
     mediaUrl, mediaInputMode, uploadedFileName,
@@ -617,6 +639,44 @@ export default function CreateAssignmentScreen() {
                 : <><Feather name="check" size={18} color="#fff" /><Text style={s.submitText}>Создать колоду</Text></>
               }
             </TouchableOpacity>
+
+            {/* Свои колоды: единственный вход к ним у учителя — вкладки «Слова» у него нет. */}
+            <View style={{ marginTop: 28 }}>
+              <Text style={s.sectionTitle}>Мои колоды</Text>
+
+              {myDecks === null ? (
+                <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />
+              ) : myDecks.length === 0 ? (
+                <Text style={{ fontSize: 13, color: colors.mutedForeground, marginTop: 4, lineHeight: 19 }}>
+                  {myDecksError
+                    ? myDecksError
+                    : "Пока ни одной колоды. Создайте первую — потом здесь можно будет открыть её, добавить слова и отправить ученикам."}
+                </Text>
+              ) : (
+                myDecks.map((d) => (
+                  <TouchableOpacity
+                    key={d.id}
+                    onPress={() => router.push(`/flashcards/deck/${d.id}`)}
+                    activeOpacity={0.85}
+                    style={{
+                      flexDirection: "row", alignItems: "center", gap: 12,
+                      backgroundColor: colors.card, borderRadius: 14, borderWidth: 1,
+                      borderColor: colors.border, padding: 14, marginTop: 10,
+                    }}
+                  >
+                    <Text style={{ fontSize: 26 }}>{d.emoji ?? "📕"}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }} numberOfLines={1}>{d.title}</Text>
+                      <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                        {d.wordCount} слов
+                        {d.assignedCount ? ` · отправлена ${d.assignedCount} ученикам` : " · никому не отправлена"}
+                      </Text>
+                    </View>
+                    <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
           </>
         ) : (
           // ── Форма задания ─────────────────────────────────────────────
