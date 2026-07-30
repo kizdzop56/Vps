@@ -440,12 +440,17 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Ученику и родителю «Друзья» в таб-баре не нужны — список друзей,
+            заявки и добавление по коду остались на вкладке «Профиль». */}
         <Tabs.Screen
           name="friends"
-          options={{
-            title: "Друзья",
-            tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
-          }}
+          options={isTeacher
+            ? {
+                title: "Друзья",
+                tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
+              }
+            : { href: null }
+          }
         />
 
         <Tabs.Screen

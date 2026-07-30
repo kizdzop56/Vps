@@ -94,12 +94,26 @@ type FlashcardStats = {
   placementLevel: string | null;
 };
 
+/** Подтверждённая бронь слота = проведённое (или предстоящее) занятие. */
+type Lesson = {
+  bookingId: number;
+  slotId: number;
+  date: string;      // "YYYY-MM-DD"
+  startTime: string; // "15:00"
+  endTime: string;   // "16:00"
+  note: string | null;
+  teacherName: string | null;
+  teacherSurname: string | null;
+  teacherUsername: string | null;
+};
+
 type ChildReport = {
   profile: Profile | null;
   submissions: Submission[];
   categoryStats: CategoryStat[];
   time: TimeStats | null;
   flashcards: FlashcardStats | null;
+  lessons: Lesson[];
 };
 
 // ── Справочники ───────────────────────────────────────────────────────
@@ -215,6 +229,114 @@ function daysSince(iso: string | null): number | null {
   if (Number.isNaN(then.getTime())) return null;
   const diff = Date.now() - then.getTime();
   return Math.floor(diff / 86_400_000);
+}
+
+/** "15:30" → 930 минут от полуночи. */
+function parseHM(time: string): number {
+  const [h, m] = time.split(":");
+  const hh = Number(h);
+  const mm = Number(m ?? 0);
+  if (!Number.isFinite(hh)) return 0;
+  return hh * 60 + (Number.isFinite(mm) ? mm : 0);
+}
+
+/** Длительность занятия в минутах по времени слота. */
+function lessonMinutes(lesson: Lesson): number {
+  const dur = parseHM(lesson.endTime) - parseHM(lesson.startTime);
+  return dur > 0 ? dur : 0;
+}
+
+/** "2026-07-28" → "28 июля". */
+function formatLessonDate(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return date;
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
+function pluralDays(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return "дней";
+  if (mod10 === 1) return "день";
+  if (mod10 >= 2 && mod10 <= 4) return "дня";
+  return "дней";
+}
+
+function pluralLessons(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return "занятий";
+  if (mod10 === 1) return "занятие";
+  if (mod10 >= 2 && mod10 <= 4) return "занятия";
+  return "занятий";
+}
+
+/**
+ * Сводка по занятиям: считаем ДНИ, в которые было хотя бы одно занятие
+ * (а не количество слотов) — родителя интересует регулярность.
+ * Будущие слоты в «отзанимался» не попадают, но идут в «следующее занятие».
+ */
+function summarizeLessons(lessons: Lesson[]): {
+  daysWeek: number;
+  daysMonth: number;
+  lessonsWeek: number;
+  lessonsMonth: number;
+  totalPast: number;
+  totalMinutes: number;
+  last: Lesson | null;
+  next: Lesson | null;
+  /** Проведённые занятия, от новых к старым — для списка на экране. */
+  past: Lesson[];
+} {
+  const now = new Date();
+  const todayKey = dayKey(now);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const keyDaysAgo = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return dayKey(d);
+  };
+  // Окна включают сегодня: неделя = сегодня и 6 предыдущих дней.
+  const weekStartKey = keyDaysAgo(6);
+  const monthStartKey = keyDaysAgo(29);
+
+  const isPast = (l: Lesson) =>
+    l.date < todayKey || (l.date === todayKey && parseHM(l.endTime) <= nowMinutes);
+
+  const past = lessons.filter(isPast);
+  const upcoming = lessons.filter((l) => !isPast(l));
+
+  const daysIn = (fromKey: string) => {
+    const set = new Set<string>();
+    for (const l of past) if (l.date >= fromKey && l.date <= todayKey) set.add(l.date);
+    return set.size;
+  };
+  const countIn = (fromKey: string) =>
+    past.filter((l) => l.date >= fromKey && l.date <= todayKey).length;
+
+  // past отсортирован от новых к старым (сортировка на сервере), upcoming — наоборот.
+  const sortedUpcoming = [...upcoming].sort(
+    (a, b) => a.date.localeCompare(b.date) || parseHM(a.startTime) - parseHM(b.startTime)
+  );
+
+  return {
+    daysWeek: daysIn(weekStartKey),
+    daysMonth: daysIn(monthStartKey),
+    lessonsWeek: countIn(weekStartKey),
+    lessonsMonth: countIn(monthStartKey),
+    totalPast: past.length,
+    totalMinutes: past.reduce((sum, l) => sum + lessonMinutes(l), 0),
+    last: past[0] ?? null,
+    next: sortedUpcoming[0] ?? null,
+    past,
+  };
+}
+
+/** Имя учителя для подписи занятия: имя+фамилия, иначе ник. */
+function teacherLabel(lesson: Lesson): string {
+  const full = [lesson.teacherName, lesson.teacherSurname].filter(Boolean).join(" ").trim();
+  return full || lesson.teacherUsername || "";
 }
 
 // ── График динамики среднего балла ────────────────────────────────────
@@ -459,6 +581,7 @@ export default function ProgressScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
+  const [showAllLessons, setShowAllLessons] = useState(false);
 
   // Ширина графиков = ширина окна минус отступы скролла (20+20) и карточки (18+18).
   // Тот же приём, что на экране статистики карточек, но через хук —
@@ -485,12 +608,13 @@ export default function ProgressScreen() {
   const loadReport = useCallback(async (childId: number, silent = false) => {
     if (!silent) setLoadingReport(true);
     try {
-      const [profile, submissions, categoryStats, time, flashcards] = await Promise.all([
+      const [profile, submissions, categoryStats, time, flashcards, lessons] = await Promise.all([
         apiFetch(`/api/users/${childId}`).catch(() => null),
         apiFetch(`/api/students/${childId}/submissions`).catch(() => []),
         apiFetch(`/api/students/${childId}/category-stats`).catch(() => []),
         apiFetch(`/api/students/${childId}/time`).catch(() => null),
         apiFetch(`/api/flashcards/stats?studentId=${childId}`).catch(() => null),
+        apiFetch(`/api/students/${childId}/lessons`).catch(() => []),
       ]);
       setReport({
         profile: profile ?? null,
@@ -498,6 +622,7 @@ export default function ProgressScreen() {
         categoryStats: Array.isArray(categoryStats) ? categoryStats : [],
         time: time ?? null,
         flashcards: flashcards ?? null,
+        lessons: Array.isArray(lessons) ? lessons : [],
       });
     } finally {
       setLoadingReport(false);
@@ -508,6 +633,7 @@ export default function ProgressScreen() {
 
   useEffect(() => {
     setShowAllHistory(false);
+    setShowAllLessons(false);
     if (activeChildId !== null) loadReport(activeChildId);
     else setReport(null);
   }, [activeChildId, loadReport]);
@@ -561,9 +687,12 @@ export default function ProgressScreen() {
     const lastSubmission = subs[0] ?? null;
     const idleDays = daysSince(lastSubmission?.submittedAt ?? null);
 
+    const lessons = summarizeLessons(report?.lessons ?? []);
+
     return {
       chronological, avgScore, trend, recentAvg, best, worst, week, streak,
       activeDaysThisWeek, totalCorrect, totalQuestions, lastSubmission, idleDays,
+      lessons,
     };
   }, [report]);
 
@@ -572,13 +701,14 @@ export default function ProgressScreen() {
     const out: { icon: any; tone: "good" | "warn" | "info"; text: string }[] = [];
     const subs = report?.submissions ?? [];
 
+    // Без заданий выводов по баллам нет — но занятия, время в приложении
+    // и словарный запас показываем всё равно, они могут быть.
     if (subs.length === 0) {
       out.push({
         icon: "info",
         tone: "info",
-        text: "Ребёнок ещё не выполнил ни одного задания. Как только появится первый результат, здесь будет полный анализ.",
+        text: "Ребёнок ещё не выполнил ни одного задания. Как только появится первый результат, здесь будет разбор по баллам.",
       });
-      return out;
     }
 
     if (derived.trend !== null && derived.trend >= 5) {
@@ -620,6 +750,15 @@ export default function ProgressScreen() {
 
     if (derived.idleDays !== null && derived.idleDays >= 7) {
       out.push({ icon: "calendar", tone: "warn", text: `Последнее задание выполнено ${derived.idleDays} дней назад — перерыв затянулся.` });
+    }
+
+    const ls = derived.lessons;
+    if (ls.totalPast > 0) {
+      out.push({
+        icon: "calendar",
+        tone: ls.daysWeek > 0 ? "good" : "info",
+        text: `Занятия с учителем: ${ls.daysWeek} ${pluralDays(ls.daysWeek)} за неделю и ${ls.daysMonth} ${pluralDays(ls.daysMonth)} за месяц.`,
+      });
     }
 
     const fc = report?.flashcards;
@@ -772,6 +911,11 @@ export default function ProgressScreen() {
   const fc = report?.flashcards ?? null;
   const time = report?.time ?? null;
   const history = showAllHistory ? report?.submissions ?? [] : (report?.submissions ?? []).slice(0, 6);
+
+  // Занятия: сводка + список проведённых (сервер отдаёт от новых к старым).
+  const lessonsInfo = derived.lessons;
+  const pastLessons = lessonsInfo.past;
+  const visibleLessons = showAllLessons ? pastLessons : pastLessons.slice(0, 5);
 
   return (
     <View style={styles.container}>
@@ -994,6 +1138,133 @@ export default function ProgressScreen() {
                 colors={colors}
               />
             </View>
+          </View>
+
+          {/* ── История занятий (по слотам календаря) ── */}
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>История занятий</Text>
+            <Text style={styles.sectionHint}>Занятия с учителем по расписанию</Text>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+              {[
+                { label: `${pluralDays(lessonsInfo.daysWeek)} за неделю`, value: lessonsInfo.daysWeek, sub: `${lessonsInfo.lessonsWeek} ${pluralLessons(lessonsInfo.lessonsWeek)}`, color: "#ec4899" },
+                { label: `${pluralDays(lessonsInfo.daysMonth)} за месяц`, value: lessonsInfo.daysMonth, sub: `${lessonsInfo.lessonsMonth} ${pluralLessons(lessonsInfo.lessonsMonth)}`, color: colors.primary },
+              ].map((item) => (
+                <View
+                  key={item.label}
+                  style={{ flex: 1, backgroundColor: item.color + "12", borderRadius: 14, padding: 14, alignItems: "center", gap: 2 }}
+                >
+                  <Text style={{ fontSize: 30, fontWeight: "900", color: item.color, lineHeight: 34 }}>
+                    {item.value}
+                  </Text>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>{item.label}</Text>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{item.sub}</Text>
+                </View>
+              ))}
+            </View>
+
+            {lessonsInfo.totalPast === 0 ? (
+              <Text style={styles.empty}>
+                {(report?.lessons.length ?? 0) > 0
+                  ? "Занятия назначены, но ещё не прошли"
+                  : "Занятий пока не было — они появятся, когда учитель запишет ребёнка в расписание"}
+              </Text>
+            ) : (
+              <View style={{ gap: 8, marginTop: 14 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Feather name="check-circle" size={14} color={colors.success} />
+                  <Text style={{ fontSize: 13, color: colors.foreground }}>
+                    Всего проведено: <Text style={{ fontWeight: "800" }}>{lessonsInfo.totalPast} {pluralLessons(lessonsInfo.totalPast)}</Text>
+                    {lessonsInfo.totalMinutes > 0 ? ` · ${formatMinutes(lessonsInfo.totalMinutes)}` : ""}
+                  </Text>
+                </View>
+                {lessonsInfo.last && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Feather name="clock" size={14} color={colors.mutedForeground} />
+                    <Text style={{ fontSize: 13, color: colors.foreground }}>
+                      Последнее: {formatLessonDate(lessonsInfo.last.date)}, {lessonsInfo.last.startTime}–{lessonsInfo.last.endTime}
+                      {teacherLabel(lessonsInfo.last) ? ` · ${teacherLabel(lessonsInfo.last)}` : ""}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {lessonsInfo.next && (
+              <View
+                style={{
+                  flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12,
+                  backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12,
+                }}
+              >
+                <Feather name="calendar" size={15} color={colors.primary} />
+                <Text style={{ flex: 1, fontSize: 13, color: colors.foreground }}>
+                  Следующее занятие: <Text style={{ fontWeight: "800" }}>
+                    {formatLessonDate(lessonsInfo.next.date)}, {lessonsInfo.next.startTime}–{lessonsInfo.next.endTime}
+                  </Text>
+                  {teacherLabel(lessonsInfo.next) ? ` · ${teacherLabel(lessonsInfo.next)}` : ""}
+                </Text>
+              </View>
+            )}
+
+            {pastLessons.length > 0 && (
+              <View style={{ marginTop: 16 }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>
+                  Проведённые занятия
+                </Text>
+                {visibleLessons.map((lesson) => (
+                  <View
+                    key={lesson.bookingId}
+                    style={{
+                      flexDirection: "row", alignItems: "center", gap: 10,
+                      paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.border,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 36, height: 36, borderRadius: 10,
+                        backgroundColor: colors.primary + "12",
+                        alignItems: "center", justifyContent: "center",
+                      }}
+                    >
+                      <Feather name="book-open" size={15} color={colors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.foreground }}>
+                        {formatLessonDate(lesson.date)}
+                      </Text>
+                      {teacherLabel(lesson) ? (
+                        <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 1 }}>
+                          {teacherLabel(lesson)}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>
+                        {lesson.startTime}–{lesson.endTime}
+                      </Text>
+                      {lessonMinutes(lesson) > 0 && (
+                        <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
+                          {formatMinutes(lessonMinutes(lesson))}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+
+                {pastLessons.length > 5 && (
+                  <TouchableOpacity
+                    onPress={() => setShowAllLessons((v) => !v)}
+                    style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10 }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: "700", color: colors.primary }}>
+                      {showAllLessons ? "Свернуть" : `Показать все (${pastLessons.length})`}
+                    </Text>
+                    <Feather name={showAllLessons ? "chevron-up" : "chevron-down"} size={16} color={colors.primary} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
           </View>
 
           {/* ── Время в приложении ── */}
