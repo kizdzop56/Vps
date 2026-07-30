@@ -63,4 +63,41 @@ Log in as teacher in one browser window and student in an incognito window.
   translations; without the key it uses a compatibility fallback, but the key is
   recommended for a reliable production deployment.
 - After the first successful deploy you can set `RUN_DB_SETUP=false` for faster
-  boots (schema/seed are idempotent, so leaving it on is also fine).
+  boots (schema/seed are idempotent, so leaving it on is also fine). **Но учтите:**
+  при `RUN_DB_SETUP=false` схема больше не применяется, поэтому любой следующий
+  коммит, добавляющий таблицу, оставит базу позади кода. См. раздел ниже.
+
+## Troubleshooting: схема БД отстала от кода
+
+Симптом: приложение стартует, `/api/healthz` отвечает 200, большинство экранов
+работает — но отдельные разделы пустые или падают. В браузере это выглядело как
+«The string did not match the expected pattern.» (так Safari сообщает, что
+`res.json()` получил HTML-страницу ошибки Express) и как пустой раздел «Колоды
+по уровням».
+
+Причина: в базе не было таблиц, добавленных более поздними коммитами
+(`deck_assignments`, `conversations`, `messages`), потому что схема на неё не
+применялась. Postgres отвечал `relation ... does not exist` → 500.
+
+Диагностика и лечение (работает на любом хостинге — Render, VPS, docker-compose):
+
+```bash
+# что именно не хватает в базе
+pnpm db:check
+
+# применить схему и досеять системные колоды (обе операции идемпотентны)
+pnpm db:push && pnpm seed
+```
+
+То же самое видно из браузера, без доступа к серверу:
+
+```
+GET /api/healthz/db
+→ { "status": "schema-drift", "missingTables": ["conversations", "messages"] }
+```
+
+Начиная с этой версии `scripts/prod-start.mjs` сверяет схему при **каждом**
+старте, независимо от `RUN_DB_SETUP`, и при расхождении сам применяет её и
+запускает сид. Если после этого таблиц всё ещё не хватает, процесс завершается с
+ошибкой, а не поднимает наполовину рабочее приложение. Чтобы всё-таки
+стартовать, задайте `ALLOW_SCHEMA_DRIFT=true`.

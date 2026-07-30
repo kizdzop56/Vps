@@ -26,26 +26,61 @@ if (!process.env.DATABASE_URL) {
 }
 
 // ---------- 1. DB schema + seed (idempotent, safe on every boot) ----------
+function pnpmRun(args) {
+  return spawnSync("pnpm", args, { cwd: root, stdio: "inherit", env: process.env });
+}
+
+const pushSchema = () => pnpmRun(["--filter", "@workspace/db", "run", "push-force"]);
+const runSeed = () => pnpmRun(["--filter", "@workspace/scripts", "run", "seed"]);
+const checkSchema = () => pnpmRun(["--filter", "@workspace/scripts", "run", "check-schema"]);
+
 if ((process.env.RUN_DB_SETUP ?? "true") !== "false") {
   console.log("[prod] DB setup: pushing schema…");
-  const push = spawnSync("pnpm", ["--filter", "@workspace/db", "run", "push-force"], {
-    cwd: root,
-    stdio: "inherit",
-    env: process.env,
-  });
+  const push = pushSchema();
   if (push.status !== 0) {
     console.error("[prod] schema push failed — aborting startup");
     process.exit(1);
   }
   console.log("[prod] DB setup: seeding test accounts…");
-  const seed = spawnSync("pnpm", ["--filter", "@workspace/scripts", "run", "seed"], {
-    cwd: root,
-    stdio: "inherit",
-    env: process.env,
-  });
+  const seed = runSeed();
   if (seed.status !== 0) {
     // Non-fatal: the app works without seed; log loudly and continue.
     console.error("[prod] WARNING: seed failed (continuing) — check DATABASE_URL/logs");
+  }
+} else {
+  console.log("[prod] RUN_DB_SETUP=false — плановые push/seed пропущены");
+}
+
+// ---------- 1b. Схема БД проверяется ВСЕГДА ----------
+// Так приложение однажды и сломалось: с RUN_DB_SETUP=false схема в базе
+// осталась на состоянии до коммитов c93dec8 и 6915fd7 — в ней не было таблиц
+// deck_assignments, conversations и messages. Сервер при этом стартовал, healthz
+// отвечал 200, и только чат и список колод молча падали с 500. Проверка ниже
+// выполняется независимо от RUN_DB_SETUP: пропуск сида не должен приводить к
+// тому, что база структурно отстаёт от кода.
+console.log("[prod] DB check: сверяю схему с кодом…");
+if (checkSchema().status !== 0) {
+  console.error("[prod] схема БД отстала от кода — применяю её принудительно");
+  if (pushSchema().status !== 0) {
+    console.error("[prod] не удалось применить схему — останавливаюсь");
+    process.exit(1);
+  }
+  // Сид идемпотентный, но обязательный: системные колоды (в т.ч. уровневые
+  // A1–C2) появляются в базе только через него.
+  if (runSeed().status !== 0) {
+    console.error("[prod] WARNING: seed failed after schema repair (continuing)");
+  }
+  if (checkSchema().status !== 0) {
+    if (process.env.ALLOW_SCHEMA_DRIFT === "true") {
+      console.error("[prod] WARNING: схема всё ещё неполная, но ALLOW_SCHEMA_DRIFT=true — стартую");
+    } else {
+      console.error("[prod] схема всё ещё неполная — останавливаюсь, чтобы не поднимать наполовину рабочее приложение");
+      console.error("[prod] применить вручную: pnpm db:push && pnpm seed   (проверить: pnpm db:check)");
+      console.error("[prod] чтобы всё-таки стартовать: ALLOW_SCHEMA_DRIFT=true");
+      process.exit(1);
+    }
+  } else {
+    console.log("[prod] схема БД восстановлена");
   }
 }
 
