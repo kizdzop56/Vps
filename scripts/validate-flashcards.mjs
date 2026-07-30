@@ -1,36 +1,56 @@
-// Проверка офлайн-датасета флеш-карточек (scripts/src/data/flashcards-data.ts).
+// Проверка офлайн-датасета флеш-карточек.
 //
 //   node scripts/validate-flashcards.mjs
 //
-// Зачем: датасет — обычный TS-литерал, который правится руками, а ошибки в нём
-// попадают прямо в учебный материал (битый перевод, отсутствующая транскрипция,
-// дубликат слова, уровень без колод). Тест зависимостей не требует и работает на
-// любой версии Node: файл читается как текст, из него вырезается литерал массива.
-// Поэтому запускать можно и до `pnpm install`.
-import { readFileSync } from "node:fs";
+// Зачем: датасет — обычные TS-литералы, ошибки в них попадают прямо в учебный
+// материал (битый перевод, отсутствующая транскрипция, дубликат слова, уровень
+// без колод). Тест зависимостей не требует и работает на любой версии Node:
+// файлы читаются как текст, из них вырезаются литералы массивов. Поэтому
+// запускать можно и до `pnpm install`.
+//
+// Читаются все части датасета: scripts/src/data/levels.ts (обзорные колоды по
+// уровням) и scripts/src/data/decks/*.ts (тематические колоды на каждый уровень).
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const FILE = path.resolve(here, "src/data/flashcards-data.ts");
+const DATA_DIR = path.resolve(here, "src/data");
+const DECKS_DIR = path.join(DATA_DIR, "decks");
 
 const CEFR = ["A1", "A2", "B1", "B2", "C1", "C2"];
 // Части речи, которые считаются словосочетанием/фразеологизмом (не одиночным словом).
 const PHRASE_POS = new Set(["phrase", "idiom", "collocation", "phrasal verb"]);
 const MIN_DECKS_PER_LEVEL = 2;
+// Сколько карточек ожидаем в тематической колоде уровня.
+const MIN_CARDS_PER_DECK = 12;
 
-// ── загрузка датасета без tsc/tsx: вырезаем литерал массива ────────────
-function loadDecks() {
-  const src = readFileSync(FILE, "utf8");
-  const start = src.indexOf("SEED_DECKS");
-  if (start === -1) throw new Error("в файле нет SEED_DECKS");
-  const open = src.indexOf("[", start);
+// ── загрузка датасета без tsc/tsx: вырезаем литералы массивов ──────────
+function loadFile(file) {
+  const src = readFileSync(file, "utf8");
+  const marker = src.indexOf("SeedDeck[] = ");
+  if (marker === -1) return [];
+  const open = src.indexOf("[", marker);
   const close = src.lastIndexOf("];");
-  if (open === -1 || close === -1 || close < open) throw new Error("не найден литерал массива SEED_DECKS");
+  if (open === -1 || close === -1 || close < open) {
+    throw new Error(`${path.basename(file)}: не найден литерал массива колод`);
+  }
   const literal = src.slice(open, close + 1);
-  // Литерал — наш собственный файл в репозитории и содержит только строки,
-  // массивы и объекты, поэтому вычисляем его напрямую.
+  // Литералы — наши собственные файлы в репозитории, внутри только строки,
+  // массивы и объекты, поэтому вычисляем их напрямую.
   return new Function(`return ${literal};`)();
+}
+
+function loadDecks() {
+  const files = [
+    path.join(DATA_DIR, "levels.ts"),
+    ...readdirSync(DECKS_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => path.join(DECKS_DIR, f)),
+  ];
+  const decks = [];
+  for (const file of files) {
+    for (const deck of loadFile(file)) decks.push({ ...deck, __file: path.basename(file) });
+  }
+  return decks;
 }
 
 const errors = [];
@@ -134,8 +154,16 @@ for (const d of decks) {
     }
   }
 
-  // Требование задачи: в каждой колоде есть не только слова, но и словосочетания.
-  if (phrasesHere === 0) err(`${D}: нет ни одного словосочетания/фразеологизма`);
+  // В колоде должны быть не только слова, но и словосочетания. Исключение —
+  // уровень A1: словарь размечает единицы многословных статей этого уровня, и
+  // добирать их «на глаз» значило бы вносить непроверенные данные.
+  if (phrasesHere === 0 && d.cefrLevel !== "A1") {
+    err(`${D}: нет ни одного словосочетания/фразеологизма`);
+  }
+
+  if (d.words.length < MIN_CARDS_PER_DECK) {
+    warn(`${D}: всего ${d.words.length} карточек (ожидается ≥${MIN_CARDS_PER_DECK})`);
+  }
 }
 
 // Каждый уровень CEFR должен предлагать колоды: placement-тест умеет выдать
@@ -150,6 +178,20 @@ for (const level of CEFR) {
 console.log(`Колод: ${decks.length}`);
 console.log(`Карточек: ${totalEntries} (из них словосочетаний/фразеологизмов: ${totalPhrases})`);
 console.log(`Колод по уровням: ${CEFR.map((l) => `${l}:${decksByLevel.get(l) ?? 0}`).join("  ")}`);
+
+// Тематика должна быть представлена на каждом уровне: ключ темы — <тема>_<уровень>.
+const byBaseTheme = new Map();
+for (const d of decks) {
+  const m = /^(.+)_(a1|a2|b1|b2|c1|c2)$/.exec(d.theme);
+  if (!m) continue;
+  if (!byBaseTheme.has(m[1])) byBaseTheme.set(m[1], new Set());
+  byBaseTheme.get(m[1]).add(m[2].toUpperCase());
+}
+for (const [base, levels] of byBaseTheme) {
+  const missing = CEFR.filter((l) => !levels.has(l));
+  if (missing.length) err(`тематика "${base}": нет колод на уровнях ${missing.join(", ")}`);
+}
+console.log(`Тематик с колодами на все уровни: ${[...byBaseTheme].filter(([, l]) => l.size === CEFR.length).length} из ${byBaseTheme.size}`);
 
 for (const w of warnings) console.log(`⚠️  ${w}`);
 
