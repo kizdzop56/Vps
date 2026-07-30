@@ -372,12 +372,25 @@ function MainLayoutInner() {
           ...({ contentStyle: { backgroundColor: "transparent" } } as object),
         }}
       >
+        {/* Родителю задания не назначают — вместо этой вкладки он видит «Успеваемость». */}
         <Tabs.Screen
           name="assignments"
-          options={{
-            title: "Задания",
-            tabBarIcon: ({ color }) => <Feather name="book-open" size={22} color={color} />,
-          }}
+          options={isParent
+            ? { href: null }
+            : {
+                title: "Задания",
+                tabBarIcon: ({ color }) => <Feather name="book-open" size={22} color={color} />,
+              }
+          }
+        />
+
+        {/* Полный анализ успеваемости ребёнка — только для родителя. */}
+        <Tabs.Screen
+          name="progress"
+          options={isParent
+            ? { title: "Успеваемость", tabBarIcon: ({ color }) => <Feather name="trending-up" size={22} color={color} /> }
+            : { href: null }
+          }
         />
 
         <Tabs.Screen
@@ -427,12 +440,17 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Ученику и родителю «Друзья» в таб-баре не нужны — список друзей,
+            заявки и добавление по коду остались на вкладке «Профиль». */}
         <Tabs.Screen
           name="friends"
-          options={{
-            title: "Друзья",
-            tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
-          }}
+          options={isTeacher
+            ? {
+                title: "Друзья",
+                tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
+              }
+            : { href: null }
+          }
         />
 
         <Tabs.Screen

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   calendarSlotsTable, slotBookingsTable, customBookingRequestsTable,
-  usersTable, teacherStudentsTable,
+  usersTable, teacherStudentsTable, parentChildrenTable,
 } from "@workspace/db";
 import { eq, and, inArray, gte, lt, lte } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
@@ -15,6 +15,20 @@ function isInPast(date: string, time: string): boolean {
   const [h, m] = time.split(":").map(Number);
   const dt = new Date(`${date}T${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:00Z`);
   return dt.getTime() < Date.now();
+}
+
+/**
+ * Родитель связан с учеником через parentChildrenTable (или через parentId
+ * в usersTable) — та же проверка, что в routes/users.ts.
+ */
+async function isLinkedParent(parentId: number, studentId: number): Promise<boolean> {
+  const [link] = await db.select({ id: parentChildrenTable.id }).from(parentChildrenTable).where(
+    and(eq(parentChildrenTable.parentId, parentId), eq(parentChildrenTable.studentId, studentId))
+  );
+  if (link) return true;
+  const [child] = await db.select({ id: usersTable.id }).from(usersTable)
+    .where(and(eq(usersTable.id, studentId), eq(usersTable.parentId, parentId)));
+  return !!child;
 }
 
 // ── GET /calendar/slots?date=YYYY-MM-DD ───────────────────────────────
@@ -546,6 +560,51 @@ router.post("/calendar/slots/:slotId/assign", requireAuth, async (req, res) => {
   }
 
   return res.status(201).json(booking);
+});
+
+// ── GET /students/:id/lessons — история занятий ученика по слотам ──────
+// Доступ: сам ученик, учитель, админ и привязанный родитель.
+// Отдаём подтверждённые брони вместе с датой и временем слота — по ним
+// считается, сколько дней ребёнок отзанимался. Отдельно кастомные заявки
+// смотреть не нужно: при подтверждении они сами создают слот и
+// confirmed-бронь (см. PATCH /calendar/custom-requests/:id), поэтому
+// slot_bookings со статусом confirmed — единственный источник правды.
+router.get("/students/:id/lessons", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const caller = getUser(req);
+  const studentId = Number(req.params.id);
+  if (!Number.isFinite(studentId)) return res.status(400).json({ error: "Неверный ID" });
+
+  const allowed =
+    caller.userId === studentId ||
+    isTeacher(caller.role) ||
+    (caller.role === "parent" && await isLinkedParent(caller.userId, studentId));
+  if (!allowed) return res.status(403).json({ error: "Нет доступа к занятиям этого ученика" });
+
+  const lessons = await db
+    .select({
+      bookingId: slotBookingsTable.id,
+      slotId: calendarSlotsTable.id,
+      date: calendarSlotsTable.date,
+      startTime: calendarSlotsTable.startTime,
+      endTime: calendarSlotsTable.endTime,
+      note: slotBookingsTable.note,
+      teacherName: usersTable.name,
+      teacherSurname: usersTable.surname,
+      teacherUsername: usersTable.username,
+    })
+    .from(slotBookingsTable)
+    .innerJoin(calendarSlotsTable, eq(calendarSlotsTable.id, slotBookingsTable.slotId))
+    .leftJoin(usersTable, eq(usersTable.id, calendarSlotsTable.teacherId))
+    .where(and(
+      eq(slotBookingsTable.studentId, studentId),
+      eq(slotBookingsTable.status, "confirmed"),
+    ));
+
+  // От новых к старым — так же, как отдаётся история заданий.
+  lessons.sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime));
+
+  return res.json(lessons);
 });
 
 export default router;
