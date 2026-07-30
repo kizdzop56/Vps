@@ -24,6 +24,21 @@ export async function seedFlashcards(): Promise<void> {
     let deckId: number;
     if (existing.length > 0) {
       deckId = existing[0]!.id;
+      // Колода уже существует — подтягиваем метаданные из датасета. Нужно потому,
+      // что уровень (cefrLevel), название, описание и порядок могут появиться или
+      // измениться уже после того, как колода была создана на работающей базе
+      // (без этого группировка по уровням не увидит старые колоды). Слова при
+      // этом НЕ трогаются, поэтому прогресс учеников (user_card_state) сохраняется.
+      await db
+        .update(decksTable)
+        .set({
+          title: d.title,
+          description: d.description,
+          emoji: d.emoji,
+          cefrLevel: d.cefrLevel ?? null,
+          sortOrder: i,
+        })
+        .where(eq(decksTable.id, deckId));
     } else {
       const [row] = await db
         .insert(decksTable)

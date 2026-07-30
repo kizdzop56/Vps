@@ -1,5 +1,11 @@
 // Главный экран раздела «Слова»: уровень пользователя, библиотека готовых колод,
 // собственные колоды, переходы к статистике / созданию колоды / тесту уровня.
+//
+// Готовые колоды показываются двумя блоками:
+//   • «Колоды по уровням» — колоды с заданным cefrLevel, сгруппированные по A1..C2.
+//     Уровень ученика раскрыт, остальные свёрнуты, но доступны (видно, что дальше).
+//   • «Тематические колоды» — колоды без уровня: они охватывают сразу несколько
+//     уровней (еда, животные, …), поэтому в уровневые группы не помещаются.
 import React from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -10,6 +16,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc } from "@/hooks/useFlashcards";
 import type { DeckWithProgress } from "@workspace/api-client-react";
+
+// Порядок уровней должен совпадать с CEFR_ORDER на бэкенде (routes/flashcards.ts).
+const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
 export default function FlashcardsHome() {
   const colors = useColors();
@@ -30,6 +39,20 @@ export default function FlashcardsHome() {
   const systemDecks = decks.filter((d) => d.isSystem);
   const myDecks = decks.filter((d) => !d.isSystem);
   const level = settingsQ.data?.placementLevel;
+
+  // Уровневые колоды vs тематические (без cefrLevel) — см. комментарий к файлу.
+  const levelDecks = systemDecks.filter((d) => d.cefrLevel);
+  const themeDecks = systemDecks.filter((d) => !d.cefrLevel);
+  // Уровни, для которых реально есть колоды (пустых групп не рисуем).
+  const levelsWithDecks = CEFR_LEVELS.filter((l) => levelDecks.some((d) => d.cefrLevel === l));
+
+  // Пока тест уровня не пройден, считаем ученика начинающим и раскрываем A1.
+  const myLevel = level ?? "A1";
+  // Раскрытие: null → уровень ученика раскрыт по умолчанию, остальные свёрнуты.
+  const [openLevels, setOpenLevels] = React.useState<Record<string, boolean>>({});
+  const isLevelOpen = (l: string) => openLevels[l] ?? l === myLevel;
+  const toggleLevel = (l: string) =>
+    setOpenLevels((s) => ({ ...s, [l]: !(s[l] ?? l === myLevel) }));
 
   const totalDue = decks.reduce((s, d) => s + d.dueCount, 0);
   const totalNew = decks.reduce((s, d) => s + d.newCount, 0);
@@ -91,8 +114,27 @@ export default function FlashcardsHome() {
               <View style={{ height: 10 }} />
             </>
           )}
-          <SectionTitle colors={colors} title="Готовые колоды" />
-          {systemDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+          <SectionTitle colors={colors} title="Колоды по уровням" />
+          {levelsWithDecks.map((l) => (
+            <LevelGroup
+              key={l}
+              colors={colors}
+              level={l}
+              isMyLevel={l === myLevel}
+              open={isLevelOpen(l)}
+              onToggle={() => toggleLevel(l)}
+              decks={levelDecks.filter((d) => d.cefrLevel === l)}
+              onOpenDeck={(id) => router.push(`/flashcards/deck/${id}`)}
+            />
+          ))}
+
+          {themeDecks.length > 0 && (
+            <>
+              <View style={{ height: 10 }} />
+              <SectionTitle colors={colors} title="Тематические колоды" />
+              {themeDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+            </>
+          )}
         </>
       )}
     </ScrollView>
@@ -120,6 +162,91 @@ function ActionBtn({ colors, icon, label, onPress }: any) {
 
 function SectionTitle({ colors, title }: any) {
   return <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>{title}</Text>;
+}
+
+// Русские числовые формы: 1 колода / 2 колоды / 5 колод.
+function pluralRu(n: number, one: string, few: string, many: string) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+// Группа колод одного уровня CEFR: сворачивается по нажатию на заголовок.
+// Уровень ученика подсвечен и раскрыт по умолчанию, остальные свёрнуты — так
+// ученик видит свой материал, но может заглянуть и на уровень выше.
+function LevelGroup({
+  colors,
+  level,
+  isMyLevel,
+  open,
+  onToggle,
+  decks,
+  onOpenDeck,
+}: {
+  colors: any;
+  level: string;
+  isMyLevel: boolean;
+  open: boolean;
+  onToggle: () => void;
+  decks: DeckWithProgress[];
+  onOpenDeck: (id: number) => void;
+}) {
+  const words = decks.reduce((s, d) => s + d.wordCount, 0);
+  const learned = decks.reduce((s, d) => s + d.learnedCount, 0);
+  const due = decks.reduce((s, d) => s + d.dueCount, 0);
+
+  return (
+    <View style={{ marginBottom: 12 }}>
+      <TouchableOpacity
+        onPress={onToggle}
+        activeOpacity={0.85}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+          backgroundColor: isMyLevel ? colors.primary + "14" : colors.card,
+          borderColor: isMyLevel ? colors.primary + "55" : colors.border,
+          borderWidth: 1,
+          borderRadius: 16,
+          padding: 14,
+        }}
+      >
+        <View
+          style={{
+            backgroundColor: isMyLevel ? colors.primary : colors.primary + "22",
+            borderRadius: 10,
+            paddingHorizontal: 10,
+            paddingVertical: 5,
+            minWidth: 46,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ color: isMyLevel ? "#fff" : colors.primary, fontWeight: "900", fontSize: 14 }}>{level}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
+            {decks.length} {pluralRu(decks.length, "колода", "колоды", "колод")}
+            {isMyLevel ? " · ваш уровень" : ""}
+          </Text>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+            {words} слов и фраз · выучено {learned}
+          </Text>
+        </View>
+        {due > 0 && <Badge colors={colors} color={colors.primary} text={`${due}`} />}
+        <Feather name={open ? "chevron-down" : "chevron-right"} size={20} color={colors.mutedForeground} />
+      </TouchableOpacity>
+
+      {open && (
+        <View style={{ marginTop: 10 }}>
+          {decks.map((d) => (
+            <DeckCard key={d.id} deck={d} colors={colors} onPress={() => onOpenDeck(d.id)} />
+          ))}
+        </View>
+      )}
+    </View>
+  );
 }
 
 function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: any; onPress: () => void }) {
