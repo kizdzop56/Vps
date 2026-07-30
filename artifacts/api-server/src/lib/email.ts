@@ -15,8 +15,35 @@ if (!isEmailConfigured()) {
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
-const FROM = "English Learning <noreply@english-learning-replit.ru>";
-const APP_URL = process.env.APP_URL ?? `https://${process.env.REPLIT_DEV_DOMAIN}`;
+/**
+ * Адрес отправителя. Его домен обязан быть подтверждён в Resend
+ * (Domains -> Verify), иначе каждая отправка падает с ошибкой «domain is not
+ * verified» — при полностью верном API-ключе. Это самая частая причина
+ * «ключ привязал, а письма не приходят».
+ *
+ * Вынесено в переменную окружения, чтобы смена домена не требовала правки
+ * кода. Значение по умолчанию — домен, уже подтверждённый в аккаунте.
+ */
+const FROM =
+  process.env.EMAIL_FROM ??
+  "English Learning <noreply@english-learning-replit.ru>";
+
+/**
+ * Базовый адрес приложения для ссылок в письмах.
+ *
+ * Раньше при незаданном APP_URL подставлялся `REPLIT_DEV_DOMAIN`, которого вне
+ * Replit не существует, и ссылка сброса пароля молча превращалась в
+ * `https://undefined`. Теперь вместо тихой поломки — предупреждение в логах.
+ */
+const APP_URL = process.env.APP_URL ?? "";
+
+if (isEmailConfigured() && !APP_URL) {
+  console.warn(
+    "\n⚠️  APP_URL не задан. Код подтверждения регистрации придёт нормально,\n" +
+    "   но ссылка сброса пароля будет нерабочей.\n" +
+    "   Задайте APP_URL=https://ваш-домен\n"
+  );
+}
 
 export async function sendVerificationCode(to: string, code: string) {
   if (!resend) {

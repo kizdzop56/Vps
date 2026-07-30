@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { db, usersTable, timeSessionsTable, submissionsTable, authTokensTable } from "@workspace/db";
-import { sql, eq, and } from "drizzle-orm";
+import { sql, eq, and, or, isNull } from "drizzle-orm";
 
 // One-time cleanup: earlier avatar uploads stored uncompressed base64 data
 // URIs (up to several MB) directly in avatar_url. Any user row that still has
@@ -64,27 +64,39 @@ async function fixLizaOrphanedSession() {
   }
 }
 
-// One-time fix: all existing users were created before the email-verification
-// flow existed. None of them have an email address and none ever went through
-// verification, so email_verified = 'false' for everyone including the teacher.
-// The AuthContext clears stored sessions when emailVerified is false, which logs
-// every user out on every app restart. Setting all accounts to verified is the
-// correct fix — teacher-created students do not need email verification.
-async function verifyAllExistingUsers() {
+// Аккаунты БЕЗ email — это легаси-пользователи и ученики, созданные учителем.
+// Они никогда не проходили верификацию, а AuthContext на фронтенде разлогинивает
+// пользователя при emailVerified='false'. Поэтому их помечаем подтверждёнными.
+//
+// ВАЖНО: раньше здесь обновлялись ВСЕ пользователи с emailVerified='false', без
+// условия на email. Это ломало регистрацию по почте — тот, кто зарегистрировался
+// с email, становился подтверждённым сам, при следующем старте сервера, так и не
+// введя код из письма. Функция описана как «one-time fix», но выполняется на
+// КАЖДОМ старте, а на бесплатном плане Render сервис засыпает после ~15 минут
+// простоя, то есть холодные старты идут постоянно.
+//
+// Условие на пустую строку — на случай, если email где-то сохранился как '' ,
+// а не NULL.
+async function verifyUsersWithoutEmail() {
   try {
     const result = await db
       .update(usersTable)
       .set({ emailVerified: "true" })
-      .where(eq(usersTable.emailVerified, "false"))
+      .where(
+        and(
+          eq(usersTable.emailVerified, "false"),
+          or(isNull(usersTable.email), eq(usersTable.email, "")),
+        ),
+      )
       .returning({ id: usersTable.id, username: usersTable.username });
     if (result.length > 0) {
       logger.info(
         { users: result.map((u: { id: number; username: string }) => u.username) },
-        "Set emailVerified=true for existing unverified users",
+        "Set emailVerified=true for accounts without an email address",
       );
     }
   } catch (err) {
-    logger.error({ err }, "Failed to verify existing users");
+    logger.error({ err }, "Failed to verify users without email");
   }
 }
 
@@ -121,6 +133,6 @@ app.listen(port, (err) => {
   cleanupOversizedAvatars()
     .then(() => fixLizaOrphanedSession())
     .then(() => deleteAnnaUser())
-    .then(() => verifyAllExistingUsers())
+    .then(() => verifyUsersWithoutEmail())
     .catch((err) => logger.error({ err }, "Startup background cleanup failed"));
 });

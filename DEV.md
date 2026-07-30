@@ -51,8 +51,11 @@ Open the app twice in **separate sessions** so the two logins don't collide:
 
 ## Notes
 
-- Email verification is **not** required locally — the server auto-verifies all
-  users on startup, and `pnpm seed` marks the test accounts verified.
+- Email verification is **not** required locally: `pnpm seed` marks the test
+  accounts verified, and accounts without an email address (students created by
+  a teacher) are auto-verified on startup. An account that registers WITH an
+  email must enter the 6-digit code — without `RESEND_API_KEY` the code is only
+  printed to the server log, so grab it from there.
 - `RESEND_API_KEY` (email) and `OPENAI_API_KEY` (voice chat) are optional; leave
   them blank unless you want to test those specific features.
 - The first `pnpm dev` may ask to install Expo web dependencies — accept it.
