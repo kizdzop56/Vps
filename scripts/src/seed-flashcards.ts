@@ -8,6 +8,73 @@ import { db, decksTable, wordsTable } from "@workspace/db";
 import { and, eq, isNull, inArray } from "drizzle-orm";
 import { SEED_DECKS } from "./data/flashcards-data";
 
+// Темы, которые раньше были одной колодой без уровня, а теперь разложены по
+// колодам <тема>_<уровень>. На работающей базе такие колоды уже существуют
+// вместе с прогрессом учеников, поэтому их не удаляем, а разбираем: каждое
+// слово переезжает в колоду своего уровня по той же теме. Строки words
+// сохраняют id, значит user_card_state и журнал повторений остаются целыми.
+const LEGACY_THEMES = [
+  "food", "animals", "transport", "family", "home",
+  "body_health", "work", "nature", "technology", "travel", "irregular_verbs",
+];
+
+async function migrateLegacyDecks(): Promise<void> {
+  let moved = 0;
+  let removed = 0;
+
+  for (const theme of LEGACY_THEMES) {
+    const [legacy] = await db
+      .select({ id: decksTable.id })
+      .from(decksTable)
+      .where(and(eq(decksTable.theme, theme), isNull(decksTable.ownerId)));
+    if (!legacy) continue;
+
+    // куда переселять: колоды этой темы по уровням
+    const targets = await db
+      .select({ id: decksTable.id, cefrLevel: decksTable.cefrLevel })
+      .from(decksTable)
+      .where(and(isNull(decksTable.ownerId), inArray(
+        decksTable.theme,
+        ["a1", "a2", "b1", "b2", "c1", "c2"].map((l) => `${theme}_${l}`),
+      )));
+    const byLevel = new Map(targets.map((t) => [t.cefrLevel, t.id]));
+    if (!byLevel.size) continue;
+
+    const words = await db
+      .select({ id: wordsTable.id, english: wordsTable.english, cefrLevel: wordsTable.cefrLevel })
+      .from(wordsTable)
+      .where(eq(wordsTable.deckId, legacy.id));
+
+    for (const w of words) {
+      // Уровень слова известен из старого датасета; если нет — считаем начальным.
+      const targetId = byLevel.get(w.cefrLevel ?? "A1") ?? byLevel.get("A1");
+      if (!targetId) continue;
+
+      // Если такое слово в целевой колоде уже есть, старую карточку не дублируем:
+      // прогресс по ней всё равно привязан к её собственному id, а две одинаковые
+      // карточки в одной колоде сбивают повторение.
+      const [clash] = await db
+        .select({ id: wordsTable.id })
+        .from(wordsTable)
+        .where(and(eq(wordsTable.deckId, targetId), eq(wordsTable.english, w.english)));
+      if (clash) continue;
+
+      await db.update(wordsTable).set({ deckId: targetId }).where(eq(wordsTable.id, w.id));
+      moved++;
+    }
+
+    const left = await db.select({ id: wordsTable.id }).from(wordsTable).where(eq(wordsTable.deckId, legacy.id));
+    if (left.length === 0) {
+      await db.delete(decksTable).where(eq(decksTable.id, legacy.id));
+      removed++;
+    }
+  }
+
+  if (moved || removed) {
+    console.log(`  ↪️  Миграция старых колод: перенесено слов ${moved}, удалено пустых колод ${removed}.`);
+  }
+}
+
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
@@ -86,6 +153,10 @@ export async function seedFlashcards(): Promise<void> {
       wordsAdded += toInsert.length;
     }
   }
+
+  // Разбор старых безуровневых колод — только после того, как колоды по уровням
+  // уже созданы: словам нужно куда переезжать.
+  await migrateLegacyDecks();
 
   console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded} (всего колод в датасете ${SEED_DECKS.length}).`);
 }
