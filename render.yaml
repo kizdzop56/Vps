@@ -25,8 +25,13 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       # Push schema + seed test accounts (teacher/student) on every boot.
-      # Both are idempotent. Set to "false" after first successful deploy
-      # if you want faster boots.
+      # Both are idempotent.
+      #
+      # Keep this "true". Setting it to "false" is what broke chat and the deck
+      # list once: the schema stopped being applied, so tables added by later
+      # commits (deck_assignments, conversations, messages) never appeared in the
+      # database and those endpoints answered 500. The boot script now verifies
+      # the schema regardless of this flag, but leaving it "true" is simpler.
       - key: RUN_DB_SETUP
         value: "true"
       # Optional integrations — add values in the Render dashboard if needed:

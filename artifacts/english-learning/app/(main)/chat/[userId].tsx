@@ -17,22 +17,74 @@ const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
+// Разбор тела ответа, устойчивый к не-JSON.
+//
+// Раньше здесь безусловно вызывался res.json(). Когда сервер отвечал 500, он
+// отдавал HTML-страницу Express, и res.json() падал внутри самого браузера:
+// Safari сообщал «The string did not match the expected pattern.», Chrome —
+// «Unexpected token <». Именно этот текст пользователь и видел на экране чата
+// вместо настоящей причины (в базе не было таблиц conversations и messages).
+//
+// Теперь тело всегда читается как текст и разбирается вручную, поэтому
+// сообщение сервера доходит до пользователя, а нераспознанный ответ
+// превращается в понятное «Ошибка сервера (HTTP 500)».
+type ParsedBody = { json: any; text: string };
+
+async function readBody(res: Response): Promise<ParsedBody> {
+  let text = "";
+  try {
+    text = await res.text();
+  } catch {
+    text = "";
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return { json: null, text: "" };
+  try {
+    return { json: JSON.parse(trimmed), text: trimmed };
+  } catch {
+    return { json: null, text: trimmed };
+  }
+}
+
+// Сообщение об ошибке: сначала то, что прислал сервер, иначе — HTTP-статус.
+function errorMessage(res: Response, body: ParsedBody): string {
+  const payload = body.json;
+  if (payload && typeof payload === "object") {
+    const detail = payload.message ?? payload.error;
+    if (typeof detail === "string" && detail.trim()) return detail.trim();
+  }
+  if (res.status === 401) return "Сессия истекла — войдите заново";
+  return `Ошибка сервера (HTTP ${res.status})`;
+}
+
 async function apiFetch(path: string, opts?: RequestInit) {
   const token = await authStorage.getItem("auth_token");
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
-    // Без no-store браузер на web отдаёт закэшированный ответ на повторные
-    // GET-запросы поллинга, и новые сообщения не появляются — чат "не работает".
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(opts?.headers ?? {}),
-    },
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Ошибка сервера");
-  return data;
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...opts,
+      // Без no-store браузер на web отдаёт закэшированный ответ на повторные
+      // GET-запросы поллинга, и новые сообщения не появляются — чат "не работает".
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(opts?.headers ?? {}),
+      },
+    });
+  } catch {
+    // Сеть недоступна / запрос оборван — до сервера дело не дошло.
+    throw new Error("Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.");
+  }
+
+  const body = await readBody(res);
+  if (!res.ok) throw new Error(errorMessage(res, body));
+
+  if (body.json === null) {
+    throw new Error(`Сервер вернул неожиданный ответ (HTTP ${res.status})`);
+  }
+  return body.json;
 }
 
 // Загрузка файла (фото/аудио) через тот же multipart-роут, что и остальные
@@ -42,14 +94,23 @@ async function uploadFile(blob: Blob, filename: string, kind: "image" | "audio")
   const token = await authStorage.getItem("auth_token");
   const form = new FormData();
   form.append("file", blob, filename);
-  const res = await fetch(`${BASE}/api/upload/${kind}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token ?? ""}` },
-    body: form,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки файла");
-  return data.url as string;
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api/upload/${kind}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token ?? ""}` },
+      body: form,
+    });
+  } catch {
+    throw new Error("Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.");
+  }
+
+  const body = await readBody(res);
+  if (!res.ok) throw new Error(errorMessage(res, body));
+
+  const url = body.json?.url;
+  if (typeof url !== "string") throw new Error("Сервер не вернул ссылку на файл");
+  return url;
 }
 
 type ChatUser = {

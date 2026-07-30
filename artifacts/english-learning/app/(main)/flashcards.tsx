@@ -105,6 +105,15 @@ export default function FlashcardsHome() {
 
       {decksQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+      ) : decksQ.isError ? (
+        // Раньше упавший запрос молча превращался в пустой список: заголовок
+        // «Колоды по уровням» рисовался, а под ним не было ничего — выглядело
+        // как «колоды пропали», хотя сервер отвечал 500. Теперь ошибка видна.
+        <LoadError
+          colors={colors}
+          message={decksQ.error instanceof Error ? decksQ.error.message : "Не удалось загрузить колоды"}
+          onRetry={() => decksQ.refetch()}
+        />
       ) : (
         <>
           {myDecks.length > 0 && (
@@ -114,19 +123,25 @@ export default function FlashcardsHome() {
               <View style={{ height: 10 }} />
             </>
           )}
-          <SectionTitle colors={colors} title="Колоды по уровням" />
-          {levelsWithDecks.map((l) => (
-            <LevelGroup
-              key={l}
-              colors={colors}
-              level={l}
-              isMyLevel={l === myLevel}
-              open={isLevelOpen(l)}
-              onToggle={() => toggleLevel(l)}
-              decks={levelDecks.filter((d) => d.cefrLevel === l)}
-              onOpenDeck={(id) => router.push(`/flashcards/deck/${id}`)}
-            />
-          ))}
+
+          {/* Заголовок только при наличии колод — пустая рубрика вводит в заблуждение. */}
+          {levelsWithDecks.length > 0 && (
+            <>
+              <SectionTitle colors={colors} title="Колоды по уровням" />
+              {levelsWithDecks.map((l) => (
+                <LevelGroup
+                  key={l}
+                  colors={colors}
+                  level={l}
+                  isMyLevel={l === myLevel}
+                  open={isLevelOpen(l)}
+                  onToggle={() => toggleLevel(l)}
+                  decks={levelDecks.filter((d) => d.cefrLevel === l)}
+                  onOpenDeck={(id) => router.push(`/flashcards/deck/${id}`)}
+                />
+              ))}
+            </>
+          )}
 
           {themeDecks.length > 0 && (
             <>
@@ -134,6 +149,10 @@ export default function FlashcardsHome() {
               <SectionTitle colors={colors} title="Тематические колоды" />
               {themeDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
             </>
+          )}
+
+          {decks.length === 0 && (
+            <EmptyDecks colors={colors} onRetry={() => decksQ.refetch()} />
           )}
         </>
       )}
@@ -157,6 +176,50 @@ function ActionBtn({ colors, icon, label, onPress }: any) {
       <Feather name={icon} size={16} color={colors.foreground} />
       <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 14 }}>{label}</Text>
     </TouchableOpacity>
+  );
+}
+
+// Запрос колод упал: показываем текст ошибки сервера и даём повторить.
+function LoadError({ colors, message, onRetry }: { colors: any; message: string; onRetry: () => void }) {
+  return (
+    <View style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 20, alignItems: "center", marginTop: 8 }}>
+      <Feather name="alert-triangle" size={28} color={colors.warning ?? "#f59e0b"} />
+      <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground, marginTop: 10 }}>
+        Не удалось загрузить колоды
+      </Text>
+      <Text style={{ fontSize: 13, color: colors.mutedForeground, marginTop: 6, textAlign: "center" }}>
+        {message}
+      </Text>
+      <TouchableOpacity
+        onPress={onRetry}
+        activeOpacity={0.85}
+        style={{ marginTop: 16, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 10 }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Повторить</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// Запрос прошёл, но колод нет вообще — обычно значит, что не выполнен сид.
+function EmptyDecks({ colors, onRetry }: { colors: any; onRetry: () => void }) {
+  return (
+    <View style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 20, alignItems: "center", marginTop: 8 }}>
+      <Text style={{ fontSize: 30 }}>📭</Text>
+      <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground, marginTop: 10 }}>
+        Колод пока нет
+      </Text>
+      <Text style={{ fontSize: 13, color: colors.mutedForeground, marginTop: 6, textAlign: "center" }}>
+        Готовые колоды ещё не загружены на сервер. Можно создать свою колоду или обновить список.
+      </Text>
+      <TouchableOpacity
+        onPress={onRetry}
+        activeOpacity={0.85}
+        style={{ marginTop: 16, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 10 }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Обновить</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
