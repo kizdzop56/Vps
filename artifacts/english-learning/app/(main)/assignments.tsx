@@ -14,6 +14,8 @@ import authStorage from "@/utils/authStorage";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { useGamification } from "@/hooks/useGamification";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { useQuery } from "@tanstack/react-query";
+import { fc } from "@/hooks/useFlashcards";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -46,7 +48,12 @@ const TYPE_COLORS: Record<string, string> = {
   text_test: "#8b5cf6", audio: "#6366f1", reading: "#6366f1", video: "#ec4899", free_form: "#ec4899",
 };
 const FILTERS = ["Все", "text_test", "audio", "reading", "video", "free_form"] as const;
-type Filter = typeof FILTERS[number];
+// «Колоды» — отдельная категория в созданных заданиях учителя. До этого у
+// учителя вообще не было входа в свои колоды: вкладка «Слова» скрыта для него,
+// и после создания колоды вернуться к ней было нельзя.
+const DECKS_FILTER = "decks" as const;
+const TEACHER_FILTERS = [...FILTERS, DECKS_FILTER] as const;
+type Filter = typeof FILTERS[number] | typeof DECKS_FILTER;
 
 type StudentItem = {
   id: number; name: string; surname?: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null;
@@ -694,7 +701,7 @@ export default function AssignmentsScreen() {
             </View>
             <FlatList
               horizontal
-              data={FILTERS}
+              data={isTeacher ? TEACHER_FILTERS : FILTERS}
               keyExtractor={(f) => f}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
@@ -704,7 +711,7 @@ export default function AssignmentsScreen() {
                   onPress={() => setFilter(f)}
                 >
                   <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-                    {f === "Все" ? "Все" : TYPE_LABELS[f]}
+                    {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -767,8 +774,13 @@ export default function AssignmentsScreen() {
             showsVerticalScrollIndicator={false}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
           >
+            {/* Teacher: свои колоды слов — отдельная категория «Колоды» */}
+            {isTeacher && filter === DECKS_FILTER && (
+              <TeacherDecks colors={colors} styles={styles} search={searchLower} />
+            )}
+
             {/* Teacher: only own assignments */}
-            {isTeacher && (() => {
+            {isTeacher && filter !== DECKS_FILTER && (() => {
               const filtered = myAssignments.filter(a =>
                 (filter === "Все" || a.type === filter) &&
                 (!searchLower || a.title.toLowerCase().includes(searchLower))
@@ -825,5 +837,91 @@ export default function AssignmentsScreen() {
       />
 
     </View>
+  );
+}
+
+// ─── Колоды слов учителя ──────────────────────────────────────────────
+// Отдельная категория внутри созданных заданий. Раньше у учителя не было
+// никакого входа в свои колоды: вкладка «Слова» для него скрыта, а страница
+// колоды открывалась только сразу после создания — вернуться к ней потом
+// было нельзя. Список берём быстрым запросом только своих колод (?mine=1).
+function TeacherDecks({ colors, styles, search }: { colors: any; styles: any; search: string }) {
+  const router = useRouter();
+  const decksQ = useQuery({ queryKey: ["fc-my-decks"], queryFn: fc.getMyDecks });
+
+  useFocusEffect(useCallback(() => { decksQ.refetch(); }, []));
+
+  const decks = (decksQ.data ?? []).filter(
+    (d) => !search || d.title.toLowerCase().includes(search),
+  );
+
+  if (decksQ.isLoading) {
+    return <View style={styles.empty}><ActivityIndicator color={colors.primary} size="large" /></View>;
+  }
+
+  if (decksQ.isError) {
+    return (
+      <View style={[styles.empty, { paddingTop: 40, gap: 12 }]}>
+        <Feather name="alert-circle" size={44} color={colors.destructive} />
+        <Text style={styles.emptyText}>Не удалось загрузить колоды.</Text>
+        <TouchableOpacity
+          onPress={() => decksQ.refetch()}
+          style={{ backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 11 }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "700" }}>Повторить</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Text style={styles.sectionLabel}>Колоды слов · {decks.length}</Text>
+
+      <TouchableOpacity
+        onPress={() => router.push("/(main)/flashcards/new-deck" as any)}
+        activeOpacity={0.85}
+        style={{
+          flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+          borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
+          borderRadius: 14, paddingVertical: 13, marginBottom: 12,
+        }}
+      >
+        <Feather name="plus" size={18} color={colors.primary} />
+        <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 14 }}>Создать колоду</Text>
+      </TouchableOpacity>
+
+      {decks.length === 0 ? (
+        <View style={[styles.empty, { paddingTop: 30 }]}>
+          <Feather name="layers" size={48} color={colors.mutedForeground} />
+          <Text style={styles.emptyText}>
+            Колод пока нет.{"\n"}Создайте колоду, добавьте слова и отправьте её ученикам.
+          </Text>
+        </View>
+      ) : (
+        decks.map((d) => (
+          <TouchableOpacity
+            key={d.id}
+            activeOpacity={0.8}
+            onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)}
+            style={{
+              flexDirection: "row", alignItems: "center", gap: 12,
+              backgroundColor: colors.card, borderRadius: 16, borderWidth: 1,
+              borderColor: colors.border, padding: 14, marginBottom: 10,
+            }}
+          >
+            <Text style={{ fontSize: 28 }}>{d.emoji ?? "📘"}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{d.title}</Text>
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3 }}>
+                {d.wordCount} слов
+                {d.assignedCount ? ` · отправлена ${d.assignedCount} ученикам` : " · ещё никому не отправлена"}
+              </Text>
+            </View>
+            <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+          </TouchableOpacity>
+        ))
+      )}
+    </>
   );
 }

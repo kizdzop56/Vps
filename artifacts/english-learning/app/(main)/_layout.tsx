@@ -335,23 +335,21 @@ function MainLayoutInner() {
   const isParent = user.role === "parent";
 
   // Первый вход ученика без пройденного теста → показываем тест уровня.
-  if (isStudent) {
-    if (placementSettingsQ.isLoading) {
-      return (
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background }}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      );
-    }
-    if (placementSettingsQ.data && !placementSettingsQ.data.placementDone) {
-      return (
-        <View style={{ flex: 1 }}>
-          <StudentTimerManager />
-          <PlacementTest onDone={() => { qc.invalidateQueries({ queryKey: ["fc-settings"] }); placementSettingsQ.refetch(); }} />
-        </View>
-      );
-    }
-  }
+  //
+  // Раньше и спиннер загрузки настроек, и сам тест возвращались ВМЕСТО <Tabs>.
+  // Из-за этого при переходе на вкладку «Слова» навигатор не успевал
+  // смонтироваться: ученик видел пустой белый экран со спиннером, а когда
+  // запрос настроек падал (ошибка нигде не проверялась), код проваливался мимо
+  // обеих проверок и монтировал <Tabs> заново — с первой вкладки, то есть
+  // «Задания». Это и выглядело как «вечная загрузка и выкидывает на задания».
+  //
+  // Теперь вкладки монтируются всегда и сразу, а тест и спиннер показываются
+  // слоем поверх. Навигатор не размонтируется, выбранная вкладка не теряется,
+  // а ошибка запроса настроек больше не запирает ученика в приложении:
+  // тест уровня всегда можно пройти из раздела «Слова».
+  const needsPlacement = !!placementSettingsQ.data && !placementSettingsQ.data.placementDone;
+  const placementLoading = isStudent && placementSettingsQ.isLoading;
+  const showPlacement = isStudent && needsPlacement;
 
   return (
     <>
@@ -477,7 +475,29 @@ function MainLayoutInner() {
         <Tabs.Screen name="flashcards/stats" options={{ href: null }} />
         <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />
         <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
+        {/* предпросмотр колоды для учителя — без записи прогресса */}
+        <Tabs.Screen name="flashcards/preview/[id]" options={{ href: null }} />
       </Tabs>
+
+      {/* Тест уровня и ожидание настроек — слоем поверх вкладок, а не вместо
+          них: подмена навигатора теряла выбранную вкладку (см. комментарий
+          у needsPlacement). */}
+      {placementLoading && (
+        <View style={{
+          position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+          justifyContent: "center", alignItems: "center", backgroundColor: colors.background,
+        }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      )}
+      {showPlacement && (
+        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.background }}>
+          <PlacementTest onDone={() => {
+            qc.invalidateQueries({ queryKey: ["fc-settings"] });
+            placementSettingsQ.refetch();
+          }} />
+        </View>
+      )}
 
       {/* Preload mascot image so it appears instantly when TabGuide opens */}
       <ExpoImage

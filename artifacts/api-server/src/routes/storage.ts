@@ -39,7 +39,9 @@ function localObjectPath(id: string): string {
 }
 
 /** Валидный id локального объекта: без слэшей и переходов на уровень выше. */
-function isSafeId(id: string | undefined): id is string {
+// Параметр маршрута в типах Express может быть и массивом строк — принимаем
+// такой вариант и отбраковываем его как небезопасный (иначе не сходятся типы).
+function isSafeId(id: string | string[] | undefined): id is string {
   return typeof id === "string" && id.length > 0 && !id.includes("/") && !id.includes("..");
 }
 

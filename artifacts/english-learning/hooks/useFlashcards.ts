@@ -98,7 +98,18 @@ export type MarathonQueue = Partial<DailyWordProgress> & {
 // Колода с прогрессом + поля назначения (эндпоинт расширен вручную, без Orval):
 //   assigned      — колода назначена текущему ученику учителем
 //   assignedCount — скольким ученикам колода назначена (видит владелец-учитель)
-export type DeckWithAssign = DeckWithProgress & { assigned?: boolean; assignedCount?: number };
+//   canEdit       — колода своя и не системная: можно добавлять слова и отправлять
+//                   её ученикам. Раньше клиент выводил это из !isSystem, и для
+//                   ещё не загруженной колоды получал запрет.
+export type DeckWithAssign = DeckWithProgress & {
+  assigned?: boolean;
+  assignedCount?: number;
+  canEdit?: boolean;
+};
+
+// Результат импорта + сами пропущенные слова: учителю важно понять, что именно
+// не попало в колоду (поле добавлено вручную, без Orval).
+export type ImportResultWithSkipped = ImportResult & { skippedWords?: string[] };
 
 // Статистика слов + CEFR-уровень из placement-теста, сегодняшний прогресс к цели
 // дня и число «сложных слов» (поля добавлены вручную, без Orval).
@@ -122,7 +133,9 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
-async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
+// Экспортируем: экраны колод дергают и соседние эндпоинты (список учеников),
+// а каждый экран объявлял свою копию этой функции.
+export async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
   const token = await authStorage.getItem("auth_token");
   const res = await fetch(`${BASE_URL}${path}`, {
     cache: "no-store",
@@ -141,15 +154,24 @@ async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T
 
 export const fc = {
   getDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks"),
+  // Только свои колоды — быстрый список для учителя (раздел «Задания»).
+  getMyDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks?mine=1"),
+  // Одна колода. Страница колоды раньше искала её в полном списке всех колод и,
+  // пока список грузился, считала колоду ненайденной.
+  getDeck: (deckId: number) => apiFetch<DeckWithAssign>(`/api/flashcards/decks/${deckId}`),
   getDeckWords: (deckId: number) => apiFetch<FlashcardWordWithEmoji[]>(`/api/flashcards/decks/${deckId}/words`),
   createDeck: (body: CreateDeckRequest) =>
     apiFetch<FlashcardDeck>("/api/flashcards/decks", { method: "POST", body: JSON.stringify(body) }),
   deleteDeck: (deckId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}`, { method: "DELETE" }),
   addWord: (deckId: number, body: AddWordRequest) =>
-    apiFetch<FlashcardWord>(`/api/flashcards/decks/${deckId}/words`, { method: "POST", body: JSON.stringify(body) }),
-  importWords: (deckId: number, format: "csv" | "json", content: string) =>
-    apiFetch<ImportResult>(`/api/flashcards/decks/${deckId}/import`, { method: "POST", body: JSON.stringify({ format, content }) }),
+    apiFetch<FlashcardWordWithEmoji>(`/api/flashcards/decks/${deckId}/words`, { method: "POST", body: JSON.stringify(body) }),
+  deleteWord: (deckId: number, wordId: number) =>
+    apiFetch<null>(`/api/flashcards/decks/${deckId}/words/${wordId}`, { method: "DELETE" }),
+  // format "lines" — построчно «hello — привет»: так учитель набивает колоду
+  // руками, не возясь с CSV. Перевод можно не писать, тогда его подберёт сервер.
+  importWords: (deckId: number, format: "csv" | "json" | "lines", content: string) =>
+    apiFetch<ImportResultWithSkipped>(`/api/flashcards/decks/${deckId}/import`, { method: "POST", body: JSON.stringify({ format, content }) }),
   getStudyQueue: (deckId: number) => apiFetch<TrainerQueue>(`/api/flashcards/study/${deckId}`),
   // Сквозная сессия по всем колодам: сначала повторения, между ними новые слова.
   getSession: () => apiFetch<TrainerQueue>("/api/flashcards/session"),
@@ -176,9 +198,18 @@ export const fc = {
     apiFetch<{ deckId: number; studentId: number }>(`/api/flashcards/decks/${deckId}/assign`, {
       method: "POST", body: JSON.stringify({ studentId }),
     }),
+  // Отправить колоду сразу нескольким ученикам одним запросом.
+  assignDeckMany: (deckId: number, studentIds: number[]) =>
+    apiFetch<{ deckId: number; studentIds: number[] }>(`/api/flashcards/decks/${deckId}/assign`, {
+      method: "POST", body: JSON.stringify({ studentIds }),
+    }),
   unassignDeck: (deckId: number, studentId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}/assign/${studentId}`, { method: "DELETE" }),
   getAssignees: (deckId: number) => apiFetch<number[]>(`/api/flashcards/decks/${deckId}/assignees`),
+  // Какие колоды уже отправлены этому ученику — одним запросом вместо опроса
+  // assignees по каждой колоде отдельно.
+  getStudentAssignments: (studentId: number) =>
+    apiFetch<number[]>(`/api/flashcards/assignments?studentId=${studentId}`),
   getSettings: () => apiFetch<FlashcardSettingsWithGoal>("/api/flashcards/settings"),
   // Дневная норма новых слов и/или цель дня по словам.
   updateSettings: (patch: { dailyNewLimit?: number; dailyWordGoal?: number }) =>

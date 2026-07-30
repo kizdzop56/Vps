@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
+import { useQueryClient } from "@tanstack/react-query";
 import { fc } from "@/hooks/useFlashcards";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -88,6 +89,8 @@ export default function CreateAssignmentScreen() {
   const audioInputRef = useRef<any>(null);
   const videoInputRef = useRef<any>(null);
 
+  const qc = useQueryClient();
+
   // Режим экрана + состояние формы колоды (простая: название + иконка). Слова
   // добавляются уже на странице колоды после создания.
   const [mode, setMode] = useState<CreateMode>("assignment");
@@ -139,6 +142,16 @@ export default function CreateAssignmentScreen() {
     setDeckSaving(true);
     try {
       const deck = await fc.createDeck({ title: deckTitle.trim(), emoji: deckEmoji });
+      // Кладём созданную колоду прямо в кэш: страница колоды покажет название,
+      // иконку и форму добавления слов сразу. Раньше она ждала полный список
+      // всех колод и до его прихода считала колоду ненайденной — учитель видел
+      // заголовок «Колода» и не получал формы добавления слов.
+      qc.setQueryData(["fc-deck", deck.id], {
+        ...deck, wordCount: 0, learnedCount: 0, dueCount: 0, newCount: 0, canEdit: true,
+      });
+      qc.setQueryData(["fc-words", deck.id], []);
+      qc.invalidateQueries({ queryKey: ["fc-decks"] });
+      qc.invalidateQueries({ queryKey: ["fc-my-decks"] });
       router.replace(`/flashcards/deck/${deck.id}`);
     } catch (e: any) {
       setDeckError(e?.message ?? "Не удалось создать колоду");

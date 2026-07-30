@@ -479,15 +479,15 @@ function AssignDeckModal({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await fc.getDecks();
-      // только собственные колоды учителя (не системные)
-      const own = all.filter((d) => d.ownerId === teacherId && !d.isSystem);
-      setDecks(own);
-      // какие уже назначены этому ученику
-      const pairs = await Promise.all(
-        own.map(async (d) => [d.id, (await fc.getAssignees(d.id)).includes(studentId)] as const),
-      );
-      setAssignedSet(new Set(pairs.filter(([, on]) => on).map(([id]) => id)));
+      // Свои колоды и список уже отправленных этому ученику — двумя запросами.
+      // Раньше assignees опрашивались по каждой колоде отдельно: открытие окна
+      // стоило N+1 запросов и заметно тормозило на мобильной сети.
+      const [own, assigned] = await Promise.all([
+        fc.getMyDecks(),
+        fc.getStudentAssignments(studentId),
+      ]);
+      setDecks(own.filter((d) => d.ownerId === teacherId && !d.isSystem));
+      setAssignedSet(new Set(assigned));
     } catch {
       setDecks([]);
     } finally {
