@@ -239,7 +239,7 @@ export default function AssignmentDetailScreen() {
       const ext = match ? match[1] : "jpg";
       const contentType = `image/${ext === "jpg" ? "jpeg" : ext}`;
 
-      // Web (the VPS deployment is Expo web): GCS presigned PUT for persistence.
+      // Web (the VPS deployment is Expo web): presigned PUT into object storage.
       if (Platform.OS === "web") {
         const blobRes = await fetch(asset.uri);
         const blob = await blobRes.blob();
@@ -251,7 +251,12 @@ export default function AssignmentDetailScreen() {
         const presignedData = await presignedRes.json();
         if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
         const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
-        const uploadRes = await fetch(uploadURL, {
+        // Без настроенного хранилища сервер отдаёт ОТНОСИТЕЛЬНУЮ ссылку на свой
+        // local-put — дополняем её BASE_URL.
+        const uploadTarget = uploadURL.startsWith("http")
+          ? uploadURL
+          : `${BASE_URL}${uploadURL}`;
+        const uploadRes = await fetch(uploadTarget, {
           method: "PUT",
           headers: { "Content-Type": contentType },
           body: blob,

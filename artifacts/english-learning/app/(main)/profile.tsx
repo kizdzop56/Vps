@@ -1057,11 +1057,18 @@ export default function ProfileScreen() {
         actions,
         { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: false }
       );
-      // Загружаем аватар через тот же multipart-роут, что и остальные файлы
-      // (POST /api/upload/image) — он проверен в бою и работает на VPS «из
-      // коробки» (multer -> локальный диск, отдача через /api/uploads/<file>
-      // с правильным Content-Type). Раньше использовался presigned-flow
-      // (request-upload-url + PUT), из-за которого аватар не отображался.
+      // Аватар грузится тем же presigned-потоком, что фото/аудио/видео заданий
+      // (request-upload-url -> PUT -> отдача через /api/storage/objects/...).
+      //
+      // Это ОБЯЗАТЕЛЬНО в проде: multer-роут /api/upload/image пишет файл на
+      // локальный диск контейнера, а на Render persistent disk нет — аватары
+      // исчезали при каждом деплое. Presigned-поток кладёт файл в объектное
+      // хранилище, а если оно не настроено — сам уходит в локальный фолбэк.
+      //
+      // Ранее presigned-поток для аватара откатывали, потому что сервер
+      // возвращал абсолютный uploadURL, собранный из заголовка Host, который
+      // внутренний reverse proxy переписывает на localhost:8080. Теперь ссылка
+      // относительная (см. routes/storage.ts), и загрузка работает.
       const blobRes = await fetch(manipulated.uri);
       const blob = await blobRes.blob();
       if (blob.size > 500_000) {
@@ -1070,19 +1077,46 @@ export default function ProfileScreen() {
         return;
       }
       const token = await authStorage.getItem("auth_token");
-      // Имя файла с расширением .jpg обязательно: сервер отдаёт файл через
-      // res.sendFile и определяет Content-Type по расширению — без него
-      // браузер не отрисует картинку.
-      const formData = new FormData();
-      formData.append("file", blob, "avatar.jpg");
-      const uploadRes = await fetch(`${BASE}/api/upload/image`, {
+
+      // Шаг 1: получить ссылку для загрузки.
+      const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token ?? ""}` },
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token ?? ""}`,
+        },
+        body: JSON.stringify({
+          name: "avatar.jpg",
+          size: blob.size,
+          contentType: "image/jpeg",
+        }),
       });
-      const uploadData = await uploadRes.json().catch(() => ({}));
-      if (!uploadRes.ok) throw new Error(uploadData.error ?? "Ошибка загрузки файла на сервер");
-      const serveUrl = uploadData.url as string;
+      const presignedData = await presignedRes.json().catch(() => ({}));
+      if (!presignedRes.ok) {
+        throw new Error(presignedData.error ?? "Ошибка получения ссылки для загрузки");
+      }
+      const { uploadURL, objectPath } = presignedData as {
+        uploadURL: string;
+        objectPath: string;
+      };
+
+      // Шаг 2: загрузить файл. Content-Type сохраняется на объекте — без него
+      // браузер не отрисует картинку при отдаче.
+      // В локальном режиме uploadURL относительный — дополняем его BASE, чтобы
+      // работало и в нативном приложении, где нет origin страницы.
+      const uploadTarget = uploadURL.startsWith("http")
+        ? uploadURL
+        : `${BASE}${uploadURL}`;
+      const uploadRes = await fetch(uploadTarget, {
+        method: "PUT",
+        headers: { "Content-Type": "image/jpeg" },
+        body: blob,
+      });
+      if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
+
+      // Шаг 3: в БД сохраняем ссылку через наш прокси, а не прямую в бакет —
+      // бакет приватный, и прямые ссылки истекают.
+      const serveUrl = `${BASE}/api/storage${objectPath}?kind=image`;
       setAvatarUrl(serveUrl);
       const ok = await saveProfile({ avatarUrl: serveUrl });
       if (!ok) {

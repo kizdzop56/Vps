@@ -164,8 +164,14 @@ export default function CreateAssignmentScreen() {
 
       const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
 
-      // Step 2: upload directly to GCS via presigned URL (bypasses our proxy entirely).
-      const uploadRes = await fetch(uploadURL, {
+      // Step 2: upload directly to object storage via the presigned URL
+      // (bypasses our proxy entirely). When storage isn't configured the server
+      // returns a RELATIVE url pointing at its own local-put endpoint — prefix
+      // it with BASE so native builds (no page origin) work too.
+      const uploadTarget = uploadURL.startsWith("http")
+        ? uploadURL
+        : `${BASE}${uploadURL}`;
+      const uploadRes = await fetch(uploadTarget, {
         method: "PUT",
         headers: { "Content-Type": file.type },
         body: file,

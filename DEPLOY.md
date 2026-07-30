@@ -49,10 +49,15 @@ Log in as teacher in one browser window and student in an incognito window.
 - **Free web service** sleeps after ~15 min idle; the first request after that
   takes up to a minute (cold start).
 - **Free PostgreSQL expires after 30 days** — upgrade the DB plan to keep data.
-- **File uploads (avatars)** are stored on the container's ephemeral disk and
-  disappear on redeploy/restart. The Replit deployment used Replit Object
-  Storage (`/api/storage` routes) — that feature requires an S3-compatible
-  replacement outside Replit.
+- **File uploads (avatars, assignment photos/audio/video, student recordings)**
+  need object storage. Without it they go to the container's ephemeral disk and
+  **disappear on every redeploy** — Render's free plan has no persistent disk.
+  The app now works with any S3-compatible provider; Cloudflare R2 gives 10 GB
+  free with free egress. Set `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
+  `S3_SECRET_ACCESS_KEY` under **Environment**, add a CORS rule on the bucket,
+  then verify from the Render Shell:
+  `node scripts/storage-check.mjs --origin https://your-app.onrender.com`.
+  Full walkthrough: [`deploy-vps/STORAGE.md`](./deploy-vps/STORAGE.md).
 - **Email (Resend) and voice chat (OpenAI)** are optional: set `RESEND_API_KEY`
   / `OPENAI_API_KEY` in the Render dashboard (Environment) to enable them.
   Login works without email verification (the server auto-verifies users).

@@ -5,6 +5,9 @@
 - **dev-kit** — локальный запуск одной командой: docker-compose (Postgres), `pnpm dev`, сид тестовых аккаунтов (см. `DEV.md`)
 - **деплой на Render** — `Dockerfile`, `render.yaml`, `scripts/prod-start.mjs` (см. `DEPLOY.md`)
 - **демо-сборка** — упаковка web-версии в один HTML с mock-бэкендом в браузере (см. `demo/README.md`)
+- **хранилище файлов** — аватары и медиа заданий хранятся в любом S3-совместимом
+  хранилище (Cloudflare R2, Backblaze B2, MinIO). Настройка и диагностика:
+  `deploy-vps/STORAGE.md`, проверка — `pnpm storage:check`
 
 Тестовые аккаунты: `teacher` / `teacher123`, `student` / `student123`.
 

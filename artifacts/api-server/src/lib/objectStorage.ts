@@ -1,28 +1,32 @@
-import { Storage, File } from "@google-cloud/storage";
-import { Readable } from "stream";
 import { randomUUID } from "crypto";
 import {
-  ObjectAclPolicy,
   ObjectPermission,
   canAccessObject,
   getObjectAclPolicy,
   setObjectAclPolicy,
 } from "./objectAcl";
+import type { ObjectAclPolicy, StoredObject } from "./objectAcl";
+import { s3ClientFromEnv } from "./s3Client";
+import type { S3Client } from "./s3Client";
 
-// GCS client. On a VPS use standard GCS auth: set GOOGLE_APPLICATION_CREDENTIALS
-// to the path of a service-account JSON key, and GCS_PROJECT_ID to the GCP
-// project that owns the bucket. The @google-cloud/storage SDK picks up
-// GOOGLE_APPLICATION_CREDENTIALS automatically when no explicit credentials
-// are passed, so we only forward projectId here.
-export const objectStorageClient = new Storage({
-  projectId: process.env.GCS_PROJECT_ID || undefined,
-});
+/**
+ * Объектное хранилище для медиа: аватары, фото/аудио/видео к заданиям,
+ * голосовые записи учеников.
+ *
+ * Работает с любым S3-совместимым хранилищем (Cloudflare R2, Backblaze B2,
+ * MinIO, Supabase Storage, Storj, AWS S3) — раньше здесь был Replit Object
+ * Storage, затем Google Cloud Storage. Провайдер меняется переменными
+ * окружения, без правок кода: см. `deploy-vps/STORAGE.md`.
+ *
+ * Схема загрузки: сервер выдаёт presigned PUT (15 минут), браузер грузит файл
+ * напрямую в хранилище (минуя наш прокси и его лимиты на размер тела), затем
+ * файл отдаётся обратно через `GET /api/storage/objects/<id>`.
+ */
 
-if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GCS_EMULATOR_HOST) {
-  console.warn(
-    "\n⚠️  GCS not configured: set GOOGLE_APPLICATION_CREDENTIALS (path to a " +
-      "service-account JSON key) and GCS_PROJECT_ID. Uploads will fail without it.\n"
-  );
+/** Префикс ключей в бакете. Позволяет держать в одном бакете и другие данные. */
+function objectPrefix(): string {
+  const raw = process.env.S3_PREFIX ?? "uploads";
+  return raw.replace(/^\/+|\/+$/g, "");
 }
 
 export class ObjectNotFoundError extends Error {
@@ -33,218 +37,136 @@ export class ObjectNotFoundError extends Error {
   }
 }
 
-export class ObjectStorageService {
-  constructor() {}
-
-  getPublicObjectSearchPaths(): Array<string> {
-    const pathsStr = process.env.PUBLIC_OBJECT_SEARCH_PATHS || "";
-    const paths = Array.from(
-      new Set(
-        pathsStr
-          .split(",")
-          .map((path) => path.trim())
-          .filter((path) => path.length > 0)
-      )
+export class ObjectStorageNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "Объектное хранилище не настроено: задайте S3_ENDPOINT, S3_BUCKET, " +
+        "S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY. Инструкция: deploy-vps/STORAGE.md"
     );
-    if (paths.length === 0) {
-      throw new Error(
-        "PUBLIC_OBJECT_SEARCH_PATHS not set. Create a bucket in 'Object Storage' " +
-          "tool and set PUBLIC_OBJECT_SEARCH_PATHS env var (comma-separated paths)."
-      );
+    this.name = "ObjectStorageNotConfiguredError";
+    Object.setPrototypeOf(this, ObjectStorageNotConfiguredError.prototype);
+  }
+}
+
+export interface UploadTarget {
+  /** Presigned PUT — его отдаём браузеру. */
+  uploadURL: string;
+  /** Внутренний путь вида `/objects/<id>`, который сохраняется в БД. */
+  objectPath: string;
+}
+
+export interface DownloadableObject {
+  body: ReadableStream<Uint8Array> | null;
+  contentType: string;
+  contentLength: number | null;
+  cacheControl: string;
+}
+
+export class ObjectStorageService {
+  /**
+   * Клиент создаётся лениво: сервер должен подниматься и без настроенного
+   * хранилища (тогда роуты уходят в локальный дисковый фолбэк).
+   */
+  private client(): S3Client {
+    const client = s3ClientFromEnv();
+    if (!client) {
+      throw new ObjectStorageNotConfiguredError();
     }
-    return paths;
+    return client;
   }
 
-  getPrivateObjectDir(): string {
-    const dir = process.env.PRIVATE_OBJECT_DIR || "";
-    if (!dir) {
-      throw new Error(
-        "PRIVATE_OBJECT_DIR not set. Create a bucket in 'Object Storage' " +
-          "tool and set PRIVATE_OBJECT_DIR env var."
-      );
-    }
-    return dir;
-  }
-
-  async searchPublicObject(filePath: string): Promise<File | null> {
-    for (const searchPath of this.getPublicObjectSearchPaths()) {
-      const fullPath = `${searchPath}/${filePath}`;
-
-      const { bucketName, objectName } = parseObjectPath(fullPath);
-      const bucket = objectStorageClient.bucket(bucketName);
-      const file = bucket.file(objectName);
-
-      const [exists] = await file.exists();
-      if (exists) {
-        return file;
-      }
-    }
-
-    return null;
-  }
-
-  async downloadObject(file: File, cacheTtlSec: number = 3600): Promise<Response> {
-    const [metadata] = await file.getMetadata();
-    const aclPolicy = await getObjectAclPolicy(file);
-    const isPublic = aclPolicy?.visibility === "public";
-
-    const nodeStream = file.createReadStream();
-    const webStream = Readable.toWeb(nodeStream) as ReadableStream;
-
-    const headers: Record<string, string> = {
-      "Content-Type": (metadata.contentType as string) || "application/octet-stream",
-      "Cache-Control": `${isPublic ? "public" : "private"}, max-age=${cacheTtlSec}`,
-    };
-    if (metadata.size) {
-      headers["Content-Length"] = String(metadata.size);
-    }
-
-    return new Response(webStream, { headers });
-  }
-
-  async getObjectEntityUploadURL(): Promise<string> {
-    const privateObjectDir = this.getPrivateObjectDir();
-    if (!privateObjectDir) {
-      throw new Error(
-        "PRIVATE_OBJECT_DIR not set. Create a bucket in 'Object Storage' " +
-          "tool and set PRIVATE_OBJECT_DIR env var."
-      );
-    }
-
-    const objectId = randomUUID();
-    const fullPath = `${privateObjectDir}/uploads/${objectId}`;
-
-    const { bucketName, objectName } = parseObjectPath(fullPath);
-
-    return signObjectURL({
-      bucketName,
-      objectName,
-      method: "PUT",
-      ttlSec: 900,
-    });
-  }
-
-  async getObjectEntityFile(objectPath: string): Promise<File> {
+  /** `/objects/<id>` -> ключ в бакете. */
+  private keyFromObjectPath(objectPath: string): string {
     if (!objectPath.startsWith("/objects/")) {
       throw new ObjectNotFoundError();
     }
-
-    const parts = objectPath.slice(1).split("/");
-    if (parts.length < 2) {
+    const id = objectPath.slice("/objects/".length);
+    // Защита от выхода за пределы префикса.
+    if (!id || id.includes("..")) {
       throw new ObjectNotFoundError();
     }
+    const prefix = objectPrefix();
+    return prefix ? `${prefix}/${id}` : id;
+  }
 
-    const entityId = parts.slice(1).join("/");
-    let entityDir = this.getPrivateObjectDir();
-    if (!entityDir.endsWith("/")) {
-      entityDir = `${entityDir}/`;
-    }
-    const objectEntityPath = `${entityDir}${entityId}`;
-    const { bucketName, objectName } = parseObjectPath(objectEntityPath);
-    const bucket = objectStorageClient.bucket(bucketName);
-    const objectFile = bucket.file(objectName);
-    const [exists] = await objectFile.exists();
+  /**
+   * Presigned PUT + путь объекта одним вызовом.
+   *
+   * Раньше путь вычислялся разбором подписанного URL
+   * (`normalizeObjectEntityPath`), что зависело от домена конкретного
+   * провайдера и ломалось при его смене. Теперь id генерируется здесь и
+   * возвращается напрямую — парсить URL больше не нужно.
+   */
+  getUploadTarget(): UploadTarget {
+    const id = randomUUID();
+    const prefix = objectPrefix();
+    const key = prefix ? `${prefix}/${id}` : id;
+
+    return {
+      uploadURL: this.client().presign({
+        method: "PUT",
+        key,
+        expiresIn: 900,
+      }),
+      objectPath: `/objects/${id}`,
+    };
+  }
+
+  /** Проверить, что объект существует. Иначе — ObjectNotFoundError. */
+  async getObject(objectPath: string): Promise<StoredObject> {
+    const key = this.keyFromObjectPath(objectPath);
+    const exists = await this.client().objectExists(key);
     if (!exists) {
       throw new ObjectNotFoundError();
     }
-    return objectFile;
+    return { key };
   }
 
-  normalizeObjectEntityPath(rawPath: string): string {
-    if (!rawPath.startsWith("https://storage.googleapis.com/")) {
-      return rawPath;
-    }
+  /** Скачать объект для отдачи через наш прокси-роут. */
+  async downloadObject(
+    object: StoredObject,
+    cacheTtlSec = 3600
+  ): Promise<DownloadableObject> {
+    const client = this.client();
+    const aclPolicy = await getObjectAclPolicy(client, object);
+    const isPublic = aclPolicy?.visibility === "public";
 
-    const url = new URL(rawPath);
-    const rawObjectPath = url.pathname;
+    const response = await client.getObject(object.key);
+    const length = response.headers.get("content-length");
 
-    let objectEntityDir = this.getPrivateObjectDir();
-    if (!objectEntityDir.endsWith("/")) {
-      objectEntityDir = `${objectEntityDir}/`;
-    }
-
-    if (!rawObjectPath.startsWith(objectEntityDir)) {
-      return rawObjectPath;
-    }
-
-    const entityId = rawObjectPath.slice(objectEntityDir.length);
-    return `/objects/${entityId}`;
+    return {
+      body: response.body,
+      // Тип берём из самого объекта: он сохраняется при загрузке из
+      // Content-Type браузера. Без этого браузер не проигрывает аудио/видео.
+      contentType:
+        response.headers.get("content-type") || "application/octet-stream",
+      contentLength: length ? Number(length) : null,
+      cacheControl: `${isPublic ? "public" : "private"}, max-age=${cacheTtlSec}`,
+    };
   }
 
-  async trySetObjectEntityAclPolicy(
-    rawPath: string,
+  async setObjectAclPolicy(
+    objectPath: string,
     aclPolicy: ObjectAclPolicy
-  ): Promise<string> {
-    const normalizedPath = this.normalizeObjectEntityPath(rawPath);
-    if (!normalizedPath.startsWith("/")) {
-      return normalizedPath;
-    }
-
-    const objectFile = await this.getObjectEntityFile(normalizedPath);
-    await setObjectAclPolicy(objectFile, aclPolicy);
-    return normalizedPath;
+  ): Promise<void> {
+    const object = await this.getObject(objectPath);
+    await setObjectAclPolicy(this.client(), object, aclPolicy);
   }
 
-  async canAccessObjectEntity({
+  async canAccessObject({
     userId,
-    objectFile,
+    object,
     requestedPermission,
   }: {
     userId?: string;
-    objectFile: File;
+    object: StoredObject;
     requestedPermission?: ObjectPermission;
   }): Promise<boolean> {
     return canAccessObject({
+      client: this.client(),
       userId,
-      objectFile,
+      object,
       requestedPermission: requestedPermission ?? ObjectPermission.READ,
     });
   }
-}
-
-function parseObjectPath(path: string): {
-  bucketName: string;
-  objectName: string;
-} {
-  if (!path.startsWith("/")) {
-    path = `/${path}`;
-  }
-  const pathParts = path.split("/");
-  if (pathParts.length < 3) {
-    throw new Error("Invalid path: must contain at least a bucket name");
-  }
-
-  const bucketName = pathParts[1];
-  const objectName = pathParts.slice(2).join("/");
-
-  return {
-    bucketName,
-    objectName,
-  };
-}
-
-async function signObjectURL({
-  bucketName,
-  objectName,
-  method,
-  ttlSec,
-}: {
-  bucketName: string;
-  objectName: string;
-  method: "GET" | "PUT" | "DELETE" | "HEAD";
-  ttlSec: number;
-}): Promise<string> {
-  // Native GCS V4 signed URL — replaces the Replit Object Storage sidecar.
-  // The service account must have the "Service Account Token Creator" /
-  // "Storage Object Admin" role on the bucket.
-  const options = {
-    version: "v4" as const,
-    action: method === "PUT" ? ("write" as const) : ("read" as const),
-    expires: Date.now() + ttlSec * 1000,
-  };
-  const [url] = await objectStorageClient
-    .bucket(bucketName)
-    .file(objectName)
-    .getSignedUrl(options);
-  return url;
 }
