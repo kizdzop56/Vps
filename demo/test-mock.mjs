@@ -1,5 +1,21 @@
 // Functional test of mock-backend.js in Node (simulates browser globals).
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// mock-backend.js lives next to this test file. Resolve it relative to the
+// script (not the cwd) so `node demo/test-mock.mjs` works from anywhere —
+// previously this was an absolute path from the original build machine, which
+// made the whole suite fail with ENOENT on any other checkout.
+const MOCK_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "mock-backend.js");
+
+// The demo build injects the seed video via this placeholder (see build-html.mjs);
+// in tests a tiny valid mp4 header is enough.
+const readMock = () =>
+  readFileSync(MOCK_PATH, "utf8").replace(
+    "__SEED_VIDEO_DATAURL__",
+    "data:video/mp4;base64,AAAAGGZ0eXBtcDQy",
+  );
 
 // --- browser-ish globals ---
 var mem = {};
@@ -14,7 +30,7 @@ globalThis.FileReader = class { readAsDataURL() { this.onload && this.onload(); 
 window.fetch = async () => { throw new Error("real fetch called unexpectedly"); };
 
 // --- load the mock ---
-eval(readFileSync("/agent/workspace/webapp-build/mock-backend.js", "utf8").replace("__SEED_VIDEO_DATAURL__", "data:video/mp4;base64,AAAAGGZ0eXBtcDQy"));
+eval(readMock());
 
 const api = (path, opts = {}, token) => {
   const headers = { "Content-Type": "application/json" };
@@ -255,7 +271,7 @@ mem["elmock_db_v4"] && (() => {})();
   mem["elmock_db_v4"] = JSON.stringify(dbObj);
 }
 // reload mock so it picks the shifted session, then close it
-eval(readFileSync("/agent/workspace/webapp-build/mock-backend.js", "utf8").replace("__SEED_VIDEO_DATAURL__", "data:video/mp4;base64,AAAAGGZ0eXBtcDQy"));
+eval(readMock());
 localStorage.setItem("auth_user", JSON.stringify({ id: 2 }));
 const todayMsBefore = window.__elmockTodayMs();
 check("todayMs bridge counts open 90s session", todayMsBefore >= 88000 && todayMsBefore <= 95000 + 20 * 60000, todayMsBefore);
@@ -300,7 +316,7 @@ check("oversize upload rejected", r.status === 400);
 check("mapped mediaUrl carries kind=video marker", vaGet.mediaUrl.indexOf("kind=video") !== -1, vaGet.mediaUrl);
 
 // ===== reload survival (no IndexedDB, fresh module, same localStorage) =====
-eval(readFileSync("/agent/workspace/webapp-build/mock-backend.js", "utf8").replace("__SEED_VIDEO_DATAURL__", "data:video/mp4;base64,AAAAGGZ0eXBtcDQy"));
+eval(readMock());
 r = await api("/api/assignments/" + va.id, {}, S);
 let vaGet2 = await j(r);
 check("after reload: video URL playable (blob:/data:) with kind marker", typeof vaGet2.mediaUrl === "string" && (vaGet2.mediaUrl.indexOf("blob:") === 0 || vaGet2.mediaUrl.indexOf("data:") === 0) && vaGet2.mediaUrl.indexOf("kind=video") !== -1, (vaGet2.mediaUrl || "").slice(0, 60));
