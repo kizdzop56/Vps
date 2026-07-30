@@ -55,7 +55,23 @@ shutdown). Ниже — что реально нужно менять, что и
 
 ---
 
-## 3. Google Cloud Storage (пункт 3) — ЕСТЬ правка кода
+## 3. Объектное хранилище (пункт 3) — ЕСТЬ правка кода
+
+> **АКТУАЛЬНО:** хранилище переведено с Google Cloud Storage на **любое
+> S3-совместимое** (Cloudflare R2, Backblaze B2, MinIO, Supabase Storage).
+> Платный аккаунт Google больше не нужен. Пошаговая настройка с бесплатными
+> вариантами и обязательным правилом CORS: **[STORAGE.md](./STORAGE.md)**.
+> Проверка настройки: `node scripts/storage-check.mjs --origin https://домен`.
+>
+> Нужны переменные `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
+> `S3_SECRET_ACCESS_KEY` (+ необязательные `S3_REGION`, `S3_FORCE_PATH_STYLE`,
+> `S3_PREFIX`). Переменные `GOOGLE_APPLICATION_CREDENTIALS`, `GCS_PROJECT_ID`,
+> `PUBLIC_OBJECT_SEARCH_PATHS`, `PRIVATE_OBJECT_DIR` больше не используются.
+>
+> Раздел ниже описывает промежуточный этап миграции (Replit -> GCS) и оставлен
+> как история решения.
+
+### История: этап Replit -> GCS
 
 Это главная реальная зависимость. `objectStorage.ts` конструирует GCS-клиент с
 `external_account` кредами от Replit sidecar (`127.0.0.1:1106/token` и
@@ -162,7 +178,7 @@ Encrypt, добавляет HSTS/Referrer-Policy/X-Content-Type-Options, gzip+zs
 | Данные | Хранилище | Сохранится? |
 |---|---|---|
 | Профили, задания, сабмишены, баллы, связи, календарь, voice-история | **PostgreSQL** (Drizzle) | ✅ Всегда (volume + бэкапы) |
-| Аватары (фото), фото к заданиям, аудио, видео, записи учеников | **GCS** (после правок) | ✅ Да, если настроен GCS |
+| Аватары (фото), фото к заданиям, аудио, видео, записи учеников | **S3-совместимое хранилище** | ✅ Да, если оно настроено (см. [STORAGE.md](./STORAGE.md)) |
 
 **Что было сделано, чтобы медиа не терялись:**
 1. `objectStorage.ts` — Replit sidecar заменён на нативный GCS (`GOOGLE_APPLICATION_CREDENTIALS` + V4 signed URL).
@@ -172,8 +188,8 @@ Encrypt, добавляет HSTS/Referrer-Policy/X-Content-Type-Options, gzip+zs
 
 **Условие «без потерь»:**
 - PostgreSQL: `DATABASE_URL` + persistent volume (`v2-pgdata`) + `backup-postgres.sh` по cron.
-- GCS: `GOOGLE_APPLICATION_CREDENTIALS` + `GCS_PROJECT_ID` + бакет + `PUBLIC_OBJECT_SEARCH_PATHS` + `PRIVATE_OBJECT_DIR` в `.env` (см. `.env.production.example`).
-- Без GCS: профили/задания/баллы сохранятся, но **загрузка и отображение аватаров/фото/аудио/видео перестанут работать** (endpoint `/api/storage/...` упадёт). Поэтому GCS обязателен.
+- Хранилище: `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` в `.env` (см. `env.production.example`) **и правило CORS на бакете**.
+- Без хранилища приложение не падает: файлы уходят на локальный диск контейнера. Профили/задания/баллы сохранятся всегда, но медиа **исчезнет при следующем деплое** (на Render persistent disk нет). Поэтому в проде хранилище обязательно.
 
 ---
 
@@ -189,25 +205,28 @@ Encrypt, добавляет HSTS/Referrer-Policy/X-Content-Type-Options, gzip+zs
 | Регистрация/логин (JWT, без cookies) | ✅ | `SESSION_SECRET` |
 | Email-верификация | ✅ (или авто-верификация без ключа) | `RESEND_API_KEY` опционален |
 | Задания / сабмишены / вопросы | ✅ | Postgres |
-| Аватары / фото / аудио / видео / записи | ✅ | **GCS обязателен** |
+| Аватары / фото / аудио / видео / записи | ✅ | **нужно S3-совместимое хранилище** |
 | Voice chat (OpenAI, обычный REST, не WebSocket) | ✅ | `OPENAI_API_KEY` |
 | Геймификация / баллы / лидерборд | ✅ | Postgres |
 | Календарь / тайм-трекинг | ✅ | Postgres |
 | Connections (учитель↔ученик, друзья) | ✅ | Postgres |
 | Healthcheck (`GET /api/healthz`) | ✅ уже есть | подключить к мониторингу |
 
-Единственный функциональный блок, который **не заработает без доп. настройки**
-— загрузка/показ медиа (аватары, фото, аудио, видео), потому что она идёт
-через GCS. Все остальные фичи не имеют Replit-зависимостей и работают сразу
-после настройки Postgres + `SESSION_SECRET`.
+Единственный блок, который требует доп. настройки — **долговременное хранение**
+медиа (аватары, фото, аудио, видео). Загрузка работает и без него (локальный
+диск), но файлы не переживают деплой. Все остальные фичи не имеют
+Replit-зависимостей и работают сразу после настройки Postgres + `SESSION_SECRET`.
 
 ---
 
 ## Скрытые нюансы, которых НЕ было в твоём списке
 
-1. **Object Storage жёстче, чем «GCS бакет».** Это не просто «пропиши
-   `GOOGLE_APPLICATION_CREDENTIALS`» — нужна **правка кода** (сделана), потому
-   что аутентификация и подпись URL шли через Replit sidecar, а не через SDK.
+1. **Object Storage жёстче, чем «создать бакет».** Нужна была **правка кода**
+   (сделана), потому что аутентификация и подпись URL шли через Replit sidecar.
+   Плюс два неочевидных момента, которых нет ни в одном чек-листе:
+   **(а)** браузер грузит файл напрямую в бакет, поэтому на бакете обязательно
+   нужно правило **CORS** — без него загрузка падает при верных ключах;
+   **(б)** бакет должен остаться **приватным**: файлы отдаёт наш прокси-роут.
 
 2. ~~**Нет healthcheck-эндпоинта.**~~ **УТОЧНЕНИЕ:** он есть —
    `GET /api/healthz` (в `routes/health.ts`), просто не был подключён
@@ -263,21 +282,20 @@ pnpm --filter @workspace/english-learning exec expo export --platform web --outp
 
 # 2. Postgres
 cp deploy-vps/docker-compose.prod.yml /opt/v2/
-cp deploy-vps/.env.production.example /opt/v2/app/.env
+cp deploy-vps/env.production.example /opt/v2/app/.env
 # отредактируй /opt/v2/app/.env (DATABASE_URL, SESSION_SECRET, APP_URL,
-#   GOOGLE_APPLICATION_CREDENTIALS, GCS_*, OPENAI_API_KEY, ADMIN_CLEANUP_TOKEN)
+#   S3_*, OPENAI_API_KEY)
 sudo chown v2:v2 /opt/v2/app/.env && sudo chmod 600 /opt/v2/app/.env
 POSTGRES_PASSWORD=... docker compose -f /opt/v2/docker-compose.prod.yml up -d
 
-# 2b. GCS (ОБЯЗАТЕЛЬНО для аватаров/фото/аудио/видео)
-# - Создать бакет в Google Cloud Console
-# - Создать service account с ролью Storage Object Admin (+ Service Account Token Creator для подписи URL)
-# - Скачать JSON-ключ -> /opt/v2/secrets/gcs-service-account.json (chmod 600)
-sudo mkdir -p /opt/v2/secrets && sudo chmod 700 /opt/v2/secrets
-sudo cp gcs-service-account.json /opt/v2/secrets/
-sudo chmod 600 /opt/v2/secrets/gcs-service-account.json
-# - в .env задать: GOOGLE_APPLICATION_CREDENTIALS, GCS_PROJECT_ID,
-#   PUBLIC_OBJECT_SEARCH_PATHS, PRIVATE_OBJECT_DIR
+# 2b. Объектное хранилище (нужно, чтобы медиа не терялось при деплое)
+# Полная пошаговая инструкция: deploy-vps/STORAGE.md
+# - создать приватный бакет (Cloudflare R2 — 10 ГБ бесплатно, egress бесплатный)
+# - создать ключ с правами Object Read & Write только на этот бакет
+# - настроить CORS на бакете (обязательно, иначе загрузка из браузера упадёт)
+# - в .env задать: S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID,
+#   S3_SECRET_ACCESS_KEY, S3_REGION, S3_FORCE_PATH_STYLE, S3_PREFIX
+node scripts/storage-check.mjs --origin https://ваш-домен   # проверка настройки
 
 # 3. Service + Caddy
 sudo cp deploy-vps/v2.service /etc/systemd/system/
@@ -292,6 +310,7 @@ sudo cp deploy-vps/backup-postgres.sh /opt/v2/app/deploy-vps/
 
 # 5. Проверка
 curl -sf http://127.0.0.1:3000/api/healthz && echo "API OK"
+node scripts/storage-check.mjs --origin https://ваш-домен
 journalctl -u v2 -f
 ```
 
@@ -301,7 +320,8 @@ journalctl -u v2 -f
 
 | Файл | Назначение |
 |---|---|
-| `.env.production.example` | Шаблон env со всеми переменными и комментариями |
+| `env.production.example` | Шаблон env со всеми переменными и комментариями |
+| `STORAGE.md` | Настройка объектного хранилища: R2 / B2 / MinIO, CORS, диагностика |
 | `Caddyfile` | Reverse proxy + авто-HTTPS + security headers |
 | `v2.service` | systemd unit с graceful shutdown + hardening |
 | `docker-compose.prod.yml` | Postgres 16, localhost-only, tuned под 4 ГБ |
@@ -310,6 +330,16 @@ journalctl -u v2 -f
 
 ## Код-правка (вне этой папки)
 
-- `artifacts/api-server/src/lib/objectStorage.ts` — Replit sidecar → нативная
-  GCS-аутентификация + V4 signed URL. **Обязательно проверь typecheck/билд
-  после pull.**
+- `artifacts/api-server/src/lib/s3Client.ts` (новый) — подпись AWS SigV4 на
+  встроенном `crypto`, без новых зависимостей. Тест на официальных векторах
+  AWS: `s3Client.test.ts`.
+- `artifacts/api-server/src/lib/objectStorage.ts`, `objectAcl.ts`,
+  `routes/storage.ts` — Replit sidecar → GCS → **любое S3-совместимое
+  хранилище**. Заодно исправлены: жёстко зашитый `image/jpeg` в локальном
+  режиме и абсолютная ссылка загрузки, собранная из заголовка `Host`.
+- `artifacts/english-learning/app/(main)/profile.tsx` — аватар переведён с
+  multer на общий presigned-поток (на Render он исчезал при каждом деплое).
+- `scripts/storage-check.mjs` (новый) — диагностика хранилища.
+
+Подробности и причины каждой правки — в разделе «Что было изменено в коде»
+в [STORAGE.md](./STORAGE.md). **Обязательно проверь typecheck/билд после pull.**
