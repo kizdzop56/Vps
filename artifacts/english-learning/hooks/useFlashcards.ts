@@ -167,22 +167,89 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
+/** Сколько ждём ответ, прежде чем сказать, что сервер не отвечает. */
+const REQUEST_TIMEOUT_MS = 45_000;
+
+/**
+ * Таймаут запроса, если платформа умеет AbortSignal.timeout (iOS 16+, все
+ * актуальные браузеры). На старых версиях просто ждём столько, сколько нужно —
+ * ломать запрос ради таймаута нельзя.
+ */
+function requestSignal(): AbortSignal | undefined {
+  const ctor = (globalThis as { AbortSignal?: { timeout?: (ms: number) => AbortSignal } }).AbortSignal;
+  return typeof ctor?.timeout === "function" ? ctor.timeout(REQUEST_TIMEOUT_MS) : undefined;
+}
+
+/** Понятный текст по коду ответа — когда сервер не прислал своего объяснения. */
+function messageForStatus(status: number): string {
+  if (status === 401 || status === 403) return "Похоже, сессия истекла. Войдите в приложение заново.";
+  if (status === 404) return "Сервер не нашёл этот раздел. Обновите страницу.";
+  if (status === 409) return "Такая запись уже есть.";
+  if (status === 413) return "Слишком много данных за один раз.";
+  if (status === 429) return "Слишком много запросов подряд. Подождите немного.";
+  if (status === 502 || status === 503) return "Сервер недоступен или ещё запускается. Попробуйте через минуту.";
+  if (status === 504) return "Сервер не ответил вовремя. Попробуйте ещё раз.";
+  if (status >= 500) return "Внутренняя ошибка сервера. Попробуйте ещё раз.";
+  return "Не удалось выполнить запрос.";
+}
+
 // Экспортируем: экраны колод дергают и соседние эндпоинты (список учеников),
 // а каждый экран объявлял свою копию этой функции.
+//
+// Тело ответа разбираем сами, а не через res.json(), и только после проверки
+// res.ok. Причина: при сбое сервер может ответить не JSON, а HTML — страницей
+// ошибки express («Internal Server Error») или заглушкой прокси. res.json() на
+// таком теле бросает системное исключение разбора, а экраны показывают его
+// message как есть. На iOS Safari этот текст выглядит как «The string did not
+// match the expected pattern.» — учитель видел его вместо причины сбоя при
+// добавлении слов в колоду.
 export async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
   const token = await authStorage.getItem("auth_token");
-  const res = await fetch(`${BASE_URL}${path}`, {
-    cache: "no-store",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options?.headers ?? {}),
-    },
-  });
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      cache: "no-store",
+      signal: requestSignal(),
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    // Сюда попадаем, когда ответа нет вообще: нет сети, запрос оборван, таймаут.
+    const name = (err as { name?: string } | null)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error("Сервер не ответил вовремя. Проверьте связь и попробуйте ещё раз.");
+    }
+    throw new Error("Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.");
+  }
+
   if (res.status === 204) return null as T;
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error ?? "Ошибка сервера");
+
+  const raw = await res.text().catch(() => "");
+  let data: any = null;
+  let parsed = false;
+  if (raw.trim()) {
+    try {
+      data = JSON.parse(raw);
+      parsed = true;
+    } catch {
+      parsed = false;
+    }
+  }
+
+  if (!res.ok) {
+    // Своё сообщение сервера показываем как есть — оно написано для учителя.
+    const fromServer = parsed && typeof data?.error === "string" ? data.error.trim() : "";
+    throw new Error(fromServer || messageForStatus(res.status));
+  }
+  if (!parsed) {
+    if (!raw.trim()) return null as T;
+    throw new Error("Сервер вернул неожиданный ответ. Обновите страницу и попробуйте ещё раз.");
+  }
   return data as T;
 }
 

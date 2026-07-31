@@ -321,6 +321,19 @@ function normalizeEnglishInput(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+// Сколько ждём внешний сервис (словарь, переводчик, подсказку написания).
+//
+// Без таймаута повисший запрос держит и наш обработчик: учитель смотрит на
+// крутилку, а в конце получает ошибку от прокси хостинга вместо объяснения.
+// Лучше быстро сказать «сервис недоступен» — учитель впишет перевод сам, и слово
+// всё равно добавится.
+const EXTERNAL_TIMEOUT_MS = Number(process.env["EXTERNAL_API_TIMEOUT_MS"] ?? 8000);
+
+function fetchExternal(url: string | URL, init?: RequestInit): Promise<Response> {
+  const signal = AbortSignal.timeout(EXTERNAL_TIMEOUT_MS) as RequestInit["signal"];
+  return fetch(url, { ...init, signal });
+}
+
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&quot;/g, '"')
@@ -334,7 +347,7 @@ async function getSpellingSuggestion(english: string): Promise<string | undefine
     const url = new URL("https://api.datamuse.com/sug");
     url.searchParams.set("s", english);
     url.searchParams.set("max", "1");
-    const response = await fetch(url);
+    const response = await fetchExternal(url);
     if (!response.ok) return undefined;
     const data = await response.json() as Array<{ word?: unknown }>;
     const candidate = typeof data[0]?.word === "string" ? normalizeEnglishInput(data[0].word) : "";
@@ -351,7 +364,7 @@ async function validateEnglishWord(input: string): Promise<WordCheck> {
   }
 
   try {
-    const response = await fetch(
+    const response = await fetchExternal(
       `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized)}`
     );
     if (response.status === 404) {
@@ -392,7 +405,7 @@ async function translateWithGoogle(english: string): Promise<string | null> {
       url.searchParams.set("source", "en");
       url.searchParams.set("target", "ru");
       url.searchParams.set("format", "text");
-      const response = await fetch(url, { method: "POST" });
+      const response = await fetchExternal(url, { method: "POST" });
       if (!response.ok) return null;
       const data = await response.json() as { data?: { translations?: Array<{ translatedText?: unknown }> } };
       const translated = data.data?.translations?.[0]?.translatedText;
@@ -406,7 +419,7 @@ async function translateWithGoogle(english: string): Promise<string | null> {
     url.searchParams.set("tl", "ru");
     url.searchParams.set("dt", "t");
     url.searchParams.set("q", english);
-    const response = await fetch(url);
+    const response = await fetchExternal(url);
     if (!response.ok) return null;
     const data = await response.json() as unknown;
     const segments = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : [];

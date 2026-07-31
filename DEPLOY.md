@@ -76,3 +76,36 @@ Log in as teacher in one browser window and student in an incognito window.
   recommended for a reliable production deployment.
 - After the first successful deploy you can set `RUN_DB_SETUP=false` for faster
   boots (schema/seed are idempotent, so leaving it on is also fine).
+
+## ⚠️ Schema changes and `RUN_DB_SETUP=false`
+
+`scripts/prod-start.mjs` applies the schema with `drizzle-kit push` **only when
+`RUN_DB_SETUP` is not `"false"`**. With it turned off, the production database
+stops receiving schema updates — and drizzle lists every mapped column in its
+`SELECT`s, so a single missing column makes Postgres answer
+`column "..." does not exist` and the API return `500` for *every* endpoint that
+reads the table.
+
+This has already happened once: commit `9c1851f` added `words.emoji`,
+`user_card_state.lapses` and `flashcard_settings.daily_word_goal`, the push never
+ran, and the whole "Слова" section went down — the word catalogue would not load
+and teachers could not add words to a deck.
+
+So, after changing anything under `lib/db/src/schema`, pick one:
+
+```bash
+# either let the container push on the next boot
+#   set RUN_DB_SETUP=true in the Render dashboard, then Manual Deploy
+
+# or push from your machine against the production database
+DATABASE_URL='postgres://…production…' pnpm db:push
+```
+
+**Safety net.** On every boot the API server compares the database with the
+drizzle schema and adds columns that are safe to add to a populated table —
+nullable ones, and `NOT NULL` ones with a simple default. See
+`artifacts/api-server/src/lib/ensureSchema.ts`; added columns are logged with
+`Schema guard: added missing columns`. It intentionally does **not** create
+tables, change types, add `NOT NULL` columns without a default, or manage
+indexes and foreign keys — those still require a real push, and the guard logs
+loudly when it finds one.

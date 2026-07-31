@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { ensureAdditiveColumns } from "./lib/ensureSchema";
 import { db, usersTable, timeSessionsTable, submissionsTable, authTokensTable } from "@workspace/db";
 import { sql, eq, and, or, isNull } from "drizzle-orm";
 
@@ -120,6 +121,40 @@ async function deleteAnnaUser() {
     logger.error({ err }, "Failed to delete user Анна");
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Схема БД должна догнать код ДО того, как сервер начнёт отвечать на запросы.
+//
+// Раскатку схемы делает drizzle-kit push из scripts/prod-start.mjs, но её
+// отключают переменной RUN_DB_SETUP=false ради быстрых холодных стартов. Тогда
+// новая колонка в схеме роняет боевой сервер: drizzle перечисляет в SELECT все
+// колонки, Postgres отвечает «column does not exist». Так весь раздел «Слова»
+// отдавал 500 из-за words.emoji, user_card_state.lapses и
+// flashcard_settings.daily_word_goal. Подробнее — в lib/ensureSchema.ts.
+//
+// Проверка быстрая (несколько DDL), но на спящей базе первое соединение может
+// тянуться, поэтому ждём её не дольше таймаута: не подняться вообще хуже, чем
+// подняться с отставшей схемой.
+// ─────────────────────────────────────────────────────────────────────────────
+const SCHEMA_GUARD_TIMEOUT_MS = 20_000;
+
+async function ensureSchemaBeforeServing() {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const giveUp = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      logger.error({ timeoutMs: SCHEMA_GUARD_TIMEOUT_MS }, "Schema guard timed out — starting server anyway");
+      resolve();
+    }, SCHEMA_GUARD_TIMEOUT_MS);
+  });
+  try {
+    // ensureAdditiveColumns не бросает исключений: любые сбои уходят в лог.
+    await Promise.race([ensureAdditiveColumns(), giveUp]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+await ensureSchemaBeforeServing();
 
 // Start listening immediately so healthchecks pass; run one-time cleanup in background.
 app.listen(port, (err) => {

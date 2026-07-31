@@ -98,6 +98,37 @@ function isApiPath(url) {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+// Ответ об ошибке самого прокси. Для /api отдаём JSON: клиент разбирает каждый
+// ответ как JSON и на текстовом теле спотыкался невнятным исключением разбора
+// («The string did not match the expected pattern.» на iOS Safari) вместо
+// объяснения. Остальные пути читает браузер, а не код, — там оставляем текст.
+function failRequest(req, res, status, message) {
+  // Ответ уже ушёл целиком — трогать нечего (destroy() здесь мог бы его обрезать).
+  if (res.writableEnded) return;
+  // Статус и заголовки уже отправлены — заменить их нельзя, только оборвать.
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  if (isApiPath(req.url)) {
+    const body = JSON.stringify({ error: message });
+    res.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(body),
+      "cache-control": "no-store",
+    });
+    res.end(body);
+    return;
+  }
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  res.end(message);
+}
+
+// Сколько ждём ответа от своего же процесса. Запрос, висящий дольше, — это
+// обычно зависший внешний вызов внутри обработчика: честный 504 в JSON лучше
+// оборванного соединения или HTML-страницы от прокси хостинга.
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 60_000);
+
 function proxyRequest(req, res, targetPort) {
   const options = {
     hostname: "127.0.0.1",
@@ -110,9 +141,12 @@ function proxyRequest(req, res, targetPort) {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.pipe(res, { end: true });
   });
+  proxy.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+    proxy.destroy();
+    failRequest(req, res, 504, "Сервер не ответил вовремя. Попробуйте ещё раз.");
+  });
   proxy.on("error", () => {
-    res.writeHead(502);
-    res.end("Service starting, please retry…");
+    failRequest(req, res, 502, "Сервер ещё запускается. Попробуйте через несколько секунд.");
   });
   req.pipe(proxy, { end: true });
 }
