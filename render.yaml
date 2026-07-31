@@ -24,11 +24,22 @@ services:
           property: connectionString
       - key: SESSION_SECRET
         generateValue: true
-      # Push schema + seed test accounts (teacher/student) on every boot.
-      # Both are idempotent. Set to "false" after first successful deploy
-      # if you want faster boots.
+      # Seed test accounts (teacher/student/parent) on boot. Idempotent.
+      # Set to "false" once you no longer need the demo accounts.
+      #
+      # NOTE: this no longer controls the schema push. The schema is pushed on
+      # EVERY boot (see scripts/prod-start.mjs) because switching it off used to
+      # take the app down silently: drizzle lists all columns in its SELECTs, so
+      # a single missing column or table makes Postgres error and the endpoint
+      # answer 500. The production DB had fallen several commits behind this way
+      # — missing the deck_assignments and messages tables and the words.emoji,
+      # user_card_state.lapses, flashcard_settings.daily_word_goal columns.
       - key: RUN_DB_SETUP
         value: "true"
+      # Escape hatch: RUN_DB_PUSH=false skips the schema push entirely. Only set
+      # it if you manage migrations yourself — after any change to
+      # lib/db/src/schema you then have to run `pnpm db:push` against this
+      # database by hand. See DEPLOY.md.
       # Optional integrations — add values in the Render dashboard if needed:
       # RESEND_API_KEY (email verification/reset), OPENAI_API_KEY (voice chat)
 
