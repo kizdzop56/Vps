@@ -24,24 +24,22 @@ services:
           property: connectionString
       - key: SESSION_SECRET
         generateValue: true
-      # Push schema + seed test accounts (teacher/student) on every boot.
-      # Both are idempotent, and "true" is the safe default.
+      # Seed test accounts (teacher/student/parent) on boot. Idempotent.
+      # Set to "false" once you no longer need the demo accounts.
       #
-      # Setting this to "false" speeds up boots but means the schema is NEVER
-      # pushed again: after any change to lib/db/src/schema you must run
-      # `pnpm db:push` against the production DATABASE_URL yourself. Skip that
-      # and every endpoint reading the changed table starts answering 500 —
-      # drizzle lists all columns in its SELECTs, so Postgres replies
-      # "column ... does not exist". That is exactly what took the whole "Слова"
-      # section down (words.emoji, user_card_state.lapses,
-      # flashcard_settings.daily_word_goal).
-      #
-      # The API server has a safety net for that case: on boot it adds missing
-      # additive columns — see artifacts/api-server/src/lib/ensureSchema.ts. It
-      # deliberately does NOT handle new tables, type changes or NOT NULL columns
-      # without a default; those still need a real push.
+      # NOTE: this no longer controls the schema push. The schema is pushed on
+      # EVERY boot (see scripts/prod-start.mjs) because switching it off used to
+      # take the app down silently: drizzle lists all columns in its SELECTs, so
+      # a single missing column or table makes Postgres error and the endpoint
+      # answer 500. The production DB had fallen several commits behind this way
+      # — missing the deck_assignments and messages tables and the words.emoji,
+      # user_card_state.lapses, flashcard_settings.daily_word_goal columns.
       - key: RUN_DB_SETUP
         value: "true"
+      # Escape hatch: RUN_DB_PUSH=false skips the schema push entirely. Only set
+      # it if you manage migrations yourself — after any change to
+      # lib/db/src/schema you then have to run `pnpm db:push` against this
+      # database by hand. See DEPLOY.md.
       # Optional integrations — add values in the Render dashboard if needed:
       # RESEND_API_KEY (email verification/reset), OPENAI_API_KEY (voice chat)
 

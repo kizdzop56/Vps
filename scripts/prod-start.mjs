@@ -1,7 +1,8 @@
 // Production startup for single-container deployments (Render, Railway, Fly, VPS).
 //
 // Boot sequence:
-//   1. (optional, RUN_DB_SETUP=true) push DB schema + run idempotent seed
+//   1. push DB schema (always, unless RUN_DB_PUSH=false)
+//      + run idempotent seed (optional, RUN_DB_SETUP=true)
 //   2. start API server (bundled dist) on API_PORT
 //   3. start static web server (Expo web export) on WEB_PORT
 //   4. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
@@ -25,25 +26,97 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ---------- 1. DB schema + seed (idempotent, safe on every boot) ----------
-if ((process.env.RUN_DB_SETUP ?? "true") !== "false") {
-  console.log("[prod] DB setup: pushing schema…");
-  const push = spawnSync("pnpm", ["--filter", "@workspace/db", "run", "push-force"], {
+// ---------- 1. DB schema (always) + seed (optional) ----------
+//
+// Раньше обоими шагами управляла одна переменная RUN_DB_SETUP, и с
+// RUN_DB_SETUP=false — как советует комментарий в render.yaml после первого
+// деплоя — схема перестаёт раскатываться совсем. Дальше любой коммит, меняющий
+// lib/db/src/schema, ломает боевой сервер: drizzle перечисляет в SELECT все
+// колонки, и на недостающей колонке или таблице Postgres отвечает ошибкой, а
+// эндпоинт — пятисоткой.
+//
+// Так и вышло: база отстала сразу на несколько коммитов — не было таблиц
+// deck_assignments и messages и колонок words.emoji, user_card_state.lapses,
+// flashcard_settings.daily_word_goal. У ученика не грузились колоды, у учителя
+// не работали каталог слов и добавление слова, не открывался чат.
+//
+// Поэтому шаги разделены:
+//   • схема — раскатывается ВСЕГДА. push идемпотентен: когда расхождений нет,
+//     это несколько секунд и никаких изменений.
+//   • сид (тестовые аккаунты, картинки к словам) — по-прежнему за RUN_DB_SETUP.
+//
+// Отказаться от push можно явно, через RUN_DB_PUSH=false, — тогда следить за
+// схемой боевой базы придётся самому (`pnpm db:push`). См. DEPLOY.md.
+const PUSH_ATTEMPTS = 2;
+// Оба шага обязаны быть ограничены по времени. spawnSync без timeout ждёт
+// бесконечно, а повисший push означает, что контейнер никогда не начнёт
+// слушать порт: healthcheck не пройдёт и деплой встанет — это хуже той поломки,
+// от которой push спасает.
+const PUSH_TIMEOUT_MS = Number(process.env.DB_PUSH_TIMEOUT_MS || 90_000);
+const SEED_TIMEOUT_MS = Number(process.env.DB_SEED_TIMEOUT_MS || 120_000);
+
+/** Синхронная пауза между попытками — без спавна лишнего процесса. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function runStep(name, args, timeoutMs) {
+  const result = spawnSync("pnpm", args, {
     cwd: root,
     stdio: "inherit",
     env: process.env,
+    timeout: timeoutMs,
   });
-  if (push.status !== 0) {
-    console.error("[prod] schema push failed — aborting startup");
-    process.exit(1);
+  // При таймауте spawnSync убивает процесс: status === null, есть signal/error.
+  const timedOut = result.error?.code === "ETIMEDOUT" || (result.status === null && !!result.signal);
+  if (timedOut) {
+    console.error(`[prod] ${name} timed out after ${Math.round(timeoutMs / 1000)}s`);
   }
+  return { ok: result.status === 0, timedOut };
+}
+
+if (process.env.RUN_DB_PUSH === "false") {
+  console.warn(
+    "[prod] WARNING: RUN_DB_PUSH=false — schema push skipped. After any change to " +
+    "lib/db/src/schema you must run `pnpm db:push` against this database yourself.",
+  );
+} else {
+  let pushed = false;
+  for (let attempt = 1; attempt <= PUSH_ATTEMPTS && !pushed; attempt++) {
+    console.log(`[prod] DB setup: pushing schema… (attempt ${attempt}/${PUSH_ATTEMPTS})`);
+    const { ok, timedOut } = runStep("schema push", ["--filter", "@workspace/db", "run", "push-force"], PUSH_TIMEOUT_MS);
+    pushed = ok;
+    // Повтор нужен ровно для одного случая: база на бесплатном тарифе просыпается
+    // вместе с сервисом и первое соединение не успевает. Такая осечка приходит
+    // быстро. Таймаут же говорит о структурной проблеме — второй заход только
+    // отнимет ещё полторы минуты у старта, поэтому не повторяем.
+    if (!pushed && timedOut) break;
+    if (!pushed && attempt < PUSH_ATTEMPTS) {
+      console.warn("[prod] schema push failed — retrying in 3s…");
+      sleepSync(3000);
+    }
+  }
+  if (pushed) {
+    console.log("[prod] DB setup: schema is up to date");
+  } else {
+    // Раньше здесь был process.exit(1). Теперь push выполняется на каждом
+    // старте, и ронять контейнер из-за разовой недоступности базы — значит
+    // менять «часть функций не работает» на «не работает ничего». Приложение
+    // поднимаем, но кричим в лог; вторая линия обороны — страховка схемы в
+    // artifacts/api-server/src/lib/ensureSchema.ts, она досоздаёт недостающие
+    // колонки уже из процесса сервера.
+    console.error(
+      "[prod] ERROR: schema push failed — starting anyway. Endpoints reading changed " +
+      "tables may return 500 until the schema is pushed (see DEPLOY.md).",
+    );
+  }
+}
+
+// Сид идемпотентен, но нужен не на каждом старте — им управляет RUN_DB_SETUP.
+if ((process.env.RUN_DB_SETUP ?? "true") !== "false") {
   console.log("[prod] DB setup: seeding test accounts…");
-  const seed = spawnSync("pnpm", ["--filter", "@workspace/scripts", "run", "seed"], {
-    cwd: root,
-    stdio: "inherit",
-    env: process.env,
-  });
-  if (seed.status !== 0) {
+  const { ok } = runStep("seed", ["--filter", "@workspace/scripts", "run", "seed"], SEED_TIMEOUT_MS);
+  if (!ok) {
     // Non-fatal: the app works without seed; log loudly and continue.
     console.error("[prod] WARNING: seed failed (continuing) — check DATABASE_URL/logs");
   }

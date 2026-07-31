@@ -125,12 +125,12 @@ async function deleteAnnaUser() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Схема БД должна догнать код ДО того, как сервер начнёт отвечать на запросы.
 //
-// Раскатку схемы делает drizzle-kit push из scripts/prod-start.mjs, но её
-// отключают переменной RUN_DB_SETUP=false ради быстрых холодных стартов. Тогда
-// новая колонка в схеме роняет боевой сервер: drizzle перечисляет в SELECT все
-// колонки, Postgres отвечает «column does not exist». Так весь раздел «Слова»
-// отдавал 500 из-за words.emoji, user_card_state.lapses и
-// flashcard_settings.daily_word_goal. Подробнее — в lib/ensureSchema.ts.
+// Основной механизм — drizzle-kit push из scripts/prod-start.mjs, но сорваться
+// может и он (база не проснулась, RUN_DB_PUSH=false). Если схема отстала, новая
+// колонка роняет боевой сервер: drizzle перечисляет в SELECT все колонки,
+// Postgres отвечает «column does not exist». Так весь раздел «Слова» отдавал 500
+// из-за words.emoji, user_card_state.lapses и flashcard_settings.daily_word_goal.
+// Подробнее — в lib/ensureSchema.ts.
 //
 // Проверка быстрая (несколько DDL), но на спящей базе первое соединение может
 // тянуться, поэтому ждём её не дольше таймаута: не подняться вообще хуже, чем

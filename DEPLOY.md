@@ -74,38 +74,54 @@ Log in as teacher in one browser window and student in an incognito window.
   application uses Google Cloud Translation Basic (v2) for English-to-Russian
   translations; without the key it uses a compatibility fallback, but the key is
   recommended for a reliable production deployment.
-- After the first successful deploy you can set `RUN_DB_SETUP=false` for faster
-  boots (schema/seed are idempotent, so leaving it on is also fine).
+- `RUN_DB_SETUP=false` skips only the **seed** (the demo teacher/student/parent
+  accounts). The schema push is separate and always runs — see below.
 
-## ⚠️ Schema changes and `RUN_DB_SETUP=false`
+## Database schema on boot
 
-`scripts/prod-start.mjs` applies the schema with `drizzle-kit push` **only when
-`RUN_DB_SETUP` is not `"false"`**. With it turned off, the production database
-stops receiving schema updates — and drizzle lists every mapped column in its
-`SELECT`s, so a single missing column makes Postgres answer
-`column "..." does not exist` and the API return `500` for *every* endpoint that
-reads the table.
+`scripts/prod-start.mjs` runs two independent steps:
 
-This has already happened once: commit `9c1851f` added `words.emoji`,
-`user_card_state.lapses` and `flashcard_settings.daily_word_goal`, the push never
-ran, and the whole "Слова" section went down — the word catalogue would not load
-and teachers could not add words to a deck.
+| Step | Controlled by | Default |
+|---|---|---|
+| `drizzle-kit push` (schema) | `RUN_DB_PUSH` | **always runs** |
+| idempotent seed (demo accounts) | `RUN_DB_SETUP` | runs |
 
-So, after changing anything under `lib/db/src/schema`, pick one:
+The push is idempotent: with no drift it takes a few seconds and changes nothing.
+It is deliberately **not** tied to `RUN_DB_SETUP`, because that coupling caused a
+silent production outage.
+
+### What went wrong before
+
+`RUN_DB_SETUP=false` was set for faster boots — as this file used to recommend —
+and from then on the schema was never pushed again. The database fell several
+commits behind: the `deck_assignments` and `messages` tables were missing, as were
+the `words.emoji`, `user_card_state.lapses` and `flashcard_settings.daily_word_goal`
+columns.
+
+Drizzle lists every mapped column in its `SELECT`s, so one missing column or table
+makes Postgres answer `column "..." does not exist` and the endpoint return `500`.
+The result: students saw "Колоды не загрузились", teachers could not open the word
+catalogue or add a word, and chat would not open — all with the unhelpful iOS
+Safari message `The string did not match the expected pattern.`
+
+### If you turn the push off anyway
+
+`RUN_DB_PUSH=false` is an escape hatch for people who manage migrations
+themselves. After **any** change under `lib/db/src/schema` you then have to push
+by hand:
 
 ```bash
-# either let the container push on the next boot
-#   set RUN_DB_SETUP=true in the Render dashboard, then Manual Deploy
-
-# or push from your machine against the production database
 DATABASE_URL='postgres://…production…' pnpm db:push
 ```
 
-**Safety net.** On every boot the API server compares the database with the
-drizzle schema and adds columns that are safe to add to a populated table —
-nullable ones, and `NOT NULL` ones with a simple default. See
-`artifacts/api-server/src/lib/ensureSchema.ts`; added columns are logged with
-`Schema guard: added missing columns`. It intentionally does **not** create
-tables, change types, add `NOT NULL` columns without a default, or manage
-indexes and foreign keys — those still require a real push, and the guard logs
-loudly when it finds one.
+### Safety net
+
+Even with the push disabled or failing, the API server compares the database with
+the drizzle schema on boot and adds columns that are safe to add to a populated
+table — nullable ones, and `NOT NULL` ones with a simple default. See
+`artifacts/api-server/src/lib/ensureSchema.ts`; added columns are logged as
+`Schema guard: added missing columns`.
+
+It intentionally does **not** create tables, change types, add `NOT NULL` columns
+without a default, or manage indexes and foreign keys — that is `drizzle-kit push`'s
+job. When the guard finds such drift it logs it loudly and tells you to push.
