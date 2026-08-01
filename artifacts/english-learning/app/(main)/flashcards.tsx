@@ -3,8 +3,9 @@
 // колод, собственные колоды и переходы к статистике / созданию колоды / тесту.
 //
 // Готовые колоды показываются двумя блоками:
-//   • «Колоды по уровням» — колоды с заданным cefrLevel, сгруппированные по A1..C2.
-//     Уровень ученика раскрыт, остальные свёрнуты, но доступны (видно, что дальше).
+//   • «Колоды по уровням» — колоды с заданным cefrLevel.
+//     Показываются только уровень ученика и следующий (A1 → A1+A2, B1 → B1+B2, C2 → C2).
+//     Уровень ученика раскрыт, следующий свёрнут.
 //   • «Тематические колоды» — колоды без уровня: они охватывают сразу несколько
 //     уровней (еда, животные, …), поэтому в уровневые группы не помещаются.
 import React from "react";
@@ -47,11 +48,19 @@ export default function FlashcardsHome() {
   // Уровневые колоды vs тематические (без cefrLevel) — см. комментарий к файлу.
   const levelDecks = systemDecks.filter((d) => d.cefrLevel);
   const themeDecks = systemDecks.filter((d) => !d.cefrLevel);
-  // Уровни, для которых реально есть колоды (пустых групп не рисуем).
-  const levelsWithDecks = CEFR_LEVELS.filter((l) => levelDecks.some((d) => d.cefrLevel === l));
 
   // Пока тест уровня не пройден, считаем ученика начинающим и раскрываем A1.
   const myLevel = level ?? "A1";
+
+  // Показываем только уровень ученика и следующий (не более двух групп).
+  // Тематические колоды (без cefrLevel) продолжают показываться отдельно.
+  const myLevelIdx = CEFR_LEVELS.indexOf(myLevel);
+  const visibleLevelSet = new Set(CEFR_LEVELS.slice(myLevelIdx, myLevelIdx + 2));
+  // Уровни, для которых реально есть колоды (пустых групп не рисуем).
+  const levelsWithDecks = CEFR_LEVELS.filter(
+    (l) => visibleLevelSet.has(l) && levelDecks.some((d) => d.cefrLevel === l)
+  );
+
   // Раскрытие: null → уровень ученика раскрыт по умолчанию, остальные свёрнуты.
   const [openLevels, setOpenLevels] = React.useState<Record<string, boolean>>({});
   const isLevelOpen = (l: string) => openLevels[l] ?? l === myLevel;
@@ -87,8 +96,7 @@ export default function FlashcardsHome() {
         </TouchableOpacity>
       </View>
 
-      {/* Главное действие: одна кнопка на всё — повторения и новые слова из всех
-          колод в одной очереди. Раньше приходилось выбирать колоду вручную. */}
+      {/* Главное действие */}
       <TouchableOpacity
         onPress={() => router.push("/flashcards/session")}
         activeOpacity={0.9}
@@ -115,7 +123,7 @@ export default function FlashcardsHome() {
         </LinearGradient>
       </TouchableOpacity>
 
-      {/* Цель дня в словах: понятный ребёнку ориентир «сколько ещё осталось». */}
+      {/* Цель дня */}
       <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 12 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
@@ -131,7 +139,7 @@ export default function FlashcardsHome() {
         </View>
       </View>
 
-      {/* Сложные слова — появляются, когда есть что подтягивать */}
+      {/* Сложные слова */}
       {hardCount > 0 && (
         <TouchableOpacity
           onPress={() => router.push("/flashcards/hard")}
@@ -155,7 +163,7 @@ export default function FlashcardsHome() {
         <ActionBtn colors={colors} icon="plus" label="Своя колода" onPress={() => router.push("/flashcards/new-deck")} />
       </View>
 
-      {/* Марафон слов — прогон всех слов уровня и переход на новый этап */}
+      {/* Марафон слов */}
       <TouchableOpacity
         onPress={() => router.push("/flashcards/marathon")}
         activeOpacity={0.85}
@@ -174,8 +182,6 @@ export default function FlashcardsHome() {
       {decksQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       ) : decksQ.isError ? (
-        /* Раньше ошибка загрузки колод не показывалась вообще: экран просто
-           оставался пустым, и было не понять, сломалась сеть или колод нет. */
         <View style={{ marginTop: 24, backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: 16, padding: 16, gap: 10 }}>
           <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Колоды не загрузились</Text>
           <Text style={{ fontSize: 13, lineHeight: 19, color: colors.destructive }}>
@@ -237,7 +243,6 @@ function SectionTitle({ colors, title }: any) {
   return <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>{title}</Text>;
 }
 
-// Русские числовые формы: 1 колода / 2 колоды / 5 колод.
 function pluralRu(n: number, one: string, few: string, many: string) {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -246,17 +251,8 @@ function pluralRu(n: number, one: string, few: string, many: string) {
   return many;
 }
 
-// Группа колод одного уровня CEFR: сворачивается по нажатию на заголовок.
-// Уровень ученика подсвечен и раскрыт по умолчанию, остальные свёрнуты — так
-// ученик видит свой материал, но может заглянуть и на уровень выше.
 function LevelGroup({
-  colors,
-  level,
-  isMyLevel,
-  open,
-  onToggle,
-  decks,
-  onOpenDeck,
+  colors, level, isMyLevel, open, onToggle, decks, onOpenDeck,
 }: {
   colors: any;
   level: string;
@@ -323,8 +319,6 @@ function LevelGroup({
 }
 
 function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: any; onPress: () => void }) {
-  // «начато» = слова, которые уже вводились (wordCount − новые). newCount с
-  // бэкенда = wordCount − introduced, поэтому introduced выводится обратно.
   const introduced = Math.max(0, deck.wordCount - deck.newCount);
   const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
@@ -336,8 +330,6 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: a
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>
-        {/* прогресс-бар: светлая заливка — начатые слова, насыщенная — выученные.
-            Фиолетовый градиент — для лучшей видимости прогресса. */}
         <View style={{ height: 6, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
           <LinearGradient
             colors={["#C4B5FD", "#A78BFA"]}

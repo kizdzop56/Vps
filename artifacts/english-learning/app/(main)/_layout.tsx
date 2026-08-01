@@ -13,7 +13,7 @@ import authStorage from "@/utils/authStorage";
 import { TabGuide, TAB_GUIDE_CONTENT, type TabGuideTab } from "@/components/TabGuide";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlacementTest } from "@/components/PlacementTest";
-import { fc } from "@/hooks/useFlashcards";
+import { fc, apiFetch } from "@/hooks/useFlashcards";
 
 export const SESSION_START_KEY = "timer_session_start";
 
@@ -40,10 +40,6 @@ function StudentTimerManager() {
     if (sessionActiveRef.current) return;
     sessionActiveRef.current = true;
     AsyncStorage.setItem(SESSION_START_KEY, String(Date.now()));
-    // ping уходит ТОЛЬКО после того, как новая сессия создана. Раньше оба
-    // запроса летели одновременно, ping мог обогнать /time-tracking/start,
-    // продлить heartbeat ПРЕДЫДУЩЕЙ (уже брошенной) сессии — и время
-    // отсутствия снова прилетало в «Сегодня».
     void rawPost("/api/time-tracking/start").then(() => rawPost("/api/users/ping"));
   }, [rawPost]);
 
@@ -123,11 +119,7 @@ function CalendarTabIcon({ color }: { color: string }) {
   );
 }
 
-// Storage key prefix for tab-first-visit tracking.
-// Bump the version to re-show the guides after a redesign.
 const TAB_SEEN_PREFIX = "tab_first_visit_v2_";
-
-// Which tabs have a guide available
 const GUIDE_TABS = new Set<string>(Object.keys(TAB_GUIDE_CONTENT));
 
 interface CustomTabBarProps {
@@ -136,13 +128,19 @@ interface CustomTabBarProps {
   navigation: any;
   onFirstVisit: (tabName: TabGuideTab, navigateFn: () => void) => void;
   userId: number;
+  /** Список вкладок, гайд которых уже показан (загружен с сервера). */
+  seenGuides: Set<string>;
+  /** true — данные с сервера получены и можно показывать гайды. */
+  seenGuidesLoaded: boolean;
 }
 
-function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: CustomTabBarProps) {
+function CustomTabBar({
+  state, descriptors, navigation,
+  onFirstVisit, userId, seenGuides, seenGuidesLoaded,
+}: CustomTabBarProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
-  // Hide the tab bar on full-screen quiz/detail screens
   const currentRouteName = state.routes[state.index]?.name ?? "";
   const hideTabBar = [
     "assignment/[id]",
@@ -211,19 +209,17 @@ function CustomTabBar({ state, descriptors, navigation, onFirstVisit, userId }: 
 
           const onPress = async () => {
             if (isFocused) return;
-
             const tabName = route.name as TabGuideTab;
 
-            // Only show guide for tabs that have content + not yet seen.
-            // The "seen" flag is written when the guide is CLOSED (Понятно),
-            // not here — so an interrupted guide shows again next time.
             if (GUIDE_TABS.has(tabName)) {
-              const seenKey = `${TAB_SEEN_PREFIX}${userId}_${tabName}`;
-              // authStorage (localStorage on web) — persists across logout/login.
-              // Raw AsyncStorage on web is in-memory and was reset on every
-              // re-login, so guides kept reappearing.
-              const seen = await authStorage.getItem(seenKey);
-              if (!seen) {
+              // Пока серверные данные ещё грузятся — просто навигируем,
+              // не показываем гайд (чтобы не показать его повторно).
+              if (!seenGuidesLoaded) {
+                navigateToTab();
+                return;
+              }
+              // Основная проверка: видел ли уже этот гайд (сервер)?
+              if (!seenGuides.has(tabName)) {
                 onFirstVisit(tabName, navigateToTab);
                 return;
               }
@@ -290,11 +286,25 @@ function MainLayoutInner() {
   const { user, isLoading } = useAuth();
   const colors = useColors();
   const qc = useQueryClient();
-  // Гейт placement-теста: ученик проходит тест уровня при первом входе.
-  const isStudentRole = user?.role === "student";
-  const placementSettingsQ = useQuery({ queryKey: ["fc-settings"], queryFn: fc.getSettings, enabled: !!user && isStudentRole });
 
-  // State for the tab guide
+  const isStudentRole = user?.role === "student";
+  const placementSettingsQ = useQuery({
+    queryKey: ["fc-settings"],
+    queryFn: fc.getSettings,
+    enabled: !!user && isStudentRole,
+  });
+
+  // Список просмотренных гайдов — хранится на сервере, чтобы не сбрасываться
+  // при очистке localStorage или входе с другого устройства.
+  const onboardingSeenQ = useQuery({
+    queryKey: ["onboarding-seen"],
+    queryFn: () => apiFetch<{ seen: string[] }>("/api/users/onboarding-seen"),
+    enabled: !!user,
+    staleTime: Infinity, // меняется только при явном invalidate после закрытия гайда
+  });
+  const seenGuides = new Set<string>(onboardingSeenQ.data?.seen ?? []);
+  const seenGuidesLoaded = onboardingSeenQ.isSuccess;
+
   const [guideState, setGuideState] = useState<{
     visible: boolean;
     tabName: TabGuideTab | null;
@@ -307,19 +317,27 @@ function MainLayoutInner() {
 
   const handleGuideClose = useCallback(() => {
     const nav = guideState.navigateFn;
-    // Mark the guide as seen only after the user actually closed it (Понятно) —
-    // so it is shown once per user per tab and never again afterwards.
-    if (guideState.tabName && user?.id) {
-      authStorage.setItem(`${TAB_SEEN_PREFIX}${user.id}_${guideState.tabName}`, "1").catch(() => {});
-    }
-    setGuideState({ visible: false, tabName: null, navigateFn: null });
-    // Navigate after the modal begins to close
-    if (nav) setTimeout(nav, 150);
-  }, [guideState.navigateFn, guideState.tabName, user?.id]);
+    const tab = guideState.tabName;
 
-  // Wait for AuthProvider to finish restoring the session from storage before
-  // deciding to redirect — otherwise a page refresh momentarily has `user === null`
-  // (before the stored token is validated) and kicks the user back to login.
+    if (tab && user?.id) {
+      // Записываем на сервер — основное хранилище.
+      apiFetch("/api/users/onboarding-seen", {
+        method: "POST",
+        body: JSON.stringify({ tab }),
+      }).catch(() => {});
+      // Локальный кэш — быстрый фолбэк на случай медленного ответа сервера.
+      authStorage.setItem(`${TAB_SEEN_PREFIX}${user.id}_${tab}`, "1").catch(() => {});
+      // Обновляем кэш React Query, чтобы следующее нажатие на вкладку уже
+      // видело актуальный список без лишнего запроса на сервер.
+      qc.setQueryData<{ seen: string[] }>(["onboarding-seen"], (old) => ({
+        seen: [...(old?.seen ?? []), tab],
+      }));
+    }
+
+    setGuideState({ visible: false, tabName: null, navigateFn: null });
+    if (nav) setTimeout(nav, 150);
+  }, [guideState.navigateFn, guideState.tabName, user?.id, qc]);
+
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background }}>
@@ -334,12 +352,6 @@ function MainLayoutInner() {
   const isTeacher = isTeacherOrAdmin(user.role);
   const isParent = user.role === "parent";
 
-  // Первый вход ученика без пройденного теста → показываем тест уровня.
-  //
-  // Вкладки монтируются всегда и сразу, а тест показывается слоем поверх.
-  // Навигатор не размонтируется, выбранная вкладка не теряется,
-  // а ошибка запроса настроек больше не запирает ученика в приложении:
-  // тест уровня всегда можно пройти из раздела «Слова».
   const needsPlacement = !!placementSettingsQ.data && !placementSettingsQ.data.placementDone;
   const showPlacement = isStudent && needsPlacement;
 
@@ -352,17 +364,15 @@ function MainLayoutInner() {
             {...props}
             onFirstVisit={handleFirstVisit}
             userId={user.id}
+            seenGuides={seenGuides}
+            seenGuidesLoaded={seenGuidesLoaded}
           />
         )}
         screenOptions={{
           headerShown: false,
-          // Bottom-tabs typings don't declare contentStyle (it's a stack
-          // option), but the runtime honors it on web — keep the behavior
-          // while satisfying the type checker via an untyped spread.
           ...({ contentStyle: { backgroundColor: "transparent" } } as object),
         }}
       >
-        {/* Родителю задания не назначают — вместо этой вкладки он видит «Успеваемость». */}
         <Tabs.Screen
           name="assignments"
           options={isParent
@@ -374,7 +384,6 @@ function MainLayoutInner() {
           }
         />
 
-        {/* Полный анализ успеваемости ребёнка — только для родителя. */}
         <Tabs.Screen
           name="progress"
           options={isParent
@@ -430,8 +439,6 @@ function MainLayoutInner() {
           }
         />
 
-        {/* Ученику и родителю «Друзья» в таб-баре не нужны — список друзей,
-            заявки и добавление по коду остались на вкладке «Профиль». */}
         <Tabs.Screen
           name="friends"
           options={isTeacher
@@ -461,18 +468,14 @@ function MainLayoutInner() {
         <Tabs.Screen name="flashcards/study/[deckId]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/session" options={{ href: null }} />
         <Tabs.Screen name="flashcards/hard" options={{ href: null }} />
-        {/* марафон раньше не был объявлен — экран попадал в нижнюю панель */}
         <Tabs.Screen name="flashcards/marathon" options={{ href: null }} />
         <Tabs.Screen name="flashcards/placement" options={{ href: null }} />
         <Tabs.Screen name="flashcards/stats" options={{ href: null }} />
         <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />
         <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
-        {/* предпросмотр колоды для учителя — без записи прогресса */}
         <Tabs.Screen name="flashcards/preview/[id]" options={{ href: null }} />
       </Tabs>
 
-      {/* Тест уровня — слоем поверх вкладок, а не вместо них:
-          подмена навигатора теряла выбранную вкладку. */}
       {showPlacement && (
         <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.background }}>
           <PlacementTest onDone={() => {
@@ -482,7 +485,6 @@ function MainLayoutInner() {
         </View>
       )}
 
-      {/* Preload mascot image so it appears instantly when TabGuide opens */}
       <ExpoImage
         source={require("@/assets/images/mascot_full.png")}
         style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}

@@ -57,6 +57,45 @@ router.get("/users", requireAuth, async (req, res) => {
   res.json(users);
 });
 
+// ── Онбординг-гайд «Снежа»: хранение просмотренных вкладок на сервере ───────
+// Записывать клиентски (authStorage / localStorage) недостаточно: на web
+// localStorage сбрасывается при очистке данных браузера или на другом устройстве.
+
+// GET /api/users/onboarding-seen → { seen: string[] }
+// ВАЖНО: этот маршрут должен стоять ДО GET /users/:id,
+// иначе "onboarding-seen" матчится как :id.
+router.get("/users/onboarding-seen", requireAuth, async (req, res) => {
+  const { userId } = getUser(req);
+  const [row] = await db
+    .select({ onboardingSeen: usersTable.onboardingSeen })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId));
+  res.json({ seen: row?.onboardingSeen ?? [] });
+});
+
+// POST /api/users/onboarding-seen  body: { tab: string }
+// Идемпотентно добавляет таб в jsonb-массив; дубликаты не записываются.
+router.post("/users/onboarding-seen", requireAuth, async (req, res) => {
+  const { userId } = getUser(req);
+  const { tab } = req.body as { tab?: string };
+  if (!tab || typeof tab !== "string") {
+    res.status(400).json({ error: "tab required" });
+    return;
+  }
+  const [row] = await db
+    .select({ onboardingSeen: usersTable.onboardingSeen })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId));
+  const current = row?.onboardingSeen ?? [];
+  if (!current.includes(tab)) {
+    await db
+      .update(usersTable)
+      .set({ onboardingSeen: [...current, tab] })
+      .where(eq(usersTable.id, userId));
+  }
+  res.json({ ok: true });
+});
+
 router.get("/users/:id", requireAuth, async (req, res) => {
   const id = Number(req.params["id"]);
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id));

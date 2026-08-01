@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, pgEnum, date } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, pgEnum, date, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -39,6 +39,9 @@ export const usersTable = pgTable("users", {
   emailVerified: text("email_verified").default("false"),
   mascotName: text("mascot_name").default("Оливер"),
   lastSeenAt: timestamp("last_seen_at"),
+  // Список просмотренных вкладок онбординга (гайд «Снежа»).
+  // null у существующих строк эквивалентен пустому массиву.
+  onboardingSeen: jsonb("onboarding_seen").$type<string[]>(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

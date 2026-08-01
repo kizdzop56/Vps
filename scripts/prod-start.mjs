@@ -27,7 +27,7 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ---------- Ensure all flashcard tables + missing columns (always, even RUN_DB_SETUP=false) ----------
+// ---------- Ensure all tables + missing columns (always, even RUN_DB_SETUP=false) ----------
 // Все CREATE TABLE IF NOT EXISTS и ALTER TABLE … ADD COLUMN IF NOT EXISTS — идемпотентны.
 // Ошибка логируется, но не роняет старт.
 // Порядок создания таблиц соблюдает FK-зависимости:
@@ -52,7 +52,14 @@ async function ensureFlashcardSchema() {
   try {
     await client.connect();
 
-    // ── Таблицы (в порядке FK-зависимостей) ──────────────────────────────────
+    // ── Колонки в основных таблицах ──────────────────────────────────────────
+
+    // Список просмотренных вкладок онбординга (гайд «Снежа»)
+    await client.query(
+      "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS onboarding_seen jsonb",
+    );
+
+    // ── Flashcard-таблицы (в порядке FK-зависимостей) ────────────────────────
 
     // 1. decks — не зависит от других flashcard-таблиц
     await client.query(`
