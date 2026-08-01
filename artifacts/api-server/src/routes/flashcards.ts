@@ -476,7 +476,7 @@ async function resolveEnglishFromRussian(
   const catalogHit = await db
     .select({ english: wordsTable.english, ipa: wordsTable.ipa, translationsRu: wordsTable.translationsRu })
     .from(wordsTable)
-    .where(sql\`\${wordsTable.translationsRu}::jsonb @> \${JSON.stringify([russian])}::jsonb\`)
+    .where(sql`${wordsTable.translationsRu}::jsonb @> ${JSON.stringify([russian])}::jsonb`)
     .limit(1);
 
   if (catalogHit[0]) {
@@ -492,17 +492,17 @@ async function resolveEnglishFromRussian(
   // 2. Google Translate RU→EN
   const translated = await translateRussianToEnglish(russian);
   if (!translated) {
-    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+    return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
   }
 
   // 3. Проверяем полученное английское слово в словаре (написание + IPA)
   const english = normalizeEnglishInput(translated);
   if (!english || !ENGLISH_INPUT_RE.test(english)) {
-    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+    return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
   }
   const checked = await validateEnglishWord(english);
   if (!checked.ok && checked.code === "not-found") {
-    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+    return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
   }
   return {
     ok: true,

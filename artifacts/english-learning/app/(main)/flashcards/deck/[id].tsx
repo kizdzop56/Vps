@@ -69,7 +69,7 @@ export default function DeckDetail() {
   // Отправлять колоду ученикам может только учитель или админ. canEdit значит
   // лишь «колода моя»: ученик, создавший свою колоду, тоже владелец, но
   // рассылать её другим он не должен.
-  const canAssign = canEdit && isTeacherOrAdmin(user?.role);
+  const canAssign = canEdit && isTeacherOrAdmin(user?.role ?? "");
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["fc-words", deckId] });
