@@ -359,8 +359,11 @@ async function validateEnglishWord(input: string): Promise<WordCheck> {
   }
 
   try {
+    // dictionaryapi.dev регистрозависим: "Russian" (Google Translate часто
+    // возвращает перевод с заглавной буквы) даёт 404, а "russian" — находится.
+    // Само сохраняемое слово (normalized) регистр не меняет — только запрос.
     const response = await fetch(
-      `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized)}`
+      `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized.toLowerCase())}`
     );
     if (response.status === 404) {
       return { ok: false, code: "not-found", suggestion: await getSpellingSuggestion(normalized) };
@@ -495,15 +498,16 @@ async function resolveEnglishFromRussian(
     return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
   }
 
-  // 3. Проверяем полученное английское слово в словаре (написание + IPA)
+  // 3. Проверяем полученное английское слово в словаре — только за IPA.
+  //    Словарь знает far from все слова (имена, редкие термины, составные
+  //    слова), но перевод у нас уже есть, так что 404 из словаря не повод
+  //    отклонять слово целиком — отклоняем только если сам перевод не получен
+  //    (случай выше) или переведённый текст в принципе не похож на слово.
   const english = normalizeEnglishInput(translated);
   if (!english || !ENGLISH_INPUT_RE.test(english)) {
     return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
   }
   const checked = await validateEnglishWord(english);
-  if (!checked.ok && checked.code === "not-found") {
-    return { ok: false, error: `Не удалось распознать слово «${russian}». Проверьте написание.` };
-  }
   return {
     ok: true,
     english: checked.ok ? (checked.normalized ?? english) : english,
@@ -1115,29 +1119,34 @@ router.post("/flashcards/decks/:id/words/bulk", requireAuth, async (req, res) =>
     if (!english) { failed.push({ english: String(raw).trim(), reason: "Пустое слово." }); continue; }
     if (existing.has(wordKey(english))) { skipped++; continue; }
 
-    const checked = await validateEnglishWord(english);
-    if (!checked.ok) {
-      failed.push({ english, reason: validationErrorMessage(english, checked) });
-      continue;
-    }
-    if (existing.has(wordKey(checked.normalized))) { skipped++; continue; }
-
     let ru = Array.isArray(item.translationsRu)
       ? item.translationsRu.map((t) => String(t).trim()).filter(Boolean)
       : [];
+
+    // Словарь может не знать слово (редкое, составное, имя) — если перевод уже
+    // есть от пользователя, это не повод отклонять слово, как и в одиночном
+    // добавлении. Отклоняем только формат/недоступность сервиса без перевода.
+    const checked = await validateEnglishWord(english);
+    if (!checked.ok && ru.length === 0) {
+      failed.push({ english, reason: validationErrorMessage(english, checked) });
+      continue;
+    }
+    const finalEnglish = checked.ok ? (checked.normalized ?? english) : english;
+    if (existing.has(wordKey(finalEnglish))) { skipped++; continue; }
+
     if (ru.length === 0) {
-      const translated = await translateWithGoogle(checked.normalized);
+      const translated = await translateWithGoogle(finalEnglish);
       if (!translated) {
-        failed.push({ english: checked.normalized, reason: "Не удалось получить перевод. Укажите его вручную." });
+        failed.push({ english: finalEnglish, reason: "Не удалось получить перевод. Укажите его вручную." });
         continue;
       }
       ru = [translated];
     }
 
-    existing.add(wordKey(checked.normalized));
+    existing.add(wordKey(finalEnglish));
     manualRows.push({
-      deckId, english: checked.normalized, partOfSpeech: null, translationsRu: ru,
-      ipa: checked.ipa ?? null, exampleEn: null, exampleRu: null, cefrLevel: null, emoji: null,
+      deckId, english: finalEnglish, partOfSpeech: null, translationsRu: ru,
+      ipa: (checked.ok ? checked.ipa : undefined) ?? null, exampleEn: null, exampleRu: null, cefrLevel: null, emoji: null,
       sortOrder: nextSortOrder + catalogRows.length + manualRows.length,
     });
   }

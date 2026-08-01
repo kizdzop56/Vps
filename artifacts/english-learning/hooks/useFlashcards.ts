@@ -242,8 +242,9 @@ export function speakWord(wordId: number, text: string, lang = "en-US"): void {
 }
 
 async function _speakWordAsync(wordId: number, text: string, lang: string): Promise<void> {
-  const token = await authStorage.getItem("auth_token");
-  if (!token) throw new Error("no token");
+  // /api/tts не требует Authorization: <audio>/new Audio(url) и expo-av грузят
+  // звук напрямую по URL и не умеют слать заголовки — аудио слов не приватные
+  // данные, поэтому роут открыт без токена (см. artifacts/api-server/src/routes/tts.ts).
   const url = `${BASE_URL}/api/tts?wordId=${wordId}`;
 
   if (Platform.OS === "web") {
@@ -252,7 +253,7 @@ async function _speakWordAsync(wordId: number, text: string, lang: string): Prom
     // Используем кэш: не качаем mp3 повторно при каждом тапе
     let blob = _ttsCache.get(wordId);
     if (!blob) {
-      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const resp = await fetch(url);
       // 404 (слово без аудио) или 503 (сервис недоступен) → тихий fallback
       if (!resp.ok) throw new Error(`tts ${resp.status}`);
       blob = await resp.blob();
@@ -285,7 +286,7 @@ async function _speakWordAsync(wordId: number, text: string, lang: string): Prom
   const av = await (import(pkg) as Promise<any>).catch(() => null);
   if (!av) throw new Error("expo-av not available");
   const { sound } = await av.Audio.Sound.createAsync(
-    { uri: url, headers: { Authorization: `Bearer ${token}` } },
+    { uri: url },
     { shouldPlay: true }
   );
   sound.setOnPlaybackStatusUpdate((status: any) => {

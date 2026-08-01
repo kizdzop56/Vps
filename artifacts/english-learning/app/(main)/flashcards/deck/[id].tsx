@@ -9,8 +9,11 @@
 //     у ненайденной колоды прежняя проверка молча давала запрет.
 //  3. Ошибки загрузки показываем с кнопкой «Повторить», а не бесконечным
 //     спиннером.
-//  4. Учителю вместо «Начать учить» — «Предпросмотр»: тренировка ведёт учёт
-//     прогресса, учителю нужно просто посмотреть колоду глазами ученика.
+//  4. Учителю/админу вместо «Начать учить» — «Предпросмотр»: тренировка ведёт
+//     учёт прогресса, а учителю нужно просто посмотреть колоду глазами ученика.
+//     Ученику в его собственной колоде «Предпросмотр» не нужен — это функция
+//     учителя, поэтому ветка зависит от canAssign (роль), а не от canEdit
+//     (владение колодой): ученик — владелец своей колоды, но не учитель.
 import React, { useState, useEffect, useMemo } from "react";
 import {
   View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator,
@@ -245,8 +248,9 @@ export default function DeckDetail() {
         )}
       </View>
 
-      {/* главное действие: учителю — предпросмотр, ученику — тренировка */}
-      {canEdit ? (
+      {/* главное действие: предпросмотр — только учителю/админу (canAssign),
+          ученику в любой колоде (своей или назначенной) — тренировка */}
+      {canAssign ? (
         <>
           <TouchableOpacity
             onPress={() => router.push(`/flashcards/preview/${deckId}`)}
@@ -261,20 +265,18 @@ export default function DeckDetail() {
             <Feather name="eye" size={18} color="#fff" />
             <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Предпросмотр колоды</Text>
           </TouchableOpacity>
-          {canAssign && (
-            <TouchableOpacity
-              onPress={() => setSendOpen(true)}
-              activeOpacity={0.85}
-              style={{
-                borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row",
-                justifyContent: "center", gap: 8, marginBottom: 18,
-                borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
-              }}
-            >
-              <Feather name="send" size={18} color={colors.primary} />
-              <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 15 }}>Отправить ученикам</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            onPress={() => setSendOpen(true)}
+            activeOpacity={0.85}
+            style={{
+              borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row",
+              justifyContent: "center", gap: 8, marginBottom: 18,
+              borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
+            }}
+          >
+            <Feather name="send" size={18} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 15 }}>Отправить ученикам</Text>
+          </TouchableOpacity>
         </>
       ) : (
         <TouchableOpacity

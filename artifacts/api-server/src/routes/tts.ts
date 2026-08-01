@@ -18,7 +18,6 @@ import path from "node:path";
 import { db } from "@workspace/db";
 import { wordsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { requireAuth } from "../lib/auth";
 import { s3ClientFromEnv } from "../lib/s3Client";
 
 const router = Router();
@@ -156,7 +155,11 @@ async function azureTts(text: string): Promise<Buffer | null> {
 
 // ── Роут ───────────────────────────────────────────────────────────────────
 
-router.get("/tts", requireAuth, async (req, res) => {
+// Без requireAuth: аудио слов (mp3-записи носителей/TTS) — не приватные
+// данные, а <audio src="...">, new Audio(url) и expo-av грузят звук напрямую
+// по URL и не умеют слать заголовок Authorization, поэтому роут был
+// фактически недоступен из плеера (сплошные 401).
+router.get("/tts", async (req, res) => {
   const keyParam = req.query["key"];
   const wordIdParam = req.query["wordId"];
   const textParam = req.query["text"];
