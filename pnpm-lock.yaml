@@ -175,6 +175,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      '@workspace/translate':
+        specifier: workspace:*
+        version: link:../../lib/translate
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -629,11 +632,20 @@ importers:
         specifier: ^0.31.10
         version: 0.31.10
 
+  lib/translate:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.4
+
   scripts:
     dependencies:
       '@workspace/db':
         specifier: workspace:*
         version: link:../lib/db
+      '@workspace/translate':
+        specifier: workspace:*
+        version: link:../lib/translate
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3

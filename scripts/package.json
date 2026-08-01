@@ -7,10 +7,12 @@
     "hello": "tsx ./src/hello.ts",
     "seed": "tsx ./src/seed.ts",
     "fetch-audio": "tsx ./src/fetch-audio.ts",
+    "import-vocab": "tsx ./src/import-vocabulary.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@workspace/db": "workspace:*",
+    "@workspace/translate": "workspace:*",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.7",
     "drizzle-orm": "catalog:"

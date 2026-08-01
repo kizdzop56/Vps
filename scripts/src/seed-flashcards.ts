@@ -7,14 +7,21 @@
 import { db, decksTable, wordsTable } from "@workspace/db";
 import { and, eq, isNull, inArray } from "drizzle-orm";
 import { SEED_DECKS, emojiFor } from "./data/flashcards-data";
+import { VOCAB_DECKS } from "./data/vocabulary-index";
+
+// Ручные тематические колоды (flashcards-data.ts) + колоды, наполненные
+// импортёром реального словаря (scripts/src/import-vocabulary.ts). Импортёр
+// пишет в отдельные vocabulary-{level}.ts именно затем, чтобы не раздувать
+// flashcards-data.ts до неуправляемого размера.
+const ALL_DECKS = [...SEED_DECKS, ...VOCAB_DECKS];
 
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
   let emojiFilled = 0;
 
-  for (let i = 0; i < SEED_DECKS.length; i++) {
-    const d = SEED_DECKS[i]!;
+  for (let i = 0; i < ALL_DECKS.length; i++) {
+    const d = ALL_DECKS[i]!;
 
     // Найти существующую системную колоду с этой темой
     const existing = await db
@@ -100,5 +107,5 @@ export async function seedFlashcards(): Promise<void> {
     }
   }
 
-  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled} (всего колод в датасете ${SEED_DECKS.length}).`);
+  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled} (всего колод в датасете ${ALL_DECKS.length}).`);
 }

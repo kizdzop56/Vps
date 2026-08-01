@@ -17,6 +17,7 @@ import {
 } from "@workspace/db";
 import { eq, and, or, ne, asc, isNull, inArray, lte, gte, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
+import { translateWithGoogle, translateRussianToEnglish } from "@workspace/translate";
 import {
   BULK_WORD_LIMIT,
   MANUAL_WORD_LIMIT,
@@ -329,14 +330,6 @@ function normalizeEnglishInput(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)));
-}
-
 async function getSpellingSuggestion(english: string): Promise<string | undefined> {
   try {
     const url = new URL("https://api.datamuse.com/sug");
@@ -389,84 +382,6 @@ function validationErrorMessage(input: string, check: Exclude<WordCheck, { ok: t
       : `Слово «${input}» не найдено. Проверьте написание и попробуйте снова.`;
   }
   return "Сервис проверки слов временно недоступен. Попробуйте ещё раз немного позже.";
-}
-
-async function translateWithGoogle(english: string): Promise<string | null> {
-  try {
-    const apiKey = process.env["GOOGLE_TRANSLATE_API_KEY"]?.trim();
-
-    if (apiKey) {
-      // Официальный Cloud Translation Basic API v2.
-      const url = new URL("https://translation.googleapis.com/language/translate/v2");
-      url.searchParams.set("key", apiKey);
-      url.searchParams.set("q", english);
-      url.searchParams.set("source", "en");
-      url.searchParams.set("target", "ru");
-      url.searchParams.set("format", "text");
-      const response = await fetch(url, { method: "POST" });
-      if (!response.ok) return null;
-      const data = await response.json() as { data?: { translations?: Array<{ translatedText?: unknown }> } };
-      const translated = data.data?.translations?.[0]?.translatedText;
-      return typeof translated === "string" && translated.trim() ? decodeHtmlEntities(translated).trim() : null;
-    }
-
-    // Совместимый резервный путь: позволяет карточкам работать до настройки API-ключа.
-    const url = new URL("https://translate.googleapis.com/translate_a/single");
-    url.searchParams.set("client", "gtx");
-    url.searchParams.set("sl", "en");
-    url.searchParams.set("tl", "ru");
-    url.searchParams.set("dt", "t");
-    url.searchParams.set("q", english);
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json() as unknown;
-    const segments = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : [];
-    const translated = segments
-      .map((segment) => Array.isArray(segment) && typeof segment[0] === "string" ? segment[0] : "")
-      .join("")
-      .trim();
-    return translated ? decodeHtmlEntities(translated) : null;
-  } catch {
-    return null;
-  }
-}
-
-// Перевод RU→EN для добавления слова «с русской стороны».
-// Структура намеренно параллельна translateWithGoogle (EN→RU) — меняем только
-// направление перевода, не ломая существующие вызовы.
-async function translateRussianToEnglish(russian: string): Promise<string | null> {
-  try {
-    const apiKey = process.env["GOOGLE_TRANSLATE_API_KEY"]?.trim();
-    if (apiKey) {
-      const url = new URL("https://translation.googleapis.com/language/translate/v2");
-      url.searchParams.set("key", apiKey);
-      url.searchParams.set("q", russian);
-      url.searchParams.set("source", "ru");
-      url.searchParams.set("target", "en");
-      url.searchParams.set("format", "text");
-      const response = await fetch(url, { method: "POST" });
-      if (!response.ok) return null;
-      const data = await response.json() as { data?: { translations?: Array<{ translatedText?: unknown }> } };
-      const translated = data.data?.translations?.[0]?.translatedText;
-      return typeof translated === "string" && translated.trim() ? decodeHtmlEntities(translated).trim() : null;
-    }
-    const url = new URL("https://translate.googleapis.com/translate_a/single");
-    url.searchParams.set("client", "gtx");
-    url.searchParams.set("sl", "ru");
-    url.searchParams.set("tl", "en");
-    url.searchParams.set("dt", "t");
-    url.searchParams.set("q", russian);
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json() as unknown;
-    const segments = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : [];
-    const translated = segments
-      .map((segment) => Array.isArray(segment) && typeof segment[0] === "string" ? segment[0] : "")
-      .join("").trim();
-    return translated ? decodeHtmlEntities(translated) : null;
-  } catch {
-    return null;
-  }
 }
 
 // Разрешить русское слово в английское: сначала ищем в каталоге, потом переводим.
