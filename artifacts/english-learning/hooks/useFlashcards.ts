@@ -1,6 +1,6 @@
 // Клиентский слой для флеш-карточек: авторизованный apiFetch + типизированные
-// вызовы + озвучка через Web Speech API (без бэкенда/ключей). Типы берём из
-// сгенерированного контракта (@workspace/api-client-react).
+// вызовы + озвучка через реальные записи носителей (TTS API) с fallback на
+// Web Speech API / expo-speech.
 import authStorage from "@/utils/authStorage";
 import { Platform } from "react-native";
 import type {
@@ -19,14 +19,10 @@ import type {
 } from "@workspace/api-client-react";
 
 // ── Тренажёр слов ───────────────────────────────────────────────────────────
-// Упражнение приходит с сервера готовым (варианты ответа, буквы для сборки), см.
-// api-server/src/lib/wordExercise.ts. Клиент только показывает задание и
-// проверяет ответ, поэтому набор упражнений одинаков во всех режимах.
 export type ExerciseType = "intro" | "choiceRu" | "choiceEn" | "listen" | "build";
 
 export type Exercise = {
   type: ExerciseType;
-  /** Что показать: английское слово (choiceRu/listen) или перевод (choiceEn/build). */
   prompt: string;
   options?: string[];
   answerIndex?: number;
@@ -34,10 +30,8 @@ export type Exercise = {
   answer?: string;
 };
 
-/** Оценка ответа — как в api-server/src/lib/srs.ts. */
 export type Grade = "again" | "hard" | "good" | "easy";
 
-/** Сам ответ ученика: оценку по нему выставляет сервер. */
 export type AnswerInfo = {
   correct: boolean;
   attempts?: number;
@@ -45,17 +39,14 @@ export type AnswerInfo = {
   hintUsed?: boolean;
 };
 
-/** Карточка тренажёра: слово + картинка-подсказка + готовое упражнение. */
 export type TrainerCard = StudyCard & { emoji?: string; exercise?: Exercise };
 
-/** Прогресс цели дня по словам (приходит вместе с любой очередью и ответом). */
 export type DailyWordProgress = {
   wordsToday: number;
   dailyWordGoal: number;
   goalReached: boolean;
 };
 
-/** Очередь тренажёра: колода, сквозная сессия или «сложные слова». */
 export type TrainerQueue = Partial<DailyWordProgress> & {
   scope?: "all" | "hard";
   deckId: number;
@@ -67,7 +58,6 @@ export type TrainerQueue = Partial<DailyWordProgress> & {
   cards: TrainerCard[];
 };
 
-/** Ответ сервера на оценку карточки: новое расписание, очки и цель дня. */
 export type ReviewOutcome = DailyWordProgress & {
   wordId: number;
   grade: Grade;
@@ -79,9 +69,6 @@ export type ReviewOutcome = DailyWordProgress & {
   pointsEarned: number;
 };
 
-// «Марафон слов»: слова уровня пользователя + прогресс/точность и готовность
-// к переходу на следующий уровень. Тип объявлен здесь (эндпоинт добавлен вручную,
-// без кодогенерации Orval).
 export type MarathonQueue = Partial<DailyWordProgress> & {
   level: string;
   nextLevel?: string;
@@ -95,24 +82,14 @@ export type MarathonQueue = Partial<DailyWordProgress> & {
   cards: TrainerCard[];
 };
 
-// Колода с прогрессом + поля назначения (эндпоинт расширен вручную, без Orval):
-//   assigned      — колода назначена текущему ученику учителем
-//   assignedCount — скольким ученикам колода назначена (видит владелец-учитель)
-//   canEdit       — колода своя и не системная: можно добавлять слова и отправлять
-//                   её ученикам. Раньше клиент выводил это из !isSystem, и для
-//                   ещё не загруженной колоды получал запрет.
 export type DeckWithAssign = DeckWithProgress & {
   assigned?: boolean;
   assignedCount?: number;
   canEdit?: boolean;
 };
 
-// Результат импорта + сами пропущенные слова: учителю важно понять, что именно
-// не попало в колоду (поле добавлено вручную, без Orval).
 export type ImportResultWithSkipped = ImportResult & { skippedWords?: string[] };
 
-// Статистика слов + CEFR-уровень из placement-теста, сегодняшний прогресс к цели
-// дня и число «сложных слов» (поля добавлены вручную, без Orval).
 export type FlashcardStatsWithLevel = FlashcardStats & {
   placementLevel?: string | null;
   wordsToday?: number;
@@ -123,40 +100,27 @@ export type FlashcardStatsWithLevel = FlashcardStats & {
   hardCount?: number;
 };
 
-// Настройки + цель дня по словам (поле добавлено вручную, без Orval).
 export type FlashcardSettingsWithGoal = FlashcardSettings & { dailyWordGoal?: number };
 
-// Слово колоды + картинка-подсказка (поле добавлено вручную, без Orval).
 export type FlashcardWordWithEmoji = FlashcardWord & { emoji?: string };
 
-// ── Каталог слов для конструктора колоды (эндпоинты добавлены вручную, без Orval) ──
-
-// Слово из каталога: то же слово колоды + откуда оно взято. deckTitle и theme
-// показываем подписью в конструкторе, чтобы учитель видел источник слова.
 export type CatalogWord = FlashcardWordWithEmoji & { deckTitle?: string; theme?: string };
 
-/** Страница каталога: total — сколько всего слов подошло под фильтры. */
 export type CatalogPage = { total: number; words: CatalogWord[] };
 
-/** Фильтры каталога. q ищет и по английскому, и по переводу. */
 export type CatalogQuery = {
   q?: string;
   theme?: string;
   level?: string;
-  /** только из одной колоды */
   deckId?: number;
-  /** не показывать слова колоды, которую сейчас наполняем */
   excludeDeckId?: number;
-  /** добавить к каталогу собственные колоды пользователя */
   includeOwn?: boolean;
   limit?: number;
   offset?: number;
 };
 
-/** Слово, введённое учителем руками: перевод необязателен (подберёт сервер). */
 export type ManualWordInput = { english: string; translationsRu?: string[] };
 
-/** Итог массового добавления: что добавилось, что пропущено и что не прошло проверку. */
 export type BulkAddResult = {
   added: number;
   skipped: number;
@@ -167,8 +131,6 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
-// Экспортируем: экраны колод дергают и соседние эндпоинты (список учеников),
-// а каждый экран объявлял свою копию этой функции.
 export async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
   const token = await authStorage.getItem("auth_token");
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -181,8 +143,6 @@ export async function apiFetch<T = any>(path: string, options?: RequestInit): Pr
     },
   });
   if (res.status === 204) return null as T;
-  // Читаем как текст и парсим вручную — если сервер вернул HTML (например, 500-страницу
-  // Express), получим понятную ошибку вместо "Unexpected token '<'".
   const text = await res.text();
   let data: unknown;
   try {
@@ -198,10 +158,7 @@ export async function apiFetch<T = any>(path: string, options?: RequestInit): Pr
 
 export const fc = {
   getDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks"),
-  // Только свои колоды — быстрый список для учителя (раздел «Задания»).
   getMyDecks: () => apiFetch<DeckWithAssign[]>("/api/flashcards/decks?mine=1"),
-  // Одна колода. Страница колоды раньше искала её в полном списке всех колод и,
-  // пока список грузился, считала колоду ненайденной.
   getDeck: (deckId: number) => apiFetch<DeckWithAssign>(`/api/flashcards/decks/${deckId}`),
   getDeckWords: (deckId: number) => apiFetch<FlashcardWordWithEmoji[]>(`/api/flashcards/decks/${deckId}/words`),
   createDeck: (body: CreateDeckRequest) =>
@@ -212,11 +169,8 @@ export const fc = {
     apiFetch<FlashcardWordWithEmoji>(`/api/flashcards/decks/${deckId}/words`, { method: "POST", body: JSON.stringify(body) }),
   deleteWord: (deckId: number, wordId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}/words/${wordId}`, { method: "DELETE" }),
-  // format "lines" — построчно «hello — привет»: так учитель набивает колоду
-  // руками, не возясь с CSV. Перевод можно не писать, тогда его подберёт сервер.
   importWords: (deckId: number, format: "csv" | "json" | "lines", content: string) =>
     apiFetch<ImportResultWithSkipped>(`/api/flashcards/decks/${deckId}/import`, { method: "POST", body: JSON.stringify({ format, content }) }),
-  // Каталог готовых слов: учитель отмечает нужные вместо набора руками.
   searchCatalog: (query: CatalogQuery = {}) => {
     const p = new URLSearchParams();
     if (query.q) p.set("q", query.q);
@@ -230,19 +184,12 @@ export const fc = {
     const qs = p.toString();
     return apiFetch<CatalogPage>(`/api/flashcards/catalog/words${qs ? `?${qs}` : ""}`);
   },
-  // Записать подборку: отмеченные слова каталога (wordIds) и свои слова (words)
-  // одним запросом. Ответ разбирает итог: added / skipped / failed.
   addWordsBulk: (deckId: number, body: { wordIds?: number[]; words?: ManualWordInput[] }) =>
     apiFetch<BulkAddResult>(`/api/flashcards/decks/${deckId}/words/bulk`, { method: "POST", body: JSON.stringify(body) }),
   getStudyQueue: (deckId: number) => apiFetch<TrainerQueue>(`/api/flashcards/study/${deckId}`),
-  // Сквозная сессия по всем колодам: сначала повторения, между ними новые слова.
   getSession: () => apiFetch<TrainerQueue>("/api/flashcards/session"),
-  // «Сложные слова»: где были срывы или низкая точность.
   getHard: () => apiFetch<TrainerQueue>("/api/flashcards/hard"),
   getMarathon: () => apiFetch<MarathonQueue>("/api/flashcards/marathon"),
-  // Оценка карточки. Обычно присылаем сам ответ (answer) — оценку по нему
-  // выставляет сервер одинаковыми правилами для всех упражнений; grade нужен
-  // для знакомства, где ответа как такового нет.
   review: (wordId: number, body: { grade?: Grade; answer?: AnswerInfo; mode?: ExerciseType }) =>
     apiFetch<ReviewOutcome>("/api/flashcards/review", {
       method: "POST",
@@ -251,16 +198,12 @@ export const fc = {
   getPlacement: () => apiFetch<PlacementTest>("/api/flashcards/placement"),
   submitPlacement: (answers: PlacementAnswer[]) =>
     apiFetch<PlacementResultResponse>("/api/flashcards/placement", { method: "POST", body: JSON.stringify({ answers }) }),
-  // studentId — статистика конкретного ученика (для учителя/родителя); без него
-  // возвращается статистика самого пользователя.
   getStats: (studentId?: number) =>
     apiFetch<FlashcardStatsWithLevel>(`/api/flashcards/stats${studentId ? `?studentId=${studentId}` : ""}`),
-  // Назначение колод ученику (учитель).
   assignDeck: (deckId: number, studentId: number) =>
     apiFetch<{ deckId: number; studentId: number }>(`/api/flashcards/decks/${deckId}/assign`, {
       method: "POST", body: JSON.stringify({ studentId }),
     }),
-  // Отправить колоду сразу нескольким ученикам одним запросом.
   assignDeckMany: (deckId: number, studentIds: number[]) =>
     apiFetch<{ deckId: number; studentIds: number[] }>(`/api/flashcards/decks/${deckId}/assign`, {
       method: "POST", body: JSON.stringify({ studentIds }),
@@ -268,19 +211,78 @@ export const fc = {
   unassignDeck: (deckId: number, studentId: number) =>
     apiFetch<null>(`/api/flashcards/decks/${deckId}/assign/${studentId}`, { method: "DELETE" }),
   getAssignees: (deckId: number) => apiFetch<number[]>(`/api/flashcards/decks/${deckId}/assignees`),
-  // Какие колоды уже отправлены этому ученику — одним запросом вместо опроса
-  // assignees по каждой колоде отдельно.
   getStudentAssignments: (studentId: number) =>
     apiFetch<number[]>(`/api/flashcards/assignments?studentId=${studentId}`),
   getSettings: () => apiFetch<FlashcardSettingsWithGoal>("/api/flashcards/settings"),
-  // Дневная норма новых слов и/или цель дня по словам.
   updateSettings: (patch: { dailyNewLimit?: number; dailyWordGoal?: number }) =>
     apiFetch<FlashcardSettingsWithGoal>("/api/flashcards/settings", { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
-// Озвучка английского текста. На web — Web Speech API (speechSynthesis),
-// на нативе — expo-speech, если установлен (иначе тихо ничего не делает).
+// ── Озвучка ─────────────────────────────────────────────────────────────────
+
+/**
+ * Попытаться проиграть аудио через /api/tts с fallback на синтетическую озвучку.
+ *
+ * Используй эту функцию когда известен wordId слова — тогда сервер вернёт
+ * запись живого носителя (Wiktionary) или нейронный TTS (Azure).
+ *
+ * Не блокирует интерфейс: запускается «fire-and-forget».
+ */
+export function speakWord(wordId: number, text: string, lang = "en-US"): void {
+  if (!text) return;
+  _speakWordAsync(wordId, text, lang).catch(() => {
+    // TTS API недоступен → откат на синтетическую озвучку
+    _speakFallback(text, lang);
+  });
+}
+
+async function _speakWordAsync(wordId: number, text: string, lang: string): Promise<void> {
+  const token = await authStorage.getItem("auth_token");
+  if (!token) throw new Error("no token");
+  const url = `${BASE_URL}/api/tts?wordId=${wordId}`;
+
+  if (Platform.OS === "web") {
+    const w = globalThis as any;
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!resp.ok) throw new Error(`tts ${resp.status}`);
+    const blob = await resp.blob();
+    const objUrl: string = w.URL?.createObjectURL(blob);
+    if (!objUrl) throw new Error("URL API not available");
+    const audio = new w.Audio(objUrl);
+    const cleanup = () => {
+      try { w.URL.revokeObjectURL(objUrl); } catch {}
+    };
+    audio.onended = cleanup;
+    audio.onerror = () => { cleanup(); throw new Error("audio error"); };
+    await audio.play();
+    return;
+  }
+
+  // Нативное воспроизведение через expo-av (динамический импорт — пакет не обязателен)
+  const pkg = "expo-av";
+  const av = await (import(pkg) as Promise<any>).catch(() => null);
+  if (!av) throw new Error("expo-av not available");
+  const { sound } = await av.Audio.Sound.createAsync(
+    { uri: url, headers: { Authorization: `Bearer ${token}` } },
+    { shouldPlay: true }
+  );
+  sound.setOnPlaybackStatusUpdate((status: any) => {
+    if (status?.didJustFinish) sound.unloadAsync().catch(() => {});
+  });
+}
+
+/**
+ * Озвучить текст через Web Speech API (web) или expo-speech (native).
+ *
+ * Функция сохранена для обратной совместимости и как fallback.
+ * Когда известен wordId — используй speakWord() для записей носителей.
+ */
 export function speak(text: string, lang = "en-US") {
+  if (!text) return;
+  _speakFallback(text, lang);
+}
+
+function _speakFallback(text: string, lang: string) {
   if (!text) return;
   try {
     if (Platform.OS === "web") {
@@ -294,8 +296,6 @@ export function speak(text: string, lang = "en-US") {
       }
       return;
     }
-    // native: попытка через expo-speech, если пакет установлен (не обязателен).
-    // Нелитеральный специфизатор — чтобы TS не требовал наличия модуля на web-сборке.
     const pkg = "expo-speech";
     (import(pkg) as Promise<any>)
       .then((m: any) => m?.speak?.(text, { language: lang }))
@@ -310,5 +310,5 @@ export function speechAvailable(): boolean {
   if (Platform.OS === "web") {
     return typeof (globalThis as any).speechSynthesis !== "undefined";
   }
-  return true; // на нативе пытаемся expo-speech
+  return true;
 }

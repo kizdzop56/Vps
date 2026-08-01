@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "seed": "tsx ./src/seed.ts",
+    "fetch-audio": "tsx ./src/fetch-audio.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
