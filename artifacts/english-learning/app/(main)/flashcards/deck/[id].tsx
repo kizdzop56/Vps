@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc, apiFetch, speak, speechAvailable, type ManualWordInput } from "@/hooks/useFlashcards";
+import { fc, apiFetch, speak, speakWord, speechAvailable, type ManualWordInput } from "@/hooks/useFlashcards";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import WordPicker from "@/components/WordPicker";
 
@@ -435,7 +435,7 @@ export default function DeckDetail() {
               <Text style={{ fontSize: 14, color: colors.mutedForeground, marginTop: 2 }}>{w.translationsRu.join(", ")}</Text>
             </View>
             {speechAvailable() && (
-              <TouchableOpacity onPress={() => speak(w.english)} style={{ padding: 6 }}>
+              <TouchableOpacity onPress={() => speakWord(w.id, w.english)} style={{ padding: 6 }}>
                 <Feather name="volume-2" size={18} color={colors.primary} />
               </TouchableOpacity>
             )}

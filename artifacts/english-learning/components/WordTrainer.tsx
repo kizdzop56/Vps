@@ -18,7 +18,7 @@ import { View, Text, TouchableOpacity, Animated, ActivityIndicator, ScrollView }
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { fc, speak, speechAvailable } from "@/hooks/useFlashcards";
+import { fc, speak, speakWord, speechAvailable } from "@/hooks/useFlashcards";
 import type { Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
 
 const TRAINER_BACKGROUND = "#F8F7FF";
@@ -111,7 +111,7 @@ export function WordTrainer({
     shownAt.current = Date.now();
     if (!speechAvailable()) return;
     if (exercise.type === "intro" || exercise.type === "choiceRu" || exercise.type === "listen") {
-      speak(card.english);
+      speakWord(card.id, card.english);
     }
   }, [phase, pos, card?.id]);
 
@@ -171,7 +171,7 @@ export function WordTrainer({
     const correct = index === exercise.answerIndex;
     setFeedback({ correct, picked: index });
     submit({ correct }, exercise.type, correct ? NEXT_DELAY_OK : NEXT_DELAY_BAD);
-    if (correct && speechAvailable() && exercise.type !== "intro") speak(card.english);
+    if (correct && speechAvailable() && exercise.type !== "intro") speakWord(card.id, card.english);
   }, [feedback, card, exercise, submit]);
 
   const answerLetters = React.useMemo(() => (exercise.answer ?? "").toLowerCase().split(""), [exercise.answer]);
@@ -197,7 +197,7 @@ export function WordTrainer({
     }
     setFeedback({ correct });
     submit({ correct }, "build", correct ? NEXT_DELAY_OK : NEXT_DELAY_BAD);
-    if (correct && card && speechAvailable()) speak(card.english);
+    if (correct && card && speechAvailable()) speakWord(card.id, card.english);
   }, [feedback, exercise.letters, built, answerLetters, attempts, submit, card]);
 
   const undoLetter = React.useCallback(() => {
@@ -280,7 +280,7 @@ export function WordTrainer({
           {isListen ? (
             <>
               <TouchableOpacity
-                onPress={() => card && speak(card.english)}
+                onPress={() => card && speakWord(card.id, card.english)}
                 activeOpacity={0.85}
                 style={{ alignItems: "center", justifyContent: "center", width: 116, height: 116, borderRadius: 58, backgroundColor: colors.accent }}
                 accessibilityLabel="Прослушать слово"
@@ -315,7 +315,7 @@ export function WordTrainer({
               )}
               {(isIntro || exercise.type === "choiceRu") && speechAvailable() && (
                 <TouchableOpacity
-                  onPress={() => card && speak(card.english)}
+                  onPress={() => card && speakWord(card.id, card.english)}
                   activeOpacity={0.8}
                   style={{ flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.accent, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, marginTop: 12 }}
                 >

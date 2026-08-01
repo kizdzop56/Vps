@@ -220,20 +220,25 @@ export const fc = {
 
 // ── Озвучка ─────────────────────────────────────────────────────────────────
 
+// Клиентский кэш mp3-блобов по wordId: не скачивать аудио повторно при каждом тапе.
+const _ttsCache = new Map<number, Blob>();
+
+// Текущий <audio> на web: отменяется перед следующим воспроизведением,
+// чтобы звуки не накладывались.
+let _webAudio: any = null;
+
 /**
- * Попытаться проиграть аудио через /api/tts с fallback на синтетическую озвучку.
+ * Проиграть слово через /api/tts (записи носителей или нейронный TTS).
  *
- * Используй эту функцию когда известен wordId слова — тогда сервер вернёт
- * запись живого носителя (Wiktionary) или нейронный TTS (Azure).
- *
- * Не блокирует интерфейс: запускается «fire-and-forget».
+ * • Первый запрос — скачивает mp3, кэширует в памяти;
+ *   повторные тапы воспроизводятся мгновенно из кэша.
+ * • 404 / 503 / сетевая ошибка — молча откатывается на speak().
+ * • На web отменяет предыдущее воспроизведение перед новым.
+ * • Не блокирует интерфейс (fire-and-forget).
  */
 export function speakWord(wordId: number, text: string, lang = "en-US"): void {
   if (!text) return;
-  _speakWordAsync(wordId, text, lang).catch(() => {
-    // TTS API недоступен → откат на синтетическую озвучку
-    _speakFallback(text, lang);
-  });
+  _speakWordAsync(wordId, text, lang).catch(() => _speakFallback(text, lang));
 }
 
 async function _speakWordAsync(wordId: number, text: string, lang: string): Promise<void> {
@@ -243,22 +248,39 @@ async function _speakWordAsync(wordId: number, text: string, lang: string): Prom
 
   if (Platform.OS === "web") {
     const w = globalThis as any;
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!resp.ok) throw new Error(`tts ${resp.status}`);
-    const blob = await resp.blob();
-    const objUrl: string = w.URL?.createObjectURL(blob);
+
+    // Используем кэш: не качаем mp3 повторно при каждом тапе
+    let blob = _ttsCache.get(wordId);
+    if (!blob) {
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      // 404 (слово без аудио) или 503 (сервис недоступен) → тихий fallback
+      if (!resp.ok) throw new Error(`tts ${resp.status}`);
+      blob = await resp.blob();
+      _ttsCache.set(wordId, blob);
+    }
+
+    // Останавливаем предыдущее воспроизведение, чтобы звуки не накладывались
+    if (_webAudio) {
+      try { _webAudio.pause(); _webAudio.src = ""; } catch {}
+      _webAudio = null;
+    }
+
+    const objUrl: string | undefined = w.URL?.createObjectURL(blob);
     if (!objUrl) throw new Error("URL API not available");
+
     const audio = new w.Audio(objUrl);
+    _webAudio = audio;
     const cleanup = () => {
       try { w.URL.revokeObjectURL(objUrl); } catch {}
+      if (_webAudio === audio) _webAudio = null;
     };
     audio.onended = cleanup;
-    audio.onerror = () => { cleanup(); throw new Error("audio error"); };
+    audio.onerror = cleanup;
     await audio.play();
     return;
   }
 
-  // Нативное воспроизведение через expo-av (динамический импорт — пакет не обязателен)
+  // Нативное воспроизведение через expo-av (динамический импорт — не обязателен)
   const pkg = "expo-av";
   const av = await (import(pkg) as Promise<any>).catch(() => null);
   if (!av) throw new Error("expo-av not available");
@@ -274,8 +296,8 @@ async function _speakWordAsync(wordId: number, text: string, lang: string): Prom
 /**
  * Озвучить текст через Web Speech API (web) или expo-speech (native).
  *
- * Функция сохранена для обратной совместимости и как fallback.
- * Когда известен wordId — используй speakWord() для записей носителей.
+ * Fallback-озвучка: роботизированная, без wordId.
+ * Используй speakWord() когда есть id слова — получишь запись носителя.
  */
 export function speak(text: string, lang = "en-US") {
   if (!text) return;

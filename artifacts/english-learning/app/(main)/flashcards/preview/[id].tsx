@@ -11,7 +11,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc, speak, speechAvailable } from "@/hooks/useFlashcards";
+import { fc, speak, speakWord, speechAvailable } from "@/hooks/useFlashcards";
 
 export default function DeckPreview() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -139,7 +139,7 @@ export default function DeckPreview() {
 
           {speechAvailable() && (
             <TouchableOpacity
-              onPress={() => speak(card.english)}
+              onPress={() => speakWord(card.id, card.english)}
               style={{ alignSelf: "center", marginTop: 14, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border }}
             >
               <Feather name="volume-2" size={18} color={colors.primary} />

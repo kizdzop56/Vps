@@ -12,7 +12,7 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator } from "reac
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc, speak, speechAvailable, type CatalogWord, type ManualWordInput } from "@/hooks/useFlashcards";
+import { fc, speak, speakWord, speechAvailable, type CatalogWord, type ManualWordInput } from "@/hooks/useFlashcards";
 
 const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 const PAGE_SIZE = 40;
@@ -321,7 +321,7 @@ export default function WordPicker({
                     </View>
 
                     {speechAvailable() && (
-                      <TouchableOpacity onPress={() => speak(w.english)} style={{ padding: 6 }}>
+                      <TouchableOpacity onPress={() => speakWord(w.id, w.english)} style={{ padding: 6 }}>
                         <Feather name="volume-2" size={17} color={colors.primary} />
                       </TouchableOpacity>
                     )}
