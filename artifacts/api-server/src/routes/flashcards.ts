@@ -86,6 +86,14 @@ async function canViewStudent(viewer: { userId: number; role: string }, studentI
 const ENGLISH_INPUT_RE = /^[A-Za-z]+(?:[ A-Za-z'-]*[A-Za-z])?$/;
 const ENGLISH_MAX_LEN = 80;
 
+// Русское слово или словосочетание для добавления «с русской стороны»
+const RUSSIAN_INPUT_RE = /^[А-Яа-яЁё]+(?:[ А-Яа-яЁё-]*[А-Яа-яЁё])?$/;
+const RUSSIAN_MAX_LEN = 80;
+
+function normalizeRussianInput(s: string): string {
+  return s.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 // убрать null/undefined-поля, чтобы ответ соответствовал zod-схеме (optional)
 function clean<T extends Record<string, any>>(o: T): T {
   const out: any = {};
@@ -418,6 +426,90 @@ async function translateWithGoogle(english: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// Перевод RU→EN для добавления слова «с русской стороны».
+// Структура намеренно параллельна translateWithGoogle (EN→RU) — меняем только
+// направление перевода, не ломая существующие вызовы.
+async function translateRussianToEnglish(russian: string): Promise<string | null> {
+  try {
+    const apiKey = process.env["GOOGLE_TRANSLATE_API_KEY"]?.trim();
+    if (apiKey) {
+      const url = new URL("https://translation.googleapis.com/language/translate/v2");
+      url.searchParams.set("key", apiKey);
+      url.searchParams.set("q", russian);
+      url.searchParams.set("source", "ru");
+      url.searchParams.set("target", "en");
+      url.searchParams.set("format", "text");
+      const response = await fetch(url, { method: "POST" });
+      if (!response.ok) return null;
+      const data = await response.json() as { data?: { translations?: Array<{ translatedText?: unknown }> } };
+      const translated = data.data?.translations?.[0]?.translatedText;
+      return typeof translated === "string" && translated.trim() ? decodeHtmlEntities(translated).trim() : null;
+    }
+    const url = new URL("https://translate.googleapis.com/translate_a/single");
+    url.searchParams.set("client", "gtx");
+    url.searchParams.set("sl", "ru");
+    url.searchParams.set("tl", "en");
+    url.searchParams.set("dt", "t");
+    url.searchParams.set("q", russian);
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json() as unknown;
+    const segments = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : [];
+    const translated = segments
+      .map((segment) => Array.isArray(segment) && typeof segment[0] === "string" ? segment[0] : "")
+      .join("").trim();
+    return translated ? decodeHtmlEntities(translated) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Разрешить русское слово в английское: сначала ищем в каталоге, потом переводим.
+// Возвращает данные карточки или текст ошибки.
+async function resolveEnglishFromRussian(
+  russian: string,
+): Promise<{ ok: true; english: string; ipa?: string; translationsRu: string[] } | { ok: false; error: string }> {
+  // 1. Поиск точного совпадения в каталоге системных слов — быстро и бесплатно.
+  //    translations_ru хранится как jsonb-массив, @> проверяет вхождение элемента.
+  const catalogHit = await db
+    .select({ english: wordsTable.english, ipa: wordsTable.ipa, translationsRu: wordsTable.translationsRu })
+    .from(wordsTable)
+    .where(sql\`\${wordsTable.translationsRu}::jsonb @> \${JSON.stringify([russian])}::jsonb\`)
+    .limit(1);
+
+  if (catalogHit[0]) {
+    const hit = catalogHit[0];
+    return {
+      ok: true,
+      english: hit.english,
+      ipa: hit.ipa ?? undefined,
+      translationsRu: (hit.translationsRu as string[]).length > 0 ? (hit.translationsRu as string[]) : [russian],
+    };
+  }
+
+  // 2. Google Translate RU→EN
+  const translated = await translateRussianToEnglish(russian);
+  if (!translated) {
+    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+  }
+
+  // 3. Проверяем полученное английское слово в словаре (написание + IPA)
+  const english = normalizeEnglishInput(translated);
+  if (!english || !ENGLISH_INPUT_RE.test(english)) {
+    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+  }
+  const checked = await validateEnglishWord(english);
+  if (!checked.ok && checked.code === "not-found") {
+    return { ok: false, error: \`Не удалось распознать слово «\${russian}». Проверьте написание.\` };
+  }
+  return {
+    ok: true,
+    english: checked.ok ? (checked.normalized ?? english) : english,
+    ipa: checked.ok ? checked.ipa : undefined,
+    translationsRu: [russian],
+  };
 }
 
 // ── Placement-тест (CEFR). Вопросы адаптированы, ответы держим на сервере. ────
@@ -853,52 +945,86 @@ router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
   const chk = await assertOwnDeck(deckId, user.userId);
   if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }
 
-  const b = req.body as { english: string; translationsRu?: string[]; ipa?: string; exampleEn?: string; exampleRu?: string; partOfSpeech?: string; cefrLevel?: string; emoji?: string };
-  if (!b.english || typeof b.english !== "string") { res.status(400).json({ error: "Введите английское слово." }); return; }
+  const b = req.body as { english?: string; russian?: string; translationsRu?: string[]; ipa?: string; exampleEn?: string; exampleRu?: string; partOfSpeech?: string; cefrLevel?: string; emoji?: string };
 
-  const english = normalizeEnglishInput(b.english);
-  if (english.length > ENGLISH_MAX_LEN || !ENGLISH_INPUT_RE.test(english)) {
-    res.status(400).json({ error: "Введите английское слово или короткую фразу только латинскими буквами." });
+  // Поддерживаем два режима ввода: английское слово (как раньше) и русское слово
+  // (система сама переводит на английский и подтягивает транскрипцию).
+  const hasEnglish = !!b.english && typeof b.english === "string" && b.english.trim().length > 0;
+  const hasRussian = !!b.russian && typeof b.russian === "string" && b.russian.trim().length > 0;
+
+  if (!hasEnglish && !hasRussian) {
+    res.status(400).json({ error: "Введите английское или русское слово." });
     return;
   }
 
-  const manualRu = Array.isArray(b.translationsRu)
-    ? b.translationsRu.map((item) => String(item).trim()).filter(Boolean)
-    : [];
+  let english: string;
+  let ru: string[];
+  let autoIpa: string | undefined;
 
-  // Словарь и Google Translate — внешние сервисы, и с хостинга они бывают
-  // недоступны. Раньше любая их осечка возвращала 503 и слово не сохранялось,
-  // даже когда учитель сам ввёл перевод. Теперь при своём переводе внешние
-  // сервисы только подсказывают транскрипцию, а решение добавить слово — за
-  // учителем: имена, фразы и термины словарь всё равно не знает.
-  const checked = await validateEnglishWord(english);
-  if (!checked.ok && manualRu.length === 0) {
-    const status = checked.code === "unavailable" ? 503 : checked.code === "not-found" ? 422 : 400;
-    res.status(status).json({ error: validationErrorMessage(english || b.english.trim(), checked) });
-    return;
-  }
-
-  const normalized = checked.ok ? checked.normalized : english;
-  let ru = manualRu;
-  if (ru.length === 0) {
-    const translated = await translateWithGoogle(normalized);
-    if (!translated) {
-      res.status(422).json({ error: "Не удалось получить перевод автоматически. Впишите перевод вручную — так слово добавится наверняка." });
+  if (!hasEnglish && hasRussian) {
+    // ── Путь «русское слово» ─────────────────────────────────────────────
+    const ruNorm = normalizeRussianInput(b.russian!);
+    if (!ruNorm || ruNorm.length > RUSSIAN_MAX_LEN || !RUSSIAN_INPUT_RE.test(ruNorm)) {
+      res.status(400).json({ error: "Введите русское слово кириллицей (не более 80 символов)." });
       return;
     }
-    ru = [translated];
+    const resolved = await resolveEnglishFromRussian(ruNorm);
+    if (!resolved.ok) {
+      res.status(400).json({ error: resolved.error });
+      return;
+    }
+    english = resolved.english;
+    autoIpa = resolved.ipa;
+    ru = Array.isArray(b.translationsRu) && b.translationsRu.length > 0
+      ? b.translationsRu.map((item) => String(item).trim()).filter(Boolean)
+      : resolved.translationsRu;
+  } else {
+    // ── Путь «английское слово» (существующая логика) ────────────────────
+    english = normalizeEnglishInput(b.english!);
+    if (english.length > ENGLISH_MAX_LEN || !ENGLISH_INPUT_RE.test(english)) {
+      res.status(400).json({ error: "Введите английское слово или короткую фразу только латинскими буквами." });
+      return;
+    }
+
+    const manualRu = Array.isArray(b.translationsRu)
+      ? b.translationsRu.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+
+    // Словарь и Google Translate — внешние сервисы, и с хостинга они бывают
+    // недоступны. Раньше любая их осечка возвращала 503 и слово не сохранялось,
+    // даже когда учитель сам ввёл перевод. Теперь при своём переводе внешние
+    // сервисы только подсказывают транскрипцию, а решение добавить слово — за
+    // учителем: имена, фразы и термины словарь всё равно не знает.
+    const checked = await validateEnglishWord(english);
+    if (!checked.ok && manualRu.length === 0) {
+      const status = checked.code === "unavailable" ? 503 : checked.code === "not-found" ? 422 : 400;
+      res.status(status).json({ error: validationErrorMessage(english || b.english!.trim(), checked) });
+      return;
+    }
+
+    english = checked.ok ? (checked.normalized ?? english) : english;
+    ru = manualRu;
+    if (ru.length === 0) {
+      const translated = await translateWithGoogle(english);
+      if (!translated) {
+        res.status(422).json({ error: "Не удалось получить перевод автоматически. Впишите перевод вручную — так слово добавится наверняка." });
+        return;
+      }
+      ru = [translated];
+    }
+    autoIpa = undefined;
   }
 
   // Одно и то же слово дважды в колоде только мешает учить.
   const [dup] = await db.select({ id: wordsTable.id }).from(wordsTable)
-    .where(and(eq(wordsTable.deckId, deckId), sql`lower(${wordsTable.english}) = ${normalized.toLowerCase()}`));
-  if (dup) { res.status(409).json({ error: `Слово «${normalized}» уже есть в этой колоде.` }); return; }
+    .where(and(eq(wordsTable.deckId, deckId), sql`lower(${wordsTable.english}) = ${english.toLowerCase()}`));
+  if (dup) { res.status(409).json({ error: `Слово «${english}» уже есть в этой колоде.` }); return; }
 
   const { exampleEn, exampleRu, partOfSpeech, cefrLevel, emoji } = b;
-  const ipa = b.ipa || (checked.ok ? checked.ipa : undefined);
+  const ipa = b.ipa || autoIpa;
 
   const [row] = await db.insert(wordsTable).values({
-    deckId, english: normalized, partOfSpeech: partOfSpeech ?? null,
+    deckId, english: english, partOfSpeech: partOfSpeech ?? null,
     translationsRu: ru, ipa: ipa ?? null, exampleEn: exampleEn ?? null, exampleRu: exampleRu ?? null,
     cefrLevel: cefrLevel ?? null, emoji: emoji ?? null,
   }).returning();
@@ -1066,7 +1192,7 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
   const { format, content } = req.body as { format: "csv" | "json" | "lines"; content: string };
   if (!content) { res.status(400).json({ error: "content required" }); return; }
 
-  type Row = { english: string; ru: string[]; ipa?: string; exEn?: string; exRu?: string; pos?: string; cefr?: string };
+  type Row = { english: string; ru: string[]; ipa?: string; exEn?: string; exRu?: string; pos?: string; cefr?: string; russian?: string };
   const rows: Row[] = [];
   try {
     if (format === "json") {
@@ -1084,6 +1210,14 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
       for (const line of content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
         const parsed = splitWordLine(line);
         if (parsed) { rows.push({ english: parsed.english, ru: parsed.ru }); continue; }
+        // Строка целиком кириллицей — обрабатываем как русское слово
+        if (/^[А-Яа-яЁё]/.test(line)) {
+          const ruNorm = normalizeRussianInput(line);
+          if (ruNorm && RUSSIAN_INPUT_RE.test(ruNorm) && ruNorm.length <= RUSSIAN_MAX_LEN) {
+            rows.push({ english: "", ru: [], russian: ruNorm });
+            continue;
+          }
+        }
         const english = normalizeEnglishInput(line);
         if (english && ENGLISH_INPUT_RE.test(english)) rows.push({ english, ru: [] });
       }
@@ -1103,6 +1237,21 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: "Не удалось разобрать данные импорта" });
     return;
+  }
+
+  // Строки с русским словом: разрешаем в английское (каталог → Google Translate + словарь).
+  // Ошибочные строки записываем в failed без прерывания импорта.
+  const russianRows = rows.filter((r) => r.russian && !r.english);
+  for (let i = 0; i < russianRows.length; i += 3) {
+    await Promise.all(russianRows.slice(i, i + 3).map(async (r) => {
+      const resolved = await resolveEnglishFromRussian(r.russian!);
+      if (resolved.ok) {
+        r.english = resolved.english;
+        if (!r.ru.length) r.ru = resolved.translationsRu;
+        if (resolved.ipa) r.ipa = resolved.ipa;
+      }
+      // Если не удалось — строка останется с english="" и выпадет в пропущенные
+    }));
   }
 
   // Строки без перевода дополняем автопереводом, но не блокируем весь импорт,

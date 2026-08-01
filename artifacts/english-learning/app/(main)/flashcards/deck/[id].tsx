@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc, apiFetch, speak, speakWord, speechAvailable, type ManualWordInput } from "@/hooks/useFlashcards";
+import { fc, apiFetch, speak, speakWord, speechAvailable, type ManualWordInput, type FlashcardWordWithEmoji } from "@/hooks/useFlashcards";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import WordPicker from "@/components/WordPicker";
 
@@ -88,22 +88,33 @@ export default function DeckDetail() {
 
   const addWord = async () => {
     const english = newEn.trim();
-    if (!english) return;
+    const russian = newRu.trim();
+    if (!english && !russian) return;
     setAdding(true);
     setNotice(null);
     try {
-      const added = await fc.addWord(deckId, {
-        english,
-        translationsRu: newRu.trim()
-          ? newRu.split(/[,;/]/).map((s) => s.trim()).filter(Boolean)
-          : undefined,
-      });
+      // Режим «английское слово»: перевод берём из поля перевода или автоматом.
+      // Режим «русское слово»: поле перевода пустое, system определяет английское.
+      const body = english
+        ? {
+            english,
+            translationsRu: russian
+              ? russian.split(/[,;/]/).map((s) => s.trim()).filter(Boolean)
+              : undefined,
+          }
+        : { russian };
+      const added = await apiFetch<FlashcardWordWithEmoji>(
+        `/api/flashcards/decks/${deckId}/words`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
       setNewEn("");
       setNewRu("");
+      const suffix = english
+        ? (russian ? "" : " (перевод подобран автоматически)")
+        : " (английское слово определено автоматически)";
       setNotice({
         type: "success",
-        text: `Добавлено: ${added.english} — ${added.translationsRu.join(", ")}`
-          + (newRu.trim() ? "" : " (перевод подобран автоматически)"),
+        text: `Добавлено: ${added.english} — ${added.translationsRu.join(", ")}${suffix}`,
       });
       refresh();
     } catch (e: any) {
@@ -328,7 +339,7 @@ export default function DeckDetail() {
               <TextInput
                 value={newEn}
                 onChangeText={(v) => { setNewEn(v); setNotice(null); }}
-                placeholder="Английское слово или фраза"
+                placeholder="Английское слово или фраза (или русское во второй строке)"
                 autoCapitalize="none"
                 autoCorrect={false}
                 placeholderTextColor={colors.mutedForeground}
@@ -341,7 +352,7 @@ export default function DeckDetail() {
               <TextInput
                 value={newRu}
                 onChangeText={(v) => { setNewRu(v); setNotice(null); }}
-                placeholder="Перевод (можно не заполнять)"
+                placeholder="Перевод или русское слово (по нему система найдёт английское)"
                 placeholderTextColor={colors.mutedForeground}
                 style={{
                   backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
@@ -349,12 +360,12 @@ export default function DeckDetail() {
                   paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8,
                 }}
               />
-              <Hint colors={colors} text="Оставьте перевод пустым — его подберёт переводчик. Свой перевод всегда важнее: с ним слово добавится, даже если словарь такого слова не знает." />
+              <Hint colors={colors} text="Заполните любое поле: по английскому подберётся перевод, по русскому — английское слово и транскрипция. Свой перевод во втором поле всегда важнее автоматического." />
               <ActionButton
                 colors={colors}
                 label="Добавить слово"
                 busy={adding}
-                disabled={!newEn.trim()}
+                disabled={!newEn.trim() && !newRu.trim()}
                 onPress={addWord}
               />
             </>
