@@ -51,15 +51,13 @@ export default function FlashcardsHome() {
 
   // Пока тест уровня не пройден, считаем ученика начинающим и раскрываем A1.
   const myLevel = level ?? "A1";
-
-  // Показываем только уровень ученика и следующий (не более двух групп).
-  // Тематические колоды (без cefrLevel) продолжают показываться отдельно.
-  const myLevelIdx = CEFR_LEVELS.indexOf(myLevel);
-  const visibleLevelSet = new Set(CEFR_LEVELS.slice(myLevelIdx, myLevelIdx + 2));
+  // Показываем только свой уровень и один следующий: раньше рисовались все
+  // группы A1..C2 сразу, и ученик A1 видел колоды C2, до которых ему далеко.
+  // Тот же принцип, что и на бэкенде в levelsUpTo() (routes/flashcards.ts).
+  const myLevelIdx = Math.max(0, CEFR_LEVELS.indexOf(myLevel));
+  const allowedLevels = CEFR_LEVELS.slice(myLevelIdx, myLevelIdx + 2);
   // Уровни, для которых реально есть колоды (пустых групп не рисуем).
-  const levelsWithDecks = CEFR_LEVELS.filter(
-    (l) => visibleLevelSet.has(l) && levelDecks.some((d) => d.cefrLevel === l)
-  );
+  const levelsWithDecks = allowedLevels.filter((l) => levelDecks.some((d) => d.cefrLevel === l));
 
   // Раскрытие: null → уровень ученика раскрыт по умолчанию, остальные свёрнуты.
   const [openLevels, setOpenLevels] = React.useState<Record<string, boolean>>({});
