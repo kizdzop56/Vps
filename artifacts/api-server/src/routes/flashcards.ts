@@ -757,6 +757,10 @@ router.delete("/flashcards/decks/:id", requireAuth, async (req, res) => {
 // ── POST /flashcards/decks/:id/assign (учитель → отправить колоду ученику) ────
 router.post("/flashcards/decks/:id/assign", requireAuth, async (req, res) => {
   const user = getUser(req);
+  if (!isTeacher(user.role) && user.role !== "admin") {
+    res.status(403).json({ error: "Только учитель или администратор может управлять назначениями колод" });
+    return;
+  }
   const deckId = Number(req.params["id"]);
   // Принимаем и одного ученика, и сразу нескольких: учителю удобнее отправить
   // колоду всей группе одним действием.
@@ -786,6 +790,10 @@ router.post("/flashcards/decks/:id/assign", requireAuth, async (req, res) => {
 // ── DELETE /flashcards/decks/:id/assign/:studentId (отозвать колоду) ──────────
 router.delete("/flashcards/decks/:id/assign/:studentId", requireAuth, async (req, res) => {
   const user = getUser(req);
+  if (!isTeacher(user.role) && user.role !== "admin") {
+    res.status(403).json({ error: "Только учитель или администратор может управлять назначениями колод" });
+    return;
+  }
   const deckId = Number(req.params["id"]);
   const studentId = Number(req.params["studentId"]);
   const chk = await assertOwnDeck(deckId, user.userId);
@@ -798,6 +806,10 @@ router.delete("/flashcards/decks/:id/assign/:studentId", requireAuth, async (req
 // ── GET /flashcards/decks/:id/assignees (кому назначена колода) ─────────────
 router.get("/flashcards/decks/:id/assignees", requireAuth, async (req, res) => {
   const user = getUser(req);
+  if (!isTeacher(user.role) && user.role !== "admin") {
+    res.status(403).json({ error: "Только учитель или администратор может управлять назначениями колод" });
+    return;
+  }
   const deckId = Number(req.params["id"]);
   const chk = await assertOwnDeck(deckId, user.userId);
   if (!chk.ok) { res.status(chk.status!).json({ error: chk.error }); return; }

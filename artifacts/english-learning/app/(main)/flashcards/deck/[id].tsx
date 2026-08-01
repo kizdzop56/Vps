@@ -22,6 +22,7 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, apiFetch, speak, speechAvailable, type ManualWordInput } from "@/hooks/useFlashcards";
+import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import WordPicker from "@/components/WordPicker";
 
 type StudentItem = { id: number; name: string; surname?: string | null; username: string };
@@ -64,6 +65,11 @@ export default function DeckDetail() {
   const deck = deckQ.data;
   const words = wordsQ.data ?? [];
   const canEdit = !!deck?.canEdit;
+  const { user } = useAuth();
+  // Отправлять колоду ученикам может только учитель или админ. canEdit значит
+  // лишь «колода моя»: ученик, создавший свою колоду, тоже владелец, но
+  // рассылать её другим он не должен.
+  const canAssign = canEdit && isTeacherOrAdmin(user?.role);
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["fc-words", deckId] });
@@ -216,7 +222,7 @@ export default function DeckDetail() {
           )}
           <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
             {words.length} слов{deck ? ` · выучено ${deck.learnedCount}` : ""}
-            {canEdit && deck?.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : ""}
+            {canAssign && deck?.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : ""}
           </Text>
         </View>
         {canEdit && (
@@ -244,18 +250,20 @@ export default function DeckDetail() {
             <Feather name="eye" size={18} color="#fff" />
             <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Предпросмотр колоды</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setSendOpen(true)}
-            activeOpacity={0.85}
-            style={{
-              borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row",
-              justifyContent: "center", gap: 8, marginBottom: 18,
-              borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
-            }}
-          >
-            <Feather name="send" size={18} color={colors.primary} />
-            <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 15 }}>Отправить ученикам</Text>
-          </TouchableOpacity>
+          {canAssign && (
+            <TouchableOpacity
+              onPress={() => setSendOpen(true)}
+              activeOpacity={0.85}
+              style={{
+                borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row",
+                justifyContent: "center", gap: 8, marginBottom: 18,
+                borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
+              }}
+            >
+              <Feather name="send" size={18} color={colors.primary} />
+              <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 15 }}>Отправить ученикам</Text>
+            </TouchableOpacity>
+          )}
         </>
       ) : (
         <TouchableOpacity
@@ -295,7 +303,7 @@ export default function DeckDetail() {
           </Text>
 
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
-            {([["one", "Одно слово"], ["many", "Списком"]] as const).map(([key, label]) => {
+            {(([["one", "Одно слово"], ["many", "Списком"]] as const)).map(([key, label]) => {
               const active = addMode === key;
               return (
                 <TouchableOpacity
@@ -453,7 +461,7 @@ export default function DeckDetail() {
         />
       )}
 
-      {canEdit && (
+      {canAssign && (
         <SendDeckModal
           visible={sendOpen}
           onClose={() => { setSendOpen(false); qc.invalidateQueries({ queryKey: ["fc-deck", deckId] }); }}
