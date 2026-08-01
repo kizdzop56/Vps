@@ -2,7 +2,7 @@
 //
 // Boot sequence:
 //   1. (optional, RUN_DB_SETUP=true) push DB schema via drizzle-kit
-//   1a. (always) ensure missing flashcard columns exist via direct SQL
+//   1a. (always) ensure all flashcard tables + missing columns exist via direct SQL
 //   2. (optional, RUN_DB_SETUP=true) run idempotent seed
 //   3. start API server (bundled dist) on API_PORT
 //   4. start static web server (Expo web export) on WEB_PORT
@@ -27,10 +27,13 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ---------- Ensure missing flashcard columns (always, even RUN_DB_SETUP=false) ----------
-// ALTER TABLE IF EXISTS … ADD COLUMN IF NOT EXISTS — идемпотентно, безопасно на любом старте.
+// ---------- Ensure all flashcard tables + missing columns (always, even RUN_DB_SETUP=false) ----------
+// Все CREATE TABLE IF NOT EXISTS и ALTER TABLE … ADD COLUMN IF NOT EXISTS — идемпотентны.
 // Ошибка логируется, но не роняет старт.
-async function ensureFlashcardColumns() {
+// Порядок создания таблиц соблюдает FK-зависимости:
+//   decks → words → user_card_state / review_log
+//   users (уже существует до этого шага) → все остальные
+async function ensureFlashcardSchema() {
   const dbUrl = process.env.DATABASE_URL;
   let ClientClass;
   try {
@@ -38,7 +41,7 @@ async function ensureFlashcardColumns() {
     // поддерживаем и ESM-default, и CJS-экспорт
     ClientClass = pg.default?.Client ?? pg.Client;
   } catch (e) {
-    console.error("[prod] ensureFlashcardColumns: не удалось загрузить pg —", e.message);
+    console.error("[prod] ensureFlashcardSchema: не удалось загрузить pg —", e.message);
     return;
   }
 
@@ -48,6 +51,114 @@ async function ensureFlashcardColumns() {
 
   try {
     await client.connect();
+
+    // ── Таблицы (в порядке FK-зависимостей) ──────────────────────────────────
+
+    // 1. decks — не зависит от других flashcard-таблиц
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS decks (
+        id            serial      PRIMARY KEY,
+        owner_id      integer     REFERENCES users(id) ON DELETE CASCADE,
+        title         text        NOT NULL,
+        theme         text,
+        description   text,
+        emoji         text,
+        is_system     boolean     NOT NULL DEFAULT false,
+        cefr_level    text,
+        sort_order    integer     NOT NULL DEFAULT 0,
+        created_at    timestamp   NOT NULL DEFAULT now()
+      )
+    `);
+
+    // 2. words — зависит от decks
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS words (
+        id              serial    PRIMARY KEY,
+        deck_id         integer   NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        english         text      NOT NULL,
+        part_of_speech  text,
+        translations_ru jsonb     NOT NULL,
+        ipa             text,
+        example_en      text,
+        example_ru      text,
+        cefr_level      text,
+        audio_url       text,
+        emoji           text,
+        sort_order      integer   NOT NULL DEFAULT 0,
+        created_at      timestamp NOT NULL DEFAULT now()
+      )
+    `);
+
+    // 3. user_card_state — зависит от users + words
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_card_state (
+        id             serial    PRIMARY KEY,
+        user_id        integer   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        word_id        integer   NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+        memory_level   integer   NOT NULL DEFAULT 0,
+        due_at         timestamp NOT NULL DEFAULT now(),
+        introduced     boolean   NOT NULL DEFAULT false,
+        times_seen     integer   NOT NULL DEFAULT 0,
+        times_correct  integer   NOT NULL DEFAULT 0,
+        lapses         integer   NOT NULL DEFAULT 0,
+        last_result    text,
+        created_at     timestamp NOT NULL DEFAULT now(),
+        updated_at     timestamp NOT NULL DEFAULT now(),
+        CONSTRAINT user_word_unique UNIQUE (user_id, word_id)
+      )
+    `);
+
+    // 4. placement_results — зависит от users
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS placement_results (
+        id          serial    PRIMARY KEY,
+        user_id     integer   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        score       integer   NOT NULL,
+        total       integer   NOT NULL,
+        cefr_level  text      NOT NULL,
+        answers     jsonb,
+        taken_at    timestamp NOT NULL DEFAULT now()
+      )
+    `);
+
+    // 5. flashcard_settings — зависит от users
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS flashcard_settings (
+        user_id          integer   PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        daily_new_limit  integer   NOT NULL DEFAULT 12,
+        daily_word_goal  integer   NOT NULL DEFAULT 10,
+        placement_level  text,
+        placement_done   boolean   NOT NULL DEFAULT false,
+        updated_at       timestamp NOT NULL DEFAULT now()
+      )
+    `);
+
+    // 6. review_log — зависит от users + words
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS review_log (
+        id                  serial    PRIMARY KEY,
+        user_id             integer   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        word_id             integer   NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+        result              text      NOT NULL,
+        memory_level_after  integer,
+        reviewed_at         timestamp NOT NULL DEFAULT now()
+      )
+    `);
+
+    // 7. deck_assignments — зависит от decks + users
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS deck_assignments (
+        id           serial    PRIMARY KEY,
+        deck_id      integer   NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        student_id   integer   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        assigned_by  integer   REFERENCES users(id) ON DELETE SET NULL,
+        created_at   timestamp NOT NULL DEFAULT now(),
+        CONSTRAINT deck_assignment_unique UNIQUE (deck_id, student_id)
+      )
+    `);
+
+    // ── Недостающие колонки в уже существующих таблицах ──────────────────────
+
     await client.query(
       "ALTER TABLE IF EXISTS words ADD COLUMN IF NOT EXISTS emoji text",
     );
@@ -57,9 +168,10 @@ async function ensureFlashcardColumns() {
     await client.query(
       "ALTER TABLE IF EXISTS flashcard_settings ADD COLUMN IF NOT EXISTS daily_word_goal integer NOT NULL DEFAULT 10",
     );
-    console.log("[prod] ensureFlashcardColumns: колонки добавлены (или уже существовали)");
+
+    console.log("[prod] ensureFlashcardSchema: таблицы и колонки готовы");
   } catch (e) {
-    console.error("[prod] ensureFlashcardColumns: ошибка (старт продолжается):", e.message);
+    console.error("[prod] ensureFlashcardSchema: ошибка (старт продолжается):", e.message);
   } finally {
     try {
       await client.end();
@@ -83,8 +195,8 @@ if (runDbSetup) {
   }
 }
 
-// Всегда добавляем недостающие колонки — после push (если был), до сида
-await ensureFlashcardColumns();
+// Всегда проверяем схему — после push (если был), до сида
+await ensureFlashcardSchema();
 
 if (runDbSetup) {
   console.log("[prod] DB setup: seeding test accounts…");
