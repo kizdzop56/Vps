@@ -1,10 +1,12 @@
 // Production startup for single-container deployments (Render, Railway, Fly, VPS).
 //
 // Boot sequence:
-//   1. (optional, RUN_DB_SETUP=true) push DB schema + run idempotent seed
-//   2. start API server (bundled dist) on API_PORT
-//   3. start static web server (Expo web export) on WEB_PORT
-//   4. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
+//   1. (optional, RUN_DB_SETUP=true) push DB schema via drizzle-kit
+//   1a. (always) ensure missing flashcard columns exist via direct SQL
+//   2. (optional, RUN_DB_SETUP=true) run idempotent seed
+//   3. start API server (bundled dist) on API_PORT
+//   4. start static web server (Expo web export) on WEB_PORT
+//   5. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
 //
 // The proxy pattern mirrors scripts/preview-proxy.mjs (and the Replit setup),
 // so the frontend keeps calling the API on the same origin via relative /api.
@@ -25,8 +27,50 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// ---------- Ensure missing flashcard columns (always, even RUN_DB_SETUP=false) ----------
+// ALTER TABLE IF EXISTS … ADD COLUMN IF NOT EXISTS — идемпотентно, безопасно на любом старте.
+// Ошибка логируется, но не роняет старт.
+async function ensureFlashcardColumns() {
+  const dbUrl = process.env.DATABASE_URL;
+  let ClientClass;
+  try {
+    const pg = await import("pg");
+    // поддерживаем и ESM-default, и CJS-экспорт
+    ClientClass = pg.default?.Client ?? pg.Client;
+  } catch (e) {
+    console.error("[prod] ensureFlashcardColumns: не удалось загрузить pg —", e.message);
+    return;
+  }
+
+  // Render добавляет SSL-требование; отключаем проверку сертификата для внутреннего соединения
+  const ssl = dbUrl.includes("render.com") ? { rejectUnauthorized: false } : undefined;
+  const client = new ClientClass({ connectionString: dbUrl, ssl });
+
+  try {
+    await client.connect();
+    await client.query(
+      "ALTER TABLE IF EXISTS words ADD COLUMN IF NOT EXISTS emoji text",
+    );
+    await client.query(
+      "ALTER TABLE IF EXISTS user_card_state ADD COLUMN IF NOT EXISTS lapses integer NOT NULL DEFAULT 0",
+    );
+    await client.query(
+      "ALTER TABLE IF EXISTS flashcard_settings ADD COLUMN IF NOT EXISTS daily_word_goal integer NOT NULL DEFAULT 10",
+    );
+    console.log("[prod] ensureFlashcardColumns: колонки добавлены (или уже существовали)");
+  } catch (e) {
+    console.error("[prod] ensureFlashcardColumns: ошибка (старт продолжается):", e.message);
+  } finally {
+    try {
+      await client.end();
+    } catch {}
+  }
+}
+
 // ---------- 1. DB schema + seed (idempotent, safe on every boot) ----------
-if ((process.env.RUN_DB_SETUP ?? "true") !== "false") {
+const runDbSetup = (process.env.RUN_DB_SETUP ?? "true") !== "false";
+
+if (runDbSetup) {
   console.log("[prod] DB setup: pushing schema…");
   const push = spawnSync("pnpm", ["--filter", "@workspace/db", "run", "push-force"], {
     cwd: root,
@@ -37,6 +81,12 @@ if ((process.env.RUN_DB_SETUP ?? "true") !== "false") {
     console.error("[prod] schema push failed — aborting startup");
     process.exit(1);
   }
+}
+
+// Всегда добавляем недостающие колонки — после push (если был), до сида
+await ensureFlashcardColumns();
+
+if (runDbSetup) {
   console.log("[prod] DB setup: seeding test accounts…");
   const seed = spawnSync("pnpm", ["--filter", "@workspace/scripts", "run", "seed"], {
     cwd: root,

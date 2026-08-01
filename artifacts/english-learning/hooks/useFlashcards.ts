@@ -181,8 +181,18 @@ export async function apiFetch<T = any>(path: string, options?: RequestInit): Pr
     },
   });
   if (res.status === 204) return null as T;
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error ?? "Ошибка сервера");
+  // Читаем как текст и парсим вручную — если сервер вернул HTML (например, 500-страницу
+  // Express), получим понятную ошибку вместо "Unexpected token '<'".
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Сервер вернул не JSON (статус ${res.status}). Начало ответа: ${text.slice(0, 120)}`,
+    );
+  }
+  if (!res.ok) throw new Error((data as { error?: string })?.error ?? "Ошибка сервера");
   return data as T;
 }
 
