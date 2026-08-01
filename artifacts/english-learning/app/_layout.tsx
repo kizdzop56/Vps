@@ -24,9 +24,26 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
 
   try {
     const featherUrl = require("../assets/fonts/Feather.ttf");
+
+    // font-display: swap — сразу показываем fallback-символ, меняем на иконку
+    // когда шрифт загружен. Раньше было block: браузер держал невидимый текст
+    // до 3 секунд — отсюда «пустые квадраты» при первой загрузке.
     const iconStyle = document.createElement("style");
-    iconStyle.textContent = `@font-face { font-family: 'Feather'; src: url('${featherUrl}') format('truetype'); font-display: block; }`;
+    iconStyle.textContent = `@font-face { font-family: 'Feather'; src: url('${featherUrl}') format('truetype'); font-display: swap; }`;
     document.head.appendChild(iconStyle);
+
+    // Preload: браузер начинает скачивать шрифт ещё до разбора CSS/JS,
+    // поэтому к моменту первой отрисовки он уже в кэше.
+    if (!document.querySelector('link[data-feather-preload]')) {
+      const preload = document.createElement("link");
+      preload.rel = "preload";
+      preload.as = "font";
+      preload.type = "font/ttf";
+      preload.crossOrigin = "anonymous";
+      preload.href = featherUrl;
+      preload.dataset["featherPreload"] = "1";
+      document.head.insertBefore(preload, document.head.firstChild);
+    }
   } catch (_) {}
 }
 
@@ -39,7 +56,13 @@ if (Platform.OS !== "web") {
 
 export const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, staleTime: 30_000 },
+    queries: {
+      retry: 1,
+      // 5 минут: при переходах между вкладками данные не перезапрашиваются
+      // без необходимости. Экраны, которым нужна свежая выдача, делают явный
+      // refetch через useFocusEffect с проверкой isStale.
+      staleTime: 5 * 60_000,
+    },
   },
 });
 

@@ -32,11 +32,22 @@ export default function FlashcardsHome() {
   // Статистика нужна на главной для цели дня и числа сложных слов.
   const statsQ = useQuery({ queryKey: ["fc-stats"], queryFn: () => fc.getStats() });
 
+  // Рефетч при фокусе: только когда данные реально устарели (isStale).
+  // Раньше 3 запроса летели безусловно при каждом входе на вкладку, что
+  // раздражало на медленной сети и загружало сервер без нужды.
+  // Актуальность определяется staleTime (по умолчанию 5 минут, см. queryClient).
+  const decksQRef = React.useRef(decksQ);
+  const settingsQRef = React.useRef(settingsQ);
+  const statsQRef = React.useRef(statsQ);
+  decksQRef.current = decksQ;
+  settingsQRef.current = settingsQ;
+  statsQRef.current = statsQ;
+
   useFocusEffect(
     React.useCallback(() => {
-      decksQ.refetch();
-      settingsQ.refetch();
-      statsQ.refetch();
+      if (decksQRef.current.isStale) void decksQRef.current.refetch();
+      if (settingsQRef.current.isStale) void settingsQRef.current.refetch();
+      if (statsQRef.current.isStale) void statsQRef.current.refetch();
     }, [])
   );
 
