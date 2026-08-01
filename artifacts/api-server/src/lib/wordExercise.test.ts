@@ -27,12 +27,12 @@ const NOW = new Date("2026-07-30T12:00:00.000Z");
 const word = (id: number, english: string, ru: string[]): WordLike => ({ id, english, translationsRu: ru });
 
 const POOL: WordLike[] = [
-  word(1, "apple", ["яблоко"]),
-  word(2, "bread", ["хлеб"]),
-  word(3, "water", ["вода"]),
-  word(4, "cheese", ["сыр"]),
-  word(5, "milk", ["молоко"]),
-  word(6, "egg", ["яйцо"]),
+  word(1, "apple",  ["яблоко"]),   // cardSeed(1,NOW)%2 = 1 → choiceEn
+  word(2, "bread",  ["хлеб"]),     // cardSeed(2,NOW)%2 = 0 → choiceRu
+  word(3, "water",  ["вода"]),     // cardSeed(3,NOW)%2 = 1 → choiceEn
+  word(4, "cheese", ["сыр"]),      // cardSeed(4,NOW)%2 = 0 → choiceRu
+  word(5, "milk",   ["молоко"]),   // cardSeed(5,NOW)%2 = 1 → choiceEn
+  word(6, "egg",    ["яйцо"]),     // cardSeed(6,NOW)%2 = 0 → choiceRu
 ];
 
 // ── выбор упражнения ────────────────────────────────────────────────────────
@@ -40,21 +40,64 @@ const POOL: WordLike[] = [
 test("новое слово всегда начинается со знакомства", () => {
   assert.equal(pickExerciseType({ memoryLevel: 0, isNew: true, english: "apple" }), "intro");
   assert.equal(pickExerciseType({ memoryLevel: 5, isNew: true, english: "apple" }), "intro");
+  // даже при wordId choiceEn не выдаётся для нового слова
+  assert.equal(pickExerciseType({ memoryLevel: 0, isNew: true, english: "bread", wordId: 2, now: NOW }), "intro");
 });
 
-test("упражнение усложняется с уровнем памяти", () => {
-  const type = (level: number) => pickExerciseType({ memoryLevel: level, isNew: false, english: "apple" });
-  assert.equal(type(0), "choiceRu");
-  assert.equal(type(1), "choiceRu");
-  assert.equal(type(2), "choiceEn");
+test("для нового слова choiceEn не выдаётся ни при каком wordId", () => {
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+    const t = pickExerciseType({ memoryLevel: 0, isNew: true, english: "apple", wordId: id, now: NOW });
+    assert.equal(t, "intro", `wordId=${id} isNew=true должен дать intro, получили ${t}`);
+  }
+});
+
+test("memoryLevel 0 (не новое) всегда choiceRu — обратное направление слишком рано", () => {
+  for (const id of [1, 2, 3, 4, 5, 6]) {
+    const t = pickExerciseType({ memoryLevel: 0, isNew: false, english: "apple", wordId: id, now: NOW });
+    assert.equal(t, "choiceRu", `wordId=${id} level=0 должен быть choiceRu, получили ${t}`);
+  }
+});
+
+test("уровни 1–2: детерминированное чередование по cardSeed(wordId+день)", () => {
+  // wordId=1 (apple): bit=1 → choiceEn; wordId=2 (bread): bit=0 → choiceRu
+  assert.equal(pickExerciseType({ memoryLevel: 1, isNew: false, english: "apple", wordId: 1, now: NOW }), "choiceEn");
+  assert.equal(pickExerciseType({ memoryLevel: 1, isNew: false, english: "bread", wordId: 2, now: NOW }), "choiceRu");
+  assert.equal(pickExerciseType({ memoryLevel: 2, isNew: false, english: "apple", wordId: 1, now: NOW }), "choiceEn");
+  assert.equal(pickExerciseType({ memoryLevel: 2, isNew: false, english: "bread", wordId: 2, now: NOW }), "choiceRu");
+});
+
+test("выдача детерминирована: одни и те же аргументы дают один и тот же результат", () => {
+  for (const id of [1, 2, 3, 4]) {
+    const a = pickExerciseType({ memoryLevel: 1, isNew: false, english: "apple", wordId: id, now: NOW });
+    const b = pickExerciseType({ memoryLevel: 1, isNew: false, english: "apple", wordId: id, now: NOW });
+    assert.equal(a, b, `wordId=${id} должен давать одинаковый результат`);
+  }
+});
+
+test("при memoryLevel ≥ 1 оба направления встречаются в наборе слов", () => {
+  const types = new Set<string>();
+  for (let id = 1; id <= 10; id++) {
+    types.add(pickExerciseType({ memoryLevel: 1, isNew: false, english: "apple", wordId: id, now: NOW }));
+  }
+  assert.ok(types.has("choiceRu"), "choiceRu должен встречаться среди разных wordId");
+  assert.ok(types.has("choiceEn"), "choiceEn должен встречаться среди разных wordId");
+});
+
+test("уровни 3 и выше остаются без изменений", () => {
+  const type = (level: number) => pickExerciseType({ memoryLevel: level, isNew: false, english: "apple", wordId: 1, now: NOW });
   assert.equal(type(3), "listen");
   assert.equal(type(4), "build");
   assert.equal(type(5), "build");
 });
 
-test("без озвучки аудирование заменяется выбором слова", () => {
+test("без wordId дефолт — choiceRu (безопасный фолбэк для обратной совместимости)", () => {
+  assert.equal(pickExerciseType({ memoryLevel: 1, isNew: false, english: "apple" }), "choiceRu");
+  assert.equal(pickExerciseType({ memoryLevel: 2, isNew: false, english: "apple" }), "choiceRu");
+});
+
+test("без озвучки аудирование заменяется choiceEn", () => {
   assert.equal(
-    pickExerciseType({ memoryLevel: 3, isNew: false, english: "apple", allowListen: false }),
+    pickExerciseType({ memoryLevel: 3, isNew: false, english: "apple", allowListen: false, wordId: 1, now: NOW }),
     "choiceEn",
   );
 });
@@ -152,20 +195,38 @@ test("знакомство отдаёт только слово, без вари
   assert.equal(ex.options, undefined);
 });
 
-test("choiceRu: спрашиваем английское слово, отвечаем переводом", () => {
-  const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+test("choiceRu: спрашиваем английское слово, отвечаем переводом (wordId=2 → bit=0)", () => {
+  // POOL[1] = word(2, "bread") → cardSeed(2,NOW)%2 = 0 → choiceRu
+  const ex = buildExercise({ word: POOL[1]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
   assert.equal(ex.type, "choiceRu");
-  assert.equal(ex.prompt, "apple");
-  assert.equal(ex.options![ex.answerIndex!], "яблоко");
+  assert.equal(ex.prompt, "bread");
+  assert.equal(ex.options![ex.answerIndex!], "хлеб");
   assert.equal(ex.options!.length, OPTION_COUNT);
 });
 
-test("choiceEn: спрашиваем перевод, отвечаем английским словом", () => {
-  const ex = buildExercise({ word: POOL[0]!, memoryLevel: 2, isNew: false, pool: POOL, now: NOW });
+test("choiceEn: спрашиваем перевод, отвечаем английским словом (wordId=1 → bit=1)", () => {
+  // POOL[0] = word(1, "apple") → cardSeed(1,NOW)%2 = 1 → choiceEn
+  const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
   assert.equal(ex.type, "choiceEn");
   assert.equal(ex.prompt, "яблоко");
   assert.equal(ex.options![ex.answerIndex!], "apple");
   assert.equal(ex.answer, "apple");
+});
+
+test("buildExercise детерминирован: один wordId+now → одно и то же упражнение", () => {
+  const a = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  const b = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  assert.equal(a.type, b.type);
+  assert.deepEqual(a.options, b.options);
+  assert.equal(a.answerIndex, b.answerIndex);
+});
+
+test("buildExercise выдаёт разные типы для разных wordId при одном уровне", () => {
+  // wordId=1 (apple) → bit=1 → choiceEn; wordId=2 (bread) → bit=0 → choiceRu
+  const en = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  const ru = buildExercise({ word: POOL[1]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  assert.equal(en.type, "choiceEn");
+  assert.equal(ru.type, "choiceRu");
 });
 
 test("build: даём перевод, ответ — слово, плитки перемешаны", () => {
@@ -176,13 +237,27 @@ test("build: даём перевод, ответ — слово, плитки п
   assert.ok((ex.letters?.length ?? 0) > "apple".length);
 });
 
-test("само слово не попадает в свои же варианты", () => {
-  const ex = buildExercise({ word: POOL[2]!, memoryLevel: 2, isNew: false, pool: POOL, now: NOW });
-  assert.equal(ex.options!.filter((o) => o === "water").length, 1);
+test("само слово не попадает в свои же варианты (choiceRu)", () => {
+  // POOL[1] = bread (wordId=2, bit=0 → choiceRu): варианты — русские переводы
+  const ex = buildExercise({ word: POOL[1]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  assert.equal(ex.type, "choiceRu");
+  assert.equal(ex.options!.filter((o) => o === "хлеб").length, 1);
+  // Не должно быть "bread" среди вариантов (они все русские)
+  assert.equal(ex.options!.filter((o) => o === "bread").length, 0);
+});
+
+test("само слово не попадает в свои же варианты (choiceEn)", () => {
+  // POOL[0] = apple (wordId=1, bit=1 → choiceEn): варианты — английские слова
+  const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: POOL, now: NOW });
+  assert.equal(ex.type, "choiceEn");
+  assert.equal(ex.options!.filter((o) => o === "apple").length, 1);
+  // Не должно быть "яблоко" среди вариантов (они все английские)
+  assert.equal(ex.options!.filter((o) => o === "яблоко").length, 0);
 });
 
 test("если подходящих слов нет совсем — падаем в знакомство, а не в пустой выбор", () => {
   const only = [POOL[0]!];
+  // wordId=1 → choiceRu → pool пуст → intro
   const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: only, now: NOW });
   assert.equal(ex.type, "intro");
 });

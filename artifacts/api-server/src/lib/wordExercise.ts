@@ -6,11 +6,15 @@
 // «знал», хотя вспомнить сам не смог. Поэтому упражнение подбирается по уровню
 // памяти слова и постепенно усложняется:
 //
-//   знакомство   → карточка с картинкой, переводом, примером и озвучкой;
-//   choiceRu     → услышал/увидел английское слово → выбери перевод (узнавание);
-//   choiceEn     → русский перевод → выбери английское слово (припоминание);
-//   listen       → только озвучка → выбери перевод (аудирование);
-//   build        → собери слово из букв (письмо/орфография).
+//   знакомство    → карточка с картинкой, переводом, примером и озвучкой (isNew);
+//   memoryLevel 0 → choiceRu только (EN → выбор RU, первое узнавание);
+//   memoryLevel 1–2 → choiceRu или choiceEn поровну, детерминировано по сиду
+//                     (слово + день): оба направления чередуются без Math.random;
+//   memoryLevel 3 → listen (только озвучка → выбор перевода, аудирование);
+//   memoryLevel 4–5 → build (собери слово из букв, орфография).
+//
+// Словосочетания и слова длиннее MAX_BUILD_LENGTH из букв не собираются —
+// вместо этого аудирование или choiceEn.
 //
 // Модуль чистый (без БД и express) — тесты в wordExercise.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,15 +99,31 @@ export function pickExerciseType(opts: {
   isNew: boolean;
   english: string;
   allowListen?: boolean;
+  /** ID слова — нужен для детерминированного чередования choiceRu/choiceEn. */
+  wordId?: number;
+  /** Точка времени — нужна для cardSeed (по умолчанию now). */
+  now?: Date;
 }): ExerciseType {
-  const { isNew, english } = opts;
+  const { isNew, english, wordId } = opts;
   const level = Number.isFinite(opts.memoryLevel) ? Math.max(0, Math.trunc(opts.memoryLevel)) : 0;
   const allowListen = opts.allowListen !== false;
 
   if (isNew) return "intro";
-  if (level <= 1) return "choiceRu";                       // узнавание
-  if (level === 2) return "choiceEn";                      // припоминание
+
+  // memoryLevel 0: слово только что прошло знакомство, обратное направление
+  // ещё слишком рано — даём только узнавание EN→RU.
+  if (level === 0) return "choiceRu";
+
+  // memoryLevel 1–2: чередуем choiceRu (EN→RU) и choiceEn (RU→EN) поровну.
+  // Чередование детерминировано: бит из cardSeed (wordId + день) — стабилен
+  // в течение дня, воспроизводим в тестах, не зависит от Math.random.
+  if (level <= 2) {
+    const choiceEnBit = wordId != null ? cardSeed(wordId, opts.now) % 2 : 0;
+    return choiceEnBit === 1 ? "choiceEn" : "choiceRu";
+  }
+
   if (level === 3) return allowListen ? "listen" : "choiceEn";
+
   // Выученное закрепляем письмом; фразы и длинные слова — аудированием/выбором.
   if (level >= LEARNED_LEVEL && isBuildable(english)) return "build";
   return allowListen ? "listen" : "choiceEn";
@@ -197,7 +217,14 @@ export function buildExercise(opts: {
   const { word, memoryLevel, isNew, pool } = opts;
   const now = opts.now ?? new Date();
   const rng = mulberry32(cardSeed(word.id, now));
-  const type = pickExerciseType({ memoryLevel, isNew, english: word.english, allowListen: opts.allowListen });
+  const type = pickExerciseType({
+    memoryLevel,
+    isNew,
+    english: word.english,
+    allowListen: opts.allowListen,
+    wordId: word.id,
+    now,
+  });
   const others = pool.filter((w) => w.id !== word.id);
 
   if (type === "intro") {
