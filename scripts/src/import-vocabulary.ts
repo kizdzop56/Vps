@@ -131,6 +131,30 @@ const THEME_DEFS: Record<string, ThemeDef> = {
       "bank","cash","card","credit","expensive","cheap","free","bill","salary","save","spend","budget","rich",
       "poor","loan","currency","coin","dollar"]),
   },
+  // Темы ниже добавлены для уровня B1 (глубже, чем базовый набор выше):
+  // ключевые слова подобраны по фактическим B1-строкам в data/oxford-5k.csv
+  // и data/oxford-phrase.csv, а не выдуманы — иначе классификация не сработает.
+  city_transport: {
+    title: "Город и транспорт", emoji: "🚌", description: "Городская жизнь, передвижение и транспорт.",
+    words: new Set(["border","departure","arrival","destination","located","neighbourhood","signal","transport",
+      "high street"]),
+  },
+  education: {
+    title: "Образование", emoji: "🎓", description: "Учёба, экзамены и учебные заведения (глубже, чем «Работа и учёба»).",
+    words: new Set(["academic","assignment","campus","grade","graduate","qualification","examine",
+      "primary school","secondary school","higher education"]),
+  },
+  character_relationships: {
+    title: "Характер и отношения", emoji: "🤝", description: "Черты характера, дружба и отношения между людьми.",
+    words: new Set(["ambitious","apologize","attitude","confident","friendship","generous","honest","kind",
+      "mood","reliable","respect","shy","supporter","get on with sb","get to know sb","care for sb",
+      "attached to sb/sth","respect for sb/sth"]),
+  },
+  leisure_culture: {
+    title: "Свободное время и культура", emoji: "🎭", description: "Искусство, культура и творческий досуг.",
+    words: new Set(["ceremony","entertain","entertainment","exhibition","leisure","literature","performance",
+      "poem","poetry","sculpture","talent","talented"]),
+  },
 };
 
 function classifyTheme(word: string): string | null {
@@ -228,7 +252,12 @@ async function loadExistingLevelDecks(level: CefrLevel): Promise<SeedDeck[]> {
 
 // ── Сериализация в TS ────────────────────────────────────────────────────────
 function esc(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r\n/g, "\\n")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\n");
 }
 
 function serializeWord(w: SeedWord): string {
