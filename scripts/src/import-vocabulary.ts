@@ -313,38 +313,49 @@ async function main() {
 
     console.log(`\n[${level}] кандидатов после фильтров: ${candidates.length}`);
 
-    // theme -> собранные слова за этот прогон
+    // theme -> собранные слова за этот прогон. Ключ темы всегда с суффиксом
+    // уровня (_a1/_a2/...), чтобы темы разных уровней не совпадали друг с
+    // другом (раньше "food" от A1 и "food" от A2 были бы одной и той же темой).
+    const LEVEL_SUFFIX = `_${level.toLowerCase()}`;
     const collected = new Map<string, SeedWord[]>();
-    const TOP_THEME_KEY = `top-${level.toLowerCase()}`;
+    const TOP_THEME_KEY = `top${LEVEL_SUFFIX}`;
+    const baseKeyOf = (themeKey: string): string | null =>
+      themeKey === TOP_THEME_KEY ? null : themeKey.slice(0, -LEVEL_SUFFIX.length);
 
     for (const [i, cand] of candidates.entries()) {
       if (i > 0) await sleep(rateDelay());
 
+      // Словосочетания/идиомы (несколько слов через пробел) — у dictionaryapi.dev
+      // почти нет статей на такие фразы, поэтому для них IPA необязателен: если
+      // перевод есть, слово всё равно включаем, просто без транскрипции.
+      const isPhrase = /\s/.test(cand.word.trim());
+
       const dict = await lookupDictionary(cand.word);
-      if (!dict || !dict.ipa) {
+      if (!isPhrase && (!dict || !dict.ipa)) {
         skipped.push({ word: cand.word, reason: "нет IPA в словаре (dictionaryapi.dev)" });
         continue;
       }
 
       const ru = await translateWithGoogle(cand.word);
       if (!ru) {
-        skipped.push({ word: cand.word, reason: "не удалось получить перевод" });
+        skipped.push({ word: cand.word, reason: "нет достоверных данных: не удалось получить перевод" });
         continue;
       }
 
-      let exEn = dict.example ?? "";
+      let exEn = dict?.example ?? "";
       let exRu = "";
       if (exEn) {
         exRu = (await translateWithGoogle(exEn)) ?? "";
         if (!exRu) exEn = ""; // без перевода пример не показываем, но само слово не отбрасываем
       }
 
-      const themeKey = classifyTheme(cand.word) ?? TOP_THEME_KEY;
+      const baseThemeKey = classifyTheme(cand.word);
+      const themeKey = baseThemeKey ? `${baseThemeKey}${LEVEL_SUFFIX}` : TOP_THEME_KEY;
       const word: SeedWord = {
         en: cand.word,
-        pos: dict.pos || cand.pos || "unknown",
+        pos: dict?.pos || cand.pos || (isPhrase ? "phrase" : "unknown"),
         ru: [ru],
-        ipa: dict.ipa,
+        ipa: dict?.ipa ?? "",
         exEn,
         exRu,
         cefr: level,
@@ -353,7 +364,7 @@ async function main() {
       collected.get(themeKey)!.push(word);
       existing.add(cand.word.toLowerCase());
 
-      console.log(`  + ${cand.word} -> ${ru} [${themeKey}] ${dict.ipa}`);
+      console.log(`  + ${cand.word} -> ${ru} [${themeKey}] ${word.ipa || "(без IPA)"}`);
     }
 
     if (collected.size === 0) {
@@ -367,8 +378,9 @@ async function main() {
     for (const d of existingDecks) byTheme.set(d.theme, d);
 
     for (const [themeKey, words] of collected) {
-      const def = THEME_DEFS[themeKey];
       const isTop = themeKey === TOP_THEME_KEY;
+      const baseKey = baseKeyOf(themeKey);
+      const def = baseKey ? THEME_DEFS[baseKey] : undefined;
       const existingDeck = byTheme.get(themeKey);
       if (existingDeck) {
         existingDeck.words.push(...words);
@@ -380,13 +392,37 @@ async function main() {
           description: isTop
             ? `Самые частотные слова уровня ${level} (Oxford 3000/5000), не вошедшие в тематические колоды.`
             : def!.description,
-          cefrLevel: isTop ? level : undefined,
+          // Каждая колода этого уровня помечена своим cefrLevel (не только "топ").
+          cefrLevel: level,
           words,
         });
       }
     }
 
-    const merged = Array.from(byTheme.values());
+    // Колоды держим в размере 30–60 слов: те, что вышли за 60, режем на
+    // равные части (part size <= 60), дописывая title/theme суффиксом (N/M).
+    const MAX_DECK_SIZE = 60;
+    const sized: SeedDeck[] = [];
+    for (const deck of byTheme.values()) {
+      if (deck.words.length <= MAX_DECK_SIZE) {
+        sized.push(deck);
+        continue;
+      }
+      const parts = Math.ceil(deck.words.length / MAX_DECK_SIZE);
+      const chunkSize = Math.ceil(deck.words.length / parts);
+      for (let p = 0; p < parts; p++) {
+        const chunkWords = deck.words.slice(p * chunkSize, (p + 1) * chunkSize);
+        if (chunkWords.length === 0) continue;
+        sized.push({
+          ...deck,
+          theme: `${deck.theme}_${p + 1}`,
+          title: `${deck.title} (${p + 1}/${parts})`,
+          words: chunkWords,
+        });
+      }
+    }
+
+    const merged = sized;
     mkdirSync(OUT_DIR, { recursive: true });
     writeFileSync(path.join(OUT_DIR, `vocabulary-${level.toLowerCase()}.ts`), serializeFile(level, merged), "utf-8");
     touchedLevels.add(level);
