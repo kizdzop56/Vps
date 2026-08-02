@@ -118,11 +118,11 @@ export default function FlashcardsHome() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 19, fontWeight: "900", color: "#fff" }}>Учить слова</Text>
-            <Text style={{ fontSize: 13, color: "#ffffffdd", marginTop: 3 }}>
-              {totalDue > 0 || totalNew > 0
-                ? `${totalDue} к повторению · ${totalNew} новых`
-                : "Все слова повторены — загляни позже"}
-            </Text>
+            {totalDue === 0 && totalNew === 0 ? (
+              <Text style={{ fontSize: 13, color: "#ffffffdd", marginTop: 3 }}>
+                Все слова повторены — загляни позже
+              </Text>
+            ) : null}
           </View>
           <Feather name="chevron-right" size={24} color="#fff" />
         </LinearGradient>

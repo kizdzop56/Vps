@@ -8,6 +8,7 @@
     "seed": "tsx ./src/seed.ts",
     "fetch-audio": "tsx ./src/fetch-audio.ts",
     "import-vocab": "tsx ./src/import-vocabulary.ts",
+    "reclassify-vocab": "tsx ./src/reclassify-vocabulary.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
