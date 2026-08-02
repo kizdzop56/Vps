@@ -5,5 +5,6 @@ import type { SeedDeck } from "./flashcards-data";
 import a1Decks from "./vocabulary-a1";
 import a2Decks from "./vocabulary-a2";
 import b1Decks from "./vocabulary-b1";
+import b2Decks from "./vocabulary-b2";
 
-export const VOCAB_DECKS: SeedDeck[] = [...a1Decks, ...a2Decks, ...b1Decks];
+export const VOCAB_DECKS: SeedDeck[] = [...a1Decks, ...a2Decks, ...b1Decks, ...b2Decks];

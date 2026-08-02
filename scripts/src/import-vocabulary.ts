@@ -155,11 +155,52 @@ const THEME_DEFS: Record<string, ThemeDef> = {
     words: new Set(["ceremony","entertain","entertainment","exhibition","leisure","literature","performance",
       "poem","poetry","sculpture","talent","talented"]),
   },
+  // Темы ниже добавлены для уровня B2 — абстрактнее, чем бытовой набор
+  // A1/B1: общество, наука, экономика, медиа, экология, психология.
+  // Ключевые слова подобраны по фактическим B2-строкам в data/oxford-5k.csv
+  // и data/oxford-phrase.csv.
+  society: {
+    title: "Общество и социальные проблемы", emoji: "🏛️", description: "Общество, права и социальные проблемы.",
+    words: new Set(["citizen","democracy","gender","homeless","immigration","justice","minority","racism",
+      "refugee","welfare","human rights","role model","quality of life"]),
+  },
+  science_technology: {
+    title: "Наука и технологии", emoji: "🔬", description: "Наука, исследования и инновации.",
+    words: new Set(["artificial","genetic","hypothesis","innovation","innovative","technological"]),
+  },
+  economy_work: {
+    title: "Экономика и работа", emoji: "📈", description: "Экономика, бизнес и рынок труда.",
+    words: new Set(["contract","corporation","entrepreneur","income","industrial","inflation","investment",
+      "labour","manufacture","manufacturing","negotiation","recession","recruitment","strike","workforce"]),
+  },
+  media_communication: {
+    title: "Медиа и коммуникация", emoji: "📰", description: "Медиа, журналистика и коммуникация.",
+    words: new Set(["broadcast","coverage","journalism","publication","case study"]),
+  },
+  ecology: {
+    title: "Экология", emoji: "🌍", description: "Окружающая среда, климат и экология.",
+    words: new Set(["conservation","drought","emission","fossil","greenhouse","sustainable","wildlife"]),
+  },
+  psychology_emotions: {
+    title: "Психология и эмоции", emoji: "🧠", description: "Психология, поведение и внутренний мир человека.",
+    words: new Set(["anxiety","awareness","depression","emotional","motivation","perception","psychological",
+      "psychology","therapy","mental health"]),
+  },
 };
 
-function classifyTheme(word: string): string | null {
+// На уровне B2+ бытовые темы (еда, дом, семья, животные, хобби/спорт,
+// путешествия, город/транспорт) уже не нужны — слова этого уровня в них
+// почти никогда не попадают, а если попадут (случайное совпадение ключа),
+// такое слово лучше уйдёт в «Топ-слова уровня», чем раздует бытовую колоду
+// абстрактным словом не по теме.
+const HOUSEHOLD_THEME_KEYS = new Set([
+  "food", "animals", "home", "family", "hobby_sport", "travel", "city_transport",
+]);
+
+function classifyTheme(word: string, exclude?: Set<string>): string | null {
   const key = word.toLowerCase();
   for (const [themeKey, def] of Object.entries(THEME_DEFS)) {
+    if (exclude?.has(themeKey)) continue;
     if (def.words.has(key)) return themeKey;
   }
   return null;
@@ -346,6 +387,9 @@ async function main() {
     // уровня (_a1/_a2/...), чтобы темы разных уровней не совпадали друг с
     // другом (раньше "food" от A1 и "food" от A2 были бы одной и той же темой).
     const LEVEL_SUFFIX = `_${level.toLowerCase()}`;
+    // На B2 и выше бытовые темы не используются (см. HOUSEHOLD_THEME_KEYS).
+    const levelIdx = CEFR_LEVELS.indexOf(level);
+    const excludeThemes = levelIdx >= CEFR_LEVELS.indexOf("B2") ? HOUSEHOLD_THEME_KEYS : undefined;
     const collected = new Map<string, SeedWord[]>();
     const TOP_THEME_KEY = `top${LEVEL_SUFFIX}`;
     const baseKeyOf = (themeKey: string): string | null =>
@@ -378,7 +422,7 @@ async function main() {
         if (!exRu) exEn = ""; // без перевода пример не показываем, но само слово не отбрасываем
       }
 
-      const baseThemeKey = classifyTheme(cand.word);
+      const baseThemeKey = classifyTheme(cand.word, excludeThemes);
       const themeKey = baseThemeKey ? `${baseThemeKey}${LEVEL_SUFFIX}` : TOP_THEME_KEY;
       const word: SeedWord = {
         en: cand.word,
