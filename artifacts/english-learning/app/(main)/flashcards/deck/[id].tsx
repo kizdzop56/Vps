@@ -82,6 +82,9 @@ export default function DeckDetail() {
   };
 
   // ── добавление слов ───────────────────────────────────────────────────────
+  // Блок наполнения колоды свёрнут по умолчанию — большинство заходов на
+  // страницу колоды это просто «посмотреть слова», а не редактировать.
+  const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<"one" | "many">("one");
   const [newEn, setNewEn] = useState("");
   const [newRu, setNewRu] = useState("");
@@ -294,8 +297,25 @@ export default function DeckDetail() {
         </TouchableOpacity>
       )}
 
-      {/* добавление слов — только в своей колоде */}
+      {/* добавление слов — только в своей колоде, свёрнуто аккордеоном */}
       {canEdit && (
+        <TouchableOpacity
+          onPress={() => setAddOpen((v) => !v)}
+          activeOpacity={0.85}
+          style={{
+            flexDirection: "row", alignItems: "center", gap: 10,
+            backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border,
+            padding: 14, marginBottom: 12,
+          }}
+        >
+          <Feather name="plus-circle" size={18} color={colors.primary} />
+          <Text style={{ flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground }}>
+            Добавить или изменить слова
+          </Text>
+          <Feather name={addOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.mutedForeground} />
+        </TouchableOpacity>
+      )}
+      {canEdit && addOpen && (
         <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 18 }}>
           {/* Основной способ наполнить колоду — отметить готовые слова в каталоге
               (системные колоды по темам и уровням A1–C2). Раньше слова можно было
