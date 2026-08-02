@@ -107,5 +107,29 @@ export async function seedFlashcards(): Promise<void> {
     }
   }
 
-  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled} (всего колод в датасете ${ALL_DECKS.length}).`);
+  // Удаление устаревших системных колод (например, старые «Топ-слова A2 (N/16)»
+  // после пересборки датасета на другое число колод/уровней). Раньше сид только
+  // добавлял — колоды, которых больше нет в ALL_DECKS, навсегда оставались в БД.
+  // Удаляем ТОЛЬКО системные колоды (ownerId IS NULL): пользовательские и
+  // назначенные ученикам колоды всегда принадлежат конкретному ownerId и сюда
+  // не попадают ни при каких условиях.
+  const currentThemes = new Set(ALL_DECKS.map((d) => d.theme));
+  const systemDecks = await db
+    .select({ id: decksTable.id, theme: decksTable.theme, title: decksTable.title })
+    .from(decksTable)
+    .where(isNull(decksTable.ownerId));
+  const stale = systemDecks.filter((d) => !d.theme || !currentThemes.has(d.theme));
+
+  if (stale.length > 0) {
+    console.log(`  🗑️  Flashcards: найдено ${stale.length} устаревших системных колод к удалению:`);
+    for (const d of stale) console.log(`      - theme="${d.theme}" title="${d.title}" (id=${d.id})`);
+
+    await db.delete(decksTable).where(inArray(decksTable.id, stale.map((d) => d.id)));
+
+    console.log(
+      `  🗑️  Flashcards: удалено ${stale.length} устаревших системных колод: ${stale.map((d) => d.theme ?? `id:${d.id}`).join(", ")}.`,
+    );
+  }
+
+  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled}, устаревших колод удалено ${stale.length} (всего колод в датасете ${ALL_DECKS.length}).`);
 }

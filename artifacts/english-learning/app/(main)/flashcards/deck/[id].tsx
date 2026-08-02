@@ -17,7 +17,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator,
-  Alert, Platform, Modal,
+  Alert, Platform, Modal, Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -497,7 +497,13 @@ export default function DeckDetail() {
       {canAssign && (
         <SendDeckModal
           visible={sendOpen}
-          onClose={() => { setSendOpen(false); qc.invalidateQueries({ queryKey: ["fc-deck", deckId] }); }}
+          onClose={() => {
+            setSendOpen(false);
+            qc.invalidateQueries({ queryKey: ["fc-deck", deckId] });
+            // Учитель может сразу перейти в «Задания» → «Колоды» — счётчик
+            // «отправлена N ученикам» там должен быть свежим без перезаходов.
+            qc.invalidateQueries({ queryKey: ["fc-my-decks"] });
+          }}
           deckId={deckId}
           deckTitle={deck?.title ?? ""}
           wordCount={words.length}
@@ -694,6 +700,7 @@ function CatalogPickerModal({ visible, onClose, deckId, alreadyIn, colors, onSav
 function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors }: {
   visible: boolean; onClose: () => void; deckId: number; deckTitle: string; wordCount: number; colors: any;
 }) {
+  const insets = useSafeAreaInsets();
   const studentsQ = useQuery({
     queryKey: ["teacher-students-for-deck"],
     queryFn: () => apiFetch<StudentItem[]>("/api/connections/teacher/students"),
@@ -757,12 +764,14 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" }}>
+      {/* Собственный оверлей: непрозрачный фон контента ниже + затемнение фона
+          страницы, чтобы содержимое экрана не просвечивало сквозь модалку. */}
+      <View style={{ flex: 1, backgroundColor: "#00000099", justifyContent: "flex-end" }}>
         <View style={{
-          backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-          paddingHorizontal: 20, paddingTop: 16, paddingBottom: 32, maxHeight: "85%",
+          backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+          paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, maxHeight: "85%",
         }}>
-          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
             <Text style={{ flex: 1, fontSize: 18, fontWeight: "800", color: colors.foreground }}>Отправить ученикам</Text>
             <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
               <Feather name="x" size={22} color={colors.mutedForeground} />
@@ -793,7 +802,7 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
               </Text>
             </View>
           ) : (
-            <ScrollView style={{ maxHeight: 340 }}>
+            <ScrollView style={{ maxHeight: Dimensions.get("window").height * 0.5 }}>
               {students.map((s) => {
                 const has = already.has(s.id);
                 const on = picked.has(s.id);
