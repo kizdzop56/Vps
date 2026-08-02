@@ -18,7 +18,7 @@ import { View, Text, TouchableOpacity, Animated, ActivityIndicator, ScrollView }
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { fc, speak, speakWord, speechAvailable } from "@/hooks/useFlashcards";
+import { fc, speakWord, speechAvailable } from "@/hooks/useFlashcards";
 import type { Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
 
 const TRAINER_BACKGROUND = "#F8F7FF";
@@ -342,7 +342,12 @@ export function WordTrainer({
                   <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
                     <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
                     {speechAvailable() && (
-                      <TouchableOpacity onPress={() => speak(card.exampleEn!)} accessibilityLabel="Прослушать пример">
+                      // У примера-предложения нет своего wordId — озвучиваем текст
+                      // напрямую через /api/tts?text=... (см. speakWord). Раньше
+                      // здесь стоял speak() — он всегда идёт мимо сервера, сразу
+                      // в Web Speech API/expo-speech, поэтому пример звучал
+                      // старым синтезом даже когда сервер уже умеет живые голоса.
+                      <TouchableOpacity onPress={() => speakWord(undefined, card.exampleEn!)} accessibilityLabel="Прослушать пример">
                         <Feather name="volume-2" size={18} color={colors.primary} />
                       </TouchableOpacity>
                     )}

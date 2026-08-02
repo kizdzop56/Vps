@@ -27,9 +27,14 @@ import { s3ClientFromEnv } from "../lib/s3Client";
 
 const router = Router();
 
-// Валидация: только латиница, пробел, дефис, апостроф — не более 80 символов
-const TEXT_RE = /^[a-zA-Z][a-zA-Z\s\-']*$/;
-const TEXT_MAX = 80;
+// Валидация: латиница, пробел, дефис, апостроф и базовая пунктуация
+// (.,!?;:()) — не более 200 символов. Раньше пунктуация была под запретом
+// (только буквы/пробел/дефис/апостроф) и лимит был 80 символов — из-за этого
+// падали любые тексты со знаками препинания и примеры-предложения на
+// карточках ("This is an important question." — точка в конце, часто длиннее
+// 80 символов).
+const TEXT_RE = /^[a-zA-Z][a-zA-Z\s\-'.,!?;:()]*$/;
+const TEXT_MAX = 200;
 
 // ── Локальный кэш ──────────────────────────────────────────────────────────
 let ttsDir = path.resolve(process.cwd(), "../../uploads/tts");
@@ -202,6 +207,7 @@ router.get("/tts", async (req, res) => {
   if (typeof keyParam === "string" && keyParam) {
     const buf = await readFromCache(keyParam).catch(() => null);
     if (!buf) {
+      req.log.warn({ key: keyParam }, "tts: cache key not found");
       res.status(404).json({ error: "Audio not found in cache" });
       return;
     }
@@ -218,6 +224,7 @@ router.get("/tts", async (req, res) => {
   if (typeof wordIdParam === "string" && wordIdParam) {
     wordId = Number(wordIdParam);
     if (!Number.isInteger(wordId) || wordId <= 0) {
+      req.log.warn({ wordIdParam }, "tts: invalid wordId");
       res.status(400).json({ error: "Invalid wordId" });
       return;
     }
@@ -226,6 +233,7 @@ router.get("/tts", async (req, res) => {
       .from(wordsTable)
       .where(eq(wordsTable.id, wordId));
     if (!word) {
+      req.log.warn({ wordId }, "tts: word not found");
       res.status(404).json({ error: "Word not found" });
       return;
     }
@@ -273,13 +281,15 @@ router.get("/tts", async (req, res) => {
   } else if (typeof textParam === "string" && textParam) {
     text = textParam.trim();
   } else {
+    req.log.warn({ query: req.query }, "tts: neither wordId nor text provided");
     res.status(400).json({ error: "Provide wordId or text" });
     return;
   }
 
   // ── Валидация текста ───────────────────────────────────────────────────
   if (!text || text.length > TEXT_MAX || !TEXT_RE.test(text)) {
-    res.status(400).json({ error: "Invalid text: latin letters, spaces, hyphens, apostrophes only, max 80 chars" });
+    req.log.warn({ text, length: text?.length ?? 0 }, "tts: text rejected by validation");
+    res.status(400).json({ error: "Invalid text: latin letters, spaces, and .,!?;:()-' only, max 200 chars" });
     return;
   }
 
@@ -318,6 +328,10 @@ router.get("/tts", async (req, res) => {
   }
 
   if (!audioBuf) {
+    req.log.warn(
+      { text, wordId, hasDeepgramKey: !!process.env["DEEPGRAM_API_KEY"], hasAzureKey: !!process.env["AZURE_SPEECH_KEY"] },
+      "tts: no audio source produced audio for this text",
+    );
     res.status(404).json({ error: "Audio not available for this text" });
     return;
   }

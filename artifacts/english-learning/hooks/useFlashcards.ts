@@ -225,44 +225,57 @@ export const fc = {
 
 // ── Озвучка ─────────────────────────────────────────────────────────────────
 
-// Клиентский кэш mp3-блобов по wordId: не скачивать аудио повторно при каждом тапе.
-const _ttsCache = new Map<number, Blob>();
+// Клиентский кэш mp3-блобов: не скачивать аудио повторно при каждом тапе.
+// Ключ — "id:<wordId>" для слов с карточки или "text:<текст>" для всего
+// остального (в первую очередь — примеров-предложений, у которых нет
+// собственного wordId).
+const _ttsCache = new Map<string, Blob>();
 
 // Текущий <audio> на web: отменяется перед следующим воспроизведением,
 // чтобы звуки не накладывались.
 let _webAudio: any = null;
 
 /**
- * Проиграть слово через /api/tts (записи носителей или нейронный TTS).
+ * Проиграть слово или произвольный текст через /api/tts (записи носителей
+ * или нейронный TTS).
+ *
+ * wordId передавайте, когда озвучиваете слово карточки (сервер быстрее найдёт
+ * его аудио и обновит words.audio_url для будущего кэша). Для всего, у чего
+ * нет своего wordId, — например exampleEn примера-предложения на карточке —
+ * передавайте wordId: undefined: сервер озвучит text напрямую
+ * (GET /api/tts?text=...), без обращения к БД.
  *
  * • Первый запрос — скачивает mp3, кэширует в памяти;
  *   повторные тапы воспроизводятся мгновенно из кэша.
- * • 404 / 503 / сетевая ошибка — молча откатывается на speak().
+ * • 404 / 503 / сетевая ошибка — молча откатывается на speak() (Web Speech API).
  * • На web отменяет предыдущее воспроизведение перед новым.
  * • Не блокирует интерфейс (fire-and-forget).
  */
-export function speakWord(wordId: number, text: string, lang = "en-US"): void {
+export function speakWord(wordId: number | undefined, text: string, lang = "en-US"): void {
   if (!text) return;
   _speakWordAsync(wordId, text, lang).catch(() => _speakFallback(text, lang));
 }
 
-async function _speakWordAsync(wordId: number, text: string, lang: string): Promise<void> {
+async function _speakWordAsync(wordId: number | undefined, text: string, lang: string): Promise<void> {
   // /api/tts не требует Authorization: <audio>/new Audio(url) и expo-av грузят
   // звук напрямую по URL и не умеют слать заголовки — аудио слов не приватные
   // данные, поэтому роут открыт без токена (см. artifacts/api-server/src/routes/tts.ts).
-  const url = `${BASE_URL}/api/tts?wordId=${wordId}`;
+  const url = wordId != null
+    ? `${BASE_URL}/api/tts?wordId=${wordId}`
+    : `${BASE_URL}/api/tts?text=${encodeURIComponent(text)}`;
+  const cacheKey = wordId != null ? `id:${wordId}` : `text:${text}`;
 
   if (Platform.OS === "web") {
     const w = globalThis as any;
 
     // Используем кэш: не качаем mp3 повторно при каждом тапе
-    let blob = _ttsCache.get(wordId);
+    let blob = _ttsCache.get(cacheKey);
     if (!blob) {
       const resp = await fetch(url);
       // 404 (слово без аудио) или 503 (сервис недоступен) → тихий fallback
       if (!resp.ok) throw new Error(`tts ${resp.status}`);
       blob = await resp.blob();
-      _ttsCache.set(wordId, blob);
+      _ttsCache.set(cacheKey, blob);
     }
 
     // Останавливаем предыдущее воспроизведение, чтобы звуки не накладывались
