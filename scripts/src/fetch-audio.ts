@@ -1,9 +1,13 @@
 // Скрипт массового прогрева кэша TTS-аудио для всех слов без audio_url.
 //
 // Алгоритм на каждое слово:
-//   1. dictionaryapi.dev — запись живого носителя (предпочитаем en-US)
-//   2. Azure TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
-//   3. Пропустить
+//   1. dictionaryapi.dev — запись живого носителя (предпочитаем en-US),
+//      только одиночные слова — у фраз/идиом такой записи не бывает
+//   2. Deepgram Aura-2 TTS (aura-2-thalia-en) — всё остальное: словосочетания,
+//      идиомы и слова, для которых dictionaryapi.dev ничего не нашёл. Готовый
+//      mp3, PCM собирать не нужно. Нужен DEEPGRAM_API_KEY.
+//   3. Azure TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
+//   4. Пропустить
 //
 // Аудио кэшируется в ./uploads/tts/<sha256>.mp3 (или S3 если настроен),
 // ссылка сохраняется в words.audio_url.
@@ -20,7 +24,8 @@ import { isNull, or, eq } from "drizzle-orm";
 
 // Пауза между запросами (мс) — не словить rate-limit dictionaryapi.dev
 const PAUSE_MS = 600;
-// Пауза перед Azure TTS (мс)
+// Пауза перед Deepgram / Azure TTS (мс)
+const DEEPGRAM_PAUSE_MS = 200;
 const AZURE_PAUSE_MS = 200;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -65,6 +70,39 @@ async function fetchDictAudioUrl(word: string): Promise<string | null> {
 async function downloadUrl(url: string): Promise<Buffer | null> {
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    if (!resp.ok) return null;
+    return Buffer.from(await resp.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deepgram Aura-2 TTS: aura-2-thalia-en. Готовый mp3, PCM собирать не нужно.
+ * Обрабатывает 429 (rate limit) одним повтором после паузы — прогрев кэша
+ * гоняет сотни/тысячи слов подряд, и лимит легко словить.
+ */
+async function deepgramTts(text: string, retrying = false): Promise<Buffer | null> {
+  const key = process.env["DEEPGRAM_API_KEY"]?.trim();
+  if (!key) return null;
+  try {
+    const resp = await fetch(
+      "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    if (resp.status === 429 && !retrying) {
+      const retryAfterMs = Number(resp.headers.get("retry-after")) * 1000 || 2_000;
+      await sleep(retryAfterMs);
+      return deepgramTts(text, true);
+    }
     if (!resp.ok) return null;
     return Buffer.from(await resp.arrayBuffer());
   } catch {
@@ -121,36 +159,55 @@ async function main() {
     return;
   }
 
-  let found = 0, azureUsed = 0, skipped = 0, errs = 0;
+  // Отдельная статистика по одиночным словам и словосочетаниям/идиомам:
+  // dictionaryapi.dev в принципе не знает записей носителей для фраз, поэтому
+  // для них раньше единственным источником оставался Azure (или ничего).
+  const stats = {
+    word: { dict: 0, deepgram: 0, azure: 0, skipped: 0, total: 0 },
+    phrase: { dict: 0, deepgram: 0, azure: 0, skipped: 0, total: 0 },
+  };
+  let errs = 0;
 
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!;
+    const isPhrase = /\s/.test(word.english.trim());
+    const bucket = isPhrase ? stats.phrase : stats.word;
+    bucket.total++;
     const pct = Math.round(((i + 1) / words.length) * 100);
     process.stdout.write(`[${pct}%] ${word.english.padEnd(30, " ")} `);
 
     await sleep(PAUSE_MS);
 
     try {
-      // 1. dictionaryapi.dev
+      // 1. dictionaryapi.dev — живая запись носителя, только одиночные слова
       const dictUrl = await fetchDictAudioUrl(word.english);
       if (dictUrl) {
         const buf = await downloadUrl(dictUrl);
         if (buf) {
           await saveAndRecord(word.id, word.english, buf);
           process.stdout.write(`✓ dict\n`);
-          found++;
+          bucket.dict++;
           continue;
         }
       }
 
-      // 2. Azure TTS
+      // 2. Deepgram Aura-2 — всё остальное: фразы, идиомы, слова без записи
+      await sleep(DEEPGRAM_PAUSE_MS);
+      const dgBuf = await deepgramTts(word.english);
+      if (dgBuf) {
+        await saveAndRecord(word.id, word.english, dgBuf);
+        process.stdout.write(`✓ deepgram\n`);
+        bucket.deepgram++;
+        continue;
+      }
+
+      // 3. Azure TTS
       await sleep(AZURE_PAUSE_MS);
       const azBuf = await azureTts(word.english);
       if (azBuf) {
         await saveAndRecord(word.id, word.english, azBuf);
         process.stdout.write(`✓ azure\n`);
-        found++;
-        azureUsed++;
+        bucket.azure++;
         continue;
       }
     } catch (e: any) {
@@ -160,12 +217,16 @@ async function main() {
     }
 
     process.stdout.write(`— пропущено\n`);
-    skipped++;
+    bucket.skipped++;
   }
 
-  console.log(
-    `\n✅ Готово: найдено ${found} (dict ${found - azureUsed}, azure ${azureUsed}), пропущено ${skipped}, ошибок ${errs}`
-  );
+  const foundOf = (b: typeof stats.word) => b.dict + b.deepgram + b.azure;
+  console.log(`\n✅ Готово. Ошибок: ${errs}\n`);
+  console.log("| тип | всего | со звуком | dict | deepgram | azure | без звука |");
+  console.log("|---|---|---|---|---|---|---|");
+  for (const [label, b] of [["слова", stats.word], ["фразы/идиомы", stats.phrase]] as const) {
+    console.log(`| ${label} | ${b.total} | ${foundOf(b)} | ${b.dict} | ${b.deepgram} | ${b.azure} | ${b.skipped} |`);
+  }
 }
 
 main()

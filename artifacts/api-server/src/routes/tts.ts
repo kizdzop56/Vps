@@ -4,9 +4,14 @@
 //
 // Приоритет источников:
 //   1. Кэш (local ./uploads/tts/<sha256>.mp3 или S3)
-//   2. dictionaryapi.dev (Wiktionary MP3, только одиночные слова)
-//   3. Azure Speech TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
-//   4. 404 JSON
+//   2. dictionaryapi.dev (Wiktionary MP3, живая запись носителя — только
+//      одиночные слова, у фраз/идиом такой записи в принципе не бывает)
+//   3. Deepgram Aura-2 TTS — всё остальное: словосочетания, идиомы и
+//      одиночные слова, для которых dictionaryapi.dev ничего не нашёл.
+//      Отдаёт готовый mp3 (в отличие от Gemini, PCM разбирать не нужно).
+//   4. Gemini TTS — если когда-нибудь будет добавлен (сейчас нет)
+//   5. Azure Speech TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
+//   6. 404 JSON
 //
 // После первого успешного поиска аудио кэшируется и words.audio_url
 // обновляется → повторные запросы идут прямо в кэш.
@@ -114,6 +119,35 @@ async function fetchDictionaryAudioUrl(word: string): Promise<string | null> {
 async function downloadUrl(url: string): Promise<Buffer | null> {
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    if (!resp.ok) return null;
+    return Buffer.from(await resp.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deepgram Aura-2 TTS: aura-2-thalia-en (женский голос en-US, чёткий и
+ * энергичный — подходит и для отдельных слов, и для фраз/идиом). Отдаёт
+ * готовый mp3 напрямую, в отличие от Gemini не нужно собирать PCM самим.
+ * Любая ошибка или отсутствие ключа — null, ничего не роняем.
+ */
+async function deepgramTts(text: string): Promise<Buffer | null> {
+  const key = process.env["DEEPGRAM_API_KEY"]?.trim();
+  if (!key) return null;
+  try {
+    const resp = await fetch(
+      "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
     if (!resp.ok) return null;
     return Buffer.from(await resp.arrayBuffer());
   } catch {
@@ -264,14 +298,21 @@ router.get("/tts", async (req, res) => {
     return;
   }
 
-  // ── 1. dictionaryapi.dev ───────────────────────────────────────────────
+  // ── 1. dictionaryapi.dev (живая запись носителя, только одиночные слова) ─
   let audioBuf: Buffer | null = null;
   const dictUrl = await fetchDictionaryAudioUrl(text).catch(() => null);
   if (dictUrl) {
     audioBuf = await downloadUrl(dictUrl).catch(() => null);
   }
 
-  // ── 2. Azure TTS ───────────────────────────────────────────────────────
+  // ── 2. Deepgram Aura-2 (всё остальное: фразы, идиомы, слова без записи) ──
+  if (!audioBuf) {
+    audioBuf = await deepgramTts(text).catch(() => null);
+  }
+
+  // ── 3. Gemini TTS — пока не подключен ────────────────────────────────────
+
+  // ── 4. Azure TTS ───────────────────────────────────────────────────────
   if (!audioBuf) {
     audioBuf = await azureTts(text).catch(() => null);
   }
