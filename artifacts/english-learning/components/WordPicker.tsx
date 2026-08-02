@@ -14,7 +14,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, speak, speakWord, speechAvailable, type CatalogWord, type ManualWordInput } from "@/hooks/useFlashcards";
 
-const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 const PAGE_SIZE = 40;
 
 /** Ключ сравнения слов — как на сервере (lib/deckWords.ts). */
@@ -43,8 +42,6 @@ export default function WordPicker({
   const [tab, setTab] = useState<"catalog" | "manual">("catalog");
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [theme, setTheme] = useState<string | null>(null);
-  const [level, setLevel] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [accumulated, setAccumulated] = useState<CatalogWord[]>([]);
 
@@ -58,25 +55,13 @@ export default function WordPicker({
     return () => clearTimeout(t);
   }, [search]);
 
-  // Смена фильтров начинает выдачу заново.
-  useEffect(() => { setPage(0); setAccumulated([]); }, [debounced, theme, level]);
-
-  // Темы для чипсов берём из готовых колод — отдельного эндпоинта не нужно.
-  const decksQ = useQuery({ queryKey: ["fc-decks"], queryFn: fc.getDecks });
-  const themes = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const d of decksQ.data ?? []) {
-      if (d.isSystem && d.theme && !seen.has(d.theme)) seen.set(d.theme, d.title);
-    }
-    return [...seen.entries()].map(([key, title]) => ({ key, title }));
-  }, [decksQ.data]);
+  // Смена запроса начинает выдачу заново.
+  useEffect(() => { setPage(0); setAccumulated([]); }, [debounced]);
 
   const catalogQ = useQuery({
-    queryKey: ["fc-catalog", debounced, theme, level, page, excludeDeckId ?? 0],
+    queryKey: ["fc-catalog", debounced, page, excludeDeckId ?? 0],
     queryFn: () => fc.searchCatalog({
       q: debounced || undefined,
-      theme: theme ?? undefined,
-      level: level ?? undefined,
       excludeDeckId,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
@@ -160,23 +145,23 @@ export default function WordPicker({
         })}
       </View>
 
-      {/* счётчик выбранного */}
-      <View style={{
-        flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14,
-        backgroundColor: totalPicked > 0 ? colors.primary + "14" : colors.card,
-        borderWidth: 1, borderColor: totalPicked > 0 ? colors.primary + "45" : colors.border,
-        borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
-      }}>
-        <Feather name="check-square" size={16} color={totalPicked > 0 ? colors.primary : colors.mutedForeground} />
-        <Text style={{ flex: 1, fontSize: 13, fontWeight: "700", color: totalPicked > 0 ? colors.primary : colors.mutedForeground }}>
-          {totalPicked > 0 ? `Выбрано слов: ${totalPicked}` : "Слова пока не выбраны"}
-        </Text>
-        {totalPicked > 0 && (
+      {/* счётчик выбранного — показываем только когда что-то реально выбрано */}
+      {totalPicked > 0 && (
+        <View style={{
+          flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14,
+          backgroundColor: colors.primary + "14",
+          borderWidth: 1, borderColor: colors.primary + "45",
+          borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
+        }}>
+          <Feather name="check-square" size={16} color={colors.primary} />
+          <Text style={{ flex: 1, fontSize: 13, fontWeight: "700", color: colors.primary }}>
+            {`Выбрано слов: ${totalPicked}`}
+          </Text>
           <TouchableOpacity onPress={() => { onChangeSelected([]); onChangeManual([]); }} style={{ padding: 4 }}>
             <Text style={{ fontSize: 12, fontWeight: "700", color: colors.mutedForeground }}>Очистить</Text>
           </TouchableOpacity>
-        )}
-      </View>
+        </View>
+      )}
 
       {tab === "catalog" ? (
         <>
@@ -199,56 +184,6 @@ export default function WordPicker({
             )}
           </View>
 
-          {/* уровни CEFR */}
-          <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>
-            Уровень
-          </Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-            {CEFR_LEVELS.map((lv) => {
-              const on = level === lv;
-              return (
-                <TouchableOpacity
-                  key={lv}
-                  onPress={() => setLevel(on ? null : lv)}
-                  style={{
-                    paddingHorizontal: 13, paddingVertical: 7, borderRadius: 999, borderWidth: 1.5,
-                    borderColor: on ? colors.primary : colors.border,
-                    backgroundColor: on ? colors.primary : colors.card,
-                  }}
-                >
-                  <Text style={{ fontSize: 12, fontWeight: "800", color: on ? "#fff" : colors.mutedForeground }}>{lv}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* темы */}
-          {themes.length > 0 && (
-            <>
-              <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>
-                Тема
-              </Text>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                {themes.map((t) => {
-                  const on = theme === t.key;
-                  return (
-                    <TouchableOpacity
-                      key={t.key}
-                      onPress={() => setTheme(on ? null : t.key)}
-                      style={{
-                        paddingHorizontal: 13, paddingVertical: 7, borderRadius: 999, borderWidth: 1.5,
-                        borderColor: on ? colors.primary : colors.border,
-                        backgroundColor: on ? colors.primary : colors.card,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, fontWeight: "700", color: on ? "#fff" : colors.mutedForeground }}>{t.title}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </>
-          )}
-
           {/* результаты */}
           {catalogQ.isLoading && accumulated.length === 0 ? (
             <ActivityIndicator color={colors.primary} style={{ marginVertical: 28 }} />
@@ -267,7 +202,7 @@ export default function WordPicker({
               <Text style={{ fontSize: 32 }}>🔍</Text>
               <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>Ничего не нашлось</Text>
               <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center" }}>
-                Измените запрос или снимите фильтры. Своё слово можно добавить на вкладке «Своё слово».
+                Измените запрос. Своё слово можно добавить на вкладке «Своё слово».
               </Text>
             </View>
           ) : (

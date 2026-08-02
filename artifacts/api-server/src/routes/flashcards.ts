@@ -705,10 +705,17 @@ router.get("/flashcards/catalog/words", requireAuth, async (req, res) => {
   if (q) {
     const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
     // Ищем и по английскому, и по переводу: учителю удобно набрать «яблоко».
-    // translations_ru — jsonb-массив, поэтому сравниваем его текстовое представление.
+    // translations_ru — jsonb-массив строк, а не текст: ILIKE по касту всего
+    // массива в текст сравнивал бы «["яблоко","фрукт"]» целиком (со скобками
+    // и кавычками) — при подстроках это работает лишь случайно и ломается
+    // на границах элементов. Разворачиваем массив в строки через
+    // jsonb_array_elements_text и матчим ILIKE каждый элемент отдельно.
     wordFilters.push(or(
       sql`${wordsTable.english} ILIKE ${like}`,
-      sql`${wordsTable.translationsRu}::text ILIKE ${like}`,
+      sql`EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${wordsTable.translationsRu}) AS elem
+        WHERE elem ILIKE ${like}
+      )`,
     )!);
   }
   const where = and(...wordFilters);
@@ -743,8 +750,13 @@ router.post("/flashcards/decks", requireAuth, async (req, res) => {
     res.status(400).json({ error: "title required" });
     return;
   }
+  const themeTrimmed = typeof theme === "string" ? theme.trim() : "";
+  if (themeTrimmed.length > 60) {
+    res.status(400).json({ error: "theme: максимум 60 символов" });
+    return;
+  }
   const [row] = await db.insert(decksTable).values({
-    ownerId: user.userId, title: title.trim(), theme: theme ?? "custom",
+    ownerId: user.userId, title: title.trim(), theme: themeTrimmed || "custom",
     emoji: emoji ?? "📕", description: description ?? null, isSystem: false,
   }).returning();
   res.status(201).json(clean({

@@ -19,13 +19,14 @@ export default function NewDeckScreen() {
 
   const [title, setTitle] = useState("");
   const [emoji, setEmoji] = useState("📕");
+  const [theme, setTheme] = useState("");
   const [saving, setSaving] = useState(false);
 
   const create = async () => {
     if (!title.trim()) return;
     setSaving(true);
     try {
-      const deck = await fc.createDeck({ title: title.trim(), emoji });
+      const deck = await fc.createDeck({ title: title.trim(), emoji, theme: theme.trim() || undefined });
       // Кладём колоду в кэш, чтобы её страница открылась с готовым названием и
       // формой добавления слов, а не ждала загрузки общего списка колод.
       qc.setQueryData(["fc-deck", deck.id], {
@@ -50,6 +51,11 @@ export default function NewDeckScreen() {
 
       <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>Название</Text>
       <TextInput value={title} onChangeText={setTitle} placeholder="Например: Мои слова из фильма" placeholderTextColor={colors.mutedForeground}
+        style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.foreground, marginBottom: 18 }} />
+
+      <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>Тема (необязательно)</Text>
+      <TextInput value={theme} onChangeText={setTheme} placeholder="например: Мои фразы с урока" placeholderTextColor={colors.mutedForeground}
+        maxLength={60}
         style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.foreground, marginBottom: 18 }} />
 
       <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>Иконка</Text>
