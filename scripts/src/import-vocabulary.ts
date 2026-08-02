@@ -186,6 +186,39 @@ const THEME_DEFS: Record<string, ThemeDef> = {
     words: new Set(["anxiety","awareness","depression","emotional","motivation","perception","psychological",
       "psychology","therapy","mental health"]),
   },
+  // Темы ниже добавлены для уровня C1 — академическая и профессиональная
+  // лексика. Ключевые слова подобраны по фактическим C1-строкам в
+  // data/oxford-5k.csv и data/oxford-phrase.csv.
+  politics_law: {
+    title: "Политика и право", emoji: "⚖️", description: "Политика, государство и правовая система.",
+    words: new Set(["ambassador","coalition","constitution","constitutional","diplomat","diplomatic",
+      "governance","jurisdiction","lawsuit","legislation","legislative","prosecute","prosecution",
+      "referendum","regime","sanction","sovereignty","treaty","tribunal","verdict"]),
+  },
+  philosophy_thinking: {
+    title: "Философия и мышление", emoji: "💭", description: "Философия, рассуждение и абстрактное мышление.",
+    words: new Set(["contemplate","dilemma","logic","morality","philosophical","premise","rational",
+      "reasoning","for the sake of sb/sth","in the light of sth"]),
+  },
+  literature_art: {
+    title: "Литература и искусство", emoji: "🎨", description: "Литература, искусство и литературная критика.",
+    words: new Set(["aesthetic","composition","critique","imagery","ironic","irony","manuscript","verse"]),
+  },
+  research_argumentation: {
+    title: "Исследования и аргументация", emoji: "🧪", description: "Научные исследования, доказательства и построение аргументов.",
+    words: new Set(["contradiction","correlation","empirical","methodology","validity","be attributed to sb",
+      "consistent with sth","in accordance with sth"]),
+  },
+  business_negotiation: {
+    title: "Бизнес и переговоры", emoji: "🤵", description: "Бизнес, сделки и деловые переговоры.",
+    words: new Set(["acquisition","compromise","deficit","merger","shareholder","surplus","turnover",
+      "venture","on behalf of sb"]),
+  },
+  abstract_concepts: {
+    title: "Абстрактные понятия", emoji: "🔷", description: "Абстрактные понятия и оттенки смысла.",
+    words: new Set(["arbitrary","complexity","dimension","dynamic","entity","explicit","hierarchy",
+      "inherent","spectrum","subtle","underlying","by means of sth"]),
+  },
 };
 
 // На уровне B2+ бытовые темы (еда, дом, семья, животные, хобби/спорт,
