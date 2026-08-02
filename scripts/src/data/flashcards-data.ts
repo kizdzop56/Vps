@@ -23,6 +23,12 @@ export type SeedDeck = {
   emoji: string;
   description: string;
   cefrLevel?: string;   // для колод «Топ-слова A1/...»
+  // Скрытая колода-«витрина не нужна»: слова существуют и участвуют в сквозной
+  // сессии/марафоне (см. visibleDeckIds() в routes/flashcards.ts), но сама
+  // колода не показывается в списке колод на экране «Слова» (GET /decks её
+  // отфильтровывает). Используется для слов уровня, которые не попали ни в
+  // одну тематическую колоду при перераскладке (scripts/src/repack-vocabulary.ts).
+  hidden?: boolean;
   words: SeedWord[];
 };
 

@@ -16,8 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { fc } from "@/hooks/useFlashcards";
-import type { DeckWithProgress } from "@workspace/api-client-react";
+import { fc, type DeckWithAssign } from "@/hooks/useFlashcards";
 
 // Порядок уровней должен совпадать с CEFR_ORDER на бэкенде (routes/flashcards.ts).
 const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
@@ -52,8 +51,13 @@ export default function FlashcardsHome() {
   );
 
   const decks = decksQ.data ?? [];
+  // Колоды, назначенные учителем, — отдельная категория (см. DeckCard/бейдж
+  // «От учителя» ниже). Раньше они молча попадали в «Мои колоды» вместе с
+  // колодами, которые ученик создал сам: assigned-колода тоже !isSystem
+  // (её владелец — учитель), и ученик не мог отличить одну от другой.
+  const assignedDecks = decks.filter((d) => d.assigned);
   const systemDecks = decks.filter((d) => d.isSystem);
-  const myDecks = decks.filter((d) => !d.isSystem);
+  const myDecks = decks.filter((d) => !d.isSystem && !d.assigned);
   const level = settingsQ.data?.placementLevel;
 
   // Уровневые колоды vs тематические (без cefrLevel) — см. комментарий к файлу.
@@ -201,6 +205,15 @@ export default function FlashcardsHome() {
         </View>
       ) : (
         <>
+          {/* Назначенные учителем колоды — самый верх списка, ученик должен
+              увидеть их сразу, не долистывая до колод по уровням. */}
+          {assignedDecks.length > 0 && (
+            <>
+              <SectionTitle colors={colors} title="От учителя" />
+              {assignedDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              <View style={{ height: 10 }} />
+            </>
+          )}
           {myDecks.length > 0 && (
             <>
               <SectionTitle colors={colors} title="Мои колоды" />
@@ -264,7 +277,7 @@ function LevelGroup({
   isMyLevel: boolean;
   open: boolean;
   onToggle: () => void;
-  decks: DeckWithProgress[];
+  decks: DeckWithAssign[];
   onOpenDeck: (id: number) => void;
 }) {
   const words = decks.reduce((s, d) => s + d.wordCount, 0);
@@ -323,7 +336,7 @@ function LevelGroup({
   );
 }
 
-function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: any; onPress: () => void }) {
+function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any; onPress: () => void }) {
   const introduced = Math.max(0, deck.wordCount - deck.newCount);
   const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
@@ -331,7 +344,18 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithProgress; colors: a
     <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}>
       <Text style={{ fontSize: 32 }}>{deck.emoji ?? "📘"}</Text>
       <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+          {/* Колода, назначенная учителем, должна визуально отличаться от
+              системных и собственных колод ученика. */}
+          {deck.assigned && (
+            <View style={{ backgroundColor: colors.primary + "18", borderRadius: 8, paddingHorizontal: 7, paddingVertical: 2 }}>
+              <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
+                {deck.ownerName ? `От ${deck.ownerName}` : "От учителя"}
+              </Text>
+            </View>
+          )}
+        </View>
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>

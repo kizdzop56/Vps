@@ -216,7 +216,13 @@ function trainerCard(w: WordRow, st: StateRow | undefined, pool: WordLike[], now
   });
 }
 
-/** Колоды, доступные ученику: системные + свои + назначенные учителем. */
+/**
+ * Колоды, доступные ученику: системные + свои + назначенные учителем.
+ * Скрытые колоды (hidden, например "misc_{level}") НЕ исключаются — их слова
+ * должны попадать в сквозную сессию/марафон, только сама колода не видна
+ * в списке колод на экране «Слова» (см. фильтр eq(decksTable.hidden, false)
+ * в GET /flashcards/decks).
+ */
 async function visibleDeckIds(userId: number): Promise<number[]> {
   const assignments = await db.select({ deckId: deckAssignmentsTable.deckId })
     .from(deckAssignmentsTable).where(eq(deckAssignmentsTable.studentId, userId));
@@ -554,14 +560,20 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
   const assignedDeckIds = new Set(myAssignments.map((a) => a.deckId));
 
   // Системные + собственные + назначенные пользователю. С ?mine=1 — только свои
-  // колоды: этим списком учитель пользуется в разделе «Задания».
+  // колоды: этим списком учитель пользуется в разделе «Задания». Скрытые колоды
+  // (misc_{level}: слова уровня без своей тематической колоды) в список не
+  // попадают ни при каких условиях — их слова доступны только через сквозную
+  // сессию/марафон (visibleDeckIds() их не исключает).
   const mineOnly = req.query["mine"] === "1" || req.query["mine"] === "true";
   const decks = mineOnly
-    ? await db.select().from(decksTable).where(eq(decksTable.ownerId, user.userId))
-    : await db.select().from(decksTable).where(or(
-      isNull(decksTable.ownerId),
-      eq(decksTable.ownerId, user.userId),
-      assignedDeckIds.size > 0 ? inArray(decksTable.id, [...assignedDeckIds]) : sql`false`,
+    ? await db.select().from(decksTable).where(and(eq(decksTable.ownerId, user.userId), eq(decksTable.hidden, false)))
+    : await db.select().from(decksTable).where(and(
+      or(
+        isNull(decksTable.ownerId),
+        eq(decksTable.ownerId, user.userId),
+        assignedDeckIds.size > 0 ? inArray(decksTable.id, [...assignedDeckIds]) : sql`false`,
+      ),
+      eq(decksTable.hidden, false),
     ));
 
   // Для колод, которыми владеет пользователь (учитель), — скольким ученикам они
@@ -572,6 +584,18 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
     const rows = await db.select({ deckId: deckAssignmentsTable.deckId })
       .from(deckAssignmentsTable).where(inArray(deckAssignmentsTable.deckId, ownedIds));
     for (const r of rows) assignedCountByDeck.set(r.deckId, (assignedCountByDeck.get(r.deckId) ?? 0) + 1);
+  }
+
+  // Имя владельца — для колод, назначенных ученику учителем: клиент показывает
+  // бейдж «От {ownerName}» (см. DeckCard в flashcards.tsx). Чужой владелец
+  // нужен только у назначенных колод, но тянем имя для всех decks.ownerId сразу
+  // одним запросом, а не по одному на колоду.
+  const ownerIds = [...new Set(decks.map((d) => d.ownerId).filter((id): id is number => id != null))];
+  const ownerNameById = new Map<number, string>();
+  if (ownerIds.length > 0) {
+    const owners = await db.select({ id: usersTable.id, name: usersTable.name, surname: usersTable.surname })
+      .from(usersTable).where(inArray(usersTable.id, ownerIds));
+    for (const o of owners) ownerNameById.set(o.id, [o.name, o.surname].filter(Boolean).join(" "));
   }
 
   const {
@@ -588,6 +612,9 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
       return clean({
         id: d.id,
         ownerId: d.ownerId ?? undefined,
+        ownerName: d.ownerId != null ? ownerNameById.get(d.ownerId) : undefined,
+        // для сортировки «новые сверху» в общем списке заданий+колод (вкладка «Все»)
+        createdAt: d.createdAt.toISOString(),
         title: d.title,
         theme: d.theme ?? undefined,
         description: d.description ?? undefined,

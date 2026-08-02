@@ -251,6 +251,12 @@ export default function AssignmentsScreen() {
   const isStudent = user?.role === "student";
   const [refreshing, setRefreshing] = useState(false);
 
+  // Колоды учителя — один запрос на весь экран (используется и во вкладке
+  // «Колоды», и во вкладке «Все», где колоды подмешиваются к заданиям в общий
+  // список). Раньше запрос жил внутри TeacherDecks, и вкладка «Все» о колодах
+  // просто не знала.
+  const decksQ = useQuery({ queryKey: ["fc-my-decks"], queryFn: fc.getMyDecks, enabled: isTeacher });
+
   // Gamification: daily goal bar
   const { stats: gamStats, loadStats, updateDailyGoal } = useGamification();
 
@@ -300,7 +306,8 @@ export default function AssignmentsScreen() {
     loadMyAssignments();
     loadTeacherSubs();
     loadMyCompleted();
-  }, [loadMyTasks, loadMyAssignments, loadTeacherSubs, loadMyCompleted]));
+    if (isTeacher) decksQ.refetch();
+  }, [loadMyTasks, loadMyAssignments, loadTeacherSubs, loadMyCompleted, isTeacher]));
 
   // Auto-poll every 10 seconds so new assignments appear quickly
   useEffect(() => {
@@ -776,13 +783,56 @@ export default function AssignmentsScreen() {
           >
             {/* Teacher: свои колоды слов — отдельная категория «Колоды» */}
             {isTeacher && filter === DECKS_FILTER && (
-              <TeacherDecks colors={colors} styles={styles} search={searchLower} />
+              <TeacherDecks colors={colors} styles={styles} search={searchLower} decksQ={decksQ} />
             )}
 
-            {/* Teacher: only own assignments */}
-            {isTeacher && filter !== DECKS_FILTER && (() => {
+            {/* Teacher: во «Все» — задания и колоды в общем списке, отсортированные
+                по дате создания (новые сверху). Раньше «Все» собирала только
+                задания, и созданная/отправленная колода там не появлялась —
+                увидеть её можно было только во вкладке «Колоды». В остальных
+                фильтрах (по типу задания) колоды не подмешиваются. */}
+            {isTeacher && filter !== DECKS_FILTER && filter === "Все" && (() => {
+              if (decksQ.isLoading) {
+                return <ActivityIndicator color={colors.primary} size="large" style={{ marginTop: 20 }} />;
+              }
+              type Row =
+                | { kind: "assignment"; createdAt: number; data: any }
+                | { kind: "deck"; createdAt: number; data: any };
+              const assignmentRows: Row[] = myAssignments
+                .filter((a) => !searchLower || a.title.toLowerCase().includes(searchLower))
+                .map((a) => ({ kind: "assignment", createdAt: a.createdAt ? new Date(a.createdAt).getTime() : 0, data: a }));
+              const deckRows: Row[] = (decksQ.data ?? [])
+                .filter((d: any) => !searchLower || d.title.toLowerCase().includes(searchLower))
+                .map((d: any) => ({ kind: "deck", createdAt: d.createdAt ? new Date(d.createdAt).getTime() : 0, data: d }));
+              const combined = [...assignmentRows, ...deckRows].sort((a, b) => b.createdAt - a.createdAt);
+
+              if (combined.length === 0) return (
+                <View style={[styles.empty, { paddingTop: 40 }]}>
+                  <Feather name="inbox" size={48} color={colors.mutedForeground} />
+                  <Text style={styles.emptyText}>Заданий и колод пока нет.{"\n"}Нажмите + чтобы создать первое задание.</Text>
+                </View>
+              );
+              return (
+                <>
+                  <Text style={styles.sectionLabel}>Мои задания и колоды · {combined.length}</Text>
+                  {combined.map((row) => row.kind === "assignment"
+                    ? renderMyAssignmentCard(row.data)
+                    : (
+                      <DeckRow
+                        key={`deck-${row.data.id}`}
+                        colors={colors}
+                        deck={row.data}
+                        onPress={() => router.push(`/(main)/flashcards/deck/${row.data.id}` as any)}
+                      />
+                    ))}
+                </>
+              );
+            })()}
+
+            {/* Teacher: конкретный тип задания — только задания этого типа, без колод */}
+            {isTeacher && filter !== DECKS_FILTER && filter !== "Все" && (() => {
               const filtered = myAssignments.filter(a =>
-                (filter === "Все" || a.type === filter) &&
+                a.type === filter &&
                 (!searchLower || a.title.toLowerCase().includes(searchLower))
               );
               if (filtered.length === 0) return (
@@ -840,19 +890,45 @@ export default function AssignmentsScreen() {
   );
 }
 
+// ─── Строка колоды — общий внешний вид для вкладки «Колоды» и для колод,
+// подмешанных в общий список во вкладке «Все» (см. renderDeckRow). ──────────
+function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: () => void }) {
+  return (
+    <TouchableOpacity
+      key={deck.id}
+      activeOpacity={0.8}
+      onPress={onPress}
+      style={{
+        flexDirection: "row", alignItems: "center", gap: 12,
+        backgroundColor: colors.card, borderRadius: 16, borderWidth: 1,
+        borderColor: colors.border, padding: 14, marginBottom: 10,
+      }}
+    >
+      <Text style={{ fontSize: 28 }}>{deck.emoji ?? "📘"}</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3 }}>
+          {deck.wordCount} слов
+          {deck.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : " · ещё никому не отправлена"}
+        </Text>
+      </View>
+      <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+    </TouchableOpacity>
+  );
+}
+
 // ─── Колоды слов учителя ──────────────────────────────────────────────
 // Отдельная категория внутри созданных заданий. Раньше у учителя не было
 // никакого входа в свои колоды: вкладка «Слова» для него скрыта, а страница
 // колоды открывалась только сразу после создания — вернуться к ней потом
 // было нельзя. Список берём быстрым запросом только своих колод (?mine=1).
-function TeacherDecks({ colors, styles, search }: { colors: any; styles: any; search: string }) {
+// Запрос теперь общий для всего экрана (decksQ передаётся сверху) — вкладка
+// «Все» подмешивает те же колоды к заданиям в единый список.
+function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles: any; search: string; decksQ: any }) {
   const router = useRouter();
-  const decksQ = useQuery({ queryKey: ["fc-my-decks"], queryFn: fc.getMyDecks });
-
-  useFocusEffect(useCallback(() => { decksQ.refetch(); }, []));
 
   const decks = (decksQ.data ?? []).filter(
-    (d) => !search || d.title.toLowerCase().includes(search),
+    (d: any) => !search || d.title.toLowerCase().includes(search),
   );
 
   if (decksQ.isLoading) {
@@ -899,27 +975,8 @@ function TeacherDecks({ colors, styles, search }: { colors: any; styles: any; se
           </Text>
         </View>
       ) : (
-        decks.map((d) => (
-          <TouchableOpacity
-            key={d.id}
-            activeOpacity={0.8}
-            onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)}
-            style={{
-              flexDirection: "row", alignItems: "center", gap: 12,
-              backgroundColor: colors.card, borderRadius: 16, borderWidth: 1,
-              borderColor: colors.border, padding: 14, marginBottom: 10,
-            }}
-          >
-            <Text style={{ fontSize: 28 }}>{d.emoji ?? "📘"}</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{d.title}</Text>
-              <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3 }}>
-                {d.wordCount} слов
-                {d.assignedCount ? ` · отправлена ${d.assignedCount} ученикам` : " · ещё никому не отправлена"}
-              </Text>
-            </View>
-            <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
-          </TouchableOpacity>
+        decks.map((d: any) => (
+          <DeckRow key={d.id} colors={colors} deck={d} onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)} />
         ))
       )}
     </>

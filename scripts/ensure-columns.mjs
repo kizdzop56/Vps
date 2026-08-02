@@ -55,6 +55,9 @@ const statements = [
   `ALTER TABLE IF EXISTS flashcard_settings ADD COLUMN IF NOT EXISTS daily_word_goal integer NOT NULL DEFAULT 10`,
   `ALTER TABLE IF EXISTS words ADD COLUMN IF NOT EXISTS audio_url text`,
   `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS onboarding_seen jsonb`,
+  // Скрытые системные колоды (misc_{level}): слова участвуют в сессии/марафоне,
+  // но колода не показывается в списке колод на экране «Слова».
+  `ALTER TABLE IF EXISTS decks ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false`,
 ];
 const client = new pg.Client({
   connectionString: url,

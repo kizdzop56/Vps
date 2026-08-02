@@ -86,6 +86,11 @@ export type DeckWithAssign = DeckWithProgress & {
   assigned?: boolean;
   assignedCount?: number;
   canEdit?: boolean;
+  // Имя владельца колоды (учителя) — для бейджа «От {ownerName}» у ученика.
+  ownerName?: string;
+  // ISO-дата создания — используется для сортировки «новые сверху» в общем
+  // списке заданий и колод учителя (вкладка «Все» в разделе «Задания»).
+  createdAt?: string;
 };
 
 export type ImportResultWithSkipped = ImportResult & { skippedWords?: string[] };

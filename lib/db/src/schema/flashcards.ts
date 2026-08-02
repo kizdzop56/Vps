@@ -24,6 +24,11 @@ export const decksTable = pgTable("decks", {
   emoji: text("emoji"),                    // иконка колоды
   isSystem: boolean("is_system").notNull().default(false),
   cefrLevel: text("cefr_level"),           // для колод «Топ-слова A1/A2/...»
+  // Скрытая колода: слова участвуют в сквозной сессии/марафоне (см.
+  // visibleDeckIds() в routes/flashcards.ts), но сама колода не показывается
+  // в списке колод на экране «Слова» (GET /decks её отфильтровывает). Сейчас
+  // так помечены "misc_{level}" — слова уровня без своей тематической колоды.
+  hidden: boolean("hidden").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

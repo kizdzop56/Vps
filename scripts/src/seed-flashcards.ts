@@ -44,6 +44,7 @@ export async function seedFlashcards(): Promise<void> {
           description: d.description,
           emoji: d.emoji,
           cefrLevel: d.cefrLevel ?? null,
+          hidden: d.hidden ?? false,
           sortOrder: i,
         })
         .where(eq(decksTable.id, deckId));
@@ -58,6 +59,7 @@ export async function seedFlashcards(): Promise<void> {
           emoji: d.emoji,
           isSystem: true,
           cefrLevel: d.cefrLevel ?? null,
+          hidden: d.hidden ?? false,
           sortOrder: i,
         })
         .returning({ id: decksTable.id });
