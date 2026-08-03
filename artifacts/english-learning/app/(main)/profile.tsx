@@ -856,20 +856,31 @@ export default function ProfileScreen() {
     ? Math.max(0, Math.floor((timeStats.todayMinutes ?? 0) * 60 + (Date.now() - timeStatsAt) / 1000))
     : sessionSeconds;
 
+  // График «Мои задания». Профиль — экран таба и не размонтируется при
+  // переключении вкладок, поэтому загрузку нельзя оставлять в useEffect с
+  // зависимостью от user.id: запрос ушёл бы один раз за сессию, и после сдачи
+  // задания график остался бы прежним. Обновляем на фокусе экрана (см. ниже) и
+  // при изменении числа сдач.
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
-  useEffect(() => {
+  const loadCategoryStats = useCallback(async () => {
     if (!isStudent || !user?.id) return;
-    apiFetch(`/api/students/${user.id}/category-stats`)
-      .then((data) => setCategoryStats(data ?? []))
-      .catch(() => setCategoryStats([]));
+    try {
+      const data = await apiFetch(`/api/students/${user.id}/category-stats`);
+      setCategoryStats(data ?? []);
+    } catch {
+      setCategoryStats([]);
+    }
   }, [isStudent, user?.id]);
+
+  useEffect(() => { loadCategoryStats(); }, [loadCategoryStats, completedCount]);
 
   // ── Load gamification stats & claim daily login on focus ──────────
   useFocusEffect(
     useCallback(() => {
       if (!isStudent) return;
       loadStats();
-    }, [isStudent, loadStats])
+      loadCategoryStats();
+    }, [isStudent, loadStats, loadCategoryStats])
   );
 
   useEffect(() => {
