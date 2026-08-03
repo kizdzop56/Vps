@@ -598,9 +598,17 @@ router.get("/students/:id/submissions", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-// ── Teacher: per-category score stats for a student ───────────────────
+// ── Разбивка сдач ученика по типам заданий (график «Мои задания») ─────
+// Показывается и на своём профиле, и учителю в профиле ученика.
+//
+// count — ПРОВЕРЕННЫЕ сдачи, по ним и считается avgScore.
+// pending — сданные и ждущие проверки: у free_form сдача создаётся со статусом
+//   pending (см. POST /assignments/:id/submit) и становится graded только после
+//   ручной проверки учителем. Раньше такие работы не попадали в ответ вообще,
+//   и ученик, сдав задание, не видел его в графике ни в каком виде. free_form
+//   к тому же отсутствовал в списке типов — теперь он есть.
 router.get("/students/:id/category-stats", requireAuth, async (req, res) => {
-  const caller = getUser(req);
+  res.set("Cache-Control", "no-store");
   const studentId = Number(req.params["id"]);
 
   // Any authenticated user may view another user's category stats
@@ -608,24 +616,40 @@ router.get("/students/:id/category-stats", requireAuth, async (req, res) => {
 
   const rows = await db.select({
     score: submissionsTable.score,
+    status: submissionsTable.status,
     type: assignmentsTable.type,
   })
     .from(submissionsTable)
     .leftJoin(assignmentsTable, eq(submissionsTable.assignmentId, assignmentsTable.id))
-    .where(
-      and(
-        eq(submissionsTable.studentId, studentId),
-        eq(submissionsTable.status, "graded")
-      )
-    );
+    .where(eq(submissionsTable.studentId, studentId));
 
-  const CATEGORIES = ["text_test", "audio", "reading", "video"] as const;
-  const stats = CATEGORIES.map((cat) => {
-    const catRows = rows.filter((r) => r.type === cat);
-    const avgScore = catRows.length > 0
-      ? Math.round(catRows.reduce((s, r) => s + (r.score ?? 0), 0) / catRows.length)
-      : null;
-    return { type: cat, avgScore, count: catRows.length };
+  const CATEGORIES = ["text_test", "audio", "reading", "video", "free_form"] as const;
+  const acc = new Map<string, { count: number; pending: number; sum: number }>(
+    CATEGORIES.map((c) => [c, { count: 0, pending: 0, sum: 0 }]),
+  );
+
+  for (const row of rows) {
+    // Задание могло быть удалено (leftJoin отдаёт type = null) — такую сдачу
+    // отнести к категории нельзя, пропускаем.
+    if (!row.type) continue;
+    const bucket = acc.get(row.type);
+    if (!bucket) continue;
+    if (row.status === "graded") {
+      bucket.count += 1;
+      bucket.sum += row.score ?? 0;
+    } else {
+      bucket.pending += 1;
+    }
+  }
+
+  const stats = CATEGORIES.map((type) => {
+    const bucket = acc.get(type)!;
+    return {
+      type,
+      avgScore: bucket.count > 0 ? Math.round(bucket.sum / bucket.count) : null,
+      count: bucket.count,
+      pending: bucket.pending,
+    };
   });
 
   res.json(stats);
