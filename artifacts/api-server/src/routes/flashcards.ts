@@ -47,7 +47,6 @@ import {
   type Grade,
 } from "../lib/srs";
 import {
-  OPTION_COUNT,
   buildExercise,
   interleaveQueue,
   type WordLike,
@@ -181,26 +180,20 @@ const SESSION_MAX_CARDS = 24; // короткая сессия: дольше р�
 const SESSION_MAX_NEW = 6;    // сколько новых слов максимум за одну сессию
 const HARD_MAX_CARDS = 20;
 
+// Часть речи, уровень и колода нужны для подбора отвлекающих вариантов:
+// buildExercise берёт дистракторы той же части речи и сначала из той же колоды,
+// затем из того же уровня CEFR (см. lib/wordExercise.ts). Поэтому сюда отдаём
+// полный пул — сужать его заранее по уровню больше не нужно, приоритеты
+// расставляются внутри подбора.
 function toWordLike(w: WordRow): WordLike {
-  return { id: w.id, english: w.english, translationsRu: w.translationsRu };
-}
-
-/** Слова, сгруппированные по уровню — источник отвлекающих вариантов ответа. */
-function groupByLevel(words: WordRow[]): Map<string, WordLike[]> {
-  const map = new Map<string, WordLike[]>();
-  for (const w of words) {
-    const key = w.cefrLevel ?? "";
-    const list = map.get(key) ?? [];
-    list.push(toWordLike(w));
-    map.set(key, list);
-  }
-  return map;
-}
-
-/** Варианты берём из слов того же уровня; если их мало — из всей подборки. */
-function poolFor(word: WordRow, byLevel: Map<string, WordLike[]>, all: WordLike[]): WordLike[] {
-  const same = byLevel.get(word.cefrLevel ?? "") ?? [];
-  return same.length > OPTION_COUNT ? same : all;
+  return {
+    id: w.id,
+    english: w.english,
+    translationsRu: w.translationsRu,
+    partOfSpeech: w.partOfSpeech,
+    cefrLevel: w.cefrLevel,
+    deckId: w.deckId,
+  };
 }
 
 /** Карточка для клиента: слово + состояние ученика + готовое упражнение. */
@@ -270,7 +263,6 @@ async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Dat
   const stateByWord = new Map(states.map((s) => [s.wordId, s]));
 
   const all = words.map(toWordLike);
-  const byLevel = groupByLevel(words);
 
   let picked: WordRow[];
   let newCount = 0;
@@ -319,7 +311,7 @@ async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Dat
     newCount,
     reviewCount,
     ...progress,
-    cards: picked.map((w) => trainerCard(w, stateByWord.get(w.id), poolFor(w, byLevel, all), now)),
+    cards: picked.map((w) => trainerCard(w, stateByWord.get(w.id), all, now)),
   });
 }
 
@@ -1283,7 +1275,6 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   const poolWords = poolDeckIds.length > 0
     ? await db.select().from(wordsTable).where(inArray(wordsTable.deckId, poolDeckIds))
     : words;
-  const byLevel = groupByLevel(poolWords);
   const allPool = poolWords.map(toWordLike);
 
   const now = nowDate.getTime();
@@ -1292,7 +1283,7 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   const ordered = [...words].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
   for (const w of ordered) {
     const st = stateByWord.get(w.id);
-    const card = trainerCard(w, st, poolFor(w, byLevel, allPool), nowDate);
+    const card = trainerCard(w, st, allPool, nowDate);
     if (st) {
       if (st.dueAt.getTime() <= now) dueCards.push(card);
     } else {
@@ -1523,7 +1514,6 @@ router.get("/flashcards/marathon", requireAuth, async (req, res) => {
   let correct = 0;
   let answeredWords = 0; // сколько разных слов уровня пользователь уже отвечал
   const now = new Date();
-  const byLevel = groupByLevel(words);
   const allPool = words.map(toWordLike);
   const cards = words.map((w) => {
     const st = stateByWord.get(w.id);
@@ -1532,7 +1522,7 @@ router.get("/flashcards/marathon", requireAuth, async (req, res) => {
       correct += st.timesCorrect;
       if (st.timesSeen > 0) answeredWords++;
     }
-    return trainerCard(w, st, poolFor(w, byLevel, allPool), now);
+    return trainerCard(w, st, allPool, now);
   });
   // сначала слабо усвоенные слова (низкий уровень памяти) — их важнее подтянуть
   cards.sort((a: any, b: any) => (a.memoryLevel ?? 0) - (b.memoryLevel ?? 0));

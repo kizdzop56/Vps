@@ -18,12 +18,14 @@ import { View, Text, TouchableOpacity, Animated, ActivityIndicator, ScrollView }
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { fc, speakWord, speechAvailable } from "@/hooks/useFlashcards";
+import { fc, speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
 import type { Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
 
 const TRAINER_BACKGROUND = "#F8F7FF";
 const OK_GREEN = "#16a34a";
-const NEXT_DELAY_OK = 750;   // пауза после верного ответа
+// Пауза после верного ответа: карточка не улетает мгновенно, за это время
+// доигрывает озвучка правильного слова. Кто не хочет ждать — жмёт «Дальше».
+const NEXT_DELAY_OK = 1200;
 const NEXT_DELAY_BAD = 1900; // после ошибки даём время прочитать верный ответ
 
 type Phase = "loading" | "run" | "done";
@@ -93,7 +95,12 @@ export function WordTrainer({
     return () => { alive = false; };
   }, [loader]);
 
-  React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  // Уходя с тренажёра, обрываем и таймер перелистывания, и звук: иначе слово
+  // продолжает звучать уже на другом экране.
+  React.useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+    stopSpeaking();
+  }, []);
 
   // прогресс-бар сверху
   React.useEffect(() => {
@@ -113,6 +120,9 @@ export function WordTrainer({
     if (exercise.type === "intro" || exercise.type === "choiceRu" || exercise.type === "listen") {
       speakWord(card.id, card.english);
     }
+    // Смена карточки обрывает её озвучку — новое слово не должно накладываться
+    // на предыдущее, даже если mp3 предыдущего ещё качается.
+    return () => stopSpeaking();
   }, [phase, pos, card?.id]);
 
   React.useEffect(() => {
@@ -131,11 +141,24 @@ export function WordTrainer({
   }, []);
 
   const goNext = React.useCallback(() => {
+    stopSpeaking(); // звук предыдущей карточки не тянем на следующую
     resetCardState();
     const next = pos + 1;
     if (next >= cards.length) setPhase("done");
     else setPos(next);
   }, [pos, cards.length, resetCardState]);
+
+  /**
+   * Тап по «Дальше» до истечения паузы: не заставляем ждать доигрывания —
+   * обрываем звук и листаем сразу.
+   */
+  const skipToNext = React.useCallback(() => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    goNext();
+  }, [goNext]);
 
   /** Отправить результат карточки и перейти к следующей. */
   const submit = React.useCallback(
@@ -406,6 +429,26 @@ export function WordTrainer({
                   : `Верный ответ: ${exercise.answer ?? ""}`}
             </Text>
           </View>
+        )}
+
+        {/* Пауза перед следующей карточкой нужна, чтобы доиграла озвучка
+            верного слова. Нетерпеливых не держим: тап по «Дальше» обрывает
+            звук и листает сразу. При retry кнопки нет — там продолжается
+            та же карточка. */}
+        {feedback && !feedback.retry && (
+          <TouchableOpacity
+            onPress={skipToNext}
+            activeOpacity={0.85}
+            accessibilityLabel="Следующая карточка"
+            style={{
+              marginTop: 12, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 6,
+              borderRadius: 999, paddingHorizontal: 18, paddingVertical: 9,
+              backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+            }}
+          >
+            <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 14 }}>Дальше</Text>
+            <Feather name="arrow-right" size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
         )}
 
         {/* варианты ответа */}

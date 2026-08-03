@@ -232,8 +232,69 @@ export const fc = {
 const _ttsCache = new Map<string, Blob>();
 
 // Текущий <audio> на web: отменяется перед следующим воспроизведением,
-// чтобы звуки не накладывались.
+// чтобы звуки не накладывались. Рядом храним objectURL — его нужно освободить
+// при обрыве, иначе blob повиснет в памяти.
 let _webAudio: any = null;
+let _webAudioUrl: string | null = null;
+
+// Текущий звук на native (expo-av). Раньше ссылки не было вовсе: каждый вызов
+// создавал новый Sound, ничего не выгружая, и слова наслаивались друг на друга.
+let _nativeSound: any = null;
+
+// Поколение воспроизведения. speakWord() увеличивает счётчик синхронно — ещё до
+// сетевого запроса, — а каждый await внутри проверяет, что его поколение всё
+// ещё актуально. Без этого запрос, начатый на прошлой карточке, доигрывает
+// поверх новой, когда fetch резолвится уже после перелистывания.
+let _playToken = 0;
+
+/**
+ * Немедленно оборвать любую текущую озвучку: и mp3 с сервера, и запасной
+ * синтез речи. Вызывается перед новым словом, при смене карточки и при
+ * размонтировании тренажёра.
+ *
+ * Увеличение _playToken гасит и то, что ещё не начало играть: запрос в полёте
+ * после резолва увидит чужой токен и молча выйдет, не заиграв.
+ */
+export function stopSpeaking(): void {
+  _playToken++;
+  const w = globalThis as any;
+
+  if (_webAudio) {
+    const audio = _webAudio;
+    const objUrl = _webAudioUrl;
+    _webAudio = null;
+    _webAudioUrl = null;
+    try {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.currentTime = 0; // следующий показ слова начнётся сначала
+      audio.removeAttribute?.("src");
+      audio.load?.();
+    } catch { /* элемент мог уже освободиться */ }
+    if (objUrl) {
+      try { w.URL?.revokeObjectURL?.(objUrl); } catch { /* no-op */ }
+    }
+  }
+
+  if (_nativeSound) {
+    const sound = _nativeSound;
+    _nativeSound = null;
+    try { sound.setOnPlaybackStatusUpdate?.(null); } catch { /* no-op */ }
+    try { sound.stopAsync?.()?.catch?.(() => {}); } catch { /* no-op */ }
+    try { sound.unloadAsync?.()?.catch?.(() => {}); } catch { /* no-op */ }
+  }
+
+  // Запасная озвучка (Web Speech API / expo-speech) тоже должна замолчать.
+  try {
+    if (Platform.OS === "web") {
+      w.speechSynthesis?.cancel?.();
+    } else {
+      const pkg = "expo-speech";
+      (import(pkg) as Promise<any>).then((m: any) => m?.stop?.()).catch(() => {});
+    }
+  } catch { /* no-op */ }
+}
 
 /**
  * Проиграть слово или произвольный текст через /api/tts (записи носителей
@@ -248,15 +309,25 @@ let _webAudio: any = null;
  * • Первый запрос — скачивает mp3, кэширует в памяти;
  *   повторные тапы воспроизводятся мгновенно из кэша.
  * • 404 / 503 / сетевая ошибка — молча откатывается на speak() (Web Speech API).
- * • На web отменяет предыдущее воспроизведение перед новым.
+ * • Предыдущее воспроизведение обрывается ДО сетевого запроса (см. ниже).
  * • Не блокирует интерфейс (fire-and-forget).
  */
 export function speakWord(wordId: number | undefined, text: string, lang = "en-US"): void {
   if (!text) return;
-  _speakWordAsync(wordId, text, lang).catch(() => _speakFallback(text, lang));
+  // Гасим предыдущий звук ПЕРВЫМ ДЕЛОМ, до любой асинхронной работы. Раньше
+  // остановка стояла после await fetch — пока грузился mp3 новой карточки,
+  // предыдущее слово продолжало звучать на уже сменившейся карточке.
+  stopSpeaking();
+  const token = _playToken;
+  _speakWordAsync(token, wordId, text, lang).catch(() => _speakFallback(token, text, lang));
 }
 
-async function _speakWordAsync(wordId: number | undefined, text: string, lang: string): Promise<void> {
+async function _speakWordAsync(
+  token: number,
+  wordId: number | undefined,
+  text: string,
+  lang: string,
+): Promise<void> {
   // /api/tts не требует Authorization: <audio>/new Audio(url) и expo-av грузят
   // звук напрямую по URL и не умеют слать заголовки — аудио слов не приватные
   // данные, поэтому роут открыт без токена (см. artifacts/api-server/src/routes/tts.ts).
@@ -272,16 +343,14 @@ async function _speakWordAsync(wordId: number | undefined, text: string, lang: s
     let blob = _ttsCache.get(cacheKey);
     if (!blob) {
       const resp = await fetch(url);
+      // Карточка могла смениться, пока шёл запрос: тогда этот звук уже не нужен
+      // и играть его нельзя — иначе он ляжет поверх нового слова.
+      if (token !== _playToken) return;
       // 404 (слово без аудио) или 503 (сервис недоступен) → тихий fallback
       if (!resp.ok) throw new Error(`tts ${resp.status}`);
       blob = await resp.blob();
-      _ttsCache.set(cacheKey, blob);
-    }
-
-    // Останавливаем предыдущее воспроизведение, чтобы звуки не накладывались
-    if (_webAudio) {
-      try { _webAudio.pause(); _webAudio.src = ""; } catch {}
-      _webAudio = null;
+      _ttsCache.set(cacheKey, blob); // кэш пополняем даже для устаревшего запроса
+      if (token !== _playToken) return;
     }
 
     const objUrl: string | undefined = w.URL?.createObjectURL(blob);
@@ -289,9 +358,10 @@ async function _speakWordAsync(wordId: number | undefined, text: string, lang: s
 
     const audio = new w.Audio(objUrl);
     _webAudio = audio;
+    _webAudioUrl = objUrl;
     const cleanup = () => {
       try { w.URL.revokeObjectURL(objUrl); } catch {}
-      if (_webAudio === audio) _webAudio = null;
+      if (_webAudio === audio) { _webAudio = null; _webAudioUrl = null; }
     };
     audio.onended = cleanup;
     audio.onerror = cleanup;
@@ -302,14 +372,23 @@ async function _speakWordAsync(wordId: number | undefined, text: string, lang: s
   // Нативное воспроизведение через expo-av (динамический импорт — не обязателен)
   const pkg = "expo-av";
   const av = await (import(pkg) as Promise<any>).catch(() => null);
+  if (token !== _playToken) return;
   if (!av) throw new Error("expo-av not available");
-  const { sound } = await av.Audio.Sound.createAsync(
-    { uri: url },
-    { shouldPlay: true }
-  );
+  // shouldPlay: false — сначала грузим, потом сверяем токен и только затем
+  // играем. Иначе звук успевает пискнуть на уже сменившейся карточке.
+  const { sound } = await av.Audio.Sound.createAsync({ uri: url }, { shouldPlay: false });
+  if (token !== _playToken) {
+    sound.unloadAsync().catch(() => {});
+    return;
+  }
+  _nativeSound = sound;
   sound.setOnPlaybackStatusUpdate((status: any) => {
-    if (status?.didJustFinish) sound.unloadAsync().catch(() => {});
+    if (status?.didJustFinish) {
+      if (_nativeSound === sound) _nativeSound = null;
+      sound.unloadAsync().catch(() => {});
+    }
   });
+  await sound.playAsync();
 }
 
 /**
@@ -320,11 +399,14 @@ async function _speakWordAsync(wordId: number | undefined, text: string, lang: s
  */
 export function speak(text: string, lang = "en-US") {
   if (!text) return;
-  _speakFallback(text, lang);
+  stopSpeaking();
+  _speakFallback(_playToken, text, lang);
 }
 
-function _speakFallback(text: string, lang: string) {
-  if (!text) return;
+function _speakFallback(token: number, text: string, lang: string) {
+  // Устаревший fallback (карточка уже сменилась) молчит — иначе неудачный
+  // запрос прошлого слова заговорит поверх нового.
+  if (!text || token !== _playToken) return;
   try {
     if (Platform.OS === "web") {
       const w = globalThis as any;
