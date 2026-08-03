@@ -24,7 +24,8 @@ export type GlyphName =
   | "lock" | "crown" | "gear" | "cards" | "check"
   | "chart" | "user" | "users" | "calendar" | "plus"
   | "book" | "globe" | "leaf" | "paw" | "music"
-  | "clock" | "handshake";
+  | "clock" | "handshake" | "chat" | "trendUp" | "trendDown"
+  | "pen" | "video" | "note";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -141,7 +142,6 @@ function render(name: GlyphName, s: any, color: string) {
       );
 
     case "clock":
-      // Стрелки намеренно на «10:10»: так циферблат читается даже в 13px.
       return (
         <G>
           <Circle {...s} cx={12} cy={12} r={8.6} />
@@ -155,6 +155,55 @@ function render(name: GlyphName, s: any, color: string) {
           <Path {...s} d="M11.6 7.4 9.2 9.8a1.9 1.9 0 0 0 2.7 2.7l1.4-1.4 3.5 3.5a1.9 1.9 0 0 1-2.7 2.7" />
           <Path {...s} d="M14.1 17.3a1.9 1.9 0 0 1-2.7 0l-.8-.8" />
           <Path {...s} d="M2.6 8.4 6.4 5.6l4 1.2M21.4 8.4 17.6 5.6l-3.4 1M2.6 8.4l3.2 5.4M21.4 8.4l-3.2 5.4" />
+        </G>
+      );
+
+    case "chat":
+      return (
+        <G>
+          <Path {...s} d="M20.4 4.6H3.6A1.6 1.6 0 0 0 2 6.2v9.4a1.6 1.6 0 0 0 1.6 1.6h2.2v3.6l4.4-3.6h10.2a1.6 1.6 0 0 0 1.6-1.6V6.2a1.6 1.6 0 0 0-1.6-1.6Z" />
+          <Path {...s} d="M7.2 9.2h9.6M7.2 12.8h6" />
+        </G>
+      );
+
+    case "trendUp":
+      return (
+        <G>
+          <Path {...s} d="m2.8 17.2 6-6.2 3.6 3.6 7.4-7.4" />
+          <Path {...s} d="M15.6 7.2h4.6v4.6" />
+        </G>
+      );
+
+    case "trendDown":
+      return (
+        <G>
+          <Path {...s} d="m2.8 6.8 6 6.2 3.6-3.6 7.4 7.4" />
+          <Path {...s} d="M15.6 16.8h4.6v-4.6" />
+        </G>
+      );
+
+    case "pen":
+      return (
+        <G>
+          <Path {...s} d="M16.4 3.6a2.3 2.3 0 0 1 3.3 3.3L8.4 18.2l-4.4 1.2 1.2-4.4L16.4 3.6Z" />
+          <Path {...s} d="m14.6 5.4 4 4" />
+        </G>
+      );
+
+    case "video":
+      return (
+        <G>
+          <Rect {...s} x={2.6} y={5.6} width={13.4} height={12.8} rx={2.6} />
+          <Path {...s} d="m16 10.6 5.4-3.2v9.2L16 13.4z" />
+        </G>
+      );
+
+    case "note":
+      return (
+        <G>
+          <Path {...s} d="M13.4 2.6H6.4a1.8 1.8 0 0 0-1.8 1.8v15.2a1.8 1.8 0 0 0 1.8 1.8h11.2a1.8 1.8 0 0 0 1.8-1.8V8.6l-6-6Z" />
+          <Path {...s} d="M13.4 2.6v6h6" />
+          <Path {...s} d="M8.4 13.4h7.2M8.4 17h4.8" />
         </G>
       );
 
