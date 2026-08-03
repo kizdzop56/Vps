@@ -23,7 +23,8 @@ export type GlyphName =
   | "trophy" | "medal" | "star" | "sunrise" | "mic"
   | "lock" | "crown" | "gear" | "cards" | "check"
   | "chart" | "user" | "users" | "calendar" | "plus"
-  | "book" | "globe" | "leaf" | "paw" | "music";
+  | "book" | "globe" | "leaf" | "paw" | "music"
+  | "clock" | "handshake";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -136,6 +137,24 @@ function render(name: GlyphName, s: any, color: string) {
           <Circle {...s} cx={12} cy={12} r={8.6} />
           <Circle {...s} cx={12} cy={12} r={4.4} />
           <Circle cx={12} cy={12} r={1.7} fill={color} />
+        </G>
+      );
+
+    case "clock":
+      // Стрелки намеренно на «10:10»: так циферблат читается даже в 13px.
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.6} />
+          <Path {...s} d="M12 7.2V12l3.4 2" />
+        </G>
+      );
+
+    case "handshake":
+      return (
+        <G>
+          <Path {...s} d="M11.6 7.4 9.2 9.8a1.9 1.9 0 0 0 2.7 2.7l1.4-1.4 3.5 3.5a1.9 1.9 0 0 1-2.7 2.7" />
+          <Path {...s} d="M14.1 17.3a1.9 1.9 0 0 1-2.7 0l-.8-.8" />
+          <Path {...s} d="M2.6 8.4 6.4 5.6l4 1.2M21.4 8.4 17.6 5.6l-3.4 1M2.6 8.4l3.2 5.4M21.4 8.4l-3.2 5.4" />
         </G>
       );
 
