@@ -24,13 +24,13 @@ const KNOWLEDGE_LABELS: Record<string, string> = {
   upper_intermediate: "Продвинутый",
 };
 
-// Типы заданий — те же подписи, что в кольцах категорий, плюс свободная форма.
+// Подписи типов заданий — для списка «Задания от учителя».
 const ASSIGNMENT_TYPE_LABELS: Record<string, string> = {
-  text_test: "Тесты",
+  text_test: "Тест",
   audio: "Аудирование",
   reading: "Чтение",
   video: "Видео",
-  free_form: "Свободный ответ",
+  free_form: "Свободная форма",
 };
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -71,33 +71,44 @@ type FriendProfile = {
   lastSeenAt?: string | null;
 };
 
-// Ответ GET /api/teachers/:id/profile-stats.
-// viewer — персонально для того, кто смотрит; total — общее по учителю.
+type FriendshipStatus = "none" | "pending_sent" | "pending_received" | "friends" | "loading";
+
+// ── Цифры профиля учителя (GET /api/teachers/:id/profile-stats) ────────────
+// personal — только про пару «смотрящий ↔ этот учитель», у каждого ученика
+// свои; overall — общие цифры учителя, одинаковые для всех.
+type SlotBrief = { id: number; date: string; startTime: string; endTime: string };
+
 type TeacherProfileStats = {
   teacherId: number;
-  viewer: {
-    lessonsWithTeacher: number;
-    minutesWithTeacher: number;
-    nextLesson: { date: string; startTime: string; endTime: string } | null;
-    assignmentsAssigned: number;
-    assignmentsDone: number;
-    averageScore: number | null;
-    pointsEarned: number;
-  };
-  total: {
+  overall: {
     assignmentsCreated: number;
     studentsCount: number;
-    lessonsHeld: number;
+    lessonsTotal: number;
+    minutesTotal: number;
   };
-  categories: { type: string; count: number }[];
-  freeSlots: { id: number; date: string; startTime: string; endTime: string }[];
-  recentAssignments: {
-    id: number; title: string; type: string; points: number;
-    createdAt: string; doneByViewer: boolean;
-  }[];
+  personal: {
+    lessonsWithMe: number;
+    minutesWithMe: number;
+    lastLessonWithMe: SlotBrief | null;
+    nextLessonWithMe: SlotBrief | null;
+    assignedToMe: number;
+    completedByMe: number;
+    avgScore: number | null;
+    pointsFromTeacher: number;
+    categories: { type: string; total: number; count: number; avgScore: number | null }[];
+    recentAssignments: {
+      id: number;
+      title: string | null;
+      type: string | null;
+      points: number | null;
+      assignedAt: string;
+      score: number | null;
+      done: boolean;
+    }[];
+  };
+  freeSlots: (SlotBrief & { myStatus: "free" | "pending" })[];
+  freeSlotsTotal: number;
 };
-
-type FriendshipStatus = "none" | "pending_sent" | "pending_received" | "friends" | "loading";
 
 function formatTime(minutes: number) {
   const h = Math.floor(minutes / 60);
@@ -107,15 +118,22 @@ function formatTime(minutes: number) {
   return `${h} ч ${m} мин`;
 }
 
-// Дата слота приходит строкой "YYYY-MM-DD" — разбираем как UTC, иначе
-// на клиенте с отрицательным смещением день уезжает назад.
-const SLOT_MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+// Слот приходит строками "YYYY-MM-DD" и "HH:MM" (как хранится в БД, UTC).
+// Разбираем вручную, без парсинга локальной зоной, иначе дата съезжает на день.
 const SLOT_WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const SLOT_MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 
-function formatSlotDate(date: string) {
-  const d = new Date(`${date}T00:00:00Z`);
-  if (isNaN(d.getTime())) return date;
-  return `${d.getUTCDate()} ${SLOT_MONTHS[d.getUTCMonth()]}, ${SLOT_WEEKDAYS[d.getUTCDay()]}`;
+function formatSlot(slot: { date: string; startTime: string; endTime: string }) {
+  const parts = slot.date.split("-");
+  const y = Number(parts[0]);
+  const mo = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
+    return `${slot.date} · ${slot.startTime}–${slot.endTime}`;
+  }
+  const wd = SLOT_WEEKDAYS[new Date(Date.UTC(y, mo - 1, d)).getUTCDay()] ?? "";
+  const month = SLOT_MONTHS[mo - 1] ?? "";
+  return `${d} ${month}, ${wd} · ${slot.startTime}–${slot.endTime}`;
 }
 
 export default function FriendProfileScreen() {
@@ -137,14 +155,17 @@ export default function FriendProfileScreen() {
 
   const isStudent = user?.role === "student";
   const isTeacherViewer = isTeacherOrAdmin(user?.role ?? "");
+  // Чей профиль открыт: у учителя ученические счётчики всегда нули, поэтому
+  // весь блок цифр для него другой.
+  const isTeacherProfile = isTeacherOrAdmin(profile?.role ?? "");
 
   // Прогресс ученика по словам (флеш-карточки) + CEFR — видит учитель.
   const [wordStats, setWordStats] = useState<FlashcardStatsWithLevel | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
 
-  // Цифры чужого профиля учителя (см. GET /api/teachers/:id/profile-stats).
+  // Цифры профиля учителя — отдельным запросом, только когда открыт учитель.
   const [teacherStats, setTeacherStats] = useState<TeacherProfileStats | null>(null);
-  const [teacherStatsLoading, setTeacherStatsLoading] = useState(false);
+  const [teacherStatsError, setTeacherStatsError] = useState(false);
 
   useEffect(() => {
     if (isTeacherViewer && profile?.role === "student" && friendId) {
@@ -154,12 +175,15 @@ export default function FriendProfileScreen() {
 
   useEffect(() => {
     if (!friendId || !profile || !isTeacherOrAdmin(profile.role)) return;
-    setTeacherStatsLoading(true);
+    let cancelled = false;
+    setTeacherStatsError(false);
     apiFetch(`/api/teachers/${friendId}/profile-stats`)
-      .then(setTeacherStats)
-      .catch(() => setTeacherStats(null))
-      .finally(() => setTeacherStatsLoading(false));
-  }, [friendId, profile?.role, profile]);
+      .then((data) => { if (!cancelled) setTeacherStats(data); })
+      .catch(() => {
+        if (!cancelled) { setTeacherStats(null); setTeacherStatsError(true); }
+      });
+    return () => { cancelled = true; };
+  }, [friendId, profile?.role]);
 
   const loadProfile = useCallback(async () => {
     if (!friendId) {
@@ -313,24 +337,17 @@ export default function FriendProfileScreen() {
   const avatarEmoji = profile.avatarEmoji ?? "🦁";
   const isSelf = user?.id === friendId;
 
-  // Заголовок по роли: раньше был хардкод «Профиль ученика» для всех.
-  const isTeacherProfile = isTeacherOrAdmin(profile.role);
-  const headerTitle = isTeacherProfile
-    ? "Профиль учителя"
-    : profile.role === "parent"
-      ? "Профиль родителя"
-      : "Профиль ученика";
-
   return (
     <View style={s.container}>
       <View style={s.header}>
         <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
           <Feather name="arrow-left" size={22} color={colors.foreground} />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>{headerTitle}</Text>
-        {/* Кнопка чата — доступна учителю (связан с учеником) и ученикам-друзьям.
-            Сервер всё равно проверит связь; кнопку прячем, если чат недоступен. */}
-        {!isSelf && (!isStudent || friendStatus === "friends" || isTeacherProfile) && (
+        <Text style={s.headerTitle}>{isTeacherProfile ? "Профиль учителя" : "Профиль ученика"}</Text>
+        {/* Кнопка чата — доступна учителю (связан с учеником), ученикам-друзьям
+            и ученику на профиле учителя (дружба бывает только между учениками).
+            Сервер всё равно проверит связь. */}
+        {!isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends") && (
           <TouchableOpacity
             onPress={() => router.push(`/(main)/chat/${friendId}` as any)}
             style={{
@@ -418,15 +435,11 @@ export default function FriendProfileScreen() {
         )}
 
         {isTeacherProfile ? (
-          /* ── Профиль учителя ──
-             Очки, решённые задания и учебное время у учителя всегда нули:
-             он не решает задания и не получает очки. Вместо них — занятия и
-             задания, причём личные цифры («с вами») отделены от общих. */
-          <TeacherProfileBlocks
+          /* ── Профиль учителя: слоты и часы с вами, его задания ── */
+          <TeacherProfileStatsSection
             stats={teacherStats}
-            loading={teacherStatsLoading}
-            name={profile.name}
-            isStudentViewer={isStudent}
+            failed={teacherStatsError}
+            teacherName={profile.name}
             colors={colors}
           />
         ) : (
@@ -463,68 +476,70 @@ export default function FriendProfileScreen() {
               </Text>
               <AssignmentRingsChart stats={categoryStats} colors={colors} />
             </View>
-
-            {/* ── Учителю: уровень знаний, прогресс по словам, отправка колод ── */}
-            {isTeacherViewer && profile.role === "student" && (
-              <View style={{
-                backgroundColor: colors.card, borderRadius: 16, padding: 16,
-                borderWidth: 1, borderColor: colors.border, marginBottom: 16,
-              }}>
-                <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
-                  Знания и слова
-                </Text>
-
-                {/* Уровни: возрастной (из профиля) + CEFR (из теста) */}
-                <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
-                  <View style={{ flex: 1, backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12 }}>
-                    <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>Уровень</Text>
-                    <Text style={{ fontSize: 15, fontWeight: "800", color: colors.primary }}>
-                      {profile.knowledgeLevel ? (KNOWLEDGE_LABELS[profile.knowledgeLevel] ?? profile.knowledgeLevel) : "—"}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1, backgroundColor: "#ec489912", borderRadius: 12, padding: 12 }}>
-                    <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
-                    <Text style={{ fontSize: 15, fontWeight: "800", color: "#db2777" }}>
-                      {wordStats?.placementLevel ?? "не пройден"}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Прогресс по словам */}
-                <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
-                  {[
-                    { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
-                    { value: wordStats?.totalWords ?? 0, label: "В изучении" },
-                    { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
-                  ].map((it) => (
-                    <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
-                      <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
-                      <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => setAssignOpen(true)}
-                  style={{
-                    backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
-                    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-                  }}
-                >
-                  <Feather name="send" size={16} color="#fff" />
-                  <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Отправить колоду</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Витрина наград — только у ученика: у учителя награды считаются
-                из его нулевых ученических метрик и вводят в заблуждение. */}
-            <AchievementsShowcase
-              unlocked={unlocked}
-              showLocked={false}
-              title="Витрина наград"
-            />
           </>
+        )}
+
+        {/* ── Учителю: уровень знаний, прогресс по словам, отправка колод ── */}
+        {isTeacherViewer && profile.role === "student" && (
+          <View style={{
+            backgroundColor: colors.card, borderRadius: 16, padding: 16,
+            borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+          }}>
+            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
+              Знания и слова
+            </Text>
+
+            {/* Уровни: возрастной (из профиля) + CEFR (из теста) */}
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+              <View style={{ flex: 1, backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>Уровень</Text>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.primary }}>
+                  {profile.knowledgeLevel ? (KNOWLEDGE_LABELS[profile.knowledgeLevel] ?? profile.knowledgeLevel) : "—"}
+                </Text>
+              </View>
+              <View style={{ flex: 1, backgroundColor: "#ec489912", borderRadius: 12, padding: 12 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: "#db2777" }}>
+                  {wordStats?.placementLevel ?? "не пройден"}
+                </Text>
+              </View>
+            </View>
+
+            {/* Прогресс по словам */}
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+              {[
+                { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
+                { value: wordStats?.totalWords ?? 0, label: "В изучении" },
+                { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
+              ].map((it) => (
+                <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setAssignOpen(true)}
+              style={{
+                backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+              }}
+            >
+              <Feather name="send" size={16} color="#fff" />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Отправить колоду</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Витрина наград завязана на решённые задания и очки — у учителя их
+            нет, поэтому показываем её только на профиле ученика. */}
+        {!isTeacherProfile && (
+          <AchievementsShowcase
+            unlocked={unlocked}
+            showLocked={false}
+            title="Витрина наград"
+          />
         )}
 
       </ScrollView>
@@ -543,33 +558,19 @@ export default function FriendProfileScreen() {
   );
 }
 
-// ── Блоки чужого профиля учителя ───────────────────────────────────────
-// Личные цифры («с вами») и общие («всего») специально разведены по разным
-// карточкам с плашками: иначе ученик читает общее число занятий учителя как
-// своё собственное.
-function TeacherProfileBlocks({
-  stats, loading, name, isStudentViewer, colors,
+// Блок цифр на профиле учителя. Личное («с вами») и общее («всего») разведены
+// плашками, чтобы ученик не принял общий счётчик за свой.
+function TeacherProfileStatsSection({
+  stats, failed, teacherName, colors,
 }: {
   stats: TeacherProfileStats | null;
-  loading: boolean;
-  name: string;
-  isStudentViewer: boolean;
+  failed: boolean;
+  teacherName: string;
   colors: any;
 }) {
   const router = useRouter();
 
-  if (loading && !stats) {
-    return (
-      <View style={{
-        backgroundColor: colors.card, borderRadius: 16, padding: 24,
-        borderWidth: 1, borderColor: colors.border, marginBottom: 16, alignItems: "center",
-      }}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
-  }
-
-  if (!stats) {
+  if (failed) {
     return (
       <View style={{
         backgroundColor: colors.card, borderRadius: 16, padding: 20,
@@ -583,281 +584,275 @@ function TeacherProfileBlocks({
     );
   }
 
-  const { viewer, total, categories, freeSlots, recentAssignments } = stats;
-  const donePct = viewer.assignmentsAssigned > 0
-    ? Math.round((viewer.assignmentsDone / viewer.assignmentsAssigned) * 100)
-    : 0;
-  const maxCategory = categories.reduce((m, c) => Math.max(m, c.count), 0);
-  // Ученик, который ещё ни разу не занимался и не получал заданий: показываем
-  // приглашение вместо пустых нулей.
-  const isFirstTime = isStudentViewer
-    && viewer.lessonsWithTeacher === 0
-    && viewer.assignmentsAssigned === 0
-    && !viewer.nextLesson;
-
-  const cardStyle = {
-    backgroundColor: colors.card, borderRadius: 16, padding: 16,
-    borderWidth: 1, borderColor: colors.border, marginBottom: 16,
-  } as const;
-
-  const sectionTitle = {
-    fontSize: 11, fontWeight: "700" as const, color: colors.mutedForeground,
-    textTransform: "uppercase" as const, letterSpacing: 0.5,
-  };
-
-  const Badge = ({ text, tone }: { text: string; tone: "personal" | "total" }) => (
-    <View style={{
-      backgroundColor: tone === "personal" ? colors.primary + "18" : colors.muted,
-      borderRadius: 8, paddingHorizontal: 7, paddingVertical: 2, marginTop: 6,
-    }}>
-      <Text style={{
-        fontSize: 9, fontWeight: "800",
-        color: tone === "personal" ? colors.primary : colors.mutedForeground,
+  if (!stats) {
+    return (
+      <View style={{
+        backgroundColor: colors.card, borderRadius: 16, padding: 28,
+        borderWidth: 1, borderColor: colors.border, marginBottom: 16,
       }}>
-        {text}
-      </Text>
-    </View>
-  );
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
 
-  const StatCard = ({
-    icon, color, value, label, badge, tone,
-  }: {
-    icon: string; color: string; value: string | number; label: string;
-    badge: string; tone: "personal" | "total";
-  }) => (
-    <View style={{
-      flex: 1, backgroundColor: colors.card, borderRadius: 14, padding: 12,
-      alignItems: "center", borderWidth: 1, borderColor: colors.border,
-    }}>
-      <Feather name={icon as any} size={18} color={color} />
-      <Text
-        style={{ fontSize: typeof value === "string" && value.length > 4 ? 14 : 20, fontWeight: "900", color: colors.foreground, marginTop: 6, marginBottom: 2 }}
-        numberOfLines={1}
-      >
-        {value}
-      </Text>
-      <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{label}</Text>
-      <Badge text={badge} tone={tone} />
-    </View>
-  );
+  const p = stats.personal;
+  const o = stats.overall;
+  // Ученик ещё не занимался с этим учителем: нули показывать бессмысленно —
+  // вместо них подсказка, что делать дальше.
+  const firstTime = p.lessonsWithMe === 0 && p.assignedToMe === 0 && !p.nextLessonWithMe;
+
+  const cards: { icon: string; color: string; value: string | number; label: string; badge: string; personal: boolean }[] = [
+    { icon: "calendar", color: "#6366f1", value: p.lessonsWithMe, label: "Слотов", badge: "с вами", personal: true },
+    { icon: "clock", color: colors.primary, value: formatTime(p.minutesWithMe), label: "Время", badge: "с вами", personal: true },
+    { icon: "edit-3", color: "#ec4899", value: o.assignmentsCreated, label: "Заданий создано", badge: "всего", personal: false },
+  ];
+
+  const ringStats: CategoryStat[] = p.categories.map((c) => ({
+    type: c.type,
+    avgScore: c.avgScore,
+    count: c.count,
+  }));
 
   return (
     <>
-      {/* ── Персонально: занятия и задания с этим учителем ── */}
-      {isStudentViewer && (
-        <>
-          <Text style={[sectionTitle, { marginBottom: 8 }]}>С вами</Text>
-          <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
-            <StatCard
-              icon="calendar" color="#8b5cf6"
-              value={viewer.lessonsWithTeacher} label="Слотов"
-              badge="с вами" tone="personal"
-            />
-            <StatCard
-              icon="clock" color={colors.primary}
-              value={formatTime(viewer.minutesWithTeacher)} label="Времени"
-              badge="с вами" tone="personal"
-            />
-            <StatCard
-              icon="inbox" color="#ec4899"
-              value={viewer.assignmentsAssigned} label="Заданий"
-              badge="от учителя" tone="personal"
-            />
-          </View>
-        </>
-      )}
-
-      {/* ── Общее по учителю ── */}
-      <Text style={[sectionTitle, { marginBottom: 8 }]}>Всего у учителя</Text>
+      {/* ── Три главные цифры ── */}
       <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
-        <StatCard
-          icon="edit-3" color="#6366f1"
-          value={total.assignmentsCreated} label="Создано"
-          badge="всего" tone="total"
-        />
-        <StatCard
-          icon="users" color="#d946ef"
-          value={total.studentsCount} label="Учеников"
-          badge="всего" tone="total"
-        />
-        <StatCard
-          icon="check-circle" color="#22c55e"
-          value={total.lessonsHeld} label="Занятий"
-          badge="всего" tone="total"
-        />
+        {cards.map((card) => (
+          <View key={card.label} style={{
+            flex: 1, backgroundColor: colors.card, borderRadius: 14, padding: 14,
+            alignItems: "center", borderWidth: 1, borderColor: colors.border,
+          }}>
+            <Feather name={card.icon as any} size={20} color={card.color} />
+            <Text style={{
+              fontSize: typeof card.value === "string" ? 14 : 22,
+              fontWeight: "900", color: colors.foreground, marginTop: 6, marginBottom: 2,
+            }}>
+              {card.value}
+            </Text>
+            <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>
+              {card.label}
+            </Text>
+            <View style={{
+              marginTop: 6, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2,
+              backgroundColor: card.personal ? colors.primary + "18" : colors.muted,
+            }}>
+              <Text style={{
+                fontSize: 9, fontWeight: "800", letterSpacing: 0.4, textTransform: "uppercase",
+                color: card.personal ? colors.primary : colors.mutedForeground,
+              }}>
+                {card.badge}
+              </Text>
+            </View>
+          </View>
+        ))}
       </View>
 
       {/* ── Первое знакомство: экран не должен быть пустым ── */}
-      {isFirstTime && (
-        <View style={[cardStyle, { alignItems: "center", gap: 8 }]}>
-          <Text style={{ fontSize: 34 }}>👋</Text>
-          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground, textAlign: "center" }}>
-            Вы ещё не занимались с {name}
+      {firstTime && (
+        <View style={{
+          backgroundColor: colors.primary + "10", borderRadius: 16, padding: 16,
+          borderWidth: 1, borderColor: colors.primary + "30", marginBottom: 16,
+        }}>
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground, marginBottom: 6 }}>
+            Вы ещё не занимались вместе
           </Text>
-          <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
-            Запишитесь на свободное время — после первого занятия здесь появятся ваши часы и прогресс.
+          <Text style={{ fontSize: 13, color: colors.mutedForeground, lineHeight: 19, marginBottom: 12 }}>
+            {teacherName}: {o.studentsCount} учеников, {o.assignmentsCreated} заданий, {o.lessonsTotal} проведённых занятий.
+            {stats.freeSlotsTotal > 0
+              ? ` Свободных слотов сейчас: ${stats.freeSlotsTotal}.`
+              : " Свободных слотов пока нет — загляните в календарь позже."}
           </Text>
           <TouchableOpacity
             onPress={() => router.push("/(main)/calendar" as any)}
             style={{
-              marginTop: 6, backgroundColor: colors.primary, borderRadius: 12,
-              paddingHorizontal: 20, paddingVertical: 12,
-              flexDirection: "row", alignItems: "center", gap: 8,
+              backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
+              flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
             }}
           >
             <Feather name="calendar" size={16} color="#fff" />
-            <Text style={{ color: "#fff", fontWeight: "700" }}>Записаться на занятие</Text>
+            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Открыть календарь</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* ── Ближайшее занятие ── */}
-      {viewer.nextLesson && (
-        <View style={[cardStyle, { flexDirection: "row", alignItems: "center", gap: 12 }]}>
-          <View style={{
-            width: 42, height: 42, borderRadius: 21, backgroundColor: colors.primary + "15",
-            justifyContent: "center", alignItems: "center",
-          }}>
-            <Feather name="calendar" size={20} color={colors.primary} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5 }}>
-              Ближайшее занятие
-            </Text>
-            <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground, marginTop: 2 }}>
-              {formatSlotDate(viewer.nextLesson.date)} · {viewer.nextLesson.startTime}–{viewer.nextLesson.endTime}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {/* ── Свободные слоты (когда ближайшего занятия нет) ── */}
-      {!viewer.nextLesson && freeSlots.length > 0 && (
-        <View style={cardStyle}>
-          <Text style={[sectionTitle, { marginBottom: 10 }]}>Свободное время</Text>
-          {freeSlots.map((slot) => (
-            <View
-              key={slot.id}
-              style={{
-                flexDirection: "row", alignItems: "center", gap: 10,
-                paddingVertical: 9, borderTopWidth: 1, borderTopColor: colors.border,
-              }}
-            >
-              <Feather name="clock" size={15} color={colors.mutedForeground} />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: "600", color: colors.foreground }}>
-                {formatSlotDate(slot.date)}
-              </Text>
-              <Text style={{ fontSize: 13, fontWeight: "700", color: colors.primary }}>
-                {slot.startTime}–{slot.endTime}
-              </Text>
+      {/* ── Ближайшее / последнее занятие с этим учителем ── */}
+      {(p.nextLessonWithMe || p.lastLessonWithMe) && (
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 16, padding: 16,
+          borderWidth: 1, borderColor: colors.border, marginBottom: 16, gap: 10,
+        }}>
+          {p.nextLessonWithMe && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <View style={{
+                width: 36, height: 36, borderRadius: 18, backgroundColor: colors.primary + "15",
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <Feather name="play-circle" size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground }}>Ближайшее занятие</Text>
+                <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>
+                  {formatSlot(p.nextLessonWithMe)}
+                </Text>
+              </View>
             </View>
-          ))}
-          {isStudentViewer && (
-            <TouchableOpacity
-              onPress={() => router.push("/(main)/calendar" as any)}
-              style={{
-                marginTop: 12, backgroundColor: colors.primary, borderRadius: 12,
-                paddingVertical: 11, alignItems: "center",
-                flexDirection: "row", justifyContent: "center", gap: 8,
-              }}
-            >
-              <Feather name="plus-circle" size={16} color="#fff" />
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Записаться</Text>
-            </TouchableOpacity>
+          )}
+          {p.lastLessonWithMe && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <View style={{
+                width: 36, height: 36, borderRadius: 18, backgroundColor: colors.muted,
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <Feather name="rotate-ccw" size={18} color={colors.mutedForeground} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground }}>Последнее занятие</Text>
+                <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>
+                  {formatSlot(p.lastLessonWithMe)}
+                </Text>
+              </View>
+            </View>
           )}
         </View>
       )}
 
-      {/* ── Ваш прогресс по заданиям этого учителя ── */}
-      {isStudentViewer && viewer.assignmentsAssigned > 0 && (
-        <View style={cardStyle}>
-          <Text style={[sectionTitle, { marginBottom: 10 }]}>Ваш прогресс по его заданиям</Text>
+      {/* ── Ваш прогресс по заданиям ЭТОГО учителя ── */}
+      {p.assignedToMe > 0 && (
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 16, padding: 16,
+          borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+        }}>
+          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
+            Ваш прогресс по его заданиям
+          </Text>
 
-          <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, marginBottom: 8 }}>
-            <Text style={{ fontSize: 26, fontWeight: "900", color: colors.foreground }}>
-              {viewer.assignmentsDone}
-            </Text>
-            <Text style={{ fontSize: 15, fontWeight: "700", color: colors.mutedForeground, marginBottom: 3 }}>
-              / {viewer.assignmentsAssigned} сдано
-            </Text>
-          </View>
-
-          <View style={{ height: 8, borderRadius: 4, backgroundColor: colors.muted, overflow: "hidden", marginBottom: 14 }}>
-            <View style={{ width: `${donePct}%`, height: "100%", borderRadius: 4, backgroundColor: colors.primary }} />
-          </View>
-
-          <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
             {[
-              { value: viewer.averageScore !== null ? `${viewer.averageScore}%` : "—", label: "Средний результат" },
-              { value: viewer.pointsEarned, label: "Очки за его задания" },
+              { value: `${p.completedByMe}/${p.assignedToMe}`, label: "Сдано" },
+              { value: p.avgScore !== null ? `${p.avgScore}%` : "—", label: "Средний результат" },
+              { value: p.pointsFromTeacher, label: "Очки за них" },
             ].map((it) => (
               <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
-                <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
+                <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
                 <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
               </View>
             ))}
           </View>
+
+          <AssignmentRingsChart stats={ringStats} colors={colors} />
         </View>
       )}
 
-      {/* ── Какие задания делает этот учитель ── */}
-      {categories.length > 0 && (
-        <View style={cardStyle}>
-          <Text style={[sectionTitle, { marginBottom: 10 }]}>Задания по категориям</Text>
-          {categories.map((c) => (
-            <View key={c.type} style={{ marginBottom: 8 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
-                <Text style={{ flex: 1, fontSize: 12, fontWeight: "600", color: colors.foreground }} numberOfLines={1}>
-                  {ASSIGNMENT_TYPE_LABELS[c.type] ?? c.type}
-                </Text>
-                <Text style={{ fontSize: 12, fontWeight: "800", color: colors.primary }}>{c.count}</Text>
-              </View>
-              <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.muted, overflow: "hidden" }}>
-                <View style={{
-                  width: `${maxCategory > 0 ? Math.round((c.count / maxCategory) * 100) : 0}%`,
-                  height: "100%", borderRadius: 3, backgroundColor: colors.primary,
-                }} />
-              </View>
-            </View>
-          ))}
-        </View>
-      )}
+      {/* ── Свободные слоты этого учителя ── */}
+      {stats.freeSlots.length > 0 && (
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 16, padding: 16,
+          borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+        }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
+            <Text style={{ flex: 1, fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Свободные слоты
+            </Text>
+            <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
+              {stats.freeSlotsTotal}
+            </Text>
+          </View>
 
-      {/* ── Последние задания учителя ── */}
-      {recentAssignments.length > 0 && (
-        <View style={cardStyle}>
-          <Text style={[sectionTitle, { marginBottom: 10 }]}>Последние задания</Text>
-          {recentAssignments.map((a) => (
+          {stats.freeSlots.map((slot) => (
             <TouchableOpacity
-              key={a.id}
-              onPress={() => router.push(`/(main)/assignment/${a.id}` as any)}
+              key={slot.id}
+              onPress={() => router.push("/(main)/calendar" as any)}
               style={{
                 flexDirection: "row", alignItems: "center", gap: 10,
                 paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border,
               }}
             >
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }} numberOfLines={1}>
-                  {a.title}
-                </Text>
-                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 2 }}>
-                  {ASSIGNMENT_TYPE_LABELS[a.type] ?? a.type} · {a.points} очков
+              <Feather name="clock" size={16} color={colors.mutedForeground} />
+              <Text style={{ flex: 1, fontSize: 13, fontWeight: "600", color: colors.foreground }} numberOfLines={1}>
+                {formatSlot(slot)}
+              </Text>
+              <View style={{
+                borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4,
+                backgroundColor: slot.myStatus === "pending" ? colors.muted : colors.primary + "18",
+              }}>
+                <Text style={{
+                  fontSize: 11, fontWeight: "800",
+                  color: slot.myStatus === "pending" ? colors.mutedForeground : colors.primary,
+                }}>
+                  {slot.myStatus === "pending" ? "Заявка отправлена" : "Записаться"}
                 </Text>
               </View>
-              {a.doneByViewer && (
-                <View style={{
-                  flexDirection: "row", alignItems: "center", gap: 4,
-                  backgroundColor: "#dcfce7", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
-                }}>
-                  <Feather name="check" size={11} color="#15803d" />
-                  <Text style={{ fontSize: 10, fontWeight: "800", color: "#15803d" }}>сдано</Text>
-                </View>
-              )}
-              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+            </TouchableOpacity>
+          ))}
+
+          {stats.freeSlotsTotal > stats.freeSlots.length && (
+            <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 10 }}>
+              и ещё {stats.freeSlotsTotal - stats.freeSlots.length} в календаре
+            </Text>
+          )}
+        </View>
+      )}
+
+      {/* ── Последние задания от этого учителя ── */}
+      {p.recentAssignments.length > 0 && (
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 16, padding: 16,
+          borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+        }}>
+          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+            Задания от учителя
+          </Text>
+
+          {p.recentAssignments.map((a) => (
+            <TouchableOpacity
+              key={a.id}
+              onPress={() => router.push(`/(main)/assignment/${a.id}` as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 10,
+                paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border,
+              }}
+            >
+              <View style={{
+                width: 32, height: 32, borderRadius: 10,
+                backgroundColor: a.done ? "#22c55e18" : colors.muted,
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <Feather
+                  name={a.done ? "check" : "clock"}
+                  size={15}
+                  color={a.done ? "#16a34a" : colors.mutedForeground}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }} numberOfLines={1}>
+                  {a.title ?? "Задание"}
+                </Text>
+                <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
+                  {a.type ? (ASSIGNMENT_TYPE_LABELS[a.type] ?? a.type) : "Задание"}
+                  {a.points ? ` · ${a.points} очк.` : ""}
+                </Text>
+              </View>
+              <Text style={{
+                fontSize: 13, fontWeight: "800",
+                color: a.done ? "#16a34a" : colors.mutedForeground,
+              }}>
+                {a.done ? `${a.score ?? 0}%` : "не сдано"}
+              </Text>
             </TouchableOpacity>
           ))}
         </View>
       )}
+
+      {/* ── Общие цифры учителя (одинаковы для всех учеников) ── */}
+      <View style={{
+        flexDirection: "row", alignItems: "center", gap: 8,
+        backgroundColor: colors.muted, borderRadius: 14, padding: 14, marginBottom: 16,
+      }}>
+        <Feather name="users" size={16} color={colors.mutedForeground} />
+        <Text style={{ flex: 1, fontSize: 12, color: colors.mutedForeground, lineHeight: 18 }}>
+          Всего у учителя: {o.studentsCount} учеников · {o.lessonsTotal} проведённых занятий · {formatTime(o.minutesTotal)} за всё время
+        </Text>
+      </View>
     </>
   );
 }
