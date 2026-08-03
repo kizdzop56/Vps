@@ -13,17 +13,21 @@
 // (глиф из своего набора или первая буква названия), остальные значки —
 // векторные. Поле deck.emoji в базе при этом не меняется, оно остаётся
 // источником для сопоставления с глифом.
+//
+// Оформление собрано из GameKit (components/ui/GameKit.tsx): кнопки с
+// физической нижней гранью, плитки с цветной тенью, цель дня сегментами.
+// Логика экрана при переходе на GameKit не менялась — только внешний вид.
 import React from "react";
-import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
+import { View, Text, Pressable, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, type DeckWithAssign } from "@/hooks/useFlashcards";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
 import { Glyph } from "@/components/ui/Glyph";
+import { ChunkyButton, Tile, GoalPips, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
 
 // Порядок уровней должен совпадать с CEFR_ORDER на бэкенде (routes/flashcards.ts).
@@ -91,9 +95,17 @@ export default function FlashcardsHome() {
   const stats = statsQ.data;
   const wordsToday = stats?.wordsToday ?? 0;
   const dailyWordGoal = stats?.dailyWordGoal ?? settingsQ.data?.dailyWordGoal ?? 10;
-  const goalPct = dailyWordGoal > 0 ? Math.min(100, Math.round((wordsToday / dailyWordGoal) * 100)) : 0;
   const goalReached = wordsToday >= dailyWordGoal;
   const hardCount = stats?.hardCount ?? 0;
+
+  // Подпись главной кнопки: что именно ждёт в сессии. Цифры уже есть в данных,
+  // раньше они просто не показывались — на кнопке они полезнее всего.
+  const queueParts: string[] = [];
+  if (totalDue > 0) queueParts.push(`${totalDue} ${pluralRu(totalDue, "повторение", "повторения", "повторений")}`);
+  if (totalNew > 0) queueParts.push(`${totalNew} ${pluralRu(totalNew, "новое", "новых", "новых")}`);
+  const sessionSublabel = queueParts.length
+    ? queueParts.join(" · ")
+    : "Все слова повторены — загляни позже";
 
   return (
     <ScrollView
@@ -102,73 +114,62 @@ export default function FlashcardsHome() {
     >
       {/* Заголовок + уровень */}
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <Text style={{ fontSize: 28, fontWeight: "900", color: colors.foreground }}>Слова</Text>
-        <TouchableOpacity
+        <Text style={{ fontSize: 30, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground }}>Слова</Text>
+        <Pressable
           onPress={() => router.push("/flashcards/placement")}
-          activeOpacity={0.8}
-          style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.primary + "18", borderColor: colors.primary + "55", borderWidth: 1, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 }}
+          style={({ pressed }) => pressed ? { transform: [{ scale: 0.96 }] } : undefined}
         >
-          <Glyph name="rank" size={14} color={colors.primary} />
-          <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 13 }}>{level ? `Уровень ${level}` : "Пройти тест"}</Text>
-        </TouchableOpacity>
+          {/* Пройденный уровень — награда, поэтому золото. Непройденный тест —
+              обычная метка-приглашение, не должен спорить с главной кнопкой. */}
+          <Pill
+            text={level ? `Уровень ${level}` : "Пройти тест"}
+            icon="rank"
+            tone={level ? "gold" : "soft"}
+            color={level ? undefined : colors.primary}
+            tilt={-2}
+          />
+        </Pressable>
       </View>
 
       {/* Главное действие */}
-      <TouchableOpacity
+      <ChunkyButton
+        label="Учить слова"
+        sublabel={sessionSublabel}
+        icon="play"
+        chevron
         onPress={() => router.push("/flashcards/session")}
-        activeOpacity={0.9}
-        style={{ borderRadius: 20, overflow: "hidden", marginBottom: 12 }}
-      >
-        <LinearGradient
-          colors={["#7C3AED", "#4F46E5"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={{ padding: 18, flexDirection: "row", alignItems: "center", gap: 14 }}
-        >
-          <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
-            <Glyph name="play" size={24} color="#fff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 19, fontWeight: "900", color: "#fff" }}>Учить слова</Text>
-            {totalDue === 0 && totalNew === 0 ? (
-              <Text style={{ fontSize: 13, color: "#ffffffdd", marginTop: 3 }}>
-                Все слова повторены — загляни позже
-              </Text>
-            ) : null}
-          </View>
-          <Glyph name="chevron" size={24} color="#fff" />
-        </LinearGradient>
-      </TouchableOpacity>
+        style={{ marginBottom: 12 }}
+      />
 
-      {/* Цель дня */}
-      <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 12 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-            <Glyph name={goalReached ? "check" : "target"} size={15} color={goalReached ? colors.success : colors.primary} />
+      {/* Цель дня: сегментами, а не полосой — закрытый сегмент виден сразу. */}
+      <Tile glow={goalReached ? accents.gold : accents.violetDeep} style={{ marginBottom: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Glyph name={goalReached ? "check" : "target"} size={16} color={goalReached ? accents.amber : colors.primary} />
             <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
           </View>
-          <Text style={{ fontSize: 13, fontWeight: "800", color: goalReached ? colors.success : colors.primary }}>
-            {wordsToday} / {dailyWordGoal} слов
+          <Text style={{ fontSize: 14, fontWeight: "900", fontVariant: ["tabular-nums"], color: goalReached ? accents.amber : colors.primary }}>
+            {wordsToday}
+            <Text style={{ fontSize: 12, fontWeight: "700", color: colors.mutedForeground }}> / {dailyWordGoal}</Text>
           </Text>
         </View>
-        <View style={{ height: 8, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.14)", marginTop: 10, overflow: "hidden" }}>
-          <View style={{ width: `${goalPct}%`, height: "100%", borderRadius: 999, backgroundColor: goalReached ? colors.success : colors.primary }} />
-        </View>
-      </View>
+        <GoalPips value={wordsToday} target={dailyWordGoal} done={goalReached} />
+      </Tile>
 
       {/* Сложные слова */}
       {hardCount > 0 && (
-        <TouchableOpacity
+        <Tile
+          glow={colors.warning}
+          tilt={-0.5}
           onPress={() => router.push("/flashcards/hard")}
-          activeOpacity={0.85}
-          style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.warning + "14", borderColor: colors.warning + "55", borderWidth: 1, borderRadius: 16, padding: 14, marginBottom: 12 }}
+          style={{ marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 13 }}
         >
           {/* Плашка с глифом вместо эмодзи: цвет управляется темой, а не шрифтом ОС. */}
           <LinearGradient
             colors={gradients.fire as unknown as string[]}
             start={{ x: 0.1, y: 0 }}
             end={{ x: 0.9, y: 1 }}
-            style={{ width: 40, height: 40, borderRadius: radii.sm + 2, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-5deg" }] }}
+            style={{ width: 42, height: 42, borderRadius: radii.sm + 2, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-5deg" }] }}
           >
             <Glyph name="repeat" size={20} color="#fff" />
           </LinearGradient>
@@ -179,37 +180,31 @@ export default function FlashcardsHome() {
             </Text>
           </View>
           <Glyph name="chevron" size={20} color={colors.mutedForeground} />
-        </TouchableOpacity>
+        </Tile>
       )}
 
       {/* Действия */}
       <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
-        <ActionBtn colors={colors} icon="chart" label="Статистика" onPress={() => router.push("/flashcards/stats")} />
-        <ActionBtn colors={colors} icon="plus" label="Своя колода" onPress={() => router.push("/flashcards/new-deck")} />
+        <ActionTile colors={colors} icon="chart" label="Статистика" tilt={-0.6} onPress={() => router.push("/flashcards/stats")} />
+        <ActionTile colors={colors} icon="plus" label="Своя колода" tilt={0.6} onPress={() => router.push("/flashcards/new-deck")} />
       </View>
 
-      {/* Марафон слов */}
-      <TouchableOpacity
+      {/* Марафон слов: длинная цель, поэтому тон темнее главной кнопки —
+          он не должен перетягивать внимание на себя. */}
+      <ChunkyButton
+        label="Марафон слов"
+        sublabel={`Все слова уровня ${level ?? "A1"} · дойди до 75% и переходи выше`}
+        icon="route"
+        chevron
+        tone="dark"
         onPress={() => router.push("/flashcards/marathon")}
-        activeOpacity={0.85}
-        style={{ flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.primary, borderRadius: 18, padding: 16, marginBottom: 22 }}
-      >
-        <View style={{ width: 44, height: 44, borderRadius: radii.sm + 3, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
-          <Glyph name="route" size={22} color="#fff" />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>Марафон слов</Text>
-          <Text style={{ fontSize: 12, color: "#ffffffcc", marginTop: 2 }}>
-            Все слова уровня {level ?? "A1"} · дойди до 75% и переходи выше
-          </Text>
-        </View>
-        <Glyph name="chevron" size={22} color="#fff" />
-      </TouchableOpacity>
+        style={{ marginBottom: 20 }}
+      />
 
       {decksQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       ) : decksQ.isError ? (
-        <View style={{ marginTop: 24, backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: 16, padding: 16, gap: 10 }}>
+        <View style={{ marginTop: 24, backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: radii.md, padding: 16, gap: 10 }}>
           <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Колоды не загрузились</Text>
           <Text style={{ fontSize: 13, lineHeight: 19, color: colors.destructive }}>
             {(decksQ.error as any)?.message ?? "Проверьте соединение и попробуйте ещё раз."}
@@ -227,19 +222,19 @@ export default function FlashcardsHome() {
               увидеть их сразу, не долистывая до колод по уровням. */}
           {assignedDecks.length > 0 && (
             <>
-              <SectionTitle colors={colors} title="От учителя" />
-              {assignedDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              <SectionLabel>От учителя</SectionLabel>
+              {assignedDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
               <View style={{ height: 10 }} />
             </>
           )}
           {myDecks.length > 0 && (
             <>
-              <SectionTitle colors={colors} title="Мои колоды" />
-              {myDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              <SectionLabel>Мои колоды</SectionLabel>
+              {myDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
               <View style={{ height: 10 }} />
             </>
           )}
-          <SectionTitle colors={colors} title="Колоды по уровням" />
+          <SectionLabel>Колоды по уровням</SectionLabel>
           {levelsWithDecks.map((l) => (
             <LevelGroup
               key={l}
@@ -256,8 +251,8 @@ export default function FlashcardsHome() {
           {themeDecks.length > 0 && (
             <>
               <View style={{ height: 10 }} />
-              <SectionTitle colors={colors} title="Тематические колоды" />
-              {themeDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              <SectionLabel>Тематические колоды</SectionLabel>
+              {themeDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
             </>
           )}
         </>
@@ -266,17 +261,19 @@ export default function FlashcardsHome() {
   );
 }
 
-function ActionBtn({ colors, icon, label, onPress }: any) {
+/** Пара второстепенных действий под целью дня. */
+function ActionTile({ colors, icon, label, tilt, onPress }: any) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingVertical: 13 }}>
-      <Glyph name={icon} size={16} color={colors.foreground} />
-      <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 14 }}>{label}</Text>
-    </TouchableOpacity>
+    <Tile
+      onPress={onPress}
+      tilt={tilt}
+      glow={accents.indigoDeep}
+      style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingVertical: 14 }}
+    >
+      <Glyph name={icon} size={17} color={colors.primary} />
+      <Text style={{ color: colors.foreground, fontWeight: "800", fontSize: 14 }}>{label}</Text>
+    </Tile>
   );
-}
-
-function SectionTitle({ colors, title }: any) {
-  return <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>{title}</Text>;
 }
 
 function pluralRu(n: number, one: string, few: string, many: string) {
@@ -304,49 +301,47 @@ function LevelGroup({
 
   return (
     <View style={{ marginBottom: 12 }}>
-      <TouchableOpacity
+      <Tile
         onPress={onToggle}
-        activeOpacity={0.85}
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 12,
-          backgroundColor: isMyLevel ? colors.primary + "14" : colors.card,
-          borderColor: isMyLevel ? colors.primary + "55" : colors.border,
-          borderWidth: 1,
-          borderRadius: 16,
-          padding: 14,
-        }}
+        glow={isMyLevel ? colors.primary : accents.violetDeep}
+        style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
       >
-        <View
-          style={{
-            backgroundColor: isMyLevel ? colors.primary : colors.primary + "22",
-            borderRadius: 10,
-            paddingHorizontal: 10,
-            paddingVertical: 5,
-            minWidth: 46,
-            alignItems: "center",
-          }}
-        >
-          <Text style={{ color: isMyLevel ? "#fff" : colors.primary, fontWeight: "900", fontSize: 14 }}>{level}</Text>
-        </View>
+        {/* Шильд уровня: у своего уровня — заливка градиентом, у остальных
+            спокойная плашка, чтобы «мой уровень» читался с одного взгляда. */}
+        {isMyLevel ? (
+          <LinearGradient
+            colors={gradients.action as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{ borderRadius: radii.sm, paddingHorizontal: 11, paddingVertical: 7, minWidth: 48, alignItems: "center" }}
+          >
+            <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14 }}>{level}</Text>
+          </LinearGradient>
+        ) : (
+          <View style={{ backgroundColor: colors.primary + "1f", borderRadius: radii.sm, paddingHorizontal: 11, paddingVertical: 7, minWidth: 48, alignItems: "center" }}>
+            <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 14 }}>{level}</Text>
+          </View>
+        )}
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
             {decks.length} {pluralRu(decks.length, "колода", "колоды", "колод")}
             {isMyLevel ? " · ваш уровень" : ""}
           </Text>
-          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
             {words} слов и фраз · выучено {learned}
           </Text>
         </View>
-        {due > 0 && <Badge colors={colors} color={colors.primary} text={`${due}`} />}
-        <Feather name={open ? "chevron-down" : "chevron-right"} size={20} color={colors.mutedForeground} />
-      </TouchableOpacity>
+        {due > 0 && <Pill text={`${due}`} tone="solid" />}
+        {/* Chevron из своего набора: вниз — раскрыто, вправо — свёрнуто. */}
+        <View style={{ transform: [{ rotate: open ? "90deg" : "0deg" }] }}>
+          <Glyph name="chevron" size={20} color={colors.mutedForeground} />
+        </View>
+      </Tile>
 
       {open && (
         <View style={{ marginTop: 10 }}>
-          {decks.map((d) => (
-            <DeckCard key={d.id} deck={d} colors={colors} onPress={() => onOpenDeck(d.id)} />
+          {decks.map((d, i) => (
+            <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => onOpenDeck(d.id)} />
           ))}
         </View>
       )}
@@ -354,15 +349,22 @@ function LevelGroup({
   );
 }
 
-function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any; onPress: () => void }) {
+function DeckCard({ deck, colors, onPress, index = 0 }: { deck: DeckWithAssign; colors: any; onPress: () => void; index?: number }) {
   const introduced = Math.max(0, deck.wordCount - deck.newCount);
   const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
+  // Чередующийся микро-наклон: колода выглядит положенной рукой, а не
+  // выровненной по сетке. Больше градуса — начинает мешать чтению.
+  const tilt = index % 2 === 0 ? -0.4 : 0.4;
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}>
+    <Tile
+      onPress={onPress}
+      tilt={tilt}
+      style={{ padding: 15, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}
+    >
       {/* Значок колоды: глиф из своего набора либо первая буква названия.
           Поле deck.emoji из базы используется только как ключ сопоставления. */}
-      <DeckGlyph title={deck.title} emoji={deck.emoji} size={46} />
+      <DeckGlyph title={deck.title} emoji={deck.emoji} size={48} />
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
@@ -376,10 +378,11 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
             </View>
           )}
         </View>
-        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>
-        <View style={{ height: 6, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
+        {/* Двойная полоса: светлая — начатые слова, тёмная — выученные. */}
+        <View style={{ height: 7, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 9, overflow: "hidden" }}>
           <LinearGradient
             colors={[accents.lavender, "#A78BFA"]}
             start={{ x: 0, y: 0 }}
@@ -394,19 +397,11 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
           />
         </View>
       </View>
-      <View style={{ alignItems: "flex-end", gap: 4 }}>
-        {deck.dueCount > 0 && <Badge colors={colors} color={colors.primary} text={`${deck.dueCount}`} />}
-        {deck.newCount > 0 && <Badge colors={colors} color={colors.warning} text={`+${deck.newCount}`} />}
+      <View style={{ alignItems: "flex-end", gap: 5 }}>
+        {deck.dueCount > 0 && <Pill text={`${deck.dueCount}`} tone="solid" />}
+        {deck.newCount > 0 && <Pill text={`+${deck.newCount}`} tone="warn" />}
         <Glyph name="chevron" size={20} color={colors.mutedForeground} />
       </View>
-    </TouchableOpacity>
-  );
-}
-
-function Badge({ colors, color, text }: any) {
-  return (
-    <View style={{ backgroundColor: color + "22", borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 }}>
-      <Text style={{ color, fontWeight: "800", fontSize: 12 }}>{text}</Text>
-    </View>
+    </Tile>
   );
 }
