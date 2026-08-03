@@ -30,8 +30,32 @@ import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile, GoalPips, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
 
-// Порядок уровней должен совпадать с CEFR_ORDER на бэкенде (routes/flashcards.ts).
-const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
+/**
+ * Экран падал молча: при ошибке рендера React разворачивал дерево и вкладка
+ * оставалась白 пустой, без подсказки о причине. Expo Router подхватывает
+ * экспорт ErrorBoundary для конкретного роута, поэтому теперь вместо пустоты
+ * видно текст ошибки и кнопку повторной загрузки — это же спасает пользователя
+ * от «мёртвой» вкладки, если что-то отвалится в проде.
+ */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
+  return (
+    <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 80, gap: 14 }}>
+      <Text style={{ fontSize: 20, fontWeight: "900", color: "#e11d48" }}>Экран не открылся</Text>
+      <Text style={{ fontSize: 13, lineHeight: 20, color: "#5b4f8e" }}>
+        {error?.message ?? "Неизвестная ошибка"}
+      </Text>
+      {!!error?.stack && (
+        <Text style={{ fontSize: 10, lineHeight: 15, color: "#8b7fb0" }}>{error.stack}</Text>
+      )}
+      <TouchableOpacity
+        onPress={() => { void retry(); }}
+        style={{ alignSelf: "flex-start", backgroundColor: "#6366f1", borderRadius: 12, paddingHorizontal: 18, paddingVertical: 11 }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Попробовать снова</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+}
 
 export default function FlashcardsHome() {
   const colors = useColors();
@@ -115,10 +139,7 @@ export default function FlashcardsHome() {
       {/* Заголовок + уровень */}
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <Text style={{ fontSize: 30, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground }}>Слова</Text>
-        <Pressable
-          onPress={() => router.push("/flashcards/placement")}
-          style={({ pressed }) => pressed ? { transform: [{ scale: 0.96 }] } : undefined}
-        >
+        <Pressable onPress={() => router.push("/flashcards/placement")}>
           {/* Пройденный уровень — награда, поэтому золото. Непройденный тест —
               обычная метка-приглашение, не должен спорить с главной кнопкой. */}
           <Pill
@@ -148,9 +169,8 @@ export default function FlashcardsHome() {
             <Glyph name={goalReached ? "check" : "target"} size={16} color={goalReached ? accents.amber : colors.primary} />
             <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
           </View>
-          <Text style={{ fontSize: 14, fontWeight: "900", fontVariant: ["tabular-nums"], color: goalReached ? accents.amber : colors.primary }}>
-            {wordsToday}
-            <Text style={{ fontSize: 12, fontWeight: "700", color: colors.mutedForeground }}> / {dailyWordGoal}</Text>
+          <Text style={{ fontSize: 14, fontWeight: "900", color: goalReached ? accents.amber : colors.primary }}>
+            {wordsToday} / {dailyWordGoal}
           </Text>
         </View>
         <GoalPips value={wordsToday} target={dailyWordGoal} done={goalReached} />
@@ -160,7 +180,6 @@ export default function FlashcardsHome() {
       {hardCount > 0 && (
         <Tile
           glow={colors.warning}
-          tilt={-0.5}
           onPress={() => router.push("/flashcards/hard")}
           style={{ marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 13 }}
         >
@@ -185,8 +204,8 @@ export default function FlashcardsHome() {
 
       {/* Действия */}
       <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
-        <ActionTile colors={colors} icon="chart" label="Статистика" tilt={-0.6} onPress={() => router.push("/flashcards/stats")} />
-        <ActionTile colors={colors} icon="plus" label="Своя колода" tilt={0.6} onPress={() => router.push("/flashcards/new-deck")} />
+        <ActionTile colors={colors} icon="chart" label="Статистика" onPress={() => router.push("/flashcards/stats")} />
+        <ActionTile colors={colors} icon="plus" label="Своя колода" onPress={() => router.push("/flashcards/new-deck")} />
       </View>
 
       {/* Марафон слов: длинная цель, поэтому тон темнее главной кнопки —
@@ -223,14 +242,14 @@ export default function FlashcardsHome() {
           {assignedDecks.length > 0 && (
             <>
               <SectionLabel>От учителя</SectionLabel>
-              {assignedDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              {assignedDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
               <View style={{ height: 10 }} />
             </>
           )}
           {myDecks.length > 0 && (
             <>
               <SectionLabel>Мои колоды</SectionLabel>
-              {myDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              {myDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
               <View style={{ height: 10 }} />
             </>
           )}
@@ -252,7 +271,7 @@ export default function FlashcardsHome() {
             <>
               <View style={{ height: 10 }} />
               <SectionLabel>Тематические колоды</SectionLabel>
-              {themeDecks.map((d, i) => <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
+              {themeDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
             </>
           )}
         </>
@@ -262,11 +281,10 @@ export default function FlashcardsHome() {
 }
 
 /** Пара второстепенных действий под целью дня. */
-function ActionTile({ colors, icon, label, tilt, onPress }: any) {
+function ActionTile({ colors, icon, label, onPress }: any) {
   return (
     <Tile
       onPress={onPress}
-      tilt={tilt}
       glow={accents.indigoDeep}
       style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingVertical: 14 }}
     >
@@ -327,7 +345,7 @@ function LevelGroup({
             {decks.length} {pluralRu(decks.length, "колода", "колоды", "колод")}
             {isMyLevel ? " · ваш уровень" : ""}
           </Text>
-          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
             {words} слов и фраз · выучено {learned}
           </Text>
         </View>
@@ -340,8 +358,8 @@ function LevelGroup({
 
       {open && (
         <View style={{ marginTop: 10 }}>
-          {decks.map((d, i) => (
-            <DeckCard key={d.id} deck={d} index={i} colors={colors} onPress={() => onOpenDeck(d.id)} />
+          {decks.map((d) => (
+            <DeckCard key={d.id} deck={d} colors={colors} onPress={() => onOpenDeck(d.id)} />
           ))}
         </View>
       )}
@@ -349,17 +367,13 @@ function LevelGroup({
   );
 }
 
-function DeckCard({ deck, colors, onPress, index = 0 }: { deck: DeckWithAssign; colors: any; onPress: () => void; index?: number }) {
+function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any; onPress: () => void }) {
   const introduced = Math.max(0, deck.wordCount - deck.newCount);
   const learnedPct = deck.wordCount > 0 ? Math.round((deck.learnedCount / deck.wordCount) * 100) : 0;
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
-  // Чередующийся микро-наклон: колода выглядит положенной рукой, а не
-  // выровненной по сетке. Больше градуса — начинает мешать чтению.
-  const tilt = index % 2 === 0 ? -0.4 : 0.4;
   return (
     <Tile
       onPress={onPress}
-      tilt={tilt}
       style={{ padding: 15, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}
     >
       {/* Значок колоды: глиф из своего набора либо первая буква названия.
@@ -378,7 +392,7 @@ function DeckCard({ deck, colors, onPress, index = 0 }: { deck: DeckWithAssign; 
             </View>
           )}
         </View>
-        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
+        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3 }}>
           {deck.wordCount} слов · начато {introduced} · выучено {deck.learnedCount}
         </Text>
         {/* Двойная полоса: светлая — начатые слова, тёмная — выученные. */}
