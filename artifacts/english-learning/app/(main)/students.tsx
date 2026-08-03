@@ -1,3 +1,9 @@
+// Список учеников (для учителя) или детей (для родителя).
+//
+// Эмодзи в интерфейсе не используются: в пустых состояниях и на экране ошибки
+// вместо них глифы из своего набора. Аватары пользователей это отдельная
+// история — там avatarEmoji приходит из профиля и остаётся как есть, его
+// рисует AnimatedAvatar.
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform,
@@ -11,6 +17,7 @@ import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
 import { useRouter } from "expo-router";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { Glyph } from "@/components/ui/Glyph";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -83,13 +90,14 @@ function UserCard({ item, onRemove, onPress, colors }: { item: PersonItem; onRem
 
       <View style={{ alignItems: "flex-end", gap: 6 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
-          <Feather name="star" size={12} color="#ec4899" />
-          <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground }}>
+          <Glyph name="star" size={12} color="#ec4899" />
+          {/* Табличные цифры: очки в столбце карточек не пляшут по ширине. */}
+          <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
             {item.totalPoints}
           </Text>
         </View>
         <TouchableOpacity onPress={(e) => { e.stopPropagation(); onRemove(); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Feather name="x" size={18} color={colors.destructive} />
+          <Glyph name="close" size={18} color={colors.destructive} />
         </TouchableOpacity>
       </View>
     </TouchableOpacity>
@@ -296,7 +304,7 @@ function AddByCodeModal({
               backgroundColor: "#fff1f2", borderRadius: 12, padding: 12, marginBottom: 14,
               borderWidth: 1, borderColor: "#fda4af",
             }}>
-              <Feather name="alert-circle" size={16} color={colors.destructive} />
+              <Glyph name="alert" size={16} color={colors.destructive} />
               <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>{error}</Text>
             </View>
           )}
@@ -319,7 +327,7 @@ function AddByCodeModal({
                   {found.username}{found.name || found.surname ? ` (${[found.name, found.surname].filter(Boolean).join(" ")})` : ""}
                 </Text>
               </View>
-              <Feather name="check-circle" size={26} color="#6366f1" />
+              <Glyph name="check" size={26} color="#6366f1" />
             </View>
           )}
 
@@ -450,7 +458,12 @@ export default function StudentsScreen() {
     addBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
     content: { paddingHorizontal: 20, paddingBottom: insets.bottom + 100 },
     empty: { alignItems: "center", paddingTop: 60, gap: 12 },
-    emptyEmoji: { fontSize: 52 },
+    // Плашка вместо крупного эмодзи: наклон и цвет темы вместо символа ОС.
+    emptyIcon: {
+      width: 72, height: 72, borderRadius: 24, justifyContent: "center", alignItems: "center",
+      backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "2e",
+      transform: [{ rotate: "-4deg" }],
+    },
     emptyTitle: { fontSize: 18, fontWeight: "700", color: colors.foreground },
     emptyText: { fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 },
   });
@@ -482,7 +495,9 @@ export default function StudentsScreen() {
         <View style={s.empty}><ActivityIndicator color={colors.primary} size="large" /></View>
       ) : error ? (
         <View style={s.empty}>
-          <Text style={s.emptyEmoji}>⚠️</Text>
+          <View style={[s.emptyIcon, { backgroundColor: colors.destructive + "14", borderColor: colors.destructive + "33" }]}>
+            <Glyph name="alert" size={34} color={colors.destructive} />
+          </View>
           <Text style={s.emptyTitle}>Ошибка загрузки</Text>
           <Text style={s.emptyText}>{error}</Text>
           <TouchableOpacity
@@ -528,7 +543,7 @@ export default function StudentsScreen() {
                       onPress={() => handleCancelRequest(req)}
                       style={{ backgroundColor: "#fda4af", borderRadius: 8, padding: 8 }}
                     >
-                      <Feather name="x" size={16} color="#881337" />
+                      <Glyph name="close" size={16} color="#881337" />
                     </TouchableOpacity>
                   </View>
                 );
@@ -539,7 +554,10 @@ export default function StudentsScreen() {
           {/* Accepted students / children */}
           {items.length === 0 && pendingRequests.length === 0 ? (
             <View style={s.empty}>
-              <Text style={s.emptyEmoji}>{isTeacher ? "🎓" : "👨‍👩‍👧"}</Text>
+              {/* Пустое состояние объясняет следующий шаг, а не просто пустует. */}
+              <View style={s.emptyIcon}>
+                <Glyph name={isTeacher ? "users" : "user"} size={34} color={colors.primary} />
+              </View>
               <Text style={s.emptyTitle}>{addTitle}</Text>
               <Text style={s.emptyText}>
                 {isTeacher
@@ -547,7 +565,7 @@ export default function StudentsScreen() {
                   : "Попросите ребёнка открыть\nПрофиль и продиктовать код"}
               </Text>
               <TouchableOpacity style={[s.addBtn, { marginTop: 8 }]} onPress={() => setModalOpen(true)}>
-                <Feather name="plus" size={16} color="#fff" />
+                <Glyph name="plus" size={16} color="#fff" />
                 <Text style={s.addBtnText}>Добавить по коду</Text>
               </TouchableOpacity>
             </View>
