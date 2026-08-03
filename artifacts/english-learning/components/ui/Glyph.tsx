@@ -1,0 +1,332 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Собственный иконочный набор.
+//
+// Зачем он вместо эмодзи: эмодзи рендерятся системным шрифтом, поэтому на
+// iPhone это Apple Color Emoji, на Android — Noto, а в вебе третий вариант.
+// Их нельзя перекрасить токеном темы, нельзя выровнять по базовой линии и
+// привести к одной толщине штриха. Плюс скринридер читает «огонь» вместо
+// «серия 4 дня».
+//
+// Все глифы нарисованы на сетке 24×24 с одной толщиной штриха (2.1) и
+// одинаковыми скруглениями концов. Заливка только там, где нужен вес:
+// огонь, звезда, вспышка, play. Цвет берётся из пропа color, по умолчанию
+// currentColor-подобное поведение обеспечивает вызывающий компонент.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import React from "react";
+import Svg, { Path, Circle, Rect, G } from "react-native-svg";
+
+export type GlyphName =
+  | "play" | "chevron" | "close" | "sound" | "rank"
+  | "repeat" | "route" | "bag" | "compass" | "cup"
+  | "target" | "alert" | "tray" | "flame" | "spark"
+  | "trophy" | "medal" | "star" | "sunrise" | "mic"
+  | "lock" | "crown" | "gear" | "cards" | "check"
+  | "chart" | "user" | "users" | "calendar" | "plus"
+  | "book" | "globe" | "leaf" | "paw" | "music";
+
+export interface GlyphProps {
+  name: GlyphName;
+  size?: number;
+  color?: string;
+  /** Описание для скринридера. Без него иконка считается декоративной. */
+  label?: string;
+}
+
+export function Glyph({ name, size = 24, color = "#0f172a", label }: GlyphProps) {
+  // Общие параметры штриха: одна толщина и одни скругления на весь набор.
+  const s = {
+    fill: "none" as const,
+    stroke: color,
+    strokeWidth: 2.1,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+
+  return (
+    <Svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      accessible={!!label}
+      accessibilityLabel={label}
+      accessibilityRole={label ? "image" : undefined}
+    >
+      {render(name, s, color)}
+    </Svg>
+  );
+}
+
+function render(name: GlyphName, s: any, color: string) {
+  switch (name) {
+    case "play":
+      return <Path d="M8 5.2v13.6a1 1 0 0 0 1.53.85l10.4-6.8a1 1 0 0 0 0-1.7L9.53 4.35A1 1 0 0 0 8 5.2Z" fill={color} />;
+
+    case "chevron":
+      return <Path {...s} strokeWidth={2.6} d="m9 5 7 7-7 7" />;
+
+    case "close":
+      return <Path {...s} strokeWidth={2.6} d="M18 6 6 18M6 6l12 12" />;
+
+    case "sound":
+      return (
+        <G>
+          <Path {...s} d="M11 5 6 9H2v6h4l5 4z" />
+          <Path {...s} d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <Path {...s} d="M19 5a9 9 0 0 1 0 14" />
+        </G>
+      );
+
+    case "rank":
+      return (
+        <G>
+          <Path {...s} d="M12 2.6 4.5 5.4v5.9c0 4.7 3.1 8.5 7.5 10.1 4.4-1.6 7.5-5.4 7.5-10.1V5.4L12 2.6Z" />
+          <Path d="m12 8 1.3 2.8 3 .4-2.2 2.1.55 3L12 14.9 9.35 16.3l.55-3-2.2-2.1 3-.4L12 8Z" fill={color} />
+        </G>
+      );
+
+    case "repeat":
+      return (
+        <G>
+          <Path {...s} d="M4 9a8 8 0 0 1 13.3-3.3L20 8" />
+          <Path {...s} d="M20 4v4h-4" />
+          <Path {...s} d="M20 15a8 8 0 0 1-13.3 3.3L4 16" />
+          <Path {...s} d="M4 20v-4h4" />
+        </G>
+      );
+
+    case "route":
+      return (
+        <G>
+          <Path {...s} d="M6 21V4" />
+          <Path {...s} d="M6 4.5h10.5l-2.4 3.6 2.4 3.6H6" />
+          <Circle cx={6} cy={21} r={1.6} fill={color} />
+        </G>
+      );
+
+    case "bag":
+      return (
+        <G>
+          <Path {...s} d="M4.5 8.5h15v10a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 1-2.5-2.5v-10Z" />
+          <Path {...s} d="M9 8.5V6.6A3 3 0 0 1 15 6.6v1.9" />
+          <Path {...s} d="M9.5 13.5h5" />
+        </G>
+      );
+
+    case "compass":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.6} />
+          <Path d="m15.8 8.2-2 5.6-5.6 2 2-5.6 5.6-2Z" fill={color} />
+        </G>
+      );
+
+    case "cup":
+      return (
+        <G>
+          <Path {...s} d="M4.5 9.5h12v6a4 4 0 0 1-4 4H8.5a4 4 0 0 1-4-4v-6Z" />
+          <Path {...s} d="M16.5 11h1.8a2.7 2.7 0 0 1 0 5.4h-1.8" />
+          <Path {...s} d="M8 3v2.6M12 2.6v3" />
+        </G>
+      );
+
+    case "target":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.6} />
+          <Circle {...s} cx={12} cy={12} r={4.4} />
+          <Circle cx={12} cy={12} r={1.7} fill={color} />
+        </G>
+      );
+
+    case "alert":
+      return (
+        <G>
+          <Path {...s} d="M12 3.6 2.8 19.4A1 1 0 0 0 3.7 21h16.6a1 1 0 0 0 .87-1.6L12 3.6Z" />
+          <Path {...s} d="M12 9.6v4.2" />
+          <Circle cx={12} cy={17.2} r={1.15} fill={color} />
+        </G>
+      );
+
+    case "tray":
+      return (
+        <G>
+          <Path {...s} d="M3.5 13.5h4.2l1.6 2.6h5.4l1.6-2.6h4.2" />
+          <Path {...s} d="M5.6 4.6h12.8l2.1 8.9v4a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4l2.1-8.9Z" />
+        </G>
+      );
+
+    case "flame":
+      return <Path d="M13 2.2c.4 3.4 3.2 4.6 4.4 7.4a7 7 0 1 1-12.4 5.6c0-3.4 2-5.3 3.2-7.2.5 1.5 1.4 2.3 2.4 2.4-.3-3.4.9-6.2 2.4-8.2Z" fill={color} />;
+
+    case "spark":
+      return (
+        <G>
+          <Path d="M12 1.8 14 9l7.2 2-7.2 2-2 7.2-2-7.2L2.8 11 10 9l2-7.2Z" fill={color} />
+          <Path d="M19.4 2.6 20.3 5l2.4.9-2.4.9-.9 2.4-.9-2.4L16.1 6l2.4-.9.9-2.5Z" fill={color} opacity={0.6} />
+        </G>
+      );
+
+    case "trophy":
+      return (
+        <G>
+          <Path {...s} d="M7.5 3.6h9v5.2a4.5 4.5 0 0 1-9 0V3.6Z" />
+          <Path {...s} d="M7.5 5.4H4.8v1.5a3.4 3.4 0 0 0 2.9 3.3" />
+          <Path {...s} d="M16.5 5.4h2.7v1.5a3.4 3.4 0 0 1-2.9 3.3" />
+          <Path {...s} d="M12 13.3v3.3M8.6 20.6h6.8l-1-4H9.6l-1 4Z" />
+        </G>
+      );
+
+    case "medal":
+      return (
+        <G>
+          <Path {...s} d="m8.4 2.6 2.5 5.3M15.6 2.6l-2.5 5.3" />
+          <Circle {...s} cx={12} cy={14.6} r={6.4} />
+          <Path d="m12 10.8 1.15 2.4 2.6.35-1.9 1.8.47 2.6-2.32-1.25-2.32 1.25.47-2.6-1.9-1.8 2.6-.35L12 10.8Z" fill={color} />
+        </G>
+      );
+
+    case "star":
+      return <Path d="m12 2.4 2.9 6.2 6.7.85-4.95 4.6 1.28 6.65L12 17.5l-5.93 3.2 1.28-6.65L2.4 9.45l6.7-.85L12 2.4Z" fill={color} />;
+
+    case "sunrise":
+      return (
+        <G>
+          <Path {...s} d="M12 2.6v3.2M4.6 6.4l2.2 2.2M19.4 6.4l-2.2 2.2M2.4 15.4h3.2M18.4 15.4h3.2" />
+          <Path {...s} d="M6.8 15.4a5.2 5.2 0 0 1 10.4 0" />
+          <Path {...s} d="M2.6 19.6h18.8" />
+        </G>
+      );
+
+    case "mic":
+      return (
+        <G>
+          <Rect {...s} x={9} y={2.4} width={6} height={11.4} rx={3} />
+          <Path {...s} d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0" />
+          <Path {...s} d="M12 18v3.4M8.6 21.4h6.8" />
+        </G>
+      );
+
+    case "lock":
+      return (
+        <G>
+          <Rect {...s} x={4.6} y={10} width={14.8} height={10.6} rx={2.6} />
+          <Path {...s} d="M8.2 10V7.4a3.8 3.8 0 0 1 7.6 0V10" />
+          <Circle cx={12} cy={15.3} r={1.5} fill={color} />
+        </G>
+      );
+
+    case "crown":
+      return (
+        <G>
+          <Path {...s} d="M3.4 7.4 5 18.6h14l1.6-11.2-4.9 3.6L12 4.4l-3.7 6.6L3.4 7.4Z" />
+          <Path {...s} d="M5.6 21.4h12.8" />
+        </G>
+      );
+
+    case "gear":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={3.1} />
+          <Path {...s} d="M19.1 14.4a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.46v.16a2 2 0 1 1-4 0v-.09a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.46-.97H2.9a2 2 0 1 1 0-4h.09a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32h.08a1.6 1.6 0 0 0 .97-1.46V2.9a2 2 0 1 1 4 0v.09a1.6 1.6 0 0 0 .97 1.46 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.46.97h.16a2 2 0 1 1 0 4h-.09a1.6 1.6 0 0 0-1.46.97Z" />
+        </G>
+      );
+
+    case "cards":
+      return (
+        <G>
+          <Rect {...s} x={3.4} y={6.6} width={12.4} height={14} rx={2.4} />
+          <Path {...s} d="M8 3.4h9.6a3 3 0 0 1 3 3V16" />
+          <Path {...s} d="M7 11.4h5M7 15h3.4" />
+        </G>
+      );
+
+    case "check":
+      return (
+        <G>
+          <Path {...s} d="m9 12.4 2.6 2.6L20 6.6" />
+          <Path {...s} d="M20.4 12.6V19a2.4 2.4 0 0 1-2.4 2.4H6A2.4 2.4 0 0 1 3.6 19V6.4A2.4 2.4 0 0 1 6 4h10" />
+        </G>
+      );
+
+    case "chart":
+      return <Path {...s} d="M18.4 20.4V9.6M12 20.4V3.6M5.6 20.4v-6.8" />;
+
+    case "user":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={8.2} r={4.1} />
+          <Path {...s} d="M4 21c0-4.4 3.6-7.2 8-7.2s8 2.8 8 7.2" />
+        </G>
+      );
+
+    case "users":
+      return (
+        <G>
+          <Circle {...s} cx={9.4} cy={7.6} r={3.8} />
+          <Path {...s} d="M2.6 20.6c0-3.9 3-6.4 6.8-6.4s6.8 2.5 6.8 6.4" />
+          <Path {...s} d="M17 4.4a3.8 3.8 0 0 1 0 7M18.6 14.6c2 .8 3.4 2.7 3.4 5.4" />
+        </G>
+      );
+
+    case "calendar":
+      return (
+        <G>
+          <Rect {...s} x={3.4} y={5} width={17.2} height={16} rx={2.4} />
+          <Path {...s} d="M16 2.6v4.4M8 2.6v4.4M3.4 10.6h17.2" />
+        </G>
+      );
+
+    case "plus":
+      return <Path {...s} strokeWidth={2.6} d="M12 5.4v13.2M5.4 12h13.2" />;
+
+    case "book":
+      return (
+        <G>
+          <Path {...s} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <Path {...s} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        </G>
+      );
+
+    case "globe":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.8} />
+          <Path {...s} d="M3.2 12h17.6" />
+          <Path {...s} d="M12 3.2a13.6 13.6 0 0 1 0 17.6 13.6 13.6 0 0 1 0-17.6Z" />
+        </G>
+      );
+
+    case "leaf":
+      return (
+        <G>
+          <Path {...s} d="M4.6 19.4C3.2 14 6 8 11.4 6.2c2.8-.9 6-.6 8.4.4.6 4.4-.8 8.6-4 11-2.9 2.2-7.2 2.4-11.2 1.8Z" />
+          <Path {...s} d="M5.4 20.4C7.6 15.6 11 12 15.6 9.8" />
+        </G>
+      );
+
+    case "paw":
+      return (
+        <G>
+          <Circle cx={7.4} cy={8.6} r={2.5} fill={color} />
+          <Circle cx={12} cy={6.6} r={2.5} fill={color} />
+          <Circle cx={16.6} cy={8.6} r={2.5} fill={color} />
+          <Path d="M12 11.2c3 0 5.4 2.2 5.4 4.8 0 2.2-1.8 3.6-4 3.2-.9-.2-1.9-.2-2.8 0-2.2.4-4-1-4-3.2 0-2.6 2.4-4.8 5.4-4.8Z" fill={color} />
+        </G>
+      );
+
+    case "music":
+      return (
+        <G>
+          <Path {...s} d="M9 18V5.4l11-2v12.2" />
+          <Circle {...s} cx={6.4} cy={18} r={2.6} />
+          <Circle {...s} cx={17.4} cy={15.6} r={2.6} />
+        </G>
+      );
+
+    default:
+      return null;
+  }
+}
+
+export default Glyph;
