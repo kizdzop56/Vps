@@ -14,6 +14,9 @@
 //     Ученику в его собственной колоде «Предпросмотр» не нужен — это функция
 //     учителя, поэтому ветка зависит от canAssign (роль), а не от canEdit
 //     (владение колодой): ученик — владелец своей колоды, но не учитель.
+//  5. Эмодзи на экране не используются: значок колоды рисует DeckGlyph, у слов
+//     показываем метку из первой буквы (поле word.emoji приходит из словаря и
+//     на разных платформах выглядит по-разному). Данные при этом не меняются.
 import React, { useState, useEffect, useMemo } from "react";
 import {
   View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator,
@@ -27,6 +30,8 @@ import { useColors } from "@/hooks/useColors";
 import { fc, apiFetch, speak, speakWord, speechAvailable, type ManualWordInput, type FlashcardWordWithEmoji } from "@/hooks/useFlashcards";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import WordPicker from "@/components/WordPicker";
+import { DeckGlyph } from "@/components/ui/DeckGlyph";
+import { Glyph } from "@/components/ui/Glyph";
 
 type StudentItem = { id: number; name: string; surname?: string | null; username: string };
 
@@ -226,11 +231,13 @@ export default function DeckDetail() {
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: 120 }}>
       {/* шапка */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <TouchableOpacity onPress={() => router.back()} style={{ padding: 6 }}>
           <Feather name="arrow-left" size={24} color={colors.foreground} />
         </TouchableOpacity>
-        <Text style={{ fontSize: 30 }}>{deck?.emoji ?? "📘"}</Text>
+        {/* Значок колоды: тот же компонент, что и в списке, — колода узнаётся
+            по одному и тому же глифу и цвету на всех экранах. */}
+        <DeckGlyph title={deck?.title ?? "Колода"} emoji={deck?.emoji} size={42} />
         <View style={{ flex: 1 }}>
           {deckQ.isLoading ? (
             <Text style={{ fontSize: 20, fontWeight: "900", color: colors.mutedForeground }}>Загрузка…</Text>
@@ -292,7 +299,7 @@ export default function DeckDetail() {
             flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 18,
           }}
         >
-          <Feather name="play" size={18} color="#fff" />
+          <Glyph name="play" size={18} color="#fff" />
           <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Начать учить</Text>
         </TouchableOpacity>
       )}
@@ -459,7 +466,10 @@ export default function DeckDetail() {
       ) : (
         words.map((w) => (
           <View key={w.id} style={{ backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 }}>
-            {!!w.emoji && <Text style={{ fontSize: 24 }}>{w.emoji}</Text>}
+            {/* Метка слова: первая буква английского написания в фирменной
+                плашке. Поле w.emoji приходит из словаря и на каждой платформе
+                выглядит по-своему, поэтому на экран оно не выводится. */}
+            <WordMark colors={colors} english={w.english} />
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{w.english}</Text>
@@ -469,14 +479,14 @@ export default function DeckDetail() {
             </View>
             {speechAvailable() && (
               <TouchableOpacity onPress={() => speakWord(w.id, w.english)} style={{ padding: 6 }}>
-                <Feather name="volume-2" size={18} color={colors.primary} />
+                <Glyph name="sound" size={18} color={colors.primary} />
               </TouchableOpacity>
             )}
             {canEdit && (
               <TouchableOpacity onPress={() => removeWord(w.id, w.english)} disabled={removingWord === w.id} style={{ padding: 6 }}>
                 {removingWord === w.id
                   ? <ActivityIndicator color={colors.destructive} />
-                  : <Feather name="x" size={18} color={colors.destructive} />}
+                  : <Glyph name="close" size={18} color={colors.destructive} />}
               </TouchableOpacity>
             )}
           </View>
@@ -515,6 +525,23 @@ export default function DeckDetail() {
 }
 
 // ── мелкие переиспользуемые куски ──────────────────────────────────────────
+
+/**
+ * Метка слова: первая буква в мягкой плашке. Заменяет w.emoji из словаря —
+ * он на iOS, Android и в вебе рисуется тремя разными шрифтами и не красится
+ * темой. Само поле в данных остаётся нетронутым.
+ */
+function WordMark({ colors, english }: { colors: any; english: string }) {
+  const letter = (english.match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
+  return (
+    <View style={{
+      width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center",
+      backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "33",
+    }}>
+      <Text style={{ fontSize: 15, fontWeight: "900", color: colors.primary }}>{letter}</Text>
+    </View>
+  );
+}
 
 function Hint({ colors, text }: { colors: any; text: string }) {
   return (
@@ -560,7 +587,7 @@ function ErrorScreen({ colors, insets, title, text, onBack, onRetry }: {
         <Feather name="arrow-left" size={24} color={colors.foreground} />
       </TouchableOpacity>
       <View style={{ alignItems: "center", gap: 12, marginTop: 40 }}>
-        <Feather name="alert-circle" size={44} color={colors.destructive} />
+        <Glyph name="alert" size={44} color={colors.destructive} />
         <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground, textAlign: "center" }}>{title}</Text>
         <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 }}>{text}</Text>
         {onRetry && (
@@ -645,7 +672,7 @@ function CatalogPickerModal({ visible, onClose, deckId, alreadyIn, colors, onSav
               </Text>
             </View>
             <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
-              <Feather name="x" size={22} color={colors.mutedForeground} />
+              <Glyph name="close" size={22} color={colors.mutedForeground} />
             </TouchableOpacity>
           </View>
 
@@ -774,7 +801,7 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
             <Text style={{ flex: 1, fontSize: 18, fontWeight: "800", color: colors.foreground }}>Отправить ученикам</Text>
             <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
-              <Feather name="x" size={22} color={colors.mutedForeground} />
+              <Glyph name="close" size={22} color={colors.mutedForeground} />
             </TouchableOpacity>
           </View>
           <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 14 }}>
@@ -795,7 +822,8 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
             <InlineError colors={colors} text="Не удалось загрузить список учеников." onRetry={() => studentsQ.refetch()} />
           ) : students.length === 0 ? (
             <View style={{ alignItems: "center", paddingVertical: 26, gap: 10 }}>
-              <Text style={{ fontSize: 40 }}>🧑‍🎓</Text>
+              {/* Пустое состояние учит и предлагает действие, а не извиняется. */}
+              <Glyph name="users" size={40} color={colors.primary} />
               <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>Учеников пока нет</Text>
               <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", lineHeight: 19 }}>
                 Добавьте учеников в разделе «Ученики», и колоду можно будет им отправить.
