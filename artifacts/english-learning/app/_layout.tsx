@@ -19,6 +19,11 @@ import {
   Manrope_700Bold,
   Manrope_800ExtraBold,
 } from "@expo-google-fonts/manrope";
+import { applyGlobalFonts } from "@/components/ui/applyFonts";
+
+// Типографику включаем до первой отрисовки: Unbounded уходит на заголовки и
+// крупные числа, Manrope на текст. Правило разбора и причины см. в самом файле.
+applyGlobalFonts();
 
 if (Platform.OS === "web" && typeof document !== "undefined") {
   const style = document.createElement("style");
