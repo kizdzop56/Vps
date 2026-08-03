@@ -32,6 +32,9 @@ async function isLinkedParent(parentId: number, studentId: number): Promise<bool
 // ── Слоты календаря: время хранится строками "HH:MM", дата — "YYYY-MM-DD" ──
 const SLOT_TIME_RE = /^\d{1,2}:\d{2}$/;
 
+/** Краткая карточка слота — ровно то, что рисует клиент (formatSlot). */
+type SlotBrief = { id: number; date: string; startTime: string; endTime: string };
+
 /** Длительность слота в минутах; кривое время даёт 0, а не NaN. */
 function slotMinutes(startTime: string, endTime: string): number {
   if (!SLOT_TIME_RE.test(startTime) || !SLOT_TIME_RE.test(endTime)) return 0;
@@ -51,6 +54,11 @@ function isSlotFinished(date: string, endTime: string): boolean {
   const [h, m] = endTime.split(":").map(Number);
   const dt = new Date(`${date}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`);
   return dt.getTime() < Date.now();
+}
+
+/** Раньше ли слот a, чем слот b (дата, затем время начала). */
+function slotIsEarlier(a: SlotBrief, b: SlotBrief): boolean {
+  return a.date < b.date || (a.date === b.date && a.startTime < b.startTime);
 }
 
 const router = Router();
@@ -184,10 +192,12 @@ router.get("/users/:id", requireAuth, async (req, res) => {
 // профиле учителя ученические карточки (очки, решённые задания, время)
 // всегда показывали нули: учитель не решает задания и очков не получает.
 //
-// Отдаём два независимых блока, чтобы личную цифру нельзя было спутать с общей:
-//   viewer — персонально для того, кто смотрит (слоты и часы С НИМ, его
-//            прогресс по заданиям именно этого учителя);
-//   total  — общее по учителю (создано заданий, учеников, проведено занятий).
+// Форма ответа зафиксирована типом TeacherProfileStats в
+// app/(main)/friend/[id].tsx — менять её можно только вместе с клиентом:
+//   personal — персонально для того, кто смотрит (слоты и часы С НИМ, его
+//              прогресс по заданиям именно этого учителя);
+//   overall  — общее по учителю, одинаковое для всех учеников.
+// Разведены намеренно: ученик не должен принять общую цифру за свою.
 router.get("/teachers/:id/profile-stats", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   const caller = getUser(req);
@@ -210,83 +220,91 @@ router.get("/teachers/:id/profile-stats", requireAuth, async (req, res) => {
     return;
   }
 
-  // ── Занятия: слоты учителя + подтверждённые брони ──
+  // ── Занятия: слоты учителя + брони ──
   // Подтверждённая кастомная заявка сама создаёт слот и confirmed-бронь
   // (см. PATCH /calendar/custom-requests/:id), поэтому slot_bookings —
   // единственный источник правды по занятиям.
   const slots = await db.select().from(calendarSlotsTable)
     .where(eq(calendarSlotsTable.teacherId, teacherId));
   const slotIds = slots.map((s) => s.id);
-  const confirmed = slotIds.length > 0
+  const bookings = slotIds.length > 0
     ? await db.select({
         slotId: slotBookingsTable.slotId,
         studentId: slotBookingsTable.studentId,
+        status: slotBookingsTable.status,
       })
       .from(slotBookingsTable)
-      .where(and(
-        inArray(slotBookingsTable.slotId, slotIds),
-        eq(slotBookingsTable.status, "confirmed"),
-      ))
+      .where(inArray(slotBookingsTable.slotId, slotIds))
     : [];
 
   const slotById = new Map(slots.map((s) => [s.id, s]));
-  const bookedSlotIds = new Set(confirmed.map((b) => b.slotId));
+  const bookedSlotIds = new Set<number>();      // занято подтверждённой бронью
+  const myPendingSlotIds = new Set<number>();   // моя заявка ещё висит
 
-  let lessonsWithTeacher = 0;   // проведённые слоты именно со смотрящим
-  let minutesWithTeacher = 0;   // и их суммарная длительность
-  let lessonsHeld = 0;          // все проведённые занятия учителя
-  let nextLesson: { date: string; startTime: string; endTime: string } | null = null;
+  let lessonsTotal = 0;      // проведённые занятия учителя со всеми
+  let minutesTotal = 0;
+  let lessonsWithMe = 0;     // и то же самое лично со смотрящим
+  let minutesWithMe = 0;
+  let lastLessonWithMe: SlotBrief | null = null;
+  let nextLessonWithMe: SlotBrief | null = null;
 
-  for (const booking of confirmed) {
+  for (const booking of bookings) {
     const slot = slotById.get(booking.slotId);
     if (!slot) continue;
-    const finished = isSlotFinished(slot.date, slot.endTime);
-    if (finished) lessonsHeld += 1;
-    if (booking.studentId !== caller.userId) continue;
 
+    const mine = booking.studentId === caller.userId;
+    if (booking.status === "pending") {
+      if (mine) myPendingSlotIds.add(slot.id);
+      continue;
+    }
+    if (booking.status !== "confirmed") continue;
+
+    bookedSlotIds.add(slot.id);
+    const finished = isSlotFinished(slot.date, slot.endTime);
+    const minutes = slotMinutes(slot.startTime, slot.endTime);
     if (finished) {
-      lessonsWithTeacher += 1;
-      minutesWithTeacher += slotMinutes(slot.startTime, slot.endTime);
-    } else if (
-      !nextLesson ||
-      slot.date < nextLesson.date ||
-      (slot.date === nextLesson.date && slot.startTime < nextLesson.startTime)
-    ) {
-      nextLesson = { date: slot.date, startTime: slot.startTime, endTime: slot.endTime };
+      lessonsTotal += 1;
+      minutesTotal += minutes;
+    }
+    if (!mine) continue;
+
+    const brief: SlotBrief = {
+      id: slot.id, date: slot.date, startTime: slot.startTime, endTime: slot.endTime,
+    };
+    if (finished) {
+      lessonsWithMe += 1;
+      minutesWithMe += minutes;
+      // Последнее занятие — самое позднее из уже прошедших.
+      if (!lastLessonWithMe || slotIsEarlier(lastLessonWithMe, brief)) lastLessonWithMe = brief;
+    } else if (!nextLessonWithMe || slotIsEarlier(brief, nextLessonWithMe)) {
+      // Ближайшее — самое раннее из ещё не прошедших.
+      nextLessonWithMe = brief;
     }
   }
 
-  // Ближайшие свободные слоты — чтобы на профиле было куда нажать.
+  // Свободные слоты — чтобы на профиле было куда нажать.
   const todayUTC = new Date().toISOString().slice(0, 10);
-  const freeSlots = slots
+  const freeAll = slots
     .filter((s) => s.date >= todayUTC && !bookedSlotIds.has(s.id) && !isSlotFinished(s.date, s.endTime))
-    .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
-    .slice(0, 3)
-    .map((s) => ({ id: s.id, date: s.date, startTime: s.startTime, endTime: s.endTime }));
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+  const freeSlots = freeAll.slice(0, 5).map((s) => ({
+    id: s.id,
+    date: s.date,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    myStatus: myPendingSlotIds.has(s.id) ? "pending" : "free",
+  }));
 
-  // ── Задания, созданные учителем ──
+  // ── Задания, созданные учителем (общая цифра) ──
   // Черновики и удалённые не в счёт: ученик их не видит, в общей цифре им не место.
   const created = await db
-    .select({
-      id: assignmentsTable.id,
-      title: assignmentsTable.title,
-      type: assignmentsTable.type,
-      points: assignmentsTable.points,
-      createdAt: assignmentsTable.createdAt,
-    })
+    .select({ id: assignmentsTable.id })
     .from(assignmentsTable)
     .where(and(
       eq(assignmentsTable.createdBy, teacherId),
       eq(assignmentsTable.isDraft, false),
       isNull(assignmentsTable.deletedAt),
-    ))
-    .orderBy(desc(assignmentsTable.createdAt));
-
-  const byType = new Map<string, number>();
-  for (const a of created) byType.set(a.type, (byType.get(a.type) ?? 0) + 1);
-  const categories = [...byType.entries()]
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
+    ));
 
   // ── Ученики учителя ──
   const links = await db
@@ -298,18 +316,51 @@ router.get("/teachers/:id/profile-stats", requireAuth, async (req, res) => {
     ));
 
   // ── Прогресс смотрящего по заданиям ИМЕННО ЭТОГО учителя ──
-  const assigned = await db
-    .select({ assignmentId: assignedTasksTable.assignmentId })
+  // Одно задание может быть назначено дважды — считаем по самому свежему
+  // назначению, иначе «сдано N из M» врёт на повторных выдачах.
+  const assignedRows = await db
+    .select({
+      assignmentId: assignedTasksTable.assignmentId,
+      assignedAt: assignedTasksTable.assignedAt,
+      title: assignmentsTable.title,
+      type: assignmentsTable.type,
+      points: assignmentsTable.points,
+      deletedAt: assignmentsTable.deletedAt,
+    })
     .from(assignedTasksTable)
+    .leftJoin(assignmentsTable, eq(assignedTasksTable.assignmentId, assignmentsTable.id))
     .where(and(
       eq(assignedTasksTable.teacherId, teacherId),
       eq(assignedTasksTable.studentId, caller.userId),
-    ));
-  const assignedIds = [...new Set(assigned.map((a) => a.assignmentId))];
+    ))
+    .orderBy(desc(assignedTasksTable.assignedAt));
 
-  const doneIds = new Set<number>();
-  let averageScore: number | null = null;
-  let pointsEarned = 0;
+  const assignedUnique: {
+    id: number;
+    title: string | null;
+    type: string | null;
+    points: number | null;
+    assignedAt: Date;
+  }[] = [];
+  const seenAssignments = new Set<number>();
+  for (const row of assignedRows) {
+    if (row.deletedAt) continue;                       // удалённое задание не показываем
+    if (seenAssignments.has(row.assignmentId)) continue;
+    seenAssignments.add(row.assignmentId);
+    assignedUnique.push({
+      id: row.assignmentId,
+      title: row.title ?? null,
+      type: row.type ?? null,
+      points: row.points ?? null,
+      assignedAt: row.assignedAt,
+    });
+  }
+
+  const assignedIds = assignedUnique.map((a) => a.id);
+  // Лучший процент по каждому заданию (пересдача не должна ухудшать картину)
+  // и суммарные очки по всем сдачам этих заданий.
+  const bestScore = new Map<number, number>();
+  let pointsFromTeacher = 0;
 
   if (assignedIds.length > 0) {
     const subs = await db
@@ -324,41 +375,76 @@ router.get("/teachers/:id/profile-stats", requireAuth, async (req, res) => {
         inArray(submissionsTable.assignmentId, assignedIds),
         eq(submissionsTable.status, "graded"),
       ));
-    for (const s of subs) doneIds.add(s.assignmentId);
-    if (subs.length > 0) {
-      averageScore = Math.round(subs.reduce((sum, s) => sum + (s.score ?? 0), 0) / subs.length);
-      pointsEarned = subs.reduce((sum, s) => sum + (s.pointsEarned ?? 0), 0);
+    for (const s of subs) {
+      const score = s.score ?? 0;
+      const prev = bestScore.get(s.assignmentId);
+      if (prev === undefined || score > prev) bestScore.set(s.assignmentId, score);
+      pointsFromTeacher += s.pointsEarned ?? 0;
     }
   }
 
-  const recentAssignments = created.slice(0, 5).map((a) => ({
-    id: a.id,
-    title: a.title,
-    type: a.type,
-    points: a.points,
-    createdAt: a.createdAt,
-    doneByViewer: doneIds.has(a.id),
+  const completedByMe = bestScore.size;
+  const avgScore = completedByMe > 0
+    ? Math.round([...bestScore.values()].reduce((sum, v) => sum + v, 0) / completedByMe)
+    : null;
+
+  // Разбивка по типам заданий этого учителя: total — назначено, count — сдано.
+  // Кольца рисуются только по count > 0, поэтому несданные категории не
+  // изображают ложный прогресс.
+  const byType = new Map<string, { total: number; count: number; sum: number }>();
+  for (const a of assignedUnique) {
+    const type = a.type ?? "free_form";
+    const acc = byType.get(type) ?? { total: 0, count: 0, sum: 0 };
+    acc.total += 1;
+    const score = bestScore.get(a.id);
+    if (score !== undefined) {
+      acc.count += 1;
+      acc.sum += score;
+    }
+    byType.set(type, acc);
+  }
+  const categories = [...byType.entries()].map(([type, acc]) => ({
+    type,
+    total: acc.total,
+    count: acc.count,
+    avgScore: acc.count > 0 ? Math.round(acc.sum / acc.count) : null,
   }));
+
+  const recentAssignments = assignedUnique.slice(0, 5).map((a) => {
+    const score = bestScore.get(a.id);
+    return {
+      id: a.id,
+      title: a.title,
+      type: a.type,
+      points: a.points,
+      assignedAt: a.assignedAt,
+      score: score ?? null,
+      done: score !== undefined,
+    };
+  });
 
   res.json({
     teacherId,
-    viewer: {
-      lessonsWithTeacher,
-      minutesWithTeacher,
-      nextLesson,
-      assignmentsAssigned: assignedIds.length,
-      assignmentsDone: doneIds.size,
-      averageScore,
-      pointsEarned,
-    },
-    total: {
+    overall: {
       assignmentsCreated: created.length,
       studentsCount: links.length,
-      lessonsHeld,
+      lessonsTotal,
+      minutesTotal,
     },
-    categories,
+    personal: {
+      lessonsWithMe,
+      minutesWithMe,
+      lastLessonWithMe,
+      nextLessonWithMe,
+      assignedToMe: assignedUnique.length,
+      completedByMe,
+      avgScore,
+      pointsFromTeacher,
+      categories,
+      recentAssignments,
+    },
     freeSlots,
-    recentAssignments,
+    freeSlotsTotal: freeAll.length,
   });
 });
 
