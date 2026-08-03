@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, TextInput, RefreshControl, Modal, Alert,
@@ -75,18 +75,19 @@ type LessonHistoryItem = {
 // ── Date / time helpers ───────────────────────────────────────────────
 const DAY_SHORT = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+// Полные названия месяцев — заголовок месячной сетки.
+const MONTH_FULL = [
+  "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+];
+// Неделя начинается с понедельника — как в русских календарях.
+const WEEK_HEAD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 function localDateStr(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function todayStr() { return localDateStr(); }
 
-function getDates(count = 35) {
-  return Array.from({ length: count }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate() + i);
-    return localDateStr(d);
-  });
-}
 function dateLabel(dateStr: string) {
   const d = new Date(dateStr + "T00:00:00");
   return { day: DAY_SHORT[d.getDay()], num: d.getDate(), month: MONTH_SHORT[d.getMonth()] };
@@ -100,6 +101,23 @@ function formatDateWithDay(dateStr: string | null) {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getDate()} ${MONTH_SHORT[d.getMonth()]}, ${DAY_SHORT[d.getDay()]}`;
+}
+
+/**
+ * Сетка месяца: массив недель по 7 ячеек, null — «чужой» день (до 1-го или
+ * после последнего числа). Смещение считается от понедельника:
+ * getDay() отдаёт 0 для воскресенья, поэтому (getDay() + 6) % 7.
+ */
+function buildMonthGrid(year: number, month: number): (string | null)[][] {
+  const first = new Date(year, month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (string | null)[] = Array(offset).fill(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(localDateStr(new Date(year, month, d)));
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks: (string | null)[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
 }
 
 // ── Past-slot helper ──────────────────────────────────────────────────
@@ -236,7 +254,14 @@ const BOOKING_CFG = {
   rejected:  { label: "Отклонено",     color: "#e11d48", icon: "x-circle"     as const },
 };
 
-const DATES = getDates(35);
+// Цвета точек занятости в сетке месяца.
+const DOT_LESSON  = "#8b5cf6"; // занятие подтверждено
+const DOT_PENDING = "#ec4899"; // есть заявка в ожидании
+const DOT_FREE    = "#6366f1"; // есть свободный слот
+
+// Сколько дней в месяце занимает один день сетки — для сводки по дню.
+type DayMeta = { free: number; pending: number; lesson: number; past: number };
+const EMPTY_META: DayMeta = { free: 0, pending: 0, lesson: 0, past: 0 };
 
 // ── Component ─────────────────────────────────────────────────────────
 export default function CalendarScreen() {
@@ -254,6 +279,15 @@ export default function CalendarScreen() {
   const [activeTab, setActiveTab] = useState<"schedule" | "requests" | "history">("schedule");
   const [lessonHistory, setLessonHistory] = useState<LessonHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Обзор месяца: все слоты (без параметра date) — нужен только для точек
+  // занятости в сетке и подсказки «ближайшие дни со слотами».
+  const [monthSlots, setMonthSlots] = useState<(TeacherSlot | StudentSlot)[]>([]);
+  // Первое число отображаемого месяца.
+  const [monthAnchor, setMonthAnchor] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
 
   // Delete confirm
   const [deleteSlotId, setDeleteSlotId] = useState<number | null>(null);
@@ -301,6 +335,13 @@ export default function CalendarScreen() {
     setSlots(data);
   }, []);
 
+  // Тот же роут без date отдаёт все слоты (учителю — свои, ученику — от
+  // сегодня и дальше), поэтому обзор месяца не требует отдельного эндпоинта.
+  const loadMonthSlots = useCallback(async () => {
+    const data = await apiFetch("/api/calendar/slots").catch(() => []);
+    setMonthSlots(Array.isArray(data) ? data : []);
+  }, []);
+
   const loadBookings = useCallback(async () => {
     const data = await apiFetch("/api/calendar/bookings").catch(() => []);
     setBookings(data);
@@ -320,7 +361,8 @@ export default function CalendarScreen() {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadSlots(selectedDate), loadBookings(), loadCustomRequests()]).finally(() => setLoading(false));
+    Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()])
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { loadSlots(selectedDate); }, [selectedDate]);
@@ -332,9 +374,10 @@ export default function CalendarScreen() {
   useFocusEffect(
     useCallback(() => {
       loadSlots(selectedDate);
+      loadMonthSlots();
       loadBookings();
       loadCustomRequests();
-    }, [selectedDate, loadSlots, loadBookings, loadCustomRequests]),
+    }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]),
   );
 
   // Auto-refresh every 10 s so past slots disappear and new ones/connections
@@ -342,17 +385,19 @@ export default function CalendarScreen() {
   useEffect(() => {
     const id = setInterval(() => {
       loadSlots(selectedDate);
+      loadMonthSlots();
       loadBookings();
       loadCustomRequests();
     }, 10_000);
     return () => clearInterval(id);
-  }, [selectedDate, loadSlots, loadBookings, loadCustomRequests]);
+  }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]);
 
   // Also refresh when browser tab becomes visible (web)
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         loadSlots(selectedDate);
+        loadMonthSlots();
         loadBookings();
         loadCustomRequests();
       }
@@ -361,15 +406,52 @@ export default function CalendarScreen() {
       document.addEventListener("visibilitychange", onVisible);
       return () => document.removeEventListener("visibilitychange", onVisible);
     }
-  }, [selectedDate, loadSlots, loadBookings, loadCustomRequests]);
+  }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
-    const tasks: Promise<any>[] = [loadSlots(selectedDate), loadBookings(), loadCustomRequests()];
+    const tasks: Promise<any>[] = [loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()];
     if (activeTab === "history") tasks.push(loadHistory());
     await Promise.all(tasks);
     setRefreshing(false);
-  }, [selectedDate, loadSlots, loadBookings, loadCustomRequests, loadHistory, activeTab]);
+  }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests, loadHistory, activeTab]);
+
+  // ── Занятость по дням (для сетки месяца) ────────────────────────────
+  // Каждый слот попадает ровно в одну корзину: прошедший / занятие /
+  // ожидает / свободен — иначе точки в ячейке врали бы о состоянии дня.
+  const dayMeta = useMemo(() => {
+    const map: Record<string, DayMeta> = {};
+    for (const slot of monthSlots) {
+      const acc = map[slot.date] ?? { free: 0, pending: 0, lesson: 0, past: 0 };
+      if (isPastSlot(slot.date, slot.endTime)) {
+        acc.past += 1;
+      } else if (isTeacherRole) {
+        const list = (slot as TeacherSlot).bookings ?? [];
+        if (list.some((b) => b.status === "confirmed")) acc.lesson += 1;
+        else if (list.some((b) => b.status === "pending")) acc.pending += 1;
+        else acc.free += 1;
+      } else {
+        const st = (slot as StudentSlot).status;
+        if (st === "confirmed_me") acc.lesson += 1;
+        else if (st === "pending") acc.pending += 1;
+        else if (st === "available") acc.free += 1;
+        else acc.past += 1; // unavailable — занято другим учеником, для меня не слот
+      }
+      map[slot.date] = acc;
+    }
+    return map;
+  }, [monthSlots, isTeacherRole]);
+
+  // Ближайшие дни, где что-то есть — подсказка вместо пустого экрана.
+  const nextBusyDates = useMemo(() => {
+    return Object.entries(dayMeta)
+      .filter(([date, m]) => date > selectedDate && (m.free + m.pending + m.lesson) > 0)
+      .map(([date]) => date)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 3);
+  }, [dayMeta, selectedDate]);
+
+  const selectedMeta = dayMeta[selectedDate] ?? EMPTY_META;
 
   // ── Actions ─────────────────────────────────────────────────────────
   const handleAddSlot = async () => {
@@ -388,7 +470,7 @@ export default function CalendarScreen() {
       const nextEndTotal = (Number(addEndH) * 60 + Number(addEndM) + 60) % (24 * 60);
       setAddEndH(String(Math.floor(nextEndTotal / 60)).padStart(2, "0"));
       setAddEndM(String(nextEndTotal % 60).padStart(2, "0"));
-      await loadSlots(selectedDate);
+      await Promise.all([loadSlots(selectedDate), loadMonthSlots()]);
       // Defer scroll until after React re-renders with the new slot
       setTimeout(() => scheduleScrollRef.current?.scrollTo({ y: 0, animated: false }), 50);
     } catch (e: any) { Alert.alert("Ошибка", e.message); }
@@ -401,7 +483,7 @@ export default function CalendarScreen() {
     if (!deleteSlotId) return;
     await apiFetch(`/api/calendar/slots/${deleteSlotId}`, { method: "DELETE" }).catch(() => {});
     setDeleteSlotId(null);
-    await loadSlots(selectedDate);
+    await Promise.all([loadSlots(selectedDate), loadMonthSlots()]);
   };
 
   const handleBookSlot = async () => {
@@ -413,14 +495,14 @@ export default function CalendarScreen() {
         body: JSON.stringify({ note: bookNote.trim() || undefined }),
       });
       setBookSlot(null); setBookNote("");
-      await Promise.all([loadSlots(selectedDate), loadBookings()]);
+      await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings()]);
     } catch (e: any) { Alert.alert("Ошибка", e.message); }
     finally { setBooking(false); }
   };
 
   const handleCancelBooking = async (bookingId: number) => {
     await apiFetch(`/api/calendar/bookings/${bookingId}`, { method: "DELETE" }).catch(() => {});
-    await Promise.all([loadSlots(selectedDate), loadBookings()]);
+    await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings()]);
   };
 
   const handleRespond = async (bookingId: number, status: "confirmed" | "rejected") => {
@@ -428,7 +510,7 @@ export default function CalendarScreen() {
       await apiFetch(`/api/calendar/bookings/${bookingId}`, {
         method: "PATCH", body: JSON.stringify({ status }),
       });
-      await Promise.all([loadSlots(selectedDate), loadBookings(), loadCustomRequests()]);
+      await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()]);
     } catch (e: any) { /* silent on web */ }
   };
 
@@ -437,7 +519,7 @@ export default function CalendarScreen() {
       await apiFetch(`/api/calendar/custom-requests/${requestId}`, {
         method: "PATCH", body: JSON.stringify({ status }),
       });
-      await Promise.all([loadSlots(selectedDate), loadBookings(), loadCustomRequests()]);
+      await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()]);
     } catch (e: any) { /* silent on web */ }
   };
 
@@ -487,7 +569,7 @@ export default function CalendarScreen() {
         body: JSON.stringify({ studentId: assignStudentId }),
       });
       setAssignSlot(null);
-      await Promise.all([loadSlots(selectedDate), loadHistory()]);
+      await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadHistory()]);
       setActiveTab("history");
     } catch (e: any) {
       setAssignError(e?.message ?? "Не удалось назначить ученика");
@@ -526,21 +608,63 @@ export default function CalendarScreen() {
     },
     badgeText: { fontSize: 10, fontWeight: "800", color: "#fff" },
 
-    datePicker: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 0 },
-    dateChip: {
-      alignItems: "center", justifyContent: "center",
-      width: 46, height: 58,
-      borderRadius: 12, marginHorizontal: 3,
-      backgroundColor: "rgba(255,255,255,0.35)",
-      borderWidth: 1, borderColor: "rgba(255,255,255,0.5)",
+    // ── Месячная сетка ──
+    monthCard: {
+      backgroundColor: colors.card, borderRadius: 22, padding: 14, marginBottom: 14,
+      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1, shadowRadius: 14, elevation: 5,
     },
-    dateChipActive: { backgroundColor: colors.primary },
-    dc_day: { fontSize: 9, fontWeight: "600", color: colors.mutedForeground },
-    dc_dayA: { color: "#fff" },
-    dc_num: { fontSize: 15, fontWeight: "800", color: colors.foreground, lineHeight: 18 },
-    dc_numA: { color: "#fff" },
-    dc_mon: { fontSize: 8, color: colors.mutedForeground, lineHeight: 11 },
-    dc_monA: { color: "#ffffffcc" },
+    monthHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14 },
+    monthTitle: { flex: 1, fontSize: 18, fontWeight: "800", color: colors.foreground },
+    monthNavBtn: {
+      width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center",
+      backgroundColor: colors.muted,
+    },
+    todayBtn: {
+      paddingHorizontal: 12, height: 34, borderRadius: 12,
+      alignItems: "center", justifyContent: "center",
+      backgroundColor: colors.primary + "14",
+    },
+    todayBtnText: { fontSize: 12, fontWeight: "800", color: colors.primary },
+    weekRow: { flexDirection: "row", marginBottom: 4 },
+    weekHeadCell: { flex: 1, alignItems: "center", paddingBottom: 6 },
+    weekHeadText: { fontSize: 11, fontWeight: "700", color: colors.mutedForeground },
+    dayCell: {
+      flex: 1, aspectRatio: 1, marginHorizontal: 2, borderRadius: 14,
+      alignItems: "center", justifyContent: "center",
+    },
+    dayCellFilled: { backgroundColor: colors.muted },
+    dayCellToday: { borderWidth: 1.5, borderColor: colors.primary },
+    dayCellActive: {
+      backgroundColor: colors.primary,
+      shadowColor: "#6366f1", shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.35, shadowRadius: 8, elevation: 4,
+    },
+    dayNum: { fontSize: 16, fontWeight: "700", color: colors.foreground },
+    dayNumMuted: { color: colors.mutedForeground },
+    dayNumActive: { color: "#fff", fontWeight: "800" },
+    dotRow: { flexDirection: "row", gap: 3, marginTop: 4, height: 6, alignItems: "center" },
+    dot: { width: 6, height: 6, borderRadius: 3 },
+    legendRow: {
+      flexDirection: "row", flexWrap: "wrap", gap: 14, marginTop: 12, paddingTop: 12,
+      borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+    legendText: { fontSize: 11, color: colors.mutedForeground, fontWeight: "600" },
+
+    // ── Сводка по выбранному дню ──
+    dayCard: {
+      backgroundColor: colors.card, borderRadius: 18, padding: 14, marginBottom: 12,
+      borderWidth: 1, borderColor: colors.border,
+    },
+    dayCardTitle: { fontSize: 16, fontWeight: "800", color: colors.foreground },
+    dayCardSub: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
+    countChip: {
+      flexDirection: "row", alignItems: "center", gap: 6,
+      paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10,
+      backgroundColor: colors.muted,
+    },
+    countChipText: { fontSize: 12, fontWeight: "700", color: colors.foreground },
 
     scroll: { paddingHorizontal: 16, paddingTop: 2, paddingBottom: 120 },
     historyLabel: {
@@ -556,7 +680,7 @@ export default function CalendarScreen() {
     },
     filterChipText: { fontSize: 12, fontWeight: "600", color: colors.mutedForeground },
     filterChipTextActive: { color: colors.primary },
-    emptyBox: { alignItems: "center", paddingVertical: 48, gap: 12 },
+    emptyBox: { alignItems: "center", paddingVertical: 28, gap: 10 },
     emptyEmoji: { fontSize: 42 },
     emptyText: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 22 },
 
@@ -595,6 +719,13 @@ export default function CalendarScreen() {
       padding: 16, marginTop: 4,
     },
     addBtnText: { fontSize: 15, fontWeight: "700", color: colors.primary },
+
+    jumpChip: {
+      flexDirection: "row", alignItems: "center", gap: 6,
+      paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12,
+      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "40",
+    },
+    jumpChipText: { fontSize: 12, fontWeight: "700", color: colors.primary },
 
     statusLabel: { fontSize: 12, fontWeight: "700" },
 
@@ -638,25 +769,181 @@ export default function CalendarScreen() {
     reqNote: { fontSize: 13, color: colors.mutedForeground, fontStyle: "italic" },
   });
 
-  // ── Date strip ──────────────────────────────────────────────────────
-  const renderDatePicker = () => (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.datePicker} style={{ flexGrow: 0, marginBottom: 14 }}>
-      {DATES.map((date) => {
-        const { day, num, month } = dateLabel(date);
-        const active = date === selectedDate;
-        return (
+  // ── Месячная сетка ──────────────────────────────────────────────────
+  const renderMonthCalendar = () => {
+    const year = monthAnchor.getFullYear();
+    const month = monthAnchor.getMonth();
+    const weeks = buildMonthGrid(year, month);
+    const today = todayStr();
+    const now = new Date();
+    // Назад не листаем дальше текущего месяца: в прошлом слот всё равно
+    // нельзя ни создать, ни занять (см. isInPast на сервере).
+    const canGoBack = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth());
+    const shiftMonth = (delta: number) => setMonthAnchor(new Date(year, month + delta, 1));
+
+    return (
+      <View style={s.monthCard}>
+        <View style={s.monthHead}>
           <TouchableOpacity
-            key={date} style={[s.dateChip, active && s.dateChipActive]}
-            onPress={() => setSelectedDate(date)}
+            style={[s.monthNavBtn, !canGoBack && { opacity: 0.35 }]}
+            onPress={() => canGoBack && shiftMonth(-1)}
+            disabled={!canGoBack}
           >
-            <Text style={[s.dc_day, active && s.dc_dayA]}>{day}</Text>
-            <Text style={[s.dc_num, active && s.dc_numA]}>{num}</Text>
-            <Text style={[s.dc_mon, active && s.dc_monA]}>{month}</Text>
+            <Feather name="chevron-left" size={18} color={colors.foreground} />
           </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
-  );
+          <Text style={s.monthTitle}>{MONTH_FULL[month]} {year}</Text>
+          <TouchableOpacity
+            style={s.todayBtn}
+            onPress={() => {
+              setMonthAnchor(new Date(now.getFullYear(), now.getMonth(), 1));
+              setSelectedDate(today);
+            }}
+          >
+            <Text style={s.todayBtnText}>Сегодня</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.monthNavBtn} onPress={() => shiftMonth(1)}>
+            <Feather name="chevron-right" size={18} color={colors.foreground} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={s.weekRow}>
+          {WEEK_HEAD.map((w) => (
+            <View key={w} style={s.weekHeadCell}><Text style={s.weekHeadText}>{w}</Text></View>
+          ))}
+        </View>
+
+        {weeks.map((week, wi) => (
+          <View key={wi} style={s.weekRow}>
+            {week.map((date, di) => {
+              if (!date) return <View key={`e-${di}`} style={s.dayCell} />;
+              const meta = dayMeta[date] ?? EMPTY_META;
+              const hasAnything = meta.free + meta.pending + meta.lesson > 0;
+              const active = date === selectedDate;
+              const isToday = date === today;
+              const isPastDay = date < today;
+              return (
+                <TouchableOpacity
+                  key={date}
+                  activeOpacity={0.75}
+                  onPress={() => setSelectedDate(date)}
+                  style={[
+                    s.dayCell,
+                    hasAnything && !active && s.dayCellFilled,
+                    isToday && !active && s.dayCellToday,
+                    active && s.dayCellActive,
+                    isPastDay && !active && { opacity: 0.4 },
+                  ]}
+                >
+                  <Text style={[
+                    s.dayNum,
+                    (di >= 5 || isPastDay) && s.dayNumMuted,
+                    active && s.dayNumActive,
+                  ]}>
+                    {new Date(date + "T00:00:00").getDate()}
+                  </Text>
+                  <View style={s.dotRow}>
+                    {meta.lesson > 0 && (
+                      <View style={[s.dot, { backgroundColor: active ? "#fff" : DOT_LESSON }]} />
+                    )}
+                    {meta.pending > 0 && (
+                      <View style={[s.dot, { backgroundColor: active ? "#ffffffcc" : DOT_PENDING }]} />
+                    )}
+                    {meta.free > 0 && (
+                      <View style={[s.dot, { backgroundColor: active ? "#ffffff99" : DOT_FREE }]} />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ))}
+
+        <View style={s.legendRow}>
+          <View style={s.legendItem}>
+            <View style={[s.dot, { backgroundColor: DOT_LESSON }]} />
+            <Text style={s.legendText}>Занятие</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={[s.dot, { backgroundColor: DOT_PENDING }]} />
+            <Text style={s.legendText}>Ожидает</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={[s.dot, { backgroundColor: DOT_FREE }]} />
+            <Text style={s.legendText}>Свободно</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  // ── Сводка по выбранному дню ────────────────────────────────────────
+  const renderDaySummary = () => {
+    const { day, num, month } = dateLabel(selectedDate);
+    const chips: { icon: keyof typeof Feather.glyphMap; color: string; text: string }[] = [];
+    if (selectedMeta.free > 0)    chips.push({ icon: "circle",       color: DOT_FREE,    text: `${selectedMeta.free} свободно` });
+    if (selectedMeta.pending > 0) chips.push({ icon: "clock",        color: DOT_PENDING, text: `${selectedMeta.pending} ожидает` });
+    if (selectedMeta.lesson > 0)  chips.push({ icon: "check-circle", color: DOT_LESSON,  text: `${selectedMeta.lesson} занятие` });
+
+    return (
+      <View style={s.dayCard}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.dayCardTitle}>{num} {month}, {day}</Text>
+            <Text style={s.dayCardSub}>
+              {selectedDate === todayStr() ? "Сегодня" : isTeacherRole ? "Ваше расписание" : "Слоты учителей"}
+            </Text>
+          </View>
+          {selectedMeta.past > 0 && (
+            <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
+              завершено: {selectedMeta.past}
+            </Text>
+          )}
+        </View>
+
+        {chips.length > 0 && (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            {chips.map((c) => (
+              <View key={c.text} style={s.countChip}>
+                <Feather name={c.icon} size={13} color={c.color} />
+                <Text style={s.countChipText}>{c.text}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  // Подсказка «где слоты есть» — чтобы пустой день не был пустым экраном.
+  const renderJumpHints = () => {
+    if (nextBusyDates.length === 0) return null;
+    return (
+      <View style={{ marginBottom: 16 }}>
+        <Text style={[s.legendText, { marginBottom: 8 }]}>Ближайшие дни со слотами</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {nextBusyDates.map((date) => {
+            const m = dayMeta[date] ?? EMPTY_META;
+            return (
+              <TouchableOpacity
+                key={date}
+                style={s.jumpChip}
+                onPress={() => {
+                  const d = new Date(date + "T00:00:00");
+                  setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
+                  setSelectedDate(date);
+                }}
+              >
+                <Feather name="arrow-right" size={13} color={colors.primary} />
+                <Text style={s.jumpChipText}>
+                  {formatDateWithDay(date)} · {m.free + m.pending + m.lesson}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
 
   // ── Reusable slot card (teacher) ────────────────────────────────────
   const renderTeacherSlotCard = (slot: TeacherSlot, dimmed = false) => {
@@ -741,11 +1028,17 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
+        {renderMonthCalendar()}
+        {renderDaySummary()}
+
         {active.length === 0 && past.length === 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>📅</Text>
-            <Text style={s.emptyText}>Нет слотов на {formatDate(selectedDate)}{"\n"}Добавьте время для занятий</Text>
-          </View>
+          <>
+            <View style={s.emptyBox}>
+              <Text style={s.emptyEmoji}>📅</Text>
+              <Text style={s.emptyText}>Нет слотов на {formatDate(selectedDate)}{"\n"}Добавьте время для занятий</Text>
+            </View>
+            {renderJumpHints()}
+          </>
         )}
         {active.length === 0 && past.length > 0 && (
           <View style={s.emptyBox}>
@@ -846,11 +1139,17 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
+        {renderMonthCalendar()}
+        {renderDaySummary()}
+
         {active.length === 0 && past.length === 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>📅</Text>
-            <Text style={s.emptyText}>Нет доступных слотов на {formatDate(selectedDate)}</Text>
-          </View>
+          <>
+            <View style={s.emptyBox}>
+              <Text style={s.emptyEmoji}>📅</Text>
+              <Text style={s.emptyText}>Нет доступных слотов на {formatDate(selectedDate)}</Text>
+            </View>
+            {renderJumpHints()}
+          </>
         )}
         {active.length === 0 && past.length > 0 && (
           <View style={s.emptyBox}>
@@ -1449,8 +1748,6 @@ export default function CalendarScreen() {
           </TouchableOpacity>
         )}
       </View>
-
-      {activeTab === "schedule" && renderDatePicker()}
 
       {loading
         ? <ActivityIndicator style={{ marginTop: 48 }} color={colors.primary} size="large" />
