@@ -88,10 +88,6 @@ function localDateStr(d = new Date()) {
 }
 function todayStr() { return localDateStr(); }
 
-function dateLabel(dateStr: string) {
-  const d = new Date(dateStr + "T00:00:00");
-  return { day: DAY_SHORT[d.getDay()], num: d.getDate(), month: MONTH_SHORT[d.getMonth()] };
-}
 function formatDate(dateStr: string | null) {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00");
@@ -652,13 +648,12 @@ export default function CalendarScreen() {
     legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
     legendText: { fontSize: 11, color: colors.mutedForeground, fontWeight: "600" },
 
-    // ── Сводка по выбранному дню ──
+    // ── Счётчики по выбранному дню (без даты — она видна в сетке) ──
     dayCard: {
-      backgroundColor: colors.card, borderRadius: 18, padding: 14, marginBottom: 12,
+      backgroundColor: colors.card, borderRadius: 18, padding: 12, marginBottom: 12,
       borderWidth: 1, borderColor: colors.border,
+      flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8,
     },
-    dayCardTitle: { fontSize: 16, fontWeight: "800", color: colors.foreground },
-    dayCardSub: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
     countChip: {
       flexDirection: "row", alignItems: "center", gap: 6,
       paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10,
@@ -876,39 +871,29 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Сводка по выбранному дню ────────────────────────────────────────
+  // ── Счётчики по выбранному дню ──────────────────────────────────────
+  // Дату не печатаем: выбранный день и так подсвечен в сетке выше.
   const renderDaySummary = () => {
-    const { day, num, month } = dateLabel(selectedDate);
     const chips: { icon: keyof typeof Feather.glyphMap; color: string; text: string }[] = [];
     if (selectedMeta.free > 0)    chips.push({ icon: "circle",       color: DOT_FREE,    text: `${selectedMeta.free} свободно` });
     if (selectedMeta.pending > 0) chips.push({ icon: "clock",        color: DOT_PENDING, text: `${selectedMeta.pending} ожидает` });
     if (selectedMeta.lesson > 0)  chips.push({ icon: "check-circle", color: DOT_LESSON,  text: `${selectedMeta.lesson} занятие` });
 
+    // Нечего показать — не рисуем пустую рамку.
+    if (chips.length === 0 && selectedMeta.past === 0) return null;
+
     return (
       <View style={s.dayCard}>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.dayCardTitle}>{num} {month}, {day}</Text>
-            <Text style={s.dayCardSub}>
-              {selectedDate === todayStr() ? "Сегодня" : isTeacherRole ? "Ваше расписание" : "Слоты учителей"}
-            </Text>
+        {chips.map((c) => (
+          <View key={c.text} style={s.countChip}>
+            <Feather name={c.icon} size={13} color={c.color} />
+            <Text style={s.countChipText}>{c.text}</Text>
           </View>
-          {selectedMeta.past > 0 && (
-            <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
-              завершено: {selectedMeta.past}
-            </Text>
-          )}
-        </View>
-
-        {chips.length > 0 && (
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-            {chips.map((c) => (
-              <View key={c.text} style={s.countChip}>
-                <Feather name={c.icon} size={13} color={c.color} />
-                <Text style={s.countChipText}>{c.text}</Text>
-              </View>
-            ))}
-          </View>
+        ))}
+        {selectedMeta.past > 0 && (
+          <Text style={{ fontSize: 11, color: colors.mutedForeground, marginLeft: "auto" }}>
+            завершено: {selectedMeta.past}
+          </Text>
         )}
       </View>
     );
