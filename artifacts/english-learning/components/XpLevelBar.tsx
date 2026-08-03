@@ -1,7 +1,16 @@
+// Полоса опыта и витрина значков уровней.
+//
+// Эмодзи уровней (поле emoji в constants/xpLevels.ts) на экран не выводятся:
+// они рендерятся системным шрифтом и выглядят по-разному на iOS, Android и в
+// вебе. Вместо них — глифы из своего набора через LevelBadge/LevelGlyph.
+// Сам файл данных не меняется: цвета, пороги XP и названия уровней по-прежнему
+// берутся оттуда, глиф подбирается по номеру уровня.
 import React, { useRef, useEffect, useState } from "react";
 import { View, Text, Animated, StyleSheet, Easing } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { XP_LEVELS, getXpProgress, type XpLevel } from "@/constants/xpLevels";
+import { LevelBadge, LevelGlyph } from "@/components/ui/LevelGlyph";
+import { Glyph } from "@/components/ui/Glyph";
 
 function ShimmerBar({ color, progress }: { color: string; progress: Animated.AnimatedInterpolation<string | number> }) {
   const shimmerPos = useRef(new Animated.Value(-1)).current;
@@ -113,7 +122,7 @@ export function XpLevelBar({ totalPoints, compact = false }: XpLevelBarProps) {
     return (
       <View style={styles.compactContainer}>
         <View style={[styles.compactBadge, { backgroundColor: current.bgColor, borderColor: current.color + "60" }]}>
-          <Text style={styles.compactEmoji}>{current.emoji}</Text>
+          <LevelGlyph level={current.level} size={14} color={current.color} />
           <Text style={[styles.compactLevel, { color: current.color }]}>Ур. {current.level}</Text>
         </View>
         <View style={{ flex: 1 }}>
@@ -161,12 +170,10 @@ export function XpLevelBar({ totalPoints, compact = false }: XpLevelBarProps) {
         },
       ]}
     >
-      {/* Top row: avatar badge + level info */}
+      {/* Top row: значок уровня + информация */}
       <View style={styles.topRow}>
-        <View style={[styles.levelCircle, { backgroundColor: current.color }]}>
-          <Text style={styles.levelEmoji}>{current.emoji}</Text>
-          <Text style={styles.levelNumText}>{current.level}</Text>
-        </View>
+        {/* Цвет значка берётся из данных уровня, глиф — по его номеру. */}
+        <LevelBadge level={current.level} color={current.color} size={56} />
 
         <View style={{ flex: 1, paddingHorizontal: 12 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -177,11 +184,20 @@ export function XpLevelBar({ totalPoints, compact = false }: XpLevelBarProps) {
               </View>
             )}
           </View>
-          <Text style={[styles.xpSubText, { color: colors.mutedForeground }]}>
-            {next
-              ? `До ${next.emoji} ${next.title}: ${xpToNext} XP`
-              : "Максимальный уровень! 🏆"}
-          </Text>
+          {next ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 3 }}>
+              <Text style={[styles.xpSubText, { color: colors.mutedForeground }]}>До</Text>
+              <LevelGlyph level={next.level} size={13} color={next.color} />
+              <Text style={[styles.xpSubText, { color: colors.mutedForeground }]}>
+                {next.title}: {xpToNext} XP
+              </Text>
+            </View>
+          ) : (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 3 }}>
+              <Glyph name="crown" size={13} color={current.color} />
+              <Text style={[styles.xpSubText, { color: colors.mutedForeground }]}>Максимальный уровень</Text>
+            </View>
+          )}
         </View>
 
         <View style={{ alignItems: "flex-end" }}>
@@ -208,15 +224,22 @@ export function XpLevelBar({ totalPoints, compact = false }: XpLevelBarProps) {
         </Text>
       </View>
 
-      {/* Next level reward */}
+      {/* Награда следующего уровня */}
       {next && (
         <View style={[styles.nextRewardRow, { backgroundColor: current.bgColor, borderColor: current.color + "30" }]}>
           <Text style={[styles.nextRewardLabel, { color: colors.mutedForeground }]}>
             Следующий уровень:
           </Text>
-          <Text style={[styles.nextRewardValue, { color: current.color }]}>
-            {next.emoji} {next.title} · 🎁 {next.reward}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <LevelGlyph level={next.level} size={14} color={next.color} />
+            <Text style={[styles.nextRewardValue, { color: current.color }]} numberOfLines={1}>
+              {next.title}
+            </Text>
+            <Glyph name="medal" size={13} color={current.color} />
+            <Text style={[styles.nextRewardValue, { color: current.color, flex: 1 }]} numberOfLines={1}>
+              {next.reward}
+            </Text>
+          </View>
         </View>
       )}
     </Animated.View>
@@ -241,7 +264,7 @@ export function LevelBadgesShowcase({ currentLevel }: { currentLevel: number }) 
             key={lvl.level}
             style={[styles.badge, { backgroundColor: lvl.bgColor, borderColor: lvl.color + "50" }]}
           >
-            <Text style={styles.badgeEmoji}>{lvl.emoji}</Text>
+            <LevelGlyph level={lvl.level} size={21} color={lvl.color} />
             <Text style={[styles.badgeLvl, { color: lvl.color }]}>Ур.{lvl.level}</Text>
           </View>
         ))}
@@ -258,21 +281,14 @@ export function LevelBadgesShowcase({ currentLevel }: { currentLevel: number }) 
 const styles = StyleSheet.create({
   container: {},
   topRow: { flexDirection: "row", alignItems: "center" },
-  levelCircle: {
-    width: 56, height: 56, borderRadius: 28,
-    justifyContent: "center", alignItems: "center",
-    shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
-  levelEmoji: { fontSize: 22 },
-  levelNumText: { fontSize: 11, color: "#fff", fontWeight: "900", marginTop: -2 },
   titleText: { fontSize: 16, fontWeight: "800" },
-  xpSubText: { fontSize: 12, marginTop: 3 },
+  xpSubText: { fontSize: 12 },
   nearLvlBadge: {
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8,
   },
   nearLvlText: { fontSize: 10, color: "#fff", fontWeight: "800" },
-  bigPoints: { fontSize: 24, fontWeight: "900", lineHeight: 26 },
+  // Крупные числа — табличные цифры: при тике счётчика ширина не скачет.
+  bigPoints: { fontSize: 24, fontWeight: "900", lineHeight: 26, fontVariant: ["tabular-nums"] },
   xpLabel: { fontSize: 11, fontWeight: "600", marginTop: 1 },
   trackBg: {
     height: 12, borderRadius: 6, overflow: "hidden", position: "relative",
@@ -284,11 +300,11 @@ const styles = StyleSheet.create({
   progressLabels: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6,
   },
-  labelText: { fontSize: 11 },
-  pctBig: { fontSize: 13, fontWeight: "800" },
+  labelText: { fontSize: 11, fontVariant: ["tabular-nums"] },
+  pctBig: { fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"] },
   nextRewardRow: {
     marginTop: 12, borderRadius: 10, borderWidth: 1,
-    padding: 10, gap: 2,
+    padding: 10, gap: 4,
   },
   nextRewardLabel: { fontSize: 11 },
   nextRewardValue: { fontSize: 13, fontWeight: "700" },
@@ -297,10 +313,9 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 4,
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, borderWidth: 1,
   },
-  compactEmoji: { fontSize: 14 },
   compactLevel: { fontSize: 12, fontWeight: "700" },
   compactTitle: { fontSize: 13, fontWeight: "700" },
-  compactXp: { fontSize: 11 },
+  compactXp: { fontSize: 11, fontVariant: ["tabular-nums"] },
   track: { height: 8, borderRadius: 4, overflow: "hidden" },
   fill: { height: "100%", borderRadius: 4 },
   badgesContainer: { marginBottom: 16 },
@@ -311,8 +326,7 @@ const styles = StyleSheet.create({
   badgesRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   badge: {
     width: 52, height: 52, borderRadius: 12, borderWidth: 1.5,
-    justifyContent: "center", alignItems: "center",
+    justifyContent: "center", alignItems: "center", gap: 2,
   },
-  badgeEmoji: { fontSize: 22 },
   badgeLvl: { fontSize: 10, fontWeight: "700" },
 });
