@@ -1,3 +1,10 @@
+// Календарь занятий: слоты учителя, записи учеников, запросы своего времени
+// и история проведённых уроков.
+//
+// Эмодзи в интерфейсе не используются: в пустых состояниях, предупреждениях и
+// на кнопках подтверждения стоят глифы из своего набора. Аватары учеников
+// приходят из профиля (avatarEmoji) — там, где картинки нет, показываем первую
+// букву имени, а не подставляем случайный символ.
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
@@ -11,6 +18,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useCalendarBadge } from "@/contexts/CalendarBadgeContext";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 
 // ── API helper ────────────────────────────────────────────────────────
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -97,6 +105,12 @@ function formatDateWithDay(dateStr: string | null) {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getDate()} ${MONTH_SHORT[d.getMonth()]}, ${DAY_SHORT[d.getDay()]}`;
+}
+
+/** Первая буква имени для аватара без картинки. Пропускаем знаки и пробелы. */
+function initialOf(name?: string | null, fallback = "У") {
+  const m = (name ?? "").match(/[\p{L}\p{N}]/u);
+  return (m?.[0] ?? fallback).toUpperCase();
 }
 
 /**
@@ -222,11 +236,13 @@ function WheelColumn({ items, value, onChange, fg, muted, hlColor }: WheelColumn
               onPress={() => { setLocalVal(item); onChange(item); scrollTo(i); }}
               activeOpacity={0.7}
             >
+              {/* Табличные цифры: при прокрутке колонка не «дышит» по ширине. */}
               <Text style={{
                 fontSize: sel ? 28 : 20,
                 fontWeight: sel ? "700" : "400",
                 color: sel ? fg : muted,
                 opacity: sel ? 1 : 0.55,
+                fontVariant: ["tabular-nums"],
               }}>
                 {item}
               </Text>
@@ -602,7 +618,7 @@ export default function CalendarScreen() {
       backgroundColor: colors.primary, borderRadius: 8,
       minWidth: 18, height: 18, justifyContent: "center", alignItems: "center", paddingHorizontal: 4,
     },
-    badgeText: { fontSize: 10, fontWeight: "800", color: "#fff" },
+    badgeText: { fontSize: 10, fontWeight: "800", color: "#fff", fontVariant: ["tabular-nums"] },
 
     // ── Месячная сетка ──
     monthCard: {
@@ -636,7 +652,8 @@ export default function CalendarScreen() {
       shadowColor: "#6366f1", shadowOffset: { width: 0, height: 3 },
       shadowOpacity: 0.35, shadowRadius: 8, elevation: 4,
     },
-    dayNum: { fontSize: 16, fontWeight: "700", color: colors.foreground },
+    // Числа календаря — табличные: колонки дней стоят ровно.
+    dayNum: { fontSize: 16, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] },
     dayNumMuted: { color: colors.mutedForeground },
     dayNumActive: { color: "#fff", fontWeight: "800" },
     dotRow: { flexDirection: "row", gap: 3, marginTop: 4, height: 6, alignItems: "center" },
@@ -676,8 +693,20 @@ export default function CalendarScreen() {
     filterChipText: { fontSize: 12, fontWeight: "600", color: colors.mutedForeground },
     filterChipTextActive: { color: colors.primary },
     emptyBox: { alignItems: "center", paddingVertical: 28, gap: 10 },
-    emptyEmoji: { fontSize: 42 },
+    // Плашка под глиф вместо крупного эмодзи: цвет из темы, лёгкий наклон.
+    emptyIcon: {
+      width: 66, height: 66, borderRadius: 22, alignItems: "center", justifyContent: "center",
+      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
+      transform: [{ rotate: "-4deg" }],
+    },
     emptyText: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 22 },
+
+    // Предупреждение в модалках: иконка плюс текст вместо символа ⚠.
+    warnRow: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center",
+      gap: 6, marginBottom: 8, paddingHorizontal: 8,
+    },
+    warnText: { fontSize: 13, fontWeight: "600", flexShrink: 1 },
 
     slotCard: {
       borderRadius: 16, borderWidth: 0,
@@ -687,7 +716,7 @@ export default function CalendarScreen() {
     },
     slotTop: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
     slotDot: { width: 12, height: 12, borderRadius: 6 },
-    slotTime: { flex: 1, fontSize: 17, fontWeight: "700", color: colors.foreground },
+    slotTime: { flex: 1, fontSize: 17, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] },
     slotSub: { fontSize: 12, color: colors.mutedForeground, marginTop: 1 },
 
     bookingRow: {
@@ -699,8 +728,10 @@ export default function CalendarScreen() {
     bookingNote: { fontSize: 12, color: colors.mutedForeground, marginTop: 2, fontStyle: "italic" },
 
     btnRow: { flexDirection: "row", gap: 8 },
-    btnConfirm: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: "#6366f1" },
-    btnReject:  { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: "#e11d48" },
+    // Кнопки ответа на заявку: раньше внутри стояли символы ✓ и ✗, теперь глифы,
+    // поэтому задаём им квадрат и центрирование.
+    btnConfirm: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: "#6366f1", alignItems: "center", justifyContent: "center" },
+    btnReject:  { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: "#e11d48", alignItems: "center", justifyContent: "center" },
     btnCancel:  {
       paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10,
       borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.muted,
@@ -762,7 +793,39 @@ export default function CalendarScreen() {
     reqName: { flex: 1, fontSize: 15, fontWeight: "700", color: colors.foreground },
     reqTime: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
     reqNote: { fontSize: 13, color: colors.mutedForeground, fontStyle: "italic" },
+
+    // Аватар без картинки: буква в круге вместо случайного эмодзи.
+    letterAvatar: { justifyContent: "center", alignItems: "center" },
+    letterAvatarText: { color: "#fff", fontWeight: "900" },
   });
+
+  /** Пустое состояние: глиф в плашке плюс поясняющий текст. */
+  const renderEmpty = (glyph: GlyphName, text: string, tone: "primary" | "success" = "primary") => (
+    <View style={s.emptyBox}>
+      <View style={[
+        s.emptyIcon,
+        tone === "success" && { backgroundColor: colors.success + "14", borderColor: colors.success + "30" },
+      ]}>
+        <Glyph name={glyph} size={30} color={tone === "success" ? colors.success : colors.primary} />
+      </View>
+      <Text style={s.emptyText}>{text}</Text>
+    </View>
+  );
+
+  /** Предупреждение в модалке. */
+  const renderWarn = (text: string, color: string) => (
+    <View style={s.warnRow}>
+      <Glyph name="alert" size={15} color={color} />
+      <Text style={[s.warnText, { color }]}>{text}</Text>
+    </View>
+  );
+
+  /** Аватар из буквы имени: используется, когда картинки профиля нет. */
+  const renderLetterAvatar = (name: string | null | undefined, bg: string | null, size: number) => (
+    <View style={[s.letterAvatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg ?? colors.primary }]}>
+      <Text style={[s.letterAvatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
+    </View>
+  );
 
   // ── Месячная сетка ──────────────────────────────────────────────────
   const renderMonthCalendar = () => {
@@ -797,7 +860,7 @@ export default function CalendarScreen() {
             <Text style={s.todayBtnText}>Сегодня</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.monthNavBtn} onPress={() => shiftMonth(1)}>
-            <Feather name="chevron-right" size={18} color={colors.foreground} />
+            <Glyph name="chevron" size={18} color={colors.foreground} />
           </TouchableOpacity>
         </View>
 
@@ -918,7 +981,7 @@ export default function CalendarScreen() {
                   setSelectedDate(date);
                 }}
               >
-                <Feather name="arrow-right" size={13} color={colors.primary} />
+                <Glyph name="chevron" size={13} color={colors.primary} />
                 <Text style={s.jumpChipText}>
                   {formatDateWithDay(date)} · {m.free + m.pending + m.lesson}
                 </Text>
@@ -957,7 +1020,7 @@ export default function CalendarScreen() {
 
         {confirmed && (
           <View style={s.bookingRow}>
-            <Feather name="check-circle" size={16} color="#6366f1" />
+            <Glyph name="check" size={16} color="#6366f1" />
             <View style={{ flex: 1 }}>
               <Text style={s.bookingName}>{confirmed.studentName ?? "Ученик"}</Text>
               {confirmed.note ? <Text style={s.bookingNote}>«{confirmed.note}»</Text> : null}
@@ -968,17 +1031,27 @@ export default function CalendarScreen() {
 
         {!dimmed && pending.map((b) => (
           <View key={b.id} style={s.bookingRow}>
-            <Feather name="user" size={16} color={colors.mutedForeground} />
+            <Glyph name="user" size={16} color={colors.mutedForeground} />
             <View style={{ flex: 1 }}>
               <Text style={s.bookingName}>{b.studentName ?? "Ученик"}</Text>
               {b.note ? <Text style={s.bookingNote}>«{b.note}»</Text> : null}
             </View>
             <View style={s.btnRow}>
-              <TouchableOpacity style={s.btnConfirm} onPress={() => handleRespond(b.id, "confirmed")}>
-                <Text style={s.btnText}>✓</Text>
+              {/* Раньше внутри стояли символы ✓ и ✗ — они рисуются шрифтом ОС
+                  и на Android выглядят иначе, чем на iOS. Теперь глифы. */}
+              <TouchableOpacity
+                style={s.btnConfirm}
+                onPress={() => handleRespond(b.id, "confirmed")}
+                accessibilityLabel="Подтвердить запись"
+              >
+                <Glyph name="check" size={15} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={s.btnReject} onPress={() => handleRespond(b.id, "rejected")}>
-                <Text style={s.btnText}>✗</Text>
+              <TouchableOpacity
+                style={s.btnReject}
+                onPress={() => handleRespond(b.id, "rejected")}
+                accessibilityLabel="Отклонить запись"
+              >
+                <Glyph name="close" size={15} color="#fff" />
               </TouchableOpacity>
             </View>
           </View>
@@ -1018,24 +1091,17 @@ export default function CalendarScreen() {
 
         {active.length === 0 && past.length === 0 && (
           <>
-            <View style={s.emptyBox}>
-              <Text style={s.emptyEmoji}>📅</Text>
-              <Text style={s.emptyText}>Нет слотов на {formatDate(selectedDate)}{"\n"}Добавьте время для занятий</Text>
-            </View>
+            {renderEmpty("calendar", `Нет слотов на ${formatDate(selectedDate)}\nДобавьте время для занятий`)}
             {renderJumpHints()}
           </>
         )}
-        {active.length === 0 && past.length > 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>✅</Text>
-            <Text style={s.emptyText}>Все занятия сегодня завершены</Text>
-          </View>
-        )}
+        {active.length === 0 && past.length > 0 &&
+          renderEmpty("check", "Все занятия сегодня завершены", "success")}
 
         {active.map((slot) => renderTeacherSlotCard(slot, false))}
 
         <TouchableOpacity style={s.addBtn} onPress={() => setShowAdd(true)}>
-          <Feather name="plus-circle" size={18} color={colors.primary} />
+          <Glyph name="plus" size={18} color={colors.primary} />
           <Text style={s.addBtnText}>Добавить слот</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -1051,19 +1117,14 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
-        {totalCount === 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>🎉</Text>
-            <Text style={s.emptyText}>Нет новых запросов</Text>
-          </View>
-        )}
+        {totalCount === 0 && renderEmpty("tray", "Нет новых запросов")}
 
         {/* Regular slot bookings */}
         {bookings.map((b) => (
           <View key={`sb-${b.id}`} style={s.reqCard}>
             <View style={s.reqTop}>
               <View style={[s.reqAvatar, { backgroundColor: colors.primary + "20" }]}>
-                <Feather name="user" size={18} color={colors.primary} />
+                <Glyph name="user" size={18} color={colors.primary} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={s.reqName}>{b.studentName ?? "Ученик"}</Text>
@@ -1072,10 +1133,10 @@ export default function CalendarScreen() {
             </View>
             {b.note ? <Text style={s.reqNote}>«{b.note}»</Text> : null}
             <View style={s.btnRow}>
-              <TouchableOpacity style={[s.btnConfirm, { flex: 1, alignItems: "center" }]} onPress={() => handleRespond(b.id, "confirmed")}>
+              <TouchableOpacity style={[s.btnConfirm, { flex: 1 }]} onPress={() => handleRespond(b.id, "confirmed")}>
                 <Text style={s.btnText}>Подтвердить</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btnReject, { flex: 1, alignItems: "center" }]} onPress={() => handleRespond(b.id, "rejected")}>
+              <TouchableOpacity style={[s.btnReject, { flex: 1 }]} onPress={() => handleRespond(b.id, "rejected")}>
                 <Text style={s.btnText}>Отклонить</Text>
               </TouchableOpacity>
             </View>
@@ -1100,10 +1161,10 @@ export default function CalendarScreen() {
             </View>
             {cr.note ? <Text style={s.reqNote}>«{cr.note}»</Text> : null}
             <View style={s.btnRow}>
-              <TouchableOpacity style={[s.btnConfirm, { flex: 1, alignItems: "center" }]} onPress={() => handleRespondCustom(cr.id, "confirmed")}>
+              <TouchableOpacity style={[s.btnConfirm, { flex: 1 }]} onPress={() => handleRespondCustom(cr.id, "confirmed")}>
                 <Text style={s.btnText}>Принять</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btnReject, { flex: 1, alignItems: "center" }]} onPress={() => handleRespondCustom(cr.id, "rejected")}>
+              <TouchableOpacity style={[s.btnReject, { flex: 1 }]} onPress={() => handleRespondCustom(cr.id, "rejected")}>
                 <Text style={s.btnText}>Отклонить</Text>
               </TouchableOpacity>
             </View>
@@ -1129,19 +1190,12 @@ export default function CalendarScreen() {
 
         {active.length === 0 && past.length === 0 && (
           <>
-            <View style={s.emptyBox}>
-              <Text style={s.emptyEmoji}>📅</Text>
-              <Text style={s.emptyText}>Нет доступных слотов на {formatDate(selectedDate)}</Text>
-            </View>
+            {renderEmpty("calendar", `Нет доступных слотов на ${formatDate(selectedDate)}`)}
             {renderJumpHints()}
           </>
         )}
-        {active.length === 0 && past.length > 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>✅</Text>
-            <Text style={s.emptyText}>Все занятия сегодня завершены</Text>
-          </View>
-        )}
+        {active.length === 0 && past.length > 0 &&
+          renderEmpty("check", "Все занятия сегодня завершены", "success")}
 
         {active.map((slot) => {
           const meta = STATUS_CFG[slot.status];
@@ -1158,7 +1212,7 @@ export default function CalendarScreen() {
 
               {slot.status === "available" && (
                 <TouchableOpacity
-                  style={[s.btnConfirm, { margin: 12, marginTop: 0, alignItems: "center" }]}
+                  style={[s.btnConfirm, { margin: 12, marginTop: 0 }]}
                   onPress={() => setBookSlot(slot)}
                 >
                   <Text style={s.btnText}>Записаться</Text>
@@ -1269,15 +1323,11 @@ export default function CalendarScreen() {
           </View>
         </ScrollView>
 
-        {upcoming.length === 0 && past.length === 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>📝</Text>
-            <Text style={s.emptyText}>
-              {bookingFilter === "all"
-                ? "Нет записей\nПерейдите в расписание и запишитесь к учителю"
-                : "Нет записей с таким статусом"}
-            </Text>
-          </View>
+        {upcoming.length === 0 && past.length === 0 && renderEmpty(
+          "cards",
+          bookingFilter === "all"
+            ? "Нет записей\nПерейдите в расписание и запишитесь к учителю"
+            : "Нет записей с таким статусом",
         )}
 
         {upcoming.map((b) => renderBookingCard(b, false))}
@@ -1356,11 +1406,9 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
-        {lessonHistory.length === 0 && (
-          <View style={s.emptyBox}>
-            <Text style={s.emptyEmoji}>📚</Text>
-            <Text style={s.emptyText}>История уроков пуста{"\n"}Подтверждённые занятия появятся здесь</Text>
-          </View>
+        {lessonHistory.length === 0 && renderEmpty(
+          "book",
+          "История уроков пуста\nПодтверждённые занятия появятся здесь",
         )}
 
         {monthKeys.map((mk) => (
@@ -1370,7 +1418,6 @@ export default function CalendarScreen() {
               const isPast = item.date < todayStr() || (item.date === todayStr() && item.endTime <= `${new Date().getHours().toString().padStart(2,"0")}:${new Date().getMinutes().toString().padStart(2,"0")}`);
               const accent = isPast ? "#6366f1" : colors.primary;
               const statusLabel = isPast ? "Проведён" : "Запланирован";
-              const statusIcon = isPast ? "check-circle" : "clock";
               return (
                 <View
                   key={item.id}
@@ -1390,19 +1437,14 @@ export default function CalendarScreen() {
                       : b.studentName ?? b.studentUsername ?? "Ученик";
                     return (
                       <View key={b.bookingId} style={[s.bookingRow, { marginTop: 4 }]}>
-                        <View style={{
-                          width: 32, height: 32, borderRadius: 16,
-                          backgroundColor: b.studentColor ?? "#6366f1",
-                          justifyContent: "center", alignItems: "center",
-                        }}>
-                          <Text style={{ fontSize: 16 }}>{b.studentEmoji ?? "🦁"}</Text>
-                        </View>
+                        {/* Аватар из буквы имени вместо эмодзи-заглушки. */}
+                        {renderLetterAvatar(displayName, b.studentColor, 32)}
                         <View style={{ flex: 1, marginLeft: 8 }}>
                           <Text style={s.bookingName}>{displayName}</Text>
                           {b.studentUsername ? <Text style={[s.bookingNote, { color: colors.mutedForeground }]}>@{b.studentUsername}</Text> : null}
                           {b.note ? <Text style={s.bookingNote}>«{b.note}»</Text> : null}
                         </View>
-                        <Feather name={statusIcon} size={16} color={accent} />
+                        <Glyph name={isPast ? "check" : "target"} size={16} color={accent} />
                       </View>
                     );
                   })}
@@ -1467,16 +1509,9 @@ export default function CalendarScreen() {
             </View>
           </View>
 
-          {addEnd <= addStart && (
-            <Text style={{ color: "#e11d48", fontSize: 13, fontWeight: "600", textAlign: "center", marginBottom: 8 }}>
-              ⚠ Конец раньше начала: {addStart} → {addEnd}
-            </Text>
-          )}
-          {addEnd > addStart && isPastSlot(selectedDate, addEnd) && (
-            <Text style={{ color: "#ec4899", fontSize: 13, fontWeight: "600", textAlign: "center", marginBottom: 8 }}>
-              ⚠ Это время уже прошло — слот не сохранится
-            </Text>
-          )}
+          {addEnd <= addStart && renderWarn(`Конец раньше начала: ${addStart} → ${addEnd}`, "#e11d48")}
+          {addEnd > addStart && isPastSlot(selectedDate, addEnd) &&
+            renderWarn("Это время уже прошло — слот не сохранится", "#ec4899")}
           <TouchableOpacity
             style={[s.primaryBtn, (addEnd <= addStart || (addEnd > addStart && isPastSlot(selectedDate, addEnd))) && { opacity: 0.4 }]}
             onPress={handleAddSlot}
@@ -1553,16 +1588,9 @@ export default function CalendarScreen() {
             </View>
           </View>
 
-          {crEnd <= crStart && (
-            <Text style={{ color: "#e11d48", fontSize: 13, fontWeight: "600", textAlign: "center", marginBottom: 8 }}>
-              ⚠ Конец раньше начала: {crStart} → {crEnd}
-            </Text>
-          )}
-          {crEnd > crStart && isPastSlot(selectedDate, crEnd) && (
-            <Text style={{ color: "#ec4899", fontSize: 13, fontWeight: "600", textAlign: "center", marginBottom: 8 }}>
-              ⚠ Это время уже прошло — выберите будущее время
-            </Text>
-          )}
+          {crEnd <= crStart && renderWarn(`Конец раньше начала: ${crStart} → ${crEnd}`, "#e11d48")}
+          {crEnd > crStart && isPastSlot(selectedDate, crEnd) &&
+            renderWarn("Это время уже прошло — выберите будущее время", "#ec4899")}
 
           <Text style={[s.timeLabel, { marginBottom: 8 }]}>Сообщение учителю (необязательно)</Text>
           <TextInput
@@ -1574,8 +1602,9 @@ export default function CalendarScreen() {
           />
 
           {crError && (
-            <View style={{ backgroundColor: "#ffe4e6", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-              <Text style={{ color: "#be123c", fontSize: 13, textAlign: "center" }}>⚠ {crError}</Text>
+            <View style={{ backgroundColor: "#ffe4e6", borderRadius: 10, padding: 10, marginBottom: 10, flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Glyph name="alert" size={16} color="#be123c" />
+              <Text style={{ color: "#be123c", fontSize: 13, flex: 1 }}>{crError}</Text>
             </View>
           )}
 
@@ -1629,8 +1658,10 @@ export default function CalendarScreen() {
           </Text>
 
           {assignStudents.length === 0 ? (
-            <View style={{ alignItems: "center", paddingVertical: 24, gap: 8 }}>
-              <Feather name="users" size={32} color={colors.mutedForeground} />
+            <View style={{ alignItems: "center", paddingVertical: 24, gap: 10 }}>
+              <View style={s.emptyIcon}>
+                <Glyph name="users" size={30} color={colors.primary} />
+              </View>
               <Text style={{ color: colors.mutedForeground, fontSize: 14, textAlign: "center" }}>
                 Нет подключённых учеников.{"\n"}Сначала добавьте ученика.
               </Text>
@@ -1653,18 +1684,12 @@ export default function CalendarScreen() {
                     }}
                     onPress={() => setAssignStudentId(st.id)}
                   >
-                    <View style={{
-                      width: 38, height: 38, borderRadius: 19,
-                      backgroundColor: st.avatarColor ?? "#6366f1",
-                      justifyContent: "center", alignItems: "center",
-                    }}>
-                      <Text style={{ fontSize: 18 }}>{st.avatarEmoji ?? "🦁"}</Text>
-                    </View>
+                    {renderLetterAvatar(displayName, st.avatarColor, 38)}
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>{displayName}</Text>
                       <Text style={{ fontSize: 12, color: colors.mutedForeground }}>@{st.username}</Text>
                     </View>
-                    {selected && <Feather name="check-circle" size={20} color={colors.primary} />}
+                    {selected && <Glyph name="check" size={20} color={colors.primary} />}
                   </TouchableOpacity>
                 );
               })}
@@ -1672,8 +1697,9 @@ export default function CalendarScreen() {
           )}
 
           {assignError && (
-            <View style={{ backgroundColor: "#ffe4e6", borderRadius: 10, padding: 10, marginBottom: 10, marginTop: 8 }}>
-              <Text style={{ color: "#be123c", fontSize: 13, textAlign: "center" }}>⚠ {assignError}</Text>
+            <View style={{ backgroundColor: "#ffe4e6", borderRadius: 10, padding: 10, marginBottom: 10, marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Glyph name="alert" size={16} color="#be123c" />
+              <Text style={{ color: "#be123c", fontSize: 13, flex: 1 }}>{assignError}</Text>
             </View>
           )}
 
@@ -1716,11 +1742,11 @@ export default function CalendarScreen() {
 
       <View style={s.tabRow}>
         <TouchableOpacity style={[s.tab, activeTab === "schedule" && s.tabActive]} onPress={() => setActiveTab("schedule")}>
-          <Feather name="calendar" size={14} color={activeTab === "schedule" ? colors.primary : colors.mutedForeground} />
+          <Glyph name="calendar" size={14} color={activeTab === "schedule" ? colors.primary : colors.mutedForeground} />
           <Text style={[s.tabText, activeTab === "schedule" && s.tabTextActive]}>Расписание</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[s.tab, activeTab === "requests" && s.tabActive]} onPress={() => { setActiveTab("requests"); loadBookings(); loadCustomRequests(); if (isTeacherRole) markSeen(); }}>
-          <Feather name={isTeacherRole ? "inbox" : "list"} size={14} color={activeTab === "requests" ? colors.primary : colors.mutedForeground} />
+          <Glyph name={isTeacherRole ? "tray" : "cards"} size={14} color={activeTab === "requests" ? colors.primary : colors.mutedForeground} />
           <Text style={[s.tabText, activeTab === "requests" && s.tabTextActive]}>
             {isTeacherRole ? "Запросы" : "Мои записи"}
           </Text>
@@ -1728,7 +1754,7 @@ export default function CalendarScreen() {
         </TouchableOpacity>
         {isTeacherRole && (
           <TouchableOpacity style={[s.tab, activeTab === "history" && s.tabActive]} onPress={() => { setActiveTab("history"); loadHistory(); }}>
-            <Feather name="book-open" size={14} color={activeTab === "history" ? colors.primary : colors.mutedForeground} />
+            <Glyph name="book" size={14} color={activeTab === "history" ? colors.primary : colors.mutedForeground} />
             <Text style={[s.tabText, activeTab === "history" && s.tabTextActive]}>История</Text>
           </TouchableOpacity>
         )}
