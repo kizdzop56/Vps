@@ -19,15 +19,37 @@
 
 import React, { useEffect, useRef } from "react";
 import {
-  View, Text, Pressable, Animated, Easing, StyleSheet,
+  View, Text, Pressable, Animated, Easing, StyleSheet, Platform,
   type ViewStyle, type StyleProp,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import * as Haptics from "expo-haptics";
-import { Platform } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { accents, gradients, radii, chunky, timing } from "@/constants/theme";
 import { Glyph, type GlyphName } from "./Glyph";
+
+// Анимации через нативный драйвер только там, где он есть. На вебе его нет,
+// и попытка его использовать даёт предупреждения и рассинхрон анимаций.
+const NATIVE_DRIVER = Platform.OS !== "web";
+
+/**
+ * Короткая отдача в палец при нажатии.
+ *
+ * expo-haptics намеренно НЕ импортируется статически: на вебе нативный модуль
+ * ExpoHaptics не зарегистрирован, и падает сам импорт — а вместе с ним весь
+ * модуль экрана, который тянет этот файл. Expo Router грузит роуты лениво,
+ * поэтому такая ошибка выглядит как белый экран на одной вкладке.
+ * Ленивый require под try/catch решает это: на вебе просто ничего не делаем.
+ */
+function tapFeedback() {
+  if (Platform.OS === "web") return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Haptics = require("expo-haptics");
+    Haptics.impactAsync?.(Haptics.ImpactFeedbackStyle.Light)?.catch?.(() => {});
+  } catch {
+    // Тактильная отдача — приятная мелочь, её отсутствие не должно ничего ломать.
+  }
+}
 
 // ── ChunkyButton ────────────────────────────────────────────────────────────
 
@@ -60,7 +82,7 @@ export function ChunkyButton({
       toValue: to,
       duration: chunky.duration,
       easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
+      useNativeDriver: NATIVE_DRIVER,
     }).start();
 
   const palette = {
@@ -75,8 +97,8 @@ export function ChunkyButton({
           двух теней, поэтому «толщину» кнопки рисуем настоящим прямоугольником. */}
       <View
         style={{
-          position: "absolute", left: 0, right: 0, top: chunky.edge,
-          bottom: -0, borderRadius: radii.lg,
+          position: "absolute", left: 0, right: 0, top: chunky.edge, bottom: 0,
+          borderRadius: radii.lg,
           backgroundColor: disabled ? "#c7c3d4" : palette.edge,
         }}
       />
@@ -86,16 +108,13 @@ export function ChunkyButton({
           onPressIn={() => {
             if (disabled) return;
             set(chunky.pressDepth);
-            // Лёгкая отдача в палец: подтверждает нажатие раньше, чем
-            // отработает переход. На вебе Haptics недоступен.
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            // Отдача подтверждает нажатие раньше, чем отработает переход.
+            tapFeedback();
           }}
           onPressOut={() => set(0)}
           accessibilityRole="button"
           accessibilityLabel={sublabel ? `${label}. ${sublabel}` : label}
           accessibilityState={{ disabled: !!disabled }}
-          // Тап-зона не меньше 44pt даже у компактной кнопки.
-          hitSlop={8}
         >
           <LinearGradient
             colors={(disabled ? ["#ddd9e8", "#cfcadc"] : palette.fill) as unknown as string[]}
@@ -151,36 +170,34 @@ export interface TileProps {
 
 export function Tile({ children, glow, tilt = 0, onPress, style }: TileProps) {
   const colors = useColors();
-  const shadowColor = glow ?? accents.violetDeep;
-  const body = (
-    <View
-      style={[
-        {
-          backgroundColor: colors.card,
-          borderRadius: radii.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-          padding: 14,
-          transform: [{ rotate: `${tilt}deg` }],
-          // Тень в цвете элемента, а не серая.
-          shadowColor,
-          shadowOffset: { width: 0, height: 5 },
-          shadowOpacity: 0.16,
-          shadowRadius: 14,
-          elevation: 3,
-        },
-        style,
-      ]}
-    >
-      {children}
-    </View>
-  );
-  if (!onPress) return body;
-  return (
-    <Pressable onPress={onPress} style={({ pressed }) => pressed ? { opacity: 0.92, transform: [{ scale: 0.985 }] } : undefined}>
-      {body}
-    </Pressable>
-  );
+  const base: ViewStyle = {
+    backgroundColor: colors.card,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    transform: [{ rotate: `${tilt}deg` }],
+    // Тень в цвете элемента, а не серая.
+    shadowColor: glow ?? accents.violetDeep,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    elevation: 3,
+  };
+
+  // Кликабельная плитка — ОДИН элемент, а не Pressable поверх View: иначе
+  // переданные flex/ширина уходят внутрь и ряд плиток не растягивается.
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [base, style, pressed ? { opacity: 0.92 } : null]}
+      >
+        {children}
+      </Pressable>
+    );
+  }
+  return <View style={[base, style]}>{children}</View>;
 }
 
 // ── XpBar ───────────────────────────────────────────────────────────────────
@@ -197,16 +214,16 @@ export interface XpBarProps {
 }
 
 export function XpBar({ progress, height = 14, shine = true, colors: fill, style }: XpBarProps) {
-  const theme = useColors();
   const width = useRef(new Animated.Value(0)).current;
   const glide = useRef(new Animated.Value(0)).current;
   const clamped = Math.max(0, Math.min(1, progress));
 
   useEffect(() => {
+    // Ширина не поддерживается нативным драйвером, поэтому здесь всегда JS.
     Animated.timing(width, {
       toValue: clamped,
       duration: timing.progress,
-      easing: Easing.out(Easing.quart),
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
   }, [clamped]);
@@ -215,7 +232,7 @@ export function XpBar({ progress, height = 14, shine = true, colors: fill, style
     if (!shine) return;
     const loop = Animated.loop(
       Animated.timing(glide, {
-        toValue: 1, duration: 2600, easing: Easing.out(Easing.quart), useNativeDriver: false,
+        toValue: 1, duration: 2600, easing: Easing.linear, useNativeDriver: false,
       }),
     );
     loop.start();
