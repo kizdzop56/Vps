@@ -1,3 +1,10 @@
+// Экран заданий: у учителя — созданные задания и колоды, у ученика —
+// назначенное и выполненное.
+//
+// Эмодзи в интерфейсе не используются: в пустых состояниях и в строке колоды
+// стоят глифы из своего набора. Значок колоды рисует DeckGlyph — тот же
+// компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде.
+// Поле deck.emoji из базы при этом не меняется.
 import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Platform,
@@ -16,6 +23,8 @@ import { useGamification } from "@/hooks/useGamification";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useQuery } from "@tanstack/react-query";
 import { fc } from "@/hooks/useFlashcards";
+import { Glyph } from "@/components/ui/Glyph";
+import { DeckGlyph } from "@/components/ui/DeckGlyph";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -135,7 +144,7 @@ function AssignModal({
         }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground }}>Назначить задание</Text>
-            <TouchableOpacity onPress={onClose}><Feather name="x" size={22} color={colors.mutedForeground} /></TouchableOpacity>
+            <TouchableOpacity onPress={onClose}><Glyph name="close" size={22} color={colors.mutedForeground} /></TouchableOpacity>
           </View>
           <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 16 }}>
             {assignment?.title} · выбери учеников
@@ -150,8 +159,16 @@ function AssignModal({
           {loading ? (
             <ActivityIndicator color={colors.primary} style={{ marginVertical: 30 }} />
           ) : students.length === 0 ? (
-            <View style={{ alignItems: "center", paddingVertical: 30, gap: 8 }}>
-              <Text style={{ fontSize: 36 }}>🎓</Text>
+            <View style={{ alignItems: "center", paddingVertical: 30, gap: 10 }}>
+              {/* Глиф в плашке вместо 🎓: цвет управляется темой, вид одинаков
+                  на iOS, Android и в вебе. */}
+              <View style={{
+                width: 62, height: 62, borderRadius: 20, justifyContent: "center", alignItems: "center",
+                backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "2e",
+                transform: [{ rotate: "-4deg" }],
+              }}>
+                <Glyph name="users" size={30} color={colors.primary} />
+              </View>
               <Text style={{ fontSize: 15, color: colors.mutedForeground, textAlign: "center" }}>
                 Нет принятых учеников.{"\n"}Сначала добавьте учеников на вкладке «Ученики».
               </Text>
@@ -417,7 +434,7 @@ export default function AssignmentsScreen() {
       paddingHorizontal: 10, paddingVertical: 4,
       backgroundColor: "#fce7f3", borderRadius: 8,
     },
-    pointsText: { fontSize: 12, fontWeight: "700", color: "#9d174d" },
+    pointsText: { fontSize: 12, fontWeight: "700", color: "#9d174d", fontVariant: ["tabular-nums"] },
     ageText: { fontSize: 12, color: colors.mutedForeground },
     actionBtn: {
       flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
@@ -431,6 +448,12 @@ export default function AssignmentsScreen() {
     },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 60, gap: 12 },
     emptyText: { fontSize: 16, color: colors.mutedForeground, textAlign: "center" },
+    // Плашка под глиф в пустом состоянии: лёгкий наклон вместо строгого квадрата.
+    emptyIcon: {
+      width: 68, height: 68, borderRadius: 22, justifyContent: "center", alignItems: "center",
+      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
+      transform: [{ rotate: "-4deg" }],
+    },
     teacherTag: {
       flexDirection: "row", alignItems: "center", gap: 4,
       backgroundColor: colors.primary + "15", borderRadius: 8,
@@ -482,7 +505,7 @@ export default function AssignmentsScreen() {
             <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
           </View>
           <View style={styles.pointsBadge}>
-            <Feather name="star" size={12} color="#9d174d" />
+            <Glyph name="star" size={12} color="#9d174d" />
             <Text style={styles.pointsText}>{item.points > 0 ? `${item.points} очков` : "по проверке"}</Text>
           </View>
         </View>
@@ -533,7 +556,7 @@ export default function AssignmentsScreen() {
             style={[styles.actionBtn, { borderColor: colors.border, backgroundColor: colors.card, flex: undefined, paddingHorizontal: 12 }]}
             onPress={() => router.push(`/(main)/teacher-results/${item.id}` as any)}
           >
-            <Feather name="bar-chart-2" size={14} color={colors.mutedForeground} />
+            <Glyph name="chart" size={14} color={colors.mutedForeground} />
             <Text style={[styles.actionBtnText, { color: colors.mutedForeground }]}>Итоги</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -577,9 +600,9 @@ export default function AssignmentsScreen() {
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <View style={[styles.scoreBadge, { backgroundColor: scoreColor + "18" }]}>
-              <Text style={{ fontSize: 16, fontWeight: "900", color: scoreColor }}>{score}%</Text>
+              <Text style={{ fontSize: 16, fontWeight: "900", color: scoreColor, fontVariant: ["tabular-nums"] }}>{score}%</Text>
             </View>
-            <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+            <Glyph name="chevron" size={16} color={colors.mutedForeground} />
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -615,9 +638,9 @@ export default function AssignmentsScreen() {
           <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <View style={[styles.scoreBadge, { backgroundColor: scoreColor + "18" }]}>
-              <Text style={{ fontSize: 16, fontWeight: "900", color: scoreColor }}>{item.score}%</Text>
+              <Text style={{ fontSize: 16, fontWeight: "900", color: scoreColor, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
             </View>
-            <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+            <Glyph name="chevron" size={16} color={colors.mutedForeground} />
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -626,7 +649,7 @@ export default function AssignmentsScreen() {
           </View>
           <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
           <View style={styles.pointsBadge}>
-            <Feather name="star" size={12} color="#9d174d" />
+            <Glyph name="star" size={12} color="#9d174d" />
             <Text style={styles.pointsText}>+{item.pointsEarned} очков</Text>
           </View>
           <Text style={styles.ageText}>{new Date(item.submittedAt).toLocaleDateString("ru-RU")}</Text>
@@ -651,7 +674,7 @@ export default function AssignmentsScreen() {
           </Text>
           {isTeacher && (
             <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/(main)/create-assignment" as any)}>
-              <Feather name="plus" size={20} color="#fff" />
+              <Glyph name="plus" size={20} color="#fff" />
             </TouchableOpacity>
           )}
         </View>
@@ -702,7 +725,7 @@ export default function AssignmentsScreen() {
               />
               {search.length > 0 && (
                 <TouchableOpacity onPress={() => setSearch("")}>
-                  <Feather name="x" size={16} color={colors.mutedForeground} />
+                  <Glyph name="close" size={16} color={colors.mutedForeground} />
                 </TouchableOpacity>
               )}
             </View>
@@ -740,7 +763,9 @@ export default function AssignmentsScreen() {
               const withSub = teacherSubs.filter(t => !!t.submission);
               if (withSub.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <Feather name="inbox" size={48} color={colors.mutedForeground} />
+                  <View style={styles.emptyIcon}>
+                    <Glyph name="tray" size={32} color={colors.primary} />
+                  </View>
                   <Text style={styles.emptyText}>Ответов ещё нет</Text>
                 </View>
               );
@@ -758,7 +783,9 @@ export default function AssignmentsScreen() {
             {isStudent && (() => {
               if (myCompleted.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <Feather name="check-circle" size={48} color={colors.mutedForeground} />
+                  <View style={styles.emptyIcon}>
+                    <Glyph name="check" size={32} color={colors.primary} />
+                  </View>
                   <Text style={styles.emptyText}>Выполненных заданий пока нет</Text>
                 </View>
               );
@@ -808,7 +835,9 @@ export default function AssignmentsScreen() {
 
               if (combined.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <Feather name="inbox" size={48} color={colors.mutedForeground} />
+                  <View style={styles.emptyIcon}>
+                    <Glyph name="tray" size={32} color={colors.primary} />
+                  </View>
                   <Text style={styles.emptyText}>Заданий и колод пока нет.{"\n"}Нажмите + чтобы создать первое задание.</Text>
                 </View>
               );
@@ -837,7 +866,9 @@ export default function AssignmentsScreen() {
               );
               if (filtered.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <Feather name="inbox" size={48} color={colors.mutedForeground} />
+                  <View style={styles.emptyIcon}>
+                    <Glyph name="tray" size={32} color={colors.primary} />
+                  </View>
                   <Text style={styles.emptyText}>Заданий пока нет.{"\n"}Нажмите + чтобы создать первое.</Text>
                 </View>
               );
@@ -857,7 +888,9 @@ export default function AssignmentsScreen() {
               );
               if (filtered.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <Feather name="check-circle" size={48} color={colors.mutedForeground} />
+                  <View style={styles.emptyIcon}>
+                    <Glyph name="check" size={32} color={colors.primary} />
+                  </View>
                   <Text style={styles.emptyText}>
                     {"Учитель ещё не назначил заданий"}
                   </Text>
@@ -891,7 +924,8 @@ export default function AssignmentsScreen() {
 }
 
 // ─── Строка колоды — общий внешний вид для вкладки «Колоды» и для колод,
-// подмешанных в общий список во вкладке «Все» (см. renderDeckRow). ──────────
+// подмешанных в общий список во вкладке «Все». Значок рисует DeckGlyph: тот же
+// компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде. ──
 function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: () => void }) {
   return (
     <TouchableOpacity
@@ -904,7 +938,7 @@ function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: (
         borderColor: colors.border, padding: 14, marginBottom: 10,
       }}
     >
-      <Text style={{ fontSize: 28 }}>{deck.emoji ?? "📘"}</Text>
+      <DeckGlyph title={deck.title} emoji={deck.emoji} size={44} />
       <View style={{ flex: 1 }}>
         <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3 }}>
@@ -912,7 +946,7 @@ function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: (
           {deck.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : " · ещё никому не отправлена"}
         </Text>
       </View>
-      <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+      <Glyph name="chevron" size={20} color={colors.mutedForeground} />
     </TouchableOpacity>
   );
 }
@@ -938,7 +972,9 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
   if (decksQ.isError) {
     return (
       <View style={[styles.empty, { paddingTop: 40, gap: 12 }]}>
-        <Feather name="alert-circle" size={44} color={colors.destructive} />
+        <View style={[styles.emptyIcon, { backgroundColor: colors.destructive + "14", borderColor: colors.destructive + "33" }]}>
+          <Glyph name="alert" size={32} color={colors.destructive} />
+        </View>
         <Text style={styles.emptyText}>Не удалось загрузить колоды.</Text>
         <TouchableOpacity
           onPress={() => decksQ.refetch()}
@@ -963,13 +999,15 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
           borderRadius: 14, paddingVertical: 13, marginBottom: 12,
         }}
       >
-        <Feather name="plus" size={18} color={colors.primary} />
+        <Glyph name="plus" size={18} color={colors.primary} />
         <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 14 }}>Создать колоду</Text>
       </TouchableOpacity>
 
       {decks.length === 0 ? (
         <View style={[styles.empty, { paddingTop: 30 }]}>
-          <Feather name="layers" size={48} color={colors.mutedForeground} />
+          <View style={styles.emptyIcon}>
+            <Glyph name="cards" size={32} color={colors.primary} />
+          </View>
           <Text style={styles.emptyText}>
             Колод пока нет.{"\n"}Создайте колоду, добавьте слова и отправьте её ученикам.
           </Text>
