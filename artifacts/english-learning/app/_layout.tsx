@@ -9,6 +9,16 @@ import { setBaseUrl } from "@workspace/api-client-react";
 import { LinearGradient } from "expo-linear-gradient";
 import { Platform, StyleSheet } from "react-native";
 import { useFonts } from "expo-font";
+import {
+  Unbounded_700Bold,
+  Unbounded_800ExtraBold,
+  Unbounded_900Black,
+} from "@expo-google-fonts/unbounded";
+import {
+  Manrope_500Medium,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
+} from "@expo-google-fonts/manrope";
 
 if (Platform.OS === "web" && typeof document !== "undefined") {
   const style = document.createElement("style");
@@ -70,8 +80,24 @@ const domain = process.env["EXPO_PUBLIC_DOMAIN"];
 setBaseUrl(domain ? `https://${domain}` : null);
 
 export default function RootLayout() {
+  // Feather — иконочный шрифт, без него интерфейс ломается, поэтому на нативе
+  // ждём именно его (см. проверку ниже).
   const [fontsLoaded, fontError] = useFonts({
     Feather: require("../assets/fonts/Feather.ttf"),
+  });
+
+  // Шрифты оформления грузим ОТДЕЛЬНЫМ хуком и намеренно не блокируем ими
+  // запуск: пока Unbounded и Manrope едут, текст рисуется системным шрифтом,
+  // а затем подменяется. Если объединить их с Feather, первый запуск на
+  // медленной сети даст лишнюю задержку белого экрана ради косметики.
+  // Имена ключей совпадают с fonts.* в constants/theme.ts.
+  useFonts({
+    Unbounded_700Bold,
+    Unbounded_800ExtraBold,
+    Unbounded_900Black,
+    Manrope_500Medium,
+    Manrope_700Bold,
+    Manrope_800ExtraBold,
   });
 
   // On web: directly remove the HTML loading screen as soon as React renders.
