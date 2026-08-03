@@ -1,16 +1,30 @@
+// Экран «Успеваемость» — родительский. Показывает полную картину по ребёнку:
+// средний балл и тренд, автоматические выводы, разбор по видам заданий,
+// динамику результатов, историю занятий с учителем, время в приложении,
+// словарный запас и историю сданных работ.
+//
+// Оформление сдержаннее ученических экранов: те же плитки с цветной тенью и
+// физические кнопки из GameKit, но без наклонов, бликов и игровых эффектов —
+// родителю нужны цифры, а не награды. Эмодзи не используются: значки рисует
+// собственный набор глифов (components/ui/Glyph.tsx).
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
   ActivityIndicator, Platform, RefreshControl, useWindowDimensions,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
-import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Line, Path, Rect, Text as SvgText } from "react-native-svg";
+import Svg, {
+  Circle, Line, Path, Rect, Text as SvgText,
+  Defs, LinearGradient as SvgGradient, Stop,
+} from "react-native-svg";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { accents, radii } from "@/constants/theme";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -131,12 +145,13 @@ const SCALE_COLORS: Record<string, string> = {
   video: "#ec4899",
   free_form: "#f59e0b",
 };
-const SCALE_ICONS: Record<string, any> = {
-  text_test: "edit-3",
-  audio: "headphones",
+/** Значки видов заданий — из собственного набора, а не из Feather. */
+const SCALE_ICONS: Record<string, GlyphName> = {
+  text_test: "pen",
+  audio: "sound",
   reading: "book",
   video: "video",
-  free_form: "file-text",
+  free_form: "note",
 };
 const KNOWLEDGE_LABELS: Record<string, string> = {
   starter: "Стартовый",
@@ -164,9 +179,14 @@ function scoreVerdict(score: number): string {
   return "требует внимания";
 }
 
+/**
+ * Цвет балла. Зелёного в палитре нет намеренно: «хорошо» здесь фиолетовый
+ * (colors.success = #8b5cf6), средний результат — янтарь, слабый — розовый
+ * destructive. Так экран остаётся в фирменной гамме и не спорит с брендом.
+ */
 function scoreColor(score: number, colors: { success: string; destructive: string }): string {
   if (score >= 70) return colors.success;
-  if (score >= 50) return "#f59e0b";
+  if (score >= 50) return accents.amber;
   return colors.destructive;
 }
 
@@ -357,8 +377,8 @@ function ScoreTrendChart({
 
   if (points.length < 2) {
     return (
-      <View style={{ paddingVertical: 24, alignItems: "center", gap: 8 }}>
-        <Text style={{ fontSize: 28 }}>📈</Text>
+      <View style={{ paddingVertical: 24, alignItems: "center", gap: 10 }}>
+        <Glyph name="chart" size={30} color={colors.mutedForeground} />
         <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
           График появится после двух выполненных заданий
         </Text>
@@ -379,6 +399,18 @@ function ScoreTrendChart({
 
   return (
     <Svg width={width} height={H}>
+      <Defs>
+        {/* Заливка под линией угасает книзу — линия читается чётче. */}
+        <SvgGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#a855f7" stopOpacity={0.32} />
+          <Stop offset="1" stopColor="#6366f1" stopOpacity={0.02} />
+        </SvgGradient>
+        <SvgGradient id="trendLine" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0" stopColor="#6366f1" />
+          <Stop offset="1" stopColor={accents.magenta} />
+        </SvgGradient>
+      </Defs>
+
       {/* Сетка и подписи шкалы */}
       {[0, 50, 100].map((tick) => (
         <React.Fragment key={tick}>
@@ -398,8 +430,8 @@ function ScoreTrendChart({
       ))}
 
       {/* Область под линией */}
-      <Path d={areaPath} fill={colors.primary} fillOpacity={0.14} />
-      <Path d={linePath} stroke={colors.primary} strokeWidth={2.5} fill="none" strokeLinejoin="round" strokeLinecap="round" />
+      <Path d={areaPath} fill="url(#trendFill)" />
+      <Path d={linePath} stroke="url(#trendLine)" strokeWidth={3} fill="none" strokeLinejoin="round" strokeLinecap="round" />
 
       {/* Точки */}
       {points.map((p, i) => (
@@ -443,11 +475,22 @@ function WeekActivityChart({
 
   return (
     <Svg width={width} height={H}>
+      <Defs>
+        <SvgGradient id="weekBar" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#a855f7" />
+          <Stop offset="1" stopColor="#6366f1" />
+        </SvgGradient>
+        {/* Сегодняшний столбец теплее остальных — глаз находит его сразу. */}
+        <SvgGradient id="weekBarToday" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor={accents.magenta} />
+          <Stop offset="1" stopColor="#ec4899" />
+        </SvgGradient>
+      </Defs>
       {days.map((d, i) => {
         const cx = slot * i + slot / 2;
         const h = Math.max(d.minutes > 0 ? 4 : 2, (d.minutes / max) * innerH);
         const isToday = i === days.length - 1;
-        const fill = d.minutes === 0 ? colors.muted : isToday ? "#ec4899" : colors.primary;
+        const fill = d.minutes === 0 ? colors.muted : isToday ? "url(#weekBarToday)" : "url(#weekBar)";
         return (
           <React.Fragment key={d.key}>
             {d.minutes > 0 && (
@@ -460,7 +503,7 @@ function WeekActivityChart({
               y={PAD_T + innerH - h}
               width={barW}
               height={h}
-              rx={Math.min(6, barW / 2)}
+              rx={Math.min(7, barW / 2)}
               fill={fill}
               opacity={d.minutes === 0 ? 0.7 : 1}
             />
@@ -492,31 +535,42 @@ function ScaleBars({
   const hasAny = stats.some((s) => s.count > 0);
   if (!hasAny) {
     return (
-      <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", paddingVertical: 18 }}>
-        Пока нет выполненных заданий — шкалы заполнятся автоматически
-      </Text>
+      <View style={{ alignItems: "center", paddingVertical: 18, gap: 10 }}>
+        <Glyph name="tray" size={30} color={colors.mutedForeground} />
+        <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+          Пока нет выполненных заданий — шкалы заполнятся автоматически
+        </Text>
+      </View>
     );
   }
 
   return (
-    <View style={{ gap: 14 }}>
+    <View style={{ gap: 15 }}>
       {stats.map((stat) => {
         const color = SCALE_COLORS[stat.type] ?? colors.primary;
         const has = stat.count > 0 && stat.avgScore !== null;
         const pct = Math.max(0, Math.min(100, stat.avgScore ?? 0));
         return (
           <View key={stat.type}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6, gap: 8 }}>
-              <Feather name={SCALE_ICONS[stat.type] ?? "edit-3"} size={14} color={color} />
-              <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, flex: 1 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 7, gap: 9 }}>
+              {/* Значок вида задания в плашке своего цвета: строки различимы
+                  по цвету раньше, чем прочитан текст. */}
+              <View style={{
+                width: 26, height: 26, borderRadius: 8,
+                backgroundColor: color + "1f",
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <Glyph name={SCALE_ICONS[stat.type] ?? "pen"} size={14} color={color} />
+              </View>
+              <Text style={{ fontSize: 13.5, fontWeight: "700", color: colors.foreground, flex: 1 }}>
                 {SCALE_LABELS[stat.type] ?? stat.type}
               </Text>
               {has ? (
                 <>
-                  <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
                     {stat.count} {stat.count === 1 ? "задание" : "заданий"}
                   </Text>
-                  <Text style={{ fontSize: 14, fontWeight: "900", color, minWidth: 42, textAlign: "right" }}>
+                  <Text style={{ fontSize: 15, fontWeight: "900", color, minWidth: 44, textAlign: "right", fontVariant: ["tabular-nums"] }}>
                     {pct}%
                   </Text>
                 </>
@@ -698,44 +752,44 @@ export default function ProgressScreen() {
 
   // ── Автоматические выводы для родителя ─────────────────────────────
   const insights = useMemo(() => {
-    const out: { icon: any; tone: "good" | "warn" | "info"; text: string }[] = [];
+    const out: { icon: GlyphName; tone: "good" | "warn" | "info"; text: string }[] = [];
     const subs = report?.submissions ?? [];
 
     // Без заданий выводов по баллам нет — но занятия, время в приложении
     // и словарный запас показываем всё равно, они могут быть.
     if (subs.length === 0) {
       out.push({
-        icon: "info",
+        icon: "compass",
         tone: "info",
         text: "Ребёнок ещё не выполнил ни одного задания. Как только появится первый результат, здесь будет разбор по баллам.",
       });
     }
 
     if (derived.trend !== null && derived.trend >= 5) {
-      out.push({ icon: "trending-up", tone: "good", text: `Результаты растут: +${derived.trend} п.п. за последние 5 заданий.` });
+      out.push({ icon: "trendUp", tone: "good", text: `Результаты растут: +${derived.trend} п.п. за последние 5 заданий.` });
     } else if (derived.trend !== null && derived.trend <= -5) {
-      out.push({ icon: "trending-down", tone: "warn", text: `Результаты снижаются: ${derived.trend} п.п. за последние 5 заданий. Стоит обсудить, что стало сложнее.` });
+      out.push({ icon: "trendDown", tone: "warn", text: `Результаты снижаются: ${derived.trend} п.п. за последние 5 заданий. Стоит обсудить, что стало сложнее.` });
     } else if (derived.trend !== null) {
-      out.push({ icon: "activity", tone: "info", text: "Результаты стабильны — резких изменений за последние задания нет." });
+      out.push({ icon: "chart", tone: "info", text: "Результаты стабильны — резких изменений за последние задания нет." });
     }
 
     if (derived.best && derived.best.avgScore !== null) {
       out.push({
-        icon: "award",
+        icon: "trophy",
         tone: "good",
         text: `Лучше всего даётся «${SCALE_LABELS[derived.best.type] ?? derived.best.type}» — ${derived.best.avgScore}%. Есть за что похвалить.`,
       });
     }
     if (derived.worst && derived.worst.avgScore !== null && derived.worst.avgScore < 70) {
       out.push({
-        icon: "alert-circle",
+        icon: "alert",
         tone: "warn",
         text: `Слабое место — «${SCALE_LABELS[derived.worst.type] ?? derived.worst.type}» (${derived.worst.avgScore}%). Здесь нужна дополнительная практика.`,
       });
     }
 
     if (derived.streak >= 3) {
-      out.push({ icon: "zap", tone: "good", text: `Занимается ${derived.streak} ${derived.streak === 1 ? "день" : "дней"} подряд — привычка формируется.` });
+      out.push({ icon: "flame", tone: "good", text: `Занимается ${derived.streak} ${derived.streak === 1 ? "день" : "дней"} подряд — привычка формируется.` });
     }
     if (derived.activeDaysThisWeek > 0) {
       const weekMins = report?.time?.weekMinutes ?? 0;
@@ -764,7 +818,7 @@ export default function ProgressScreen() {
     const fc = report?.flashcards;
     if (fc && fc.totalWords > 0) {
       out.push({
-        icon: "layers",
+        icon: "cards",
         tone: fc.accuracy >= 70 ? "good" : "info",
         text: `Слова: выучено ${fc.totalLearned} из ${fc.totalWords}, точность ответов ${fc.accuracy}%.`,
       });
@@ -772,7 +826,7 @@ export default function ProgressScreen() {
 
     if (derived.totalQuestions > 0) {
       out.push({
-        icon: "check-circle",
+        icon: "check",
         tone: "info",
         text: `Всего верных ответов ${derived.totalCorrect} из ${derived.totalQuestions}.`,
       });
@@ -796,45 +850,51 @@ export default function ProgressScreen() {
       paddingHorizontal: 20,
       paddingBottom: 12,
     },
-    title: { fontSize: 26, fontWeight: "800", color: colors.foreground },
+    title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
     subtitle: { fontSize: 14, color: colors.mutedForeground, marginTop: 2 },
     scroll: { paddingHorizontal: 20, paddingBottom: insets.bottom + 100 },
     center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, paddingHorizontal: 32, paddingBottom: 80 },
+    // Карточка: цветная тень вместо серой — на светло-фиолетовом фоне серая
+    // читается грязью. Рамка добавлена, чтобы край не растворялся.
     card: {
       backgroundColor: colors.card,
-      borderRadius: 20,
+      borderRadius: radii.lg - 4,
+      borderWidth: 1,
+      borderColor: colors.border,
       padding: 18,
       marginBottom: 16,
-      shadowColor: "#7c3aed",
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1,
-      shadowRadius: 12,
+      shadowColor: accents.violetDeep,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.14,
+      shadowRadius: 16,
       elevation: 4,
     },
-    sectionTitle: { fontSize: 16, fontWeight: "800", color: colors.foreground },
+    sectionTitle: { fontSize: 17, fontWeight: "800", letterSpacing: -0.2, color: colors.foreground },
     sectionHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
     statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
     statCard: {
       flex: 1,
       minWidth: "44%",
       backgroundColor: colors.card,
-      borderRadius: 16,
+      borderRadius: radii.md,
+      borderWidth: 1,
+      borderColor: colors.border,
       padding: 14,
       alignItems: "center",
-      gap: 4,
-      shadowColor: "#7c3aed",
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1,
-      shadowRadius: 10,
+      gap: 5,
+      shadowColor: accents.violetDeep,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.13,
+      shadowRadius: 14,
       elevation: 4,
     },
-    statValue: { fontSize: 24, fontWeight: "900", color: colors.foreground },
+    statValue: { fontSize: 25, fontWeight: "900", letterSpacing: -0.8, color: colors.foreground, fontVariant: ["tabular-nums"] },
     statLabel: { fontSize: 12, color: colors.mutedForeground, textAlign: "center" },
-    badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, backgroundColor: colors.muted },
+    badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: radii.pill, backgroundColor: colors.muted },
     badgeText: { fontSize: 12, color: colors.mutedForeground, fontWeight: "600" },
     historyRow: {
       backgroundColor: "rgba(243,240,255,0.6)",
-      borderRadius: 12,
+      borderRadius: radii.sm,
       padding: 12,
       borderWidth: 1,
       borderColor: colors.border,
@@ -847,7 +907,7 @@ export default function ProgressScreen() {
   if (user && user.role !== "parent") {
     return (
       <View style={[styles.container, styles.center]}>
-        <Feather name="lock" size={36} color={colors.mutedForeground} />
+        <Glyph name="lock" size={38} color={colors.mutedForeground} />
         <Text style={[styles.empty, { fontSize: 15 }]}>
           Эта вкладка доступна только родителям.
         </Text>
@@ -866,11 +926,11 @@ export default function ProgressScreen() {
   if (error) {
     return (
       <View style={[styles.container, styles.center]}>
-        <Feather name="alert-circle" size={36} color={colors.destructive} />
+        <Glyph name="alert" size={38} color={colors.destructive} />
         <Text style={[styles.empty, { fontSize: 15 }]}>{error}</Text>
         <TouchableOpacity
           onPress={() => { setLoadingChildren(true); loadChildren(); }}
-          style={{ backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 10 }}
+          style={{ backgroundColor: colors.primary, borderRadius: radii.sm, paddingHorizontal: 18, paddingVertical: 11 }}
         >
           <Text style={{ color: "#fff", fontWeight: "700" }}>Повторить</Text>
         </TouchableOpacity>
@@ -886,21 +946,16 @@ export default function ProgressScreen() {
           <Text style={styles.subtitle}>Полная картина по вашему ребёнку</Text>
         </View>
         <View style={styles.center}>
-          <Text style={{ fontSize: 46 }}>👨‍👩‍👦</Text>
+          <Glyph name="users" size={54} color={colors.mutedForeground} />
           <Text style={[styles.empty, { fontSize: 15 }]}>
             Пока не добавлен ни один ребёнок.{"\n"}Добавьте его на вкладке «Дети» — и здесь появится полный анализ успеваемости.
           </Text>
-          <TouchableOpacity
+          <ChunkyButton
+            label="Добавить ребёнка"
+            icon="plus"
             onPress={() => router.push("/(main)/students" as any)}
-            style={{
-              flexDirection: "row", alignItems: "center", gap: 8,
-              backgroundColor: colors.primary, borderRadius: 14,
-              paddingHorizontal: 18, paddingVertical: 12,
-            }}
-          >
-            <Feather name="user-plus" size={18} color="#fff" />
-            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Добавить ребёнка</Text>
-          </TouchableOpacity>
+            style={{ alignSelf: "stretch" }}
+          />
         </View>
       </View>
     );
@@ -942,10 +997,19 @@ export default function ProgressScreen() {
                 activeOpacity={0.8}
                 style={{
                   flexDirection: "row", alignItems: "center", gap: 8,
-                  paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20,
+                  paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.pill,
                   backgroundColor: active ? colors.primary : colors.card,
                   borderWidth: 1,
                   borderColor: active ? colors.primary : colors.border,
+                  // Активный ребёнок слегка приподнят — тот же приём, что у
+                  // переключателей в рейтинге.
+                  ...(active ? {
+                    shadowColor: colors.primary,
+                    shadowOffset: { width: 0, height: 3 },
+                    shadowOpacity: 0.3,
+                    shadowRadius: 8,
+                    elevation: 4,
+                  } : {}),
                 }}
               >
                 <View style={{ width: 24, height: 24, overflow: "hidden", borderRadius: 12 }}>
@@ -999,26 +1063,31 @@ export default function ProgressScreen() {
                     : "давно не заходил(а)"}
                 </Text>
               </View>
-              <TouchableOpacity
+              <Pressable
                 onPress={() => activeChildId !== null && router.push(`/(main)/chat/${activeChildId}` as any)}
-                style={{
+                style={({ pressed }) => ({
                   flexDirection: "row", alignItems: "center", gap: 6,
-                  backgroundColor: colors.primary, borderRadius: 12,
-                  paddingHorizontal: 12, paddingVertical: 8,
-                }}
+                  backgroundColor: colors.primary, borderRadius: radii.sm,
+                  paddingHorizontal: 12, paddingVertical: 9,
+                  opacity: pressed ? 0.85 : 1,
+                })}
               >
-                <Feather name="message-circle" size={15} color="#fff" />
-                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>Написать</Text>
-              </TouchableOpacity>
+                <Glyph name="chat" size={15} color="#fff" />
+                <Text style={{ color: "#fff", fontWeight: "800", fontSize: 12 }}>Написать</Text>
+              </Pressable>
             </View>
 
             {/* Средний балл крупно + тренд */}
             <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 12, marginTop: 18 }}>
-              <Text style={{ fontSize: 46, fontWeight: "900", color: avg !== null ? scoreColor(avg, colors) : colors.mutedForeground, lineHeight: 50 }}>
+              <Text style={{
+                fontSize: 46, fontWeight: "900", letterSpacing: -2, lineHeight: 50,
+                fontVariant: ["tabular-nums"],
+                color: avg !== null ? scoreColor(avg, colors) : colors.mutedForeground,
+              }}>
                 {avg !== null ? `${avg}%` : "—"}
               </Text>
               <View style={{ flex: 1, paddingBottom: 6 }}>
-                <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground }}>Средний балл</Text>
+                <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }}>Средний балл</Text>
                 <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
                   {avg !== null ? scoreVerdict(avg) : "нет выполненных заданий"}
                 </Text>
@@ -1026,14 +1095,17 @@ export default function ProgressScreen() {
               {trend !== null && trend !== 0 && (
                 <View
                   style={{
-                    flexDirection: "row", alignItems: "center", gap: 4,
-                    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12,
-                    backgroundColor: trend > 0 ? "#22c55e1a" : "#e11d481a",
+                    flexDirection: "row", alignItems: "center", gap: 5,
+                    paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill,
+                    backgroundColor: (trend > 0 ? colors.success : colors.destructive) + "1a",
                     marginBottom: 6,
                   }}
                 >
-                  <Feather name={trend > 0 ? "trending-up" : "trending-down"} size={14} color={trend > 0 ? "#16a34a" : colors.destructive} />
-                  <Text style={{ fontSize: 13, fontWeight: "800", color: trend > 0 ? "#16a34a" : colors.destructive }}>
+                  <Glyph name={trend > 0 ? "trendUp" : "trendDown"} size={14} color={trend > 0 ? colors.success : colors.destructive} />
+                  <Text style={{
+                    fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"],
+                    color: trend > 0 ? colors.success : colors.destructive,
+                  }}>
                     {trend > 0 ? `+${trend}` : trend} п.п.
                   </Text>
                 </View>
@@ -1049,47 +1121,38 @@ export default function ProgressScreen() {
                   <Text style={styles.badgeText}>Уровень: {KNOWLEDGE_LABELS[profile.knowledgeLevel]}</Text>
                 </View>
               ) : null}
-              <View style={[styles.badge, { backgroundColor: colors.primary + "1a" }]}>
-                <Text style={[styles.badgeText, { color: colors.primary, fontWeight: "700" }]}>
-                  CEFR: {fc?.placementLevel ?? "тест не пройден"}
-                </Text>
-              </View>
+              <Pill
+                text={`CEFR: ${fc?.placementLevel ?? "тест не пройден"}`}
+                icon="rank"
+                tone="soft"
+                color={colors.primary}
+              />
               {derived.streak > 0 && (
-                <View style={[styles.badge, { backgroundColor: "#ec48991a" }]}>
-                  <Text style={[styles.badgeText, { color: "#ec4899", fontWeight: "700" }]}>
-                    🔥 {derived.streak} {derived.streak === 1 ? "день" : "дней"} подряд
-                  </Text>
-                </View>
+                // Серия дней — единственный «наградный» элемент на родительском
+                // экране: огонь глифом, без эмодзи.
+                <Pill
+                  text={`${derived.streak} ${derived.streak === 1 ? "день" : "дней"} подряд`}
+                  icon="flame"
+                  tone="gold"
+                />
               )}
             </View>
           </View>
 
           {/* ── Ключевые цифры ── */}
           <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Feather name="check-circle" size={20} color={colors.success} />
-              <Text style={styles.statValue}>{report?.submissions.length ?? 0}</Text>
-              <Text style={styles.statLabel}>Выполнено заданий</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Feather name="star" size={20} color="#ec4899" />
-              <Text style={styles.statValue}>{profile?.totalPoints ?? activeChild?.totalPoints ?? 0}</Text>
-              <Text style={styles.statLabel}>Очков (XP)</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Feather name="clock" size={20} color="#6366f1" />
-              <Text style={styles.statValue}>{formatMinutes(time?.totalMinutes ?? profile?.totalTimeMinutes ?? 0)}</Text>
-              <Text style={styles.statLabel}>Всего в приложении</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Feather name="target" size={20} color={colors.primary} />
-              <Text style={styles.statValue}>
-                {derived.totalQuestions > 0
-                  ? `${Math.round((derived.totalCorrect / derived.totalQuestions) * 100)}%`
-                  : "—"}
-              </Text>
-              <Text style={styles.statLabel}>Верных ответов</Text>
-            </View>
+            <StatBox styles={styles} icon="check" tint={colors.success} value={String(report?.submissions.length ?? 0)} label="Выполнено заданий" />
+            <StatBox styles={styles} icon="star" tint={accents.magenta} value={String(profile?.totalPoints ?? activeChild?.totalPoints ?? 0)} label="Очков (XP)" />
+            <StatBox styles={styles} icon="clock" tint={colors.primary} value={formatMinutes(time?.totalMinutes ?? profile?.totalTimeMinutes ?? 0)} label="Всего в приложении" />
+            <StatBox
+              styles={styles}
+              icon="target"
+              tint={accents.amber}
+              value={derived.totalQuestions > 0
+                ? `${Math.round((derived.totalCorrect / derived.totalQuestions) * 100)}%`
+                : "—"}
+              label="Верных ответов"
+            />
           </View>
 
           {/* ── Что важно знать ── */}
@@ -1098,17 +1161,22 @@ export default function ProgressScreen() {
             <Text style={styles.sectionHint}>Автоматический разбор по данным приложения</Text>
             <View style={{ gap: 10, marginTop: 14 }}>
               {insights.map((ins, i) => {
-                const tint = ins.tone === "good" ? "#16a34a" : ins.tone === "warn" ? "#f59e0b" : colors.primary;
+                // Тон в фирменной гамме: хорошо — фиолетовый, внимание — янтарь,
+                // нейтрально — индиго. Зелёного в палитре нет намеренно.
+                const tint = ins.tone === "good" ? colors.success : ins.tone === "warn" ? accents.amber : colors.primary;
                 return (
                   <View
                     key={`${ins.text}-${i}`}
                     style={{
-                      flexDirection: "row", gap: 10, alignItems: "flex-start",
-                      backgroundColor: tint + "12", borderRadius: 12, padding: 12,
+                      flexDirection: "row", gap: 11, alignItems: "flex-start",
+                      backgroundColor: tint + "12", borderRadius: radii.sm,
+                      padding: 12,
                       borderLeftWidth: 3, borderLeftColor: tint,
                     }}
                   >
-                    <Feather name={ins.icon} size={16} color={tint} style={{ marginTop: 1 }} />
+                    <View style={{ marginTop: 1 }}>
+                      <Glyph name={ins.icon} size={16} color={tint} />
+                    </View>
                     <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: colors.foreground }}>
                       {ins.text}
                     </Text>
@@ -1147,14 +1215,14 @@ export default function ProgressScreen() {
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
               {[
-                { label: `${pluralDays(lessonsInfo.daysWeek)} за неделю`, value: lessonsInfo.daysWeek, sub: `${lessonsInfo.lessonsWeek} ${pluralLessons(lessonsInfo.lessonsWeek)}`, color: "#ec4899" },
+                { label: `${pluralDays(lessonsInfo.daysWeek)} за неделю`, value: lessonsInfo.daysWeek, sub: `${lessonsInfo.lessonsWeek} ${pluralLessons(lessonsInfo.lessonsWeek)}`, color: accents.magenta },
                 { label: `${pluralDays(lessonsInfo.daysMonth)} за месяц`, value: lessonsInfo.daysMonth, sub: `${lessonsInfo.lessonsMonth} ${pluralLessons(lessonsInfo.lessonsMonth)}`, color: colors.primary },
               ].map((item) => (
                 <View
                   key={item.label}
-                  style={{ flex: 1, backgroundColor: item.color + "12", borderRadius: 14, padding: 14, alignItems: "center", gap: 2 }}
+                  style={{ flex: 1, backgroundColor: item.color + "12", borderRadius: radii.md - 4, padding: 14, alignItems: "center", gap: 2 }}
                 >
-                  <Text style={{ fontSize: 30, fontWeight: "900", color: item.color, lineHeight: 34 }}>
+                  <Text style={{ fontSize: 30, fontWeight: "900", letterSpacing: -1, color: item.color, lineHeight: 34, fontVariant: ["tabular-nums"] }}>
                     {item.value}
                   </Text>
                   <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>{item.label}</Text>
@@ -1172,7 +1240,7 @@ export default function ProgressScreen() {
             ) : (
               <View style={{ gap: 8, marginTop: 14 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Feather name="check-circle" size={14} color={colors.success} />
+                  <Glyph name="check" size={14} color={colors.success} />
                   <Text style={{ fontSize: 13, color: colors.foreground }}>
                     Всего проведено: <Text style={{ fontWeight: "800" }}>{lessonsInfo.totalPast} {pluralLessons(lessonsInfo.totalPast)}</Text>
                     {lessonsInfo.totalMinutes > 0 ? ` · ${formatMinutes(lessonsInfo.totalMinutes)}` : ""}
@@ -1180,7 +1248,7 @@ export default function ProgressScreen() {
                 </View>
                 {lessonsInfo.last && (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Feather name="clock" size={14} color={colors.mutedForeground} />
+                    <Glyph name="clock" size={14} color={colors.mutedForeground} />
                     <Text style={{ fontSize: 13, color: colors.foreground }}>
                       Последнее: {formatLessonDate(lessonsInfo.last.date)}, {lessonsInfo.last.startTime}–{lessonsInfo.last.endTime}
                       {teacherLabel(lessonsInfo.last) ? ` · ${teacherLabel(lessonsInfo.last)}` : ""}
@@ -1193,11 +1261,11 @@ export default function ProgressScreen() {
             {lessonsInfo.next && (
               <View
                 style={{
-                  flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12,
-                  backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12,
+                  flexDirection: "row", alignItems: "center", gap: 9, marginTop: 12,
+                  backgroundColor: colors.primary + "12", borderRadius: radii.sm, padding: 12,
                 }}
               >
-                <Feather name="calendar" size={15} color={colors.primary} />
+                <Glyph name="calendar" size={15} color={colors.primary} />
                 <Text style={{ flex: 1, fontSize: 13, color: colors.foreground }}>
                   Следующее занятие: <Text style={{ fontWeight: "800" }}>
                     {formatLessonDate(lessonsInfo.next.date)}, {lessonsInfo.next.startTime}–{lessonsInfo.next.endTime}
@@ -1209,9 +1277,7 @@ export default function ProgressScreen() {
 
             {pastLessons.length > 0 && (
               <View style={{ marginTop: 16 }}>
-                <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>
-                  Проведённые занятия
-                </Text>
+                <SectionLabel>Проведённые занятия</SectionLabel>
                 {visibleLessons.map((lesson) => (
                   <View
                     key={lesson.bookingId}
@@ -1223,14 +1289,14 @@ export default function ProgressScreen() {
                     <View
                       style={{
                         width: 36, height: 36, borderRadius: 10,
-                        backgroundColor: colors.primary + "12",
+                        backgroundColor: colors.primary + "14",
                         alignItems: "center", justifyContent: "center",
                       }}
                     >
-                      <Feather name="book-open" size={15} color={colors.primary} />
+                      <Glyph name="book" size={15} color={colors.primary} />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.foreground }}>
+                      <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground }}>
                         {formatLessonDate(lesson.date)}
                       </Text>
                       {teacherLabel(lesson) ? (
@@ -1240,11 +1306,11 @@ export default function ProgressScreen() {
                       ) : null}
                     </View>
                     <View style={{ alignItems: "flex-end" }}>
-                      <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>
+                      <Text style={{ fontSize: 12, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
                         {lesson.startTime}–{lesson.endTime}
                       </Text>
                       {lessonMinutes(lesson) > 0 && (
-                        <Text style={{ fontSize: 11, color: colors.mutedForeground }}>
+                        <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
                           {formatMinutes(lessonMinutes(lesson))}
                         </Text>
                       )}
@@ -1253,15 +1319,12 @@ export default function ProgressScreen() {
                 ))}
 
                 {pastLessons.length > 5 && (
-                  <TouchableOpacity
+                  <ExpandRow
+                    colors={colors}
+                    open={showAllLessons}
                     onPress={() => setShowAllLessons((v) => !v)}
-                    style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10 }}
-                  >
-                    <Text style={{ fontSize: 14, fontWeight: "700", color: colors.primary }}>
-                      {showAllLessons ? "Свернуть" : `Показать все (${pastLessons.length})`}
-                    </Text>
-                    <Feather name={showAllLessons ? "chevron-up" : "chevron-down"} size={16} color={colors.primary} />
-                  </TouchableOpacity>
+                    label={showAllLessons ? "Свернуть" : `Показать все (${pastLessons.length})`}
+                  />
                 )}
               </View>
             )}
@@ -1274,15 +1337,15 @@ export default function ProgressScreen() {
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
               {[
-                { label: "Сегодня", value: time?.todayMinutes ?? 0, color: "#ec4899" },
+                { label: "Сегодня", value: time?.todayMinutes ?? 0, color: accents.magenta },
                 { label: "За неделю", value: time?.weekMinutes ?? 0, color: colors.primary },
-                { label: "Всего", value: time?.totalMinutes ?? profile?.totalTimeMinutes ?? 0, color: "#6366f1" },
+                { label: "Всего", value: time?.totalMinutes ?? profile?.totalTimeMinutes ?? 0, color: accents.indigoDeep },
               ].map((item) => (
                 <View
                   key={item.label}
-                  style={{ flex: 1, backgroundColor: item.color + "12", borderRadius: 14, padding: 12, alignItems: "center", gap: 2 }}
+                  style={{ flex: 1, backgroundColor: item.color + "12", borderRadius: radii.md - 4, padding: 12, alignItems: "center", gap: 2 }}
                 >
-                  <Text style={{ fontSize: 17, fontWeight: "900", color: item.color }}>
+                  <Text style={{ fontSize: 17, fontWeight: "900", color: item.color, fontVariant: ["tabular-nums"] }}>
                     {formatMinutes(item.value)}
                   </Text>
                   <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{item.label}</Text>
@@ -1302,29 +1365,29 @@ export default function ProgressScreen() {
           {fc && (
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Словарный запас</Text>
-              <Text style={styles.sectionHint}>Работа с флеш-карточками</Text>
+              <Text style={styles.sectionHint}>Работа с карточками слов</Text>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
                 {[
-                  { icon: "award" as const, color: "#22c55e", value: String(fc.totalLearned), label: "Выучено слов" },
-                  { icon: "book-open" as const, color: "#6366f1", value: String(fc.totalWords), label: "Слов в изучении" },
-                  { icon: "repeat" as const, color: "#ec4899", value: String(fc.totalReviews), label: "Повторений" },
-                  { icon: "target" as const, color: colors.primary, value: `${fc.accuracy}%`, label: "Точность" },
+                  { icon: "check" as GlyphName, color: colors.success, value: String(fc.totalLearned), label: "Выучено слов" },
+                  { icon: "book" as GlyphName, color: colors.primary, value: String(fc.totalWords), label: "Слов в изучении" },
+                  { icon: "repeat" as GlyphName, color: accents.magenta, value: String(fc.totalReviews), label: "Повторений" },
+                  { icon: "target" as GlyphName, color: accents.amber, value: `${fc.accuracy}%`, label: "Точность" },
                 ].map((item) => (
                   <View
                     key={item.label}
-                    style={{ flex: 1, minWidth: "44%", backgroundColor: item.color + "12", borderRadius: 14, padding: 12, alignItems: "center", gap: 3 }}
+                    style={{ flex: 1, minWidth: "44%", backgroundColor: item.color + "12", borderRadius: radii.md - 4, padding: 12, alignItems: "center", gap: 4 }}
                   >
-                    <Feather name={item.icon} size={18} color={item.color} />
-                    <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{item.value}</Text>
+                    <Glyph name={item.icon} size={18} color={item.color} />
+                    <Text style={{ fontSize: 21, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground, fontVariant: ["tabular-nums"] }}>{item.value}</Text>
                     <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{item.label}</Text>
                   </View>
                 ))}
               </View>
               {fc.totalWords > 0 && (
                 <View style={{ marginTop: 14 }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 5 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
                     <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Прогресс по словам</Text>
-                    <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>
+                    <Text style={{ fontSize: 12, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
                       {Math.round((fc.totalLearned / fc.totalWords) * 100)}%
                     </Text>
                   </View>
@@ -1333,7 +1396,7 @@ export default function ProgressScreen() {
                       style={{
                         height: 10,
                         width: `${Math.min(100, Math.round((fc.totalLearned / fc.totalWords) * 100))}%` as any,
-                        backgroundColor: "#22c55e",
+                        backgroundColor: colors.success,
                         borderRadius: 5,
                       }}
                     />
@@ -1360,27 +1423,27 @@ export default function ProgressScreen() {
                   return (
                     <View key={sub.submissionId} style={styles.historyRow}>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                        <Feather name={SCALE_ICONS[sub.type ?? ""] ?? "edit-3"} size={15} color={color} />
-                        <Text style={{ flex: 1, fontSize: 14, fontWeight: "600", color: colors.foreground }} numberOfLines={1}>
+                        <Glyph name={SCALE_ICONS[sub.type ?? ""] ?? "pen"} size={15} color={color} />
+                        <Text style={{ flex: 1, fontSize: 14, fontWeight: "700", color: colors.foreground }} numberOfLines={1}>
                           {sub.title ?? "Задание"}
                         </Text>
-                        <Text style={{ fontSize: 15, fontWeight: "900", color: sc }}>{sub.score}%</Text>
+                        <Text style={{ fontSize: 16, fontWeight: "900", color: sc, fontVariant: ["tabular-nums"] }}>{sub.score}%</Text>
                       </View>
                       <View style={{ flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: color + "15" }}>
-                          <Text style={{ fontSize: 11, fontWeight: "600", color }}>
+                          <Text style={{ fontSize: 11, fontWeight: "700", color }}>
                             {SCALE_LABELS[sub.type ?? ""] ?? sub.type ?? "Задание"}
                           </Text>
                         </View>
-                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+                        <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
                           {sub.correctCount}/{sub.totalQuestions} верно
                         </Text>
                         {sub.pointsEarned > 0 && (
-                          <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+                          <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
                             +{sub.pointsEarned} XP
                           </Text>
                         )}
-                        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginLeft: "auto" as any }}>
+                        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginLeft: "auto" as any, fontVariant: ["tabular-nums"] }}>
                           {new Date(sub.submittedAt).toLocaleDateString("ru-RU")}
                         </Text>
                       </View>
@@ -1391,36 +1454,85 @@ export default function ProgressScreen() {
             </View>
 
             {(report?.submissions.length ?? 0) > 6 && (
-              <TouchableOpacity
+              <ExpandRow
+                colors={colors}
+                open={showAllHistory}
                 onPress={() => setShowAllHistory((v) => !v)}
-                style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10 }}
-              >
-                <Text style={{ fontSize: 14, fontWeight: "700", color: colors.primary }}>
-                  {showAllHistory ? "Свернуть" : `Показать все (${report?.submissions.length})`}
-                </Text>
-                <Feather name={showAllHistory ? "chevron-up" : "chevron-down"} size={16} color={colors.primary} />
-              </TouchableOpacity>
+                label={showAllHistory ? "Свернуть" : `Показать все (${report?.submissions.length})`}
+              />
             )}
           </View>
 
           {/* Ссылка на полный профиль ребёнка */}
           {activeChildId !== null && (
-            <TouchableOpacity
+            <Pressable
               onPress={() => router.push(`/(main)/student/${activeChildId}` as any)}
-              style={{
-                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-                paddingVertical: 14, borderRadius: 16,
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9,
+                paddingVertical: 15, borderRadius: radii.md,
                 borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
-              }}
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Feather name="user" size={16} color={colors.primary} />
-              <Text style={{ fontSize: 14, fontWeight: "700", color: colors.primary }}>
+              <Glyph name="user" size={16} color={colors.primary} />
+              <Text style={{ fontSize: 14, fontWeight: "800", color: colors.primary }}>
                 Открыть профиль ребёнка
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           )}
         </ScrollView>
       )}
     </View>
+  );
+}
+
+/** Счётчик в сетке ключевых цифр. */
+function StatBox({
+  styles, icon, tint, value, label,
+}: {
+  styles: any;
+  icon: GlyphName;
+  tint: string;
+  value: string;
+  label: string;
+}) {
+  return (
+    <View style={styles.statCard}>
+      <View style={{
+        width: 32, height: 32, borderRadius: 10,
+        backgroundColor: tint + "1f",
+        alignItems: "center", justifyContent: "center",
+      }}>
+        <Glyph name={icon} size={18} color={tint} />
+      </View>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+/** Строка «Показать все / Свернуть» со стрелкой, которая поворачивается. */
+function ExpandRow({
+  colors, open, onPress, label,
+}: {
+  colors: any;
+  open: boolean;
+  onPress: () => void;
+  label: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: "row", alignItems: "center", justifyContent: "center",
+        gap: 7, paddingVertical: 11, opacity: pressed ? 0.7 : 1,
+      })}
+    >
+      <Text style={{ fontSize: 14, fontWeight: "800", color: colors.primary }}>{label}</Text>
+      {/* chevron вниз — свёрнуто, вверх — раскрыто. */}
+      <View style={{ transform: [{ rotate: open ? "-90deg" : "90deg" }] }}>
+        <Glyph name="chevron" size={16} color={colors.primary} />
+      </View>
+    </Pressable>
   );
 }
