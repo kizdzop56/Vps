@@ -1,16 +1,34 @@
+// Витрина наград.
+//
+// Медали рисуются готовыми рендерами из assets/badges/medals (поле image в
+// constants/achievements.ts). Поле emoji там тоже есть, но на экран оно больше
+// не выводится: если картинка вдруг не найдена, показываем глиф из своего
+// набора, подобранный по сложности награды. Файл данных не меняется.
 import React, { useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Modal, StyleSheet,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
-import type { Achievement } from "@/constants/achievements";
+import type { Achievement, AchievementDifficulty } from "@/constants/achievements";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 
 interface AchievementsShowcaseProps {
   unlocked: Achievement[];
   locked?: Achievement[];
   showLocked?: boolean;
   title?: string;
+}
+
+/**
+ * Фолбэк-глиф вместо эмодзи, когда у награды нет картинки. Подбирается по
+ * сложности: лёгкая — вспышка, средняя — медаль, сложная — трофей. Так даже
+ * без рендера видно вес награды.
+ */
+function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
+  if (difficulty === "hard") return "trophy";
+  if (difficulty === "medium") return "medal";
+  return "spark";
 }
 
 function BadgeCard({
@@ -27,7 +45,13 @@ function BadgeCard({
   const badgeBg = isLocked ? "rgba(220,210,255,0.15)" : achievement.bgColor;
 
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.75} style={styles.badgeWrap}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.75}
+      style={styles.badgeWrap}
+      accessibilityRole="button"
+      accessibilityLabel={isLocked ? `Награда «${achievement.title}» ещё не получена` : `Награда «${achievement.title}» получена`}
+    >
       <View style={{ position: "relative" }}>
         <View
           style={[
@@ -39,13 +63,13 @@ function BadgeCard({
             {achievement.image ? (
               <Image source={achievement.image} style={styles.badgeImg} resizeMode="cover" />
             ) : (
-              <Text style={styles.badgeEmoji}>{achievement.emoji}</Text>
+              <Glyph name={fallbackGlyph(achievement.difficulty)} size={28} color={achievement.color} />
             )}
           </View>
 
           {isLocked && (
             <View style={styles.lockOverlay}>
-              <Feather name="lock" size={14} color="rgba(91,79,142,0.85)" />
+              <Glyph name="lock" size={15} color="rgba(91,79,142,0.85)" />
             </View>
           )}
         </View>
@@ -89,12 +113,12 @@ function BadgeDetailModal({
               {achievement.image ? (
                 <Image source={achievement.image} style={styles.modalBadgeImg} resizeMode="cover" />
               ) : (
-                <Text style={styles.modalBadgeEmoji}>{achievement.emoji}</Text>
+                <Glyph name={fallbackGlyph(achievement.difficulty)} size={52} color={achievement.color} />
               )}
             </View>
             {isLocked && (
               <View style={styles.modalLockOverlay}>
-                <Feather name="lock" size={26} color="rgba(91,79,142,0.9)" />
+                <Glyph name="lock" size={26} color="rgba(91,79,142,0.9)" />
               </View>
             )}
           </View>
@@ -108,9 +132,9 @@ function BadgeDetailModal({
               },
             ]}
           >
-            <Feather
-              name={isLocked ? "lock" : "check-circle"}
-              size={11}
+            <Glyph
+              name={isLocked ? "lock" : "check"}
+              size={12}
               color={isLocked ? "#7c6db8" : achievement.color}
             />
             <Text style={[styles.statusPillText, { color: isLocked ? "#7c6db8" : achievement.color }]}>
@@ -130,7 +154,7 @@ function BadgeDetailModal({
             ]}
           >
             <View style={styles.infoRow}>
-              <Feather
+              <Glyph
                 name={isLocked ? "target" : "star"}
                 size={13}
                 color={isLocked ? "#7c6db8" : achievement.color}
@@ -172,7 +196,7 @@ export function AchievementsShowcase({
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={[styles.headerIcon, { backgroundColor: "#6366f115" }]}>
-            <Feather name="award" size={14} color="#6366f1" />
+            <Glyph name="medal" size={15} color="#6366f1" />
           </View>
           <Text style={[styles.headerTitle, { color: colors.foreground }]}>{title}</Text>
         </View>
@@ -184,10 +208,16 @@ export function AchievementsShowcase({
       </View>
 
       {unlocked.length === 0 && !showLocked ? (
+        // Пустое состояние объясняет, что делать, а не просто констатирует.
         <View style={styles.emptyState}>
-          <Text style={styles.emptyEmoji}>🏆</Text>
+          <View style={[styles.emptyIcon, { backgroundColor: "#6366f112", borderColor: "#6366f128" }]}>
+            <Glyph name="trophy" size={26} color="#6366f1" />
+          </View>
           <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
             Пока нет полученных наград
+          </Text>
+          <Text style={[styles.emptyHint, { color: colors.mutedForeground }]}>
+            Выполни первое задание — первая медаль придёт сразу
           </Text>
         </View>
       ) : (
@@ -213,7 +243,7 @@ export function AchievementsShowcase({
                 activeOpacity={0.7}
               >
                 <View style={styles.lockedToggleLeft}>
-                  <Feather name="lock" size={12} color={colors.mutedForeground} />
+                  <Glyph name="lock" size={13} color={colors.mutedForeground} />
                   <Text style={[styles.lockedToggleText, { color: colors.mutedForeground }]}>
                     Ещё не получены · {locked.length}
                   </Text>
@@ -261,7 +291,7 @@ const styles = StyleSheet.create({
   headerIcon: { width: 28, height: 28, borderRadius: 8, justifyContent: "center", alignItems: "center" },
   headerTitle: { fontSize: 14, fontWeight: "800", letterSpacing: 0.2 },
   countPill: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20, borderWidth: 1 },
-  countText: { fontSize: 11, fontWeight: "700", color: "#6366f1" },
+  countText: { fontSize: 11, fontWeight: "700", color: "#6366f1", fontVariant: ["tabular-nums"] },
 
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
 
@@ -272,7 +302,6 @@ const styles = StyleSheet.create({
   },
   badgeImgWrap: { width: 60, height: 60, justifyContent: "center", alignItems: "center" },
   badgeImg: { width: 60, height: 60 },
-  badgeEmoji: { fontSize: 28 },
   lockOverlay: {
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "rgba(240,235,255,0.65)", justifyContent: "center", alignItems: "center",
@@ -288,8 +317,12 @@ const styles = StyleSheet.create({
   lockedSection: { marginTop: 10, borderRadius: 12, padding: 12, borderWidth: 1 },
 
   emptyState: { alignItems: "center", paddingVertical: 24, gap: 8 },
-  emptyEmoji: { fontSize: 34 },
-  emptyText: { fontSize: 13 },
+  emptyIcon: {
+    width: 56, height: 56, borderRadius: 18, borderWidth: 1,
+    justifyContent: "center", alignItems: "center", transform: [{ rotate: "-4deg" }],
+  },
+  emptyText: { fontSize: 13, fontWeight: "700" },
+  emptyHint: { fontSize: 12, textAlign: "center", maxWidth: 240, lineHeight: 17 },
 
   modalOverlay: { flex: 1, backgroundColor: "rgba(15,12,40,0.55)", justifyContent: "center", alignItems: "center", padding: 28 },
   modalCard: {
@@ -304,7 +337,6 @@ const styles = StyleSheet.create({
   },
   modalBadgeInner: { width: 104, height: 104, justifyContent: "center", alignItems: "center" },
   modalBadgeImg: { width: 104, height: 104 },
-  modalBadgeEmoji: { fontSize: 52 },
   modalLockOverlay: {
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "rgba(240,235,255,0.7)", justifyContent: "center", alignItems: "center",
