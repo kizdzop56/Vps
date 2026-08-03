@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { usersTable, submissionsTable, timeSessionsTable, assignmentsTable, friendshipsTable, voiceChatSessionsTable, voiceChatMessagesTable, parentChildrenTable } from "@workspace/db";
+import { usersTable, submissionsTable, timeSessionsTable, assignmentsTable, friendshipsTable, voiceChatSessionsTable, voiceChatMessagesTable, parentChildrenTable, assignedTasksTable, calendarSlotsTable, slotBookingsTable, teacherStudentsTable } from "@workspace/db";
 import { eq, and, or, sql, desc, isNull, inArray } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import { liveSessionMinutes, isSessionStale, wallMinutes } from "../lib/timeStats";
@@ -27,6 +27,21 @@ async function isLinkedParent(parentId: number, studentId: number): Promise<bool
   const [child] = await db.select({ id: usersTable.id }).from(usersTable)
     .where(and(eq(usersTable.id, studentId), eq(usersTable.parentId, parentId)));
   return !!child;
+}
+
+// Длительность слота в минутах по "HH:MM" начала и конца.
+// Битое или перевёрнутое время (конец раньше начала) даёт 0, а не отрицательные
+// минуты — иначе один кривой слот испортил бы всю сумму часов в профиле.
+function slotMinutes(startTime: string, endTime: string): number {
+  const toMinutes = (t: string): number => {
+    const parts = t.split(":");
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+    return h * 60 + m;
+  };
+  const minutes = toMinutes(endTime) - toMinutes(startTime);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
 }
 
 const router = Router();
@@ -335,6 +350,248 @@ router.get("/students/:id/category-stats", requireAuth, async (req, res) => {
   });
 
   res.json(stats);
+});
+
+// ── GET /teachers/:id/profile-stats — цифры для профиля учителя ───────
+// Учитель не решает задания и не получает за них очки, поэтому ученические
+// счётчики (очки / решённые задания / время в приложении) на его профиле
+// всегда показывали нули. Считаем то, что осмысленно, и разделяем два вида
+// цифр, чтобы их не путали между собой:
+//   personal — только про пару «смотрящий ↔ этот учитель»: слоты и часы
+//              с вами, ваш прогресс по его заданиям. У каждого ученика свои.
+//   overall  — общие цифры учителя (создано заданий, учеников, проведено
+//              занятий): одинаковы для всех, кто открыл этот профиль.
+router.get("/teachers/:id/profile-stats", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const caller = getUser(req);
+  const teacherId = Number(req.params["id"]);
+  if (!Number.isFinite(teacherId)) {
+    res.status(400).json({ error: "Неверный ID" });
+    return;
+  }
+
+  const [teacher] = await db.select({
+    id: usersTable.id,
+    name: usersTable.name,
+    role: usersTable.role,
+  }).from(usersTable).where(eq(usersTable.id, teacherId));
+
+  if (!teacher) {
+    res.status(404).json({ error: "Пользователь не найден" });
+    return;
+  }
+  if (!isTeacher(teacher.role)) {
+    res.status(400).json({ error: "Это не профиль учителя" });
+    return;
+  }
+
+  const viewerId = caller.userId;
+
+  // ── Слоты учителя и брони по ним ────────────────────────────────────
+  const slots = await db.select({
+    id: calendarSlotsTable.id,
+    date: calendarSlotsTable.date,
+    startTime: calendarSlotsTable.startTime,
+    endTime: calendarSlotsTable.endTime,
+  }).from(calendarSlotsTable).where(eq(calendarSlotsTable.teacherId, teacherId));
+
+  const slotIds = slots.map((s) => s.id);
+  const bookings = slotIds.length > 0
+    ? await db.select({
+        slotId: slotBookingsTable.slotId,
+        studentId: slotBookingsTable.studentId,
+        status: slotBookingsTable.status,
+      }).from(slotBookingsTable).where(inArray(slotBookingsTable.slotId, slotIds))
+    : [];
+
+  const bookingsBySlot = new Map<number, { studentId: number; status: string }[]>();
+  for (const b of bookings) {
+    const list = bookingsBySlot.get(b.slotId) ?? [];
+    list.push({ studentId: b.studentId, status: b.status });
+    bookingsBySlot.set(b.slotId, list);
+  }
+
+  // Сравнение по UTC-строкам — так же, как в /calendar/history и /calendar/slots.
+  const nowIso = new Date().toISOString();
+  const today = nowIso.slice(0, 10);
+  const nowTime = nowIso.slice(11, 16);
+
+  type SlotBrief = { id: number; date: string; startTime: string; endTime: string };
+
+  let lessonsTotal = 0;   // проведено занятий со всеми учениками
+  let minutesTotal = 0;
+  let lessonsWithMe = 0;  // проведено занятий лично со смотрящим
+  let minutesWithMe = 0;
+  let lastLessonWithMe: SlotBrief | null = null;
+  let nextLessonWithMe: SlotBrief | null = null;
+  const freeSlots: (SlotBrief & { myStatus: "free" | "pending" })[] = [];
+
+  for (const slot of slots) {
+    const list = bookingsBySlot.get(slot.id) ?? [];
+    const confirmed = list.find((b) => b.status === "confirmed");
+    const minutes = slotMinutes(slot.startTime, slot.endTime);
+    // Слот считается проведённым, когда его время уже прошло.
+    const isPast = slot.date < today || (slot.date === today && slot.endTime <= nowTime);
+
+    if (confirmed) {
+      if (isPast) {
+        lessonsTotal += 1;
+        minutesTotal += minutes;
+      }
+      if (confirmed.studentId === viewerId) {
+        if (isPast) {
+          lessonsWithMe += 1;
+          minutesWithMe += minutes;
+          if (!lastLessonWithMe
+            || slot.date > lastLessonWithMe.date
+            || (slot.date === lastLessonWithMe.date && slot.startTime > lastLessonWithMe.startTime)) {
+            lastLessonWithMe = slot;
+          }
+        } else if (!nextLessonWithMe
+          || slot.date < nextLessonWithMe.date
+          || (slot.date === nextLessonWithMe.date && slot.startTime < nextLessonWithMe.startTime)) {
+          nextLessonWithMe = slot;
+        }
+      }
+      continue;
+    }
+
+    // Свободный слот: подтверждённой брони нет и время ещё не прошло.
+    if (!isPast) {
+      const mine = list.find((b) => b.studentId === viewerId && b.status === "pending");
+      freeSlots.push({ ...slot, myStatus: mine ? "pending" : "free" });
+    }
+  }
+
+  freeSlots.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+
+  // ── Общие цифры учителя ─────────────────────────────────────────────
+  const createdRows = await db.select({ id: assignmentsTable.id })
+    .from(assignmentsTable)
+    .where(and(
+      eq(assignmentsTable.createdBy, teacherId),
+      isNull(assignmentsTable.deletedAt),
+    ));
+
+  const studentRows = await db.select({ id: teacherStudentsTable.id })
+    .from(teacherStudentsTable)
+    .where(and(
+      eq(teacherStudentsTable.teacherId, teacherId),
+      eq(teacherStudentsTable.status, "accepted"),
+    ));
+
+  // ── Личный прогресс смотрящего по заданиям этого учителя ────────────
+  const assigned = await db.select({
+    assignmentId: assignedTasksTable.assignmentId,
+    assignedAt: assignedTasksTable.assignedAt,
+    title: assignmentsTable.title,
+    type: assignmentsTable.type,
+    points: assignmentsTable.points,
+    deletedAt: assignmentsTable.deletedAt,
+  })
+    .from(assignedTasksTable)
+    .leftJoin(assignmentsTable, eq(assignmentsTable.id, assignedTasksTable.assignmentId))
+    .where(and(
+      eq(assignedTasksTable.teacherId, teacherId),
+      eq(assignedTasksTable.studentId, viewerId),
+    ))
+    .orderBy(desc(assignedTasksTable.assignedAt));
+
+  // Удалённое учителем задание пропадает из его списка — не показываем и здесь.
+  const liveAssigned = assigned.filter((a) => !a.deletedAt);
+  const assignedIds = liveAssigned.map((a) => a.assignmentId);
+
+  const subs = assignedIds.length > 0
+    ? await db.select({
+        assignmentId: submissionsTable.assignmentId,
+        score: submissionsTable.score,
+        pointsEarned: submissionsTable.pointsEarned,
+        submittedAt: submissionsTable.submittedAt,
+      }).from(submissionsTable)
+        .where(and(
+          eq(submissionsTable.studentId, viewerId),
+          inArray(submissionsTable.assignmentId, assignedIds),
+          eq(submissionsTable.status, "graded"),
+        ))
+    : [];
+
+  // Задание можно сдать повторно — в профиле показываем последнюю попытку.
+  type LastSub = { score: number; pointsEarned: number; submittedAt: Date };
+  const lastByAssignment = new Map<number, LastSub>();
+  for (const s of subs) {
+    const prev = lastByAssignment.get(s.assignmentId);
+    if (!prev || s.submittedAt > prev.submittedAt) {
+      lastByAssignment.set(s.assignmentId, {
+        score: s.score,
+        pointsEarned: s.pointsEarned,
+        submittedAt: s.submittedAt,
+      });
+    }
+  }
+
+  const doneSubs = [...lastByAssignment.values()];
+  const completedByMe = doneSubs.length;
+  const avgScore = completedByMe > 0
+    ? Math.round(doneSubs.reduce((sum, r) => sum + r.score, 0) / completedByMe)
+    : null;
+  const pointsFromTeacher = doneSubs.reduce((sum, r) => sum + (r.pointsEarned ?? 0), 0);
+
+  // Разбивка по категориям — по заданиям ИМЕННО этого учителя, а не по всем
+  // решённым (в отличие от /students/:id/category-stats).
+  const CATEGORIES = ["text_test", "audio", "reading", "video", "free_form"] as const;
+  const categories = CATEGORIES.map((type) => {
+    const rows = liveAssigned.filter((a) => a.type === type);
+    const graded: LastSub[] = [];
+    for (const row of rows) {
+      const sub = lastByAssignment.get(row.assignmentId);
+      if (sub) graded.push(sub);
+    }
+    return {
+      type,
+      total: rows.length,
+      count: graded.length,
+      avgScore: graded.length > 0
+        ? Math.round(graded.reduce((sum, r) => sum + r.score, 0) / graded.length)
+        : null,
+    };
+  }).filter((c) => c.total > 0);
+
+  const recentAssignments = liveAssigned.slice(0, 5).map((a) => {
+    const sub = lastByAssignment.get(a.assignmentId);
+    return {
+      id: a.assignmentId,
+      title: a.title,
+      type: a.type,
+      points: a.points,
+      assignedAt: a.assignedAt,
+      score: sub?.score ?? null,
+      done: !!sub,
+    };
+  });
+
+  res.json({
+    teacherId: teacher.id,
+    overall: {
+      assignmentsCreated: createdRows.length,
+      studentsCount: studentRows.length,
+      lessonsTotal,
+      minutesTotal,
+    },
+    personal: {
+      lessonsWithMe,
+      minutesWithMe,
+      lastLessonWithMe,
+      nextLessonWithMe,
+      assignedToMe: liveAssigned.length,
+      completedByMe,
+      avgScore,
+      pointsFromTeacher,
+      categories,
+      recentAssignments,
+    },
+    freeSlots: freeSlots.slice(0, 5),
+    freeSlotsTotal: freeSlots.length,
+  });
 });
 
 router.delete("/users/:id", requireAuth, async (req, res) => {
