@@ -4,6 +4,10 @@
 FROM node:24-bookworm-slim
 
 # pnpm via corepack (version matches pnpm-lock.yaml, lockfileVersion 9)
+#
+# WARNING: corepack unpacks pnpm into /root/.cache/node/corepack. That path must
+# NEVER be cleaned in this image — pnpm is needed both at build time and at boot
+# (scripts/prod-start.mjs runs schema push + seed through pnpm).
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
@@ -21,12 +25,7 @@ ENV CI=1 \
 # out of sync with pnpm-workspace.yaml, which made --frozen-lockfile abort with
 # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Regenerate & commit the lockfile locally
 # (pnpm install) to switch this back to --frozen-lockfile for reproducible builds.
-#
-# The pnpm store is dropped right after install: packages are hardlinked into
-# node_modules, so the files stay alive and the image loses the duplicate copy.
-RUN pnpm install --no-frozen-lockfile \
- && pnpm store prune \
- && rm -rf "$(pnpm store path 2>/dev/null || echo /root/.local/share/pnpm/store)" /root/.cache/* || true
+RUN pnpm install --no-frozen-lockfile
 
 # Build the API server (esbuild bundle -> artifacts/api-server/dist/index.mjs).
 # Cheap step, no memory tuning needed.
@@ -38,7 +37,7 @@ RUN pnpm --filter @workspace/api-server run build
 # so the image works on any domain.
 #
 # MEMORY: this step used to blow past Render's 8GB build limit.
-#   --max-workers=1        Metro spawns one transformer worker per CPU core by
+#   --max-workers 1        Metro spawns one transformer worker per CPU core by
 #                          default and each keeps its own module graph — the main
 #                          cause of the OOM. Slower, but it finishes. Raise to
 #                          2-4 only on a plan with a bigger build limit.
@@ -52,8 +51,9 @@ RUN NODE_OPTIONS=--max-old-space-size=4096 \
       expo export --platform web --output-dir static-build/web --max-workers 1 \
  && find artifacts/english-learning/static-build -name '*.map' -type f -delete 2>/dev/null || true
 
-# Build caches are worthless at runtime and only inflate the image.
-RUN rm -rf /root/.cache/* /tmp/* \
+# Build leftovers only. /root/.cache stays untouched: it holds corepack's pnpm,
+# which the container still needs at boot.
+RUN rm -rf /tmp/* \
       artifacts/english-learning/.expo \
       artifacts/english-learning/.metro-cache || true
 
