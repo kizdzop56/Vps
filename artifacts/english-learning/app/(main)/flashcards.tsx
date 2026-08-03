@@ -8,6 +8,11 @@
 //     Уровень ученика раскрыт, следующий свёрнут.
 //   • «Тематические колоды» — колоды без уровня: они охватывают сразу несколько
 //     уровней (еда, животные, …), поэтому в уровневые группы не помещаются.
+//
+// Эмодзи на этом экране не используются: значок колоды рисует DeckGlyph
+// (глиф из своего набора или первая буква названия), остальные значки —
+// векторные. Поле deck.emoji в базе при этом не меняется, оно остаётся
+// источником для сопоставления с глифом.
 import React from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -17,6 +22,9 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, type DeckWithAssign } from "@/hooks/useFlashcards";
+import { DeckGlyph } from "@/components/ui/DeckGlyph";
+import { Glyph } from "@/components/ui/Glyph";
+import { accents, gradients, radii } from "@/constants/theme";
 
 // Порядок уровней должен совпадать с CEFR_ORDER на бэкенде (routes/flashcards.ts).
 const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
@@ -100,7 +108,7 @@ export default function FlashcardsHome() {
           activeOpacity={0.8}
           style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.primary + "18", borderColor: colors.primary + "55", borderWidth: 1, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 }}
         >
-          <Feather name="award" size={14} color={colors.primary} />
+          <Glyph name="rank" size={14} color={colors.primary} />
           <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 13 }}>{level ? `Уровень ${level}` : "Пройти тест"}</Text>
         </TouchableOpacity>
       </View>
@@ -118,7 +126,7 @@ export default function FlashcardsHome() {
           style={{ padding: 18, flexDirection: "row", alignItems: "center", gap: 14 }}
         >
           <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
-            <Feather name="play" size={24} color="#fff" />
+            <Glyph name="play" size={24} color="#fff" />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 19, fontWeight: "900", color: "#fff" }}>Учить слова</Text>
@@ -128,7 +136,7 @@ export default function FlashcardsHome() {
               </Text>
             ) : null}
           </View>
-          <Feather name="chevron-right" size={24} color="#fff" />
+          <Glyph name="chevron" size={24} color="#fff" />
         </LinearGradient>
       </TouchableOpacity>
 
@@ -136,7 +144,7 @@ export default function FlashcardsHome() {
       <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 12 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-            <Feather name={goalReached ? "check-circle" : "target"} size={15} color={goalReached ? colors.success : colors.primary} />
+            <Glyph name={goalReached ? "check" : "target"} size={15} color={goalReached ? colors.success : colors.primary} />
             <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
           </View>
           <Text style={{ fontSize: 13, fontWeight: "800", color: goalReached ? colors.success : colors.primary }}>
@@ -155,20 +163,28 @@ export default function FlashcardsHome() {
           activeOpacity={0.85}
           style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.warning + "14", borderColor: colors.warning + "55", borderWidth: 1, borderRadius: 16, padding: 14, marginBottom: 12 }}
         >
-          <Text style={{ fontSize: 24 }}>🔁</Text>
+          {/* Плашка с глифом вместо эмодзи: цвет управляется темой, а не шрифтом ОС. */}
+          <LinearGradient
+            colors={gradients.fire as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{ width: 40, height: 40, borderRadius: radii.sm + 2, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-5deg" }] }}
+          >
+            <Glyph name="repeat" size={20} color="#fff" />
+          </LinearGradient>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Сложные слова</Text>
             <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
               {hardCount} {pluralRu(hardCount, "слово", "слова", "слов")} с ошибками — потренируй отдельно
             </Text>
           </View>
-          <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+          <Glyph name="chevron" size={20} color={colors.mutedForeground} />
         </TouchableOpacity>
       )}
 
       {/* Действия */}
       <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
-        <ActionBtn colors={colors} icon="bar-chart-2" label="Статистика" onPress={() => router.push("/flashcards/stats")} />
+        <ActionBtn colors={colors} icon="chart" label="Статистика" onPress={() => router.push("/flashcards/stats")} />
         <ActionBtn colors={colors} icon="plus" label="Своя колода" onPress={() => router.push("/flashcards/new-deck")} />
       </View>
 
@@ -178,14 +194,16 @@ export default function FlashcardsHome() {
         activeOpacity={0.85}
         style={{ flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.primary, borderRadius: 18, padding: 16, marginBottom: 22 }}
       >
-        <Text style={{ fontSize: 30 }}>🏃</Text>
+        <View style={{ width: 44, height: 44, borderRadius: radii.sm + 3, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
+          <Glyph name="route" size={22} color="#fff" />
+        </View>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 16, fontWeight: "900", color: "#fff" }}>Марафон слов</Text>
           <Text style={{ fontSize: 12, color: "#ffffffcc", marginTop: 2 }}>
             Все слова уровня {level ?? "A1"} · дойди до 75% и переходи выше
           </Text>
         </View>
-        <Feather name="chevron-right" size={22} color="#fff" />
+        <Glyph name="chevron" size={22} color="#fff" />
       </TouchableOpacity>
 
       {decksQ.isLoading ? (
@@ -251,7 +269,7 @@ export default function FlashcardsHome() {
 function ActionBtn({ colors, icon, label, onPress }: any) {
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingVertical: 13 }}>
-      <Feather name={icon} size={16} color={colors.foreground} />
+      <Glyph name={icon} size={16} color={colors.foreground} />
       <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 14 }}>{label}</Text>
     </TouchableOpacity>
   );
@@ -342,7 +360,9 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 14 }}>
-      <Text style={{ fontSize: 32 }}>{deck.emoji ?? "📘"}</Text>
+      {/* Значок колоды: глиф из своего набора либо первая буква названия.
+          Поле deck.emoji из базы используется только как ключ сопоставления. */}
+      <DeckGlyph title={deck.title} emoji={deck.emoji} size={46} />
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
@@ -361,13 +381,13 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
         </Text>
         <View style={{ height: 6, backgroundColor: "rgba(160,140,220,0.2)", borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
           <LinearGradient
-            colors={["#C4B5FD", "#A78BFA"]}
+            colors={[accents.lavender, "#A78BFA"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${startedPct}%`, borderRadius: 4 }}
           />
           <LinearGradient
-            colors={["#A855F7", "#6D28D9"]}
+            colors={["#A855F7", accents.violetDeep]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${learnedPct}%`, borderRadius: 4 }}
@@ -377,7 +397,7 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
       <View style={{ alignItems: "flex-end", gap: 4 }}>
         {deck.dueCount > 0 && <Badge colors={colors} color={colors.primary} text={`${deck.dueCount}`} />}
         {deck.newCount > 0 && <Badge colors={colors} color={colors.warning} text={`+${deck.newCount}`} />}
-        <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+        <Glyph name="chevron" size={20} color={colors.mutedForeground} />
       </View>
     </TouchableOpacity>
   );
