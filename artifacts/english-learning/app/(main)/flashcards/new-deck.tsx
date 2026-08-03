@@ -1,5 +1,11 @@
 // Создание собственной колоды. После создания — переход к странице колоды,
 // где можно добавлять слова (с автозаполнением) и импортировать списки.
+//
+// Выбор иконки: пользователь видит глифы из своего набора, а НЕ эмодзи.
+// При этом в базу по-прежнему уходит эмодзи-символ — так схема и API
+// остаются нетронутыми, старые колоды продолжают работать, а миграция не
+// нужна. Обратно эмодзи превращается в глиф через DeckGlyph, поэтому на
+// экране символ ОС никогда не появляется.
 import React, { useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
@@ -8,8 +14,27 @@ import { Feather } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc } from "@/hooks/useFlashcards";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 
-const EMOJI = ["📕", "📗", "📘", "📙", "🧠", "⭐", "🔤", "🌍", "🎯", "💡"];
+/**
+ * Варианты иконки: что показываем (glyph) и что при этом храним (value).
+ * Каждое value обязано присутствовать в карте EMOJI_TO_GLYPH внутри
+ * DeckGlyph, иначе колода отрисуется буквой вместо выбранной иконки.
+ */
+const ICON_CHOICES: { glyph: GlyphName; value: string; label: string }[] = [
+  { glyph: "book",    value: "📘", label: "Учебник" },
+  { glyph: "cards",   value: "📝", label: "Карточки" },
+  { glyph: "bag",     value: "🎒", label: "Школа" },
+  { glyph: "compass", value: "🧭", label: "Путешествия" },
+  { glyph: "globe",   value: "🌍", label: "Мир" },
+  { glyph: "cup",     value: "☕", label: "Еда и кафе" },
+  { glyph: "leaf",    value: "🌱", label: "Природа" },
+  { glyph: "paw",     value: "🐾", label: "Животные" },
+  { glyph: "music",   value: "🎵", label: "Музыка" },
+  { glyph: "target",  value: "🎯", label: "Цель" },
+  { glyph: "star",    value: "⭐", label: "Избранное" },
+  { glyph: "spark",   value: "✨", label: "Новое" },
+];
 
 export default function NewDeckScreen() {
   const colors = useColors();
@@ -18,7 +43,7 @@ export default function NewDeckScreen() {
   const qc = useQueryClient();
 
   const [title, setTitle] = useState("");
-  const [emoji, setEmoji] = useState("📕");
+  const [emoji, setEmoji] = useState(ICON_CHOICES[0]!.value);
   const [theme, setTheme] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -60,11 +85,26 @@ export default function NewDeckScreen() {
 
       <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground, marginBottom: 8 }}>Иконка</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 26 }}>
-        {EMOJI.map((e) => (
-          <TouchableOpacity key={e} onPress={() => setEmoji(e)} style={{ width: 48, height: 48, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: emoji === e ? colors.primary : colors.border, backgroundColor: emoji === e ? colors.primary + "18" : colors.card }}>
-            <Text style={{ fontSize: 24 }}>{e}</Text>
-          </TouchableOpacity>
-        ))}
+        {ICON_CHOICES.map((c) => {
+          const active = emoji === c.value;
+          return (
+            <TouchableOpacity
+              key={c.value}
+              onPress={() => setEmoji(c.value)}
+              accessibilityRole="button"
+              accessibilityLabel={c.label}
+              accessibilityState={{ selected: active }}
+              style={{
+                width: 48, height: 48, borderRadius: 12, alignItems: "center", justifyContent: "center",
+                borderWidth: 2,
+                borderColor: active ? colors.primary : colors.border,
+                backgroundColor: active ? colors.primary + "18" : colors.card,
+              }}
+            >
+              <Glyph name={c.glyph} size={22} color={active ? colors.primary : colors.mutedForeground} />
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       <TouchableOpacity onPress={create} disabled={saving || !title.trim()} activeOpacity={0.85}
