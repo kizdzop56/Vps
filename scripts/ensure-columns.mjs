@@ -58,6 +58,11 @@ const statements = [
   // Скрытые системные колоды (misc_{level}): слова участвуют в сессии/марафоне,
   // но колода не показывается в списке колод на экране «Слова».
   `ALTER TABLE IF EXISTS decks ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false`,
+  // Срок сдачи задания. Живёт на назначении, а не на самом задании: одно
+  // задание выдаётся разным ученикам в разное время и с разным сроком.
+  // Nullable: «без срока» — валидное и частое состояние, старые назначения
+  // после добавления колонки продолжают работать как раньше.
+  `ALTER TABLE IF EXISTS assigned_tasks ADD COLUMN IF NOT EXISTS due_at timestamp`,
 ];
 const client = new pg.Client({
   connectionString: url,
