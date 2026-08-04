@@ -8,12 +8,21 @@
 // Полученная медаль стоит на подставке с тёмной нижней гранью и светится в
 // своём цвете — тот же физический приём, что у кнопок. Заблокированная не
 // прячется: пунктирная рамка с замком тянет вперёд сильнее, чем пустое место.
+//
+// Прогресс до награды считает utils/achievementProgress.ts. Раньше ученик
+// видел только «получена / не получена»: условие было написано словами
+// («Выполни 25 заданий»), но сколько у него сейчас и сколько осталось,
+// приходилось считать самому. Теперь сверху стоит блок «Следующая награда» —
+// ближайшая по заполнению медаль с полосой и остатком, а у каждой закрытой
+// медали в списке есть своя тонкая полоса.
 import React, { useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
-import type { Achievement, AchievementDifficulty } from "@/constants/achievements";
+import type { Achievement, AchievementDifficulty, AchievementStats } from "@/constants/achievements";
+import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton } from "@/components/ui/GameKit";
 import { accents, radii, chunky } from "@/constants/theme";
@@ -23,6 +32,12 @@ interface AchievementsShowcaseProps {
   locked?: Achievement[];
   showLocked?: boolean;
   title?: string;
+  /**
+   * Показатели ученика. Без них прогресс посчитать нечем — блок «Следующая
+   * награда» и полосы под медалями просто не рисуются, остальное работает
+   * как раньше.
+   */
+  stats?: AchievementStats;
 }
 
 /**
@@ -36,13 +51,105 @@ function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
   return "spark";
 }
 
+/** Полоса прогресса в цвете награды. Высота задаётся, чтобы одна и та же
+ *  полоса работала и крупно (в блоке сверху), и тонко (под медалью). */
+function ProgressTrack({
+  percent, color, height = 8,
+}: { percent: number; color: string; height?: number }) {
+  return (
+    <View style={{
+      height,
+      borderRadius: radii.pill,
+      backgroundColor: color + "22",
+      overflow: "hidden",
+    }}>
+      <LinearGradient
+        colors={[color + "cc", color]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={{ height: "100%", width: `${Math.max(percent, 3)}%`, borderRadius: radii.pill }}
+      />
+    </View>
+  );
+}
+
+/**
+ * Блок «Следующая награда»: крупная карточка над сеткой медалей.
+ *
+ * Стоит первым, потому что отвечает на единственный вопрос, который ученик
+ * задаёт этому разделу: «что мне сделать прямо сейчас». Список из 50 медалей
+ * на этот вопрос не отвечает — в нём приходится искать глазами.
+ */
+function NextRewardCard({
+  achievement, percent, remainingText, counterText, onPress,
+}: {
+  achievement: Achievement;
+  percent: number;
+  remainingText: string;
+  counterText: string;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.nextCard,
+        {
+          backgroundColor: achievement.bgColor,
+          borderColor: achievement.color + "44",
+          shadowColor: achievement.color,
+          opacity: pressed ? 0.9 : 1,
+        },
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Следующая награда «${achievement.title}». ${remainingText}`}
+    >
+      <View style={styles.nextTop}>
+        {/* Медаль показана как есть, без замка: цель должна выглядеть
+            привлекательной, а не запертой. */}
+        <View style={[styles.nextBadge, { borderColor: achievement.color + "55" }]}>
+          {achievement.image ? (
+            <Image source={achievement.image} style={styles.nextBadgeImg} resizeMode="cover" />
+          ) : (
+            <Glyph name={fallbackGlyph(achievement.difficulty)} size={30} color={achievement.color} />
+          )}
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.nextLabel, { color: achievement.color }]}>Следующая награда</Text>
+          <Text style={[styles.nextTitle, { color: colors.foreground }]} numberOfLines={1}>
+            {achievement.title}
+          </Text>
+          <Text style={[styles.nextRemaining, { color: achievement.color }]} numberOfLines={2}>
+            {remainingText}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.nextBarRow}>
+        <View style={{ flex: 1 }}>
+          <ProgressTrack percent={percent} color={achievement.color} height={10} />
+        </View>
+        <Text style={[styles.nextPercent, { color: achievement.color }]}>{percent}%</Text>
+      </View>
+
+      <Text style={[styles.nextCounter, { color: colors.mutedForeground }]}>{counterText}</Text>
+    </Pressable>
+  );
+}
+
 function BadgeCard({
   achievement,
   isLocked = false,
+  percent,
   onPress,
 }: {
   achievement: Achievement;
   isLocked?: boolean;
+  /** Заполнение 0…100 для закрытой медали. undefined — полосу не рисуем. */
+  percent?: number;
   onPress: () => void;
 }) {
   // Медали статичные — idle-анимации (shimmer/pulse/sparkle/spin/bounce) убраны.
@@ -105,6 +212,14 @@ function BadgeCard({
         <View style={{ height: 4 }} />
       </View>
 
+      {/* Тонкая полоса под закрытой медалью: видно, какие цели уже близко,
+          не открывая карточку. У полученных её нет — там всё и так ясно. */}
+      {isLocked && percent !== undefined && (
+        <View style={{ alignSelf: "stretch", marginTop: 4 }}>
+          <ProgressTrack percent={percent} color={achievement.color} height={4} />
+        </View>
+      )}
+
       <Text
         style={[styles.badgeTitle, { color: isLocked ? "#9b8ec4" : achievement.color }]}
         numberOfLines={2}
@@ -118,14 +233,18 @@ function BadgeCard({
 function BadgeDetailModal({
   achievement,
   isLocked,
+  stats,
   onClose,
 }: {
   achievement: Achievement | null;
   isLocked: boolean;
+  stats?: AchievementStats;
   onClose: () => void;
 }) {
   const colors = useColors();
   if (!achievement) return null;
+
+  const progress = isLocked && stats ? achievementProgress(achievement, stats) : null;
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -185,6 +304,28 @@ function BadgeDetailModal({
 
           <Text style={[styles.modalTitle, { color: colors.foreground }]}>{achievement.title}</Text>
 
+          {/* Прогресс стоит выше текста условия: цифра отвечает на вопрос
+              быстрее, чем формулировка. */}
+          {progress && (
+            <View style={[
+              styles.modalProgress,
+              { backgroundColor: achievement.bgColor, borderColor: achievement.color + "33" },
+            ]}>
+              <View style={styles.modalProgressHead}>
+                <Text style={[styles.modalProgressText, { color: achievement.color }]}>
+                  {progress.remainingText}
+                </Text>
+                <Text style={[styles.modalProgressPercent, { color: achievement.color }]}>
+                  {progress.percent}%
+                </Text>
+              </View>
+              <ProgressTrack percent={progress.percent} color={achievement.color} height={10} />
+              <Text style={[styles.modalProgressCounter, { color: colors.mutedForeground }]}>
+                {progress.counterText}
+              </Text>
+            </View>
+          )}
+
           <View
             style={[
               styles.infoBlock,
@@ -226,6 +367,7 @@ export function AchievementsShowcase({
   locked = [],
   showLocked = false,
   title = "Витрина наград",
+  stats,
 }: AchievementsShowcaseProps) {
   const colors = useColors();
   const [selected, setSelected] = useState<{ achievement: Achievement; isLocked: boolean } | null>(null);
@@ -234,6 +376,13 @@ export function AchievementsShowcase({
   const [lockedVisible, setLockedVisible] = useState(showLocked);
 
   const total = unlocked.length + locked.length;
+
+  // Ближайшая цель. Пересчитывается только при смене статов или списка —
+  // перебирать 50 наград на каждый ре-рендер незачем.
+  const next = React.useMemo(
+    () => (stats ? nextAchievement(locked, stats) : null),
+    [locked, stats],
+  );
 
   return (
     <View style={[
@@ -257,6 +406,16 @@ export function AchievementsShowcase({
           </Text>
         </View>
       </View>
+
+      {next && (
+        <NextRewardCard
+          achievement={next.achievement}
+          percent={next.progress.percent}
+          remainingText={next.progress.remainingText}
+          counterText={next.progress.counterText}
+          onPress={() => setSelected({ achievement: next.achievement, isLocked: true })}
+        />
+      )}
 
       {unlocked.length === 0 && !showLocked ? (
         // Пустое состояние объясняет, что делать, а не просто констатирует.
@@ -313,6 +472,7 @@ export function AchievementsShowcase({
                         key={a.id}
                         achievement={a}
                         isLocked={true}
+                        percent={stats ? achievementProgress(a, stats)?.percent : undefined}
                         onPress={() => setSelected({ achievement: a, isLocked: true })}
                       />
                     ))}
@@ -327,6 +487,7 @@ export function AchievementsShowcase({
       <BadgeDetailModal
         achievement={selected?.achievement ?? null}
         isLocked={selected?.isLocked ?? false}
+        stats={stats}
         onClose={() => setSelected(null)}
       />
     </View>
@@ -346,6 +507,24 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 14, fontWeight: "800", letterSpacing: 0.2 },
   countPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.pill, borderWidth: 1 },
   countText: { fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
+
+  nextCard: {
+    borderRadius: radii.md, borderWidth: 1.5, padding: 14, marginBottom: 16,
+    shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.22, shadowRadius: 16, elevation: 5,
+  },
+  nextTop: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 12 },
+  nextBadge: {
+    width: 58, height: 58, borderRadius: 29, borderWidth: 2,
+    overflow: "hidden", alignItems: "center", justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
+  nextBadgeImg: { width: 58, height: 58 },
+  nextLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1, textTransform: "uppercase" },
+  nextTitle: { fontSize: 16, fontWeight: "900", letterSpacing: -0.3, marginTop: 2 },
+  nextRemaining: { fontSize: 12.5, fontWeight: "800", marginTop: 3, lineHeight: 17 },
+  nextBarRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  nextPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"], minWidth: 38, textAlign: "right" },
+  nextCounter: { fontSize: 11.5, marginTop: 6, fontVariant: ["tabular-nums"] },
 
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
 
@@ -368,7 +547,7 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: "center", paddingVertical: 24, gap: 8 },
   emptyIcon: {
     width: 56, height: 56, borderRadius: radii.md, borderWidth: 1,
-    justifyContent: "center", alignItems: "center", transform: [{ rotate: "-4deg" }],
+    justifyContent: "center", alignItems: "center",
   },
   emptyText: { fontSize: 13, fontWeight: "800" },
   emptyHint: { fontSize: 12, textAlign: "center", maxWidth: 240, lineHeight: 17 },
@@ -391,6 +570,13 @@ const styles = StyleSheet.create({
   },
   statusPillText: { fontSize: 11, fontWeight: "800" },
   modalTitle: { fontSize: 21, fontWeight: "900", letterSpacing: -0.4, textAlign: "center", marginBottom: 14 },
+
+  modalProgress: { width: "100%", borderRadius: radii.sm + 2, padding: 14, borderWidth: 1, marginBottom: 12 },
+  modalProgressHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 },
+  modalProgressText: { fontSize: 13, fontWeight: "800", flex: 1 },
+  modalProgressPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  modalProgressCounter: { fontSize: 11.5, marginTop: 7, fontVariant: ["tabular-nums"] },
+
   infoBlock: { width: "100%", borderRadius: radii.sm + 2, padding: 14, borderWidth: 1, marginBottom: 18, gap: 8 },
   infoRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   infoLabel: { fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1 },
