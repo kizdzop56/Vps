@@ -22,6 +22,13 @@
 // / завтра / 3 дня / неделя» или без срока), ученик видит его на карточке, а
 // список сортируется по сроку — просроченное сверху. Вся арифметика и формат
 // живут в utils/dueDate.ts, здесь только отображение.
+//
+// Карточка созданного задания показывает прогресс сдачи сегментами: «6 из 8
+// сдали». Раньше на ней было только название и три кнопки, и главный вопрос
+// учителя — «дошло ли задание и кто уже сдал» — оставался без ответа, за ним
+// надо было заходить в «Итоги» по каждому заданию отдельно. Счётчики приходят
+// с сервера вместе со списком (assignedCount / submittedCount / pendingCount),
+// лишних запросов нет.
 import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, Platform,
@@ -42,7 +49,7 @@ import { fc } from "@/hooks/useFlashcards";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
 import { TypeArt } from "@/components/ui/TypeArt";
-import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, GoalPips, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import {
   DUE_PRESETS, dueDateFromPreset, formatDue, sortByDue, countUrgent,
@@ -91,6 +98,25 @@ const DUE_ICONS: Record<DueUrgency, GlyphName> = {
   none: "calendar",
 };
 
+/**
+ * Статус сдачи, созданной автоматически по истечении срока (см.
+ * api-server/src/lib/autoCloseOverdue.ts). Такая работа не выполнялась, и
+ * показывать её как обычный ноль нельзя — иначе выглядит как «решал и не решил».
+ */
+const EXPIRED = "expired";
+
+/**
+ * Пресет срока по числу дней. Нужен, чтобы окно отправки заранее вставало на
+ * срок, заданный при создании задания (assignments.defaultDueDays).
+ * Незнакомое число — «без срока»: врать выбранным пресетом хуже, чем не
+ * подставить ничего.
+ */
+function presetFromDays(days: number | null | undefined): DuePresetKey {
+  if (days === null || days === undefined) return "none";
+  const preset = DUE_PRESETS.find((p) => p.days === days);
+  return preset?.key ?? "none";
+}
+
 const FILTERS = ["Все", "text_test", "audio", "reading", "video", "free_form"] as const;
 // «Колоды» — отдельная категория в созданных заданиях учителя. До этого у
 // учителя вообще не было входа в свои колоды: вкладка «Слова» скрыта для него,
@@ -138,13 +164,16 @@ function AssignModal({
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // Срок сдачи для этой отправки. По умолчанию «без срока»: принуждать учителя
-  // ставить дедлайн на каждое задание — лишнее давление и лишний тап.
+  // Срок сдачи для этой отправки. Стартует с того, что учитель указал при
+  // создании задания; если там ничего нет — «без срока». Принуждать ставить
+  // дедлайн на каждую отправку не нужно, но и переспрашивать одно и то же у
+  // задания, которое всегда даётся на неделю, тоже.
   const [duePreset, setDuePreset] = useState<DuePresetKey>("none");
 
   useEffect(() => {
     if (!visible) return;
-    setSelected(new Set()); setError(""); setStudents([]); setDuePreset("none");
+    setSelected(new Set()); setError(""); setStudents([]);
+    setDuePreset(presetFromDays((assignment as any)?.defaultDueDays));
     setLoading(true);
     apiFetch("/api/connections/teacher/students")
       .then(setStudents)
@@ -157,7 +186,7 @@ function AssignModal({
         setError(msg || "Не удалось загрузить учеников");
       })
       .finally(() => setLoading(false));
-  }, [visible, logout]);
+  }, [visible, logout, assignment]);
 
   const toggle = (id: number) => setSelected((prev) => {
     const next = new Set(prev);
@@ -315,8 +344,9 @@ function AssignModal({
                 })}
               </View>
               {duePreset !== "none" && (
-                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 8 }}>
-                  Ученик увидит: «{formatDue(dueDateFromPreset(duePreset)).text}»
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 8, lineHeight: 17 }}>
+                  Ученик увидит: «{formatDue(dueDateFromPreset(duePreset)).text}».{"\n"}
+                  Если не сдаст к сроку, задание закроется само и придёт вам как несданное.
                 </Text>
               )}
             </View>
@@ -563,6 +593,13 @@ export default function AssignmentsScreen() {
     typeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     typeBadgeText: { fontSize: 12, fontWeight: "700" },
     ageText: { fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
+    // Строка под прогрессом: слева сколько сдали, справа сколько ждём.
+    progressNote: {
+      flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+      marginTop: 8, gap: 10,
+    },
+    progressText: { fontSize: 12.5, color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
+    progressStrong: { fontWeight: "900", color: colors.foreground },
     // Срок: текст с иконкой, без плашки. Плашка спорила бы с бейджем типа.
     dueRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 4 },
     dueText: { fontSize: 12.5, fontWeight: "800" },
@@ -669,6 +706,11 @@ export default function AssignmentsScreen() {
   const renderMyAssignmentCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const isDraft = item.isDraft;
+    const assigned = item.assignedCount ?? 0;
+    const submitted = item.submittedCount ?? 0;
+    const pending = item.pendingCount ?? 0;
+    const avg = item.avgScore ?? null;
+    const allDone = assigned > 0 && submitted === assigned;
     return (
       // Outer View — NOT a Touchable, so inner buttons get touches reliably
       <View
@@ -686,16 +728,54 @@ export default function AssignmentsScreen() {
         >
           <View style={styles.cardHeader}>
             <TypePlate type={item.type} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-              {isDraft && (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 3 }}>
-                  <Glyph name="pen" size={11} color={colors.mutedForeground} />
-                  <Text style={{ fontSize: 11, color: colors.mutedForeground, fontWeight: "700" }}>Черновик</Text>
+            <View style={{ flex: 1, gap: 5 }}>
+              <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+              {/* Тип и средний балл строкой под названием: раньше по карточке
+                  нельзя было понять даже вид задания — только по картинке. */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                <View style={[styles.typeBadge, { backgroundColor: color + "15", paddingVertical: 3 }]}>
+                  <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
                 </View>
-              )}
+                {isDraft ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <Glyph name="pen" size={11} color={colors.mutedForeground} />
+                    <Text style={{ fontSize: 11.5, color: colors.mutedForeground, fontWeight: "700" }}>Черновик</Text>
+                  </View>
+                ) : avg !== null ? (
+                  <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                    средний <Text style={{ fontWeight: "900", color: scoreTint(avg) }}>{avg}%</Text>
+                  </Text>
+                ) : item.type === "free_form" ? (
+                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>оценивается вручную</Text>
+                ) : null}
+              </View>
             </View>
+            {/* Работы, ждущие ручной проверки, — самое срочное на карточке. */}
+            {pending > 0 && <Pill text={`${pending}`} icon="clock" tone="warn" />}
           </View>
+
+          {/* Прогресс сдачи сегментами — тот же приём, что у цели дня в разделе
+              «Слова»: закрытый сегмент читается как «ещё один сдал», это
+              нагляднее процента и лучше работает на малых числах. */}
+          {assigned > 0 && (
+            <>
+              <GoalPips value={submitted} target={assigned} done={allDone} />
+              <View style={styles.progressNote}>
+                <Text style={styles.progressText}>
+                  <Text style={styles.progressStrong}>{submitted}</Text> из {assigned} сдали
+                </Text>
+                <Text style={styles.progressText}>
+                  {allDone ? "все ответили" : `ждём ${assigned - submitted}`}
+                </Text>
+              </View>
+            </>
+          )}
+
+          {/* Ещё никому не отправлено — это не «ноль из нуля», а другое
+              состояние: задание готово, но лежит без дела. */}
+          {assigned === 0 && !isDraft && (
+            <Text style={[styles.progressText, { marginTop: 2 }]}>Ещё никому не назначено</Text>
+          )}
         </TouchableOpacity>
 
         {/* Action buttons — independent from navigation area.
@@ -708,7 +788,9 @@ export default function AssignmentsScreen() {
             onPress={() => setAssignTarget(item)}
           >
             <Glyph name="send" size={14} color="#fff" />
-            <Text style={[styles.actionBtnText, { color: "#fff" }]}>Назначить</Text>
+            <Text style={[styles.actionBtnText, { color: "#fff" }]}>
+              {assigned > 0 ? "Назначить ещё" : "Назначить"}
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -739,14 +821,22 @@ export default function AssignmentsScreen() {
     const hasSub = !!item.submission;
     if (!hasSub) return null;
     const score = item.submission.score;
-    const tint = scoreTint(score);
+    // Автозакрытая работа — не результат ученика, а факт пропуска срока.
+    // Красим её тревожным цветом независимо от нулевого балла.
+    const expired = item.submission.status === EXPIRED;
+    const tint = expired ? colors.destructive : scoreTint(score);
     // Сдано после срока: учителю это важнее самой даты сдачи, поэтому метка,
     // а не строка мелким текстом. Без срока метки нет.
-    const late = !!item.dueAt && new Date(item.submission.submittedAt).getTime() > new Date(item.dueAt).getTime();
+    const late = !expired && !!item.dueAt &&
+      new Date(item.submission.submittedAt).getTime() > new Date(item.dueAt).getTime();
     return (
       <TouchableOpacity
         key={`${item.assignedTaskId}`}
-        style={[styles.subCard, { shadowColor: tint }]}
+        style={[
+          styles.subCard,
+          { shadowColor: tint },
+          expired && { borderColor: colors.destructive + "55" },
+        ]}
         onPress={() => router.push(`/(main)/teacher-results/${item.assignmentId}` as any)}
         activeOpacity={0.75}
       >
@@ -762,9 +852,13 @@ export default function AssignmentsScreen() {
             <Text style={{ fontSize: 12, color: colors.mutedForeground }} numberOfLines={1}>{item.assignmentTitle}</Text>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
-              <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{score}%</Text>
-            </View>
+            {expired ? (
+              <Glyph name="alert" size={20} color={colors.destructive} />
+            ) : (
+              <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
+                <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{score}%</Text>
+              </View>
+            )}
             <Glyph name="chevron" size={16} color={colors.mutedForeground} />
           </View>
         </View>
@@ -774,9 +868,13 @@ export default function AssignmentsScreen() {
           <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
             <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.assignmentType] ?? item.assignmentType}</Text>
           </View>
-          <Text style={styles.ageText}>
-            {item.submission.correctCount}/{item.submission.totalQuestions} правильно
-          </Text>
+          {expired ? (
+            <Pill text="не сдано в срок" icon="alert" tone="danger" />
+          ) : (
+            <Text style={styles.ageText}>
+              {item.submission.correctCount}/{item.submission.totalQuestions} правильно
+            </Text>
+          )}
           {late && <Pill text="с опозданием" icon="clock" tone="danger" />}
           <Text style={styles.ageText}>
             {new Date(item.submission.submittedAt).toLocaleDateString("ru-RU")}
@@ -789,12 +887,17 @@ export default function AssignmentsScreen() {
   // ── Student: render one completed assignment card (tappable → review) ──
   const renderCompletedCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
-    const tint = scoreTint(item.score);
+    const expired = item.status === EXPIRED;
+    const tint = expired ? colors.destructive : scoreTint(item.score);
     return (
       <TouchableOpacity
         key={`${item.submissionId}`}
         // Тень в цвете балла: сильные и слабые работы различимы сразу.
-        style={[styles.subCard, { shadowColor: tint }]}
+        style={[
+          styles.subCard,
+          { shadowColor: tint },
+          expired && { borderColor: colors.destructive + "55" },
+        ]}
         onPress={() => router.push(`/(main)/submission-review/${item.submissionId}` as any)}
         activeOpacity={0.75}
       >
@@ -802,9 +905,13 @@ export default function AssignmentsScreen() {
           <TypePlate type={item.type} size={44} />
           <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
-              <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
-            </View>
+            {expired ? (
+              <Glyph name="alert" size={20} color={colors.destructive} />
+            ) : (
+              <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
+                <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
+              </View>
+            )}
             <Glyph name="chevron" size={16} color={colors.mutedForeground} />
           </View>
         </View>
@@ -812,8 +919,14 @@ export default function AssignmentsScreen() {
           <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
             <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
           </View>
-          <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
-          <Pill text={`+${item.pointsEarned}`} icon="star" tone="soft" color={accents.magenta} />
+          {expired ? (
+            <Pill text="срок вышел, не сдано" icon="alert" tone="danger" />
+          ) : (
+            <>
+              <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
+              <Pill text={`+${item.pointsEarned}`} icon="star" tone="soft" color={accents.magenta} />
+            </>
+          )}
           <Text style={styles.ageText}>{new Date(item.submittedAt).toLocaleDateString("ru-RU")}</Text>
         </View>
       </TouchableOpacity>
@@ -826,7 +939,7 @@ export default function AssignmentsScreen() {
         visible={!!assignTarget}
         assignment={assignTarget}
         onClose={() => setAssignTarget(null)}
-        onDone={() => { loadMyAssignments(); }}
+        onDone={() => { loadMyAssignments(); loadTeacherSubs(); }}
       />
 
       <View style={styles.header}>
@@ -846,6 +959,21 @@ export default function AssignmentsScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Сводка у учителя: сколько работ ждёт проверки. Раньше это можно было
+            узнать, только перейдя во вкладку ответов и пересчитав глазами. */}
+        {isTeacher && (() => {
+          const pending = myAssignments.reduce((sum, a) => sum + (a.pendingCount ?? 0), 0);
+          if (pending === 0) return null;
+          return (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
+              <Glyph name="clock" size={14} color={accents.amber} />
+              <Text style={{ fontSize: 13, fontWeight: "800", color: accents.amber }}>
+                {pending} {pluralRu(pending, "работа ждёт", "работы ждут", "работ ждут")} проверки
+              </Text>
+            </View>
+          );
+        })()}
 
         {/* Сводка по срокам у ученика: сколько заданий горит прямо сейчас.
             Раньше это можно было понять, только пролистав весь список. */}
