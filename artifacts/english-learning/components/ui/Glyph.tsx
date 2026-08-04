@@ -28,7 +28,8 @@ export type GlyphName =
   | "pen" | "video" | "note"
   | "camera" | "face" | "trash" | "key" | "copy"
   | "userPlus" | "userX" | "logout" | "cap"
-  | "send" | "search" | "backspace" | "help" | "arrowRight";
+  | "send" | "search" | "backspace" | "help" | "arrowRight"
+  | "link" | "upload" | "image" | "list";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -75,6 +76,41 @@ function render(name: GlyphName, s: any, color: string) {
 
     case "arrowRight":
       return <Path {...s} strokeWidth={2.4} d="M3.6 12h16.8M14 5.6l6.4 6.4-6.4 6.4" />;
+
+    case "link":
+      return (
+        <G>
+          <Path {...s} d="M10 13.4a4.6 4.6 0 0 0 6.9.5l2.7-2.7a4.6 4.6 0 0 0-6.5-6.5l-1.6 1.5" />
+          <Path {...s} d="M14 10.6a4.6 4.6 0 0 0-6.9-.5l-2.7 2.7a4.6 4.6 0 0 0 6.5 6.5l1.5-1.5" />
+        </G>
+      );
+
+    case "upload":
+      return (
+        <G>
+          <Path {...s} d="M21 15.4v3.2a2.2 2.2 0 0 1-2.2 2.2H5.2A2.2 2.2 0 0 1 3 18.6v-3.2" />
+          <Path {...s} d="m7.4 8.4 4.6-4.6 4.6 4.6M12 3.8v11.6" />
+        </G>
+      );
+
+    case "image":
+      return (
+        <G>
+          <Rect {...s} x={3} y={4.4} width={18} height={15.2} rx={2.4} />
+          <Circle cx={8.6} cy={9.6} r={1.6} fill={color} />
+          <Path {...s} d="m3.6 17.2 5-5 3.4 3.4 3.2-3.2 5.2 5.2" />
+        </G>
+      );
+
+    case "list":
+      return (
+        <G>
+          <Path {...s} d="M9 6.4h11.4M9 12h11.4M9 17.6h11.4" />
+          <Circle cx={4.4} cy={6.4} r={1.5} fill={color} />
+          <Circle cx={4.4} cy={12} r={1.5} fill={color} />
+          <Circle cx={4.4} cy={17.6} r={1.5} fill={color} />
+        </G>
+      );
 
     case "backspace":
       // Кнопка «Стереть» в сборке слова: клавиша со стрелкой и крестиком.
