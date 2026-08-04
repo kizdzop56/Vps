@@ -6,13 +6,15 @@
 // компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде.
 // Поле deck.emoji из базы при этом не меняется.
 //
-// Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью,
-// пилюли. Логика экрана при переходе на GameKit не менялась.
+// Оформление собрано из GameKit и повторяет раздел «Слова»: главное действие —
+// физическая кнопка, значки в градиентных плашках с наклоном, карточки с
+// цветной тенью и микро-наклоном. Логика экрана не менялась.
 import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, Platform,
   ActivityIndicator, RefreshControl, Modal, ScrollView, TextInput, Alert,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -61,6 +63,22 @@ const TYPE_LABELS: Record<string, string> = {
 const TYPE_COLORS: Record<string, string> = {
   text_test: "#8b5cf6", audio: "#6366f1", reading: "#d946ef", video: "#ec4899", free_form: "#f59e0b",
 };
+/**
+ * Градиент плашки по типу задания. Плоская заливка цветом читалась как
+ * «серый прямоугольник с иконкой»; градиент делает значок объектом — тем же
+ * приёмом, что значок колоды в разделе «Слова».
+ */
+const TYPE_GRADIENTS: Record<string, readonly [string, string]> = {
+  text_test: ["#a855f7", "#7c3aed"],
+  audio:     ["#818cf8", "#4f46e5"],
+  reading:   ["#e879f9", "#c026d3"],
+  video:     ["#f472b6", "#db2777"],
+  free_form: ["#fbbf24", "#d97706"],
+};
+function typeGradient(type: string): readonly [string, string] {
+  return TYPE_GRADIENTS[type] ?? (["#a855f7", "#6366f1"] as const);
+}
+
 const FILTERS = ["Все", "text_test", "audio", "reading", "video", "free_form"] as const;
 // «Колоды» — отдельная категория в созданных заданиях учителя. До этого у
 // учителя вообще не было входа в свои колоды: вкладка «Слова» скрыта для него,
@@ -73,6 +91,39 @@ type StudentItem = {
   id: number; name: string; surname?: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null;
   avatarUrl?: string | null; knowledgeLevel: string | null;
 };
+
+/** Русская форма слова по числу. */
+function pluralRu(n: number, one: string, few: string, many: string) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+/**
+ * Значок типа задания в градиентной плашке. Наклон -5° повторяет DeckGlyph:
+ * значки во всём приложении лежат под одним углом.
+ */
+function TypePlate({ type, size = 44 }: { type: string; size?: number }) {
+  return (
+    <LinearGradient
+      colors={typeGradient(type) as unknown as string[]}
+      start={{ x: 0.1, y: 0 }}
+      end={{ x: 0.9, y: 1 }}
+      style={{
+        width: size, height: size, borderRadius: radii.sm + 2,
+        alignItems: "center", justifyContent: "center",
+        transform: [{ rotate: "-5deg" }],
+        shadowColor: TYPE_COLORS[type] ?? "#6366f1",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3, shadowRadius: 10, elevation: 4,
+      }}
+    >
+      <Glyph name={TYPE_ICONS[type] ?? "pen"} size={Math.round(size * 0.48)} color="#ffffff" />
+    </LinearGradient>
+  );
+}
 
 // ─── Assign Modal ────────────────────────────────────────────────────
 function AssignModal({
@@ -392,7 +443,7 @@ export default function AssignmentsScreen() {
       backgroundColor: colors.background,
     },
     headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-    title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
+    title: { fontSize: 30, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
     addBtn: {
       width: 42, height: 42, borderRadius: 21,
       backgroundColor: colors.primary, justifyContent: "center", alignItems: "center",
@@ -431,13 +482,12 @@ export default function AssignmentsScreen() {
       shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
     },
     assignedCard: {
-      backgroundColor: colors.primary + "08", borderRadius: radii.md, padding: 16,
-      marginBottom: 10, borderWidth: 1.5, borderColor: colors.primary + "40",
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
+      marginBottom: 12, borderWidth: 1, borderColor: colors.border,
       shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.15, shadowRadius: 15, elevation: 4,
+      shadowOpacity: 0.16, shadowRadius: 16, elevation: 4,
     },
-    cardHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10 },
-    typeIcon: { width: 44, height: 44, borderRadius: radii.sm, justifyContent: "center", alignItems: "center" },
+    cardHeader: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 10 },
     cardTitle: { fontSize: 16, fontWeight: "800", color: colors.foreground, flex: 1 },
     cardFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 },
     cardActions: { flexDirection: "row", gap: 8, marginTop: 10 },
@@ -480,9 +530,9 @@ export default function AssignmentsScreen() {
     modeBtnTextActive: { color: colors.foreground, fontWeight: "800" },
     subCard: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
-      marginBottom: 10, borderWidth: 1, borderColor: colors.border,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.12, shadowRadius: 14, elevation: 3,
+      marginBottom: 12, borderWidth: 1, borderColor: colors.border,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
     },
     scoreBadge: {
       paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.sm - 2,
@@ -490,11 +540,18 @@ export default function AssignmentsScreen() {
     },
   });
 
-  const renderMyTaskCard = ({ item }: { item: any }) => {
+  /**
+   * Чередующийся микро-наклон: список выглядит положенным рукой, а не
+   * выровненным по линейке. Больше градуса — начинает мешать чтению.
+   */
+  const tiltFor = (index: number) => (index % 2 === 0 ? "-0.4deg" : "0.4deg");
+
+  const renderMyTaskCard = (item: any, index: number) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     return (
       <TouchableOpacity
-        style={[styles.assignedCard, { shadowColor: color }]}
+        key={item.assignedTaskId}
+        style={[styles.assignedCard, { shadowColor: color, transform: [{ rotate: tiltFor(index) }] }]}
         onPress={() => router.push(`/(main)/assignment/${item.assignmentId}` as any)}
         activeOpacity={0.75}
       >
@@ -505,10 +562,9 @@ export default function AssignmentsScreen() {
           </Text>
         </View>
         <View style={styles.cardHeader}>
-          <View style={[styles.typeIcon, { backgroundColor: color + "20" }]}>
-            <Glyph name={TYPE_ICONS[item.type] ?? "pen"} size={22} color={color} />
-          </View>
+          <TypePlate type={item.type} />
           <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+          <Glyph name="chevron" size={18} color={colors.mutedForeground} />
         </View>
         <View style={styles.cardFooter}>
           <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
@@ -525,7 +581,7 @@ export default function AssignmentsScreen() {
     );
   };
 
-  const renderMyAssignmentCard = (item: any) => {
+  const renderMyAssignmentCard = (item: any, index: number) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const isDraft = item.isDraft;
     return (
@@ -534,7 +590,7 @@ export default function AssignmentsScreen() {
         key={item.id}
         style={[
           styles.card,
-          { shadowColor: color },
+          { shadowColor: color, transform: [{ rotate: tiltFor(index) }] },
           isDraft && { borderColor: colors.border, borderStyle: "dashed" },
         ]}
       >
@@ -544,9 +600,7 @@ export default function AssignmentsScreen() {
           activeOpacity={0.75}
         >
           <View style={styles.cardHeader}>
-            <View style={[styles.typeIcon, { backgroundColor: color + "20" }]}>
-              <Glyph name={TYPE_ICONS[item.type] ?? "pen"} size={22} color={color} />
-            </View>
+            <TypePlate type={item.type} />
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
               {isDraft && (
@@ -593,7 +647,7 @@ export default function AssignmentsScreen() {
   };
 
   // ── Teacher: render one student submission card (tappable → details) ──
-  const renderTeacherSubCard = (item: any) => {
+  const renderTeacherSubCard = (item: any, index: number) => {
     const color = TYPE_COLORS[item.assignmentType] || colors.primary;
     const hasSub = !!item.submission;
     if (!hasSub) return null;
@@ -602,7 +656,7 @@ export default function AssignmentsScreen() {
     return (
       <TouchableOpacity
         key={`${item.assignedTaskId}`}
-        style={styles.subCard}
+        style={[styles.subCard, { shadowColor: tint, transform: [{ rotate: tiltFor(index) }] }]}
         onPress={() => router.push(`/(main)/teacher-results/${item.assignmentId}` as any)}
         activeOpacity={0.75}
       >
@@ -640,20 +694,19 @@ export default function AssignmentsScreen() {
   };
 
   // ── Student: render one completed assignment card (tappable → review) ──
-  const renderCompletedCard = (item: any) => {
+  const renderCompletedCard = (item: any, index: number) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const tint = scoreTint(item.score);
     return (
       <TouchableOpacity
         key={`${item.submissionId}`}
-        style={styles.subCard}
+        // Тень в цвете балла: сильные и слабые работы различимы сразу.
+        style={[styles.subCard, { shadowColor: tint, transform: [{ rotate: tiltFor(index) }] }]}
         onPress={() => router.push(`/(main)/submission-review/${item.submissionId}` as any)}
         activeOpacity={0.75}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}>
-          <View style={[styles.typeIcon, { backgroundColor: color + "20" }]}>
-            <Glyph name={TYPE_ICONS[item.type] ?? "pen"} size={20} color={color} />
-          </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <TypePlate type={item.type} size={40} />
           <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
@@ -799,7 +852,7 @@ export default function AssignmentsScreen() {
                   <SectionLabel>Ответы учеников · {withSub.length}</SectionLabel>
                   {withSub
                     .sort((a, b) => new Date(b.submission.submittedAt).getTime() - new Date(a.submission.submittedAt).getTime())
-                    .map(renderTeacherSubCard)
+                    .map((item, i) => renderTeacherSubCard(item, i))
                   }
                 </>
               );
@@ -817,7 +870,7 @@ export default function AssignmentsScreen() {
               return (
                 <>
                   <SectionLabel>Выполненные · {myCompleted.length}</SectionLabel>
-                  {myCompleted.map(renderCompletedCard)}
+                  {myCompleted.map((item, i) => renderCompletedCard(item, i))}
                 </>
               );
             })()}
@@ -863,19 +916,36 @@ export default function AssignmentsScreen() {
                   <View style={styles.emptyIcon}>
                     <Glyph name="tray" size={32} color={colors.primary} />
                   </View>
-                  <Text style={styles.emptyText}>Заданий и колод пока нет.{"\n"}Нажмите + чтобы создать первое задание.</Text>
+                  <Text style={styles.emptyText}>Заданий и колод пока нет.{"\n"}Создайте первое задание.</Text>
+                  <ChunkyButton
+                    label="Создать задание"
+                    icon="plus"
+                    onPress={() => router.push("/(main)/create-assignment" as any)}
+                    style={{ alignSelf: "stretch", marginTop: 8 }}
+                  />
                 </View>
               );
               return (
                 <>
+                  {/* Главное действие учителя: раньше создать задание можно было
+                      только круглым плюсом в шапке — его легко не заметить. */}
+                  <ChunkyButton
+                    label="Создать задание"
+                    sublabel="Тест, аудирование, чтение, видео или свободный ответ"
+                    icon="plus"
+                    chevron
+                    onPress={() => router.push("/(main)/create-assignment" as any)}
+                    style={{ marginBottom: 16 }}
+                  />
                   <SectionLabel>Мои задания и колоды · {combined.length}</SectionLabel>
-                  {combined.map((row) => row.kind === "assignment"
-                    ? renderMyAssignmentCard(row.data)
+                  {combined.map((row, i) => row.kind === "assignment"
+                    ? renderMyAssignmentCard(row.data, i)
                     : (
                       <DeckRow
                         key={`deck-${row.data.id}`}
                         colors={colors}
                         deck={row.data}
+                        tilt={tiltFor(i)}
                         onPress={() => router.push(`/(main)/flashcards/deck/${row.data.id}` as any)}
                       />
                     ))}
@@ -894,13 +964,19 @@ export default function AssignmentsScreen() {
                   <View style={styles.emptyIcon}>
                     <Glyph name="tray" size={32} color={colors.primary} />
                   </View>
-                  <Text style={styles.emptyText}>Заданий пока нет.{"\n"}Нажмите + чтобы создать первое.</Text>
+                  <Text style={styles.emptyText}>Заданий этого типа пока нет.</Text>
+                  <ChunkyButton
+                    label="Создать задание"
+                    icon="plus"
+                    onPress={() => router.push("/(main)/create-assignment" as any)}
+                    style={{ alignSelf: "stretch", marginTop: 8 }}
+                  />
                 </View>
               );
               return (
                 <>
                   <SectionLabel>Мои задания · {filtered.length}</SectionLabel>
-                  {filtered.map(renderMyAssignmentCard)}
+                  {filtered.map((item, i) => renderMyAssignmentCard(item, i))}
                 </>
               );
             })()}
@@ -921,12 +997,25 @@ export default function AssignmentsScreen() {
                   </Text>
                 </View>
               );
+              const next = filtered[0];
               return (
                 <>
-                  <SectionLabel>Назначено учителем · {filtered.length}</SectionLabel>
-                  {filtered.map((item: any) => (
-                    <View key={item.assignedTaskId}>{renderMyTaskCard({ item })}</View>
-                  ))}
+                  {/* Главное действие ученика — как «Учить слова» в разделе
+                      «Слова». Раньше экран открывался списком, и ученик сам
+                      искал, за что взяться. Кнопка ведёт на то же задание,
+                      что и первая карточка списка. */}
+                  <ChunkyButton
+                    label="Начать задание"
+                    sublabel={next.title}
+                    icon="play"
+                    chevron
+                    onPress={() => router.push(`/(main)/assignment/${next.assignmentId}` as any)}
+                    style={{ marginBottom: 16 }}
+                  />
+                  <SectionLabel>
+                    Назначено учителем · {filtered.length} {pluralRu(filtered.length, "задание", "задания", "заданий")}
+                  </SectionLabel>
+                  {filtered.map((item: any, i: number) => renderMyTaskCard(item, i))}
                 </>
               );
             })()}
@@ -951,7 +1040,7 @@ export default function AssignmentsScreen() {
 // ─── Строка колоды — общий внешний вид для вкладки «Колоды» и для колод,
 // подмешанных в общий список во вкладке «Все». Значок рисует DeckGlyph: тот же
 // компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде. ──
-function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: () => void }) {
+function DeckRow({ colors, deck, onPress, tilt = "0deg" }: { colors: any; deck: any; onPress: () => void; tilt?: string }) {
   return (
     <TouchableOpacity
       key={deck.id}
@@ -960,7 +1049,8 @@ function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: (
       style={{
         flexDirection: "row", alignItems: "center", gap: 12,
         backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1,
-        borderColor: colors.border, padding: 14, marginBottom: 10,
+        borderColor: colors.border, padding: 14, marginBottom: 12,
+        transform: [{ rotate: tilt }],
         shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
         shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
       }}
@@ -1016,14 +1106,16 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
 
   return (
     <>
-      <SectionLabel>Колоды слов · {decks.length}</SectionLabel>
-
       <ChunkyButton
         label="Создать колоду"
+        sublabel="Свои слова для учеников"
         icon="plus"
+        chevron
         onPress={() => router.push("/(main)/flashcards/new-deck" as any)}
-        style={{ marginBottom: 12 }}
+        style={{ marginBottom: 16 }}
       />
+
+      <SectionLabel>Колоды слов · {decks.length}</SectionLabel>
 
       {decks.length === 0 ? (
         <View style={[styles.empty, { paddingTop: 30 }]}>
@@ -1035,8 +1127,14 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
           </Text>
         </View>
       ) : (
-        decks.map((d: any) => (
-          <DeckRow key={d.id} colors={colors} deck={d} onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)} />
+        decks.map((d: any, i: number) => (
+          <DeckRow
+            key={d.id}
+            colors={colors}
+            deck={d}
+            tilt={i % 2 === 0 ? "-0.4deg" : "0.4deg"}
+            onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)}
+          />
         ))
       )}
     </>
