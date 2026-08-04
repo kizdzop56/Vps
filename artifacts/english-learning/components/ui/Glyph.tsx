@@ -28,7 +28,7 @@ export type GlyphName =
   | "pen" | "video" | "note"
   | "camera" | "face" | "trash" | "key" | "copy"
   | "userPlus" | "userX" | "logout" | "cap"
-  | "send" | "search";
+  | "send" | "search" | "backspace" | "help" | "arrowRight";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -72,6 +72,27 @@ function render(name: GlyphName, s: any, color: string) {
 
     case "close":
       return <Path {...s} strokeWidth={2.6} d="M18 6 6 18M6 6l12 12" />;
+
+    case "arrowRight":
+      return <Path {...s} strokeWidth={2.4} d="M3.6 12h16.8M14 5.6l6.4 6.4-6.4 6.4" />;
+
+    case "backspace":
+      // Кнопка «Стереть» в сборке слова: клавиша со стрелкой и крестиком.
+      return (
+        <G>
+          <Path {...s} d="M9.4 4.6h10a2 2 0 0 1 2 2v10.8a2 2 0 0 1-2 2h-10L2.6 12l6.8-7.4Z" />
+          <Path {...s} d="m17 9.4-5.2 5.2M11.8 9.4l5.2 5.2" />
+        </G>
+      );
+
+    case "help":
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.8} />
+          <Path {...s} d="M9.4 9.2a2.7 2.7 0 0 1 5.25.9c0 1.8-2.65 2.7-2.65 2.7" />
+          <Circle cx={12} cy={16.8} r={1.2} fill={color} />
+        </G>
+      );
 
     case "send":
       // Бумажный самолётик с залитым «крылом»: направление читается сразу.
