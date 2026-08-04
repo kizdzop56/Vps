@@ -9,15 +9,22 @@
 //
 // Оформление собрано из GameKit: плитки с цветной тенью, пилюли, метки секций.
 //
-// Главное отличие от прежней версии: рейтинг перестал быть просто списком.
-// Рядом с каждым участником видно отставание от того, кто выше — «отстаёшь на
-// 40 очков» превращает таблицу в дистанцию, которую можно сократить. Раньше
-// экран показывал абсолютные значения, и понять, далеко ли до следующего
-// места, можно было только вычитая числа в уме.
+// Рейтинг перестал быть просто списком:
+//  • Рядом с каждым участником видно отставание от того, кто выше — «отстаёт на
+//    40 очков» превращает таблицу в дистанцию, которую можно сократить.
+//  • Своё место вынесено в шапку отдельным чипом. Это первое, что ищут на
+//    экране, а раньше приходилось прокручивать список и искать подсветку.
+//  • У подиума появились настоящие ступени: первое место физически выше.
+//    Раньше разница задавалась отступами у аватара и читалась случайной.
+//  • Блок «Моё место» заменён на «догоняешь»: он повторял номер, который уже
+//    виден строкой ниже, вместо того чтобы назвать соперника и дистанцию.
+//  • Длинный список сворачивается: первая десятка, разрыв «ещё N участников»
+//    и своя строка с соседями. Раньше на 14-м месте себя приходилось искать
+//    прокруткой через весь класс.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, FlatList, ActivityIndicator, Platform,
-  TouchableOpacity, Image, useWindowDimensions, RefreshControl,
+  TouchableOpacity, Pressable, Image, useWindowDimensions, RefreshControl,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path, Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from "react-native-svg";
@@ -28,7 +35,7 @@ import { useRouter } from "expo-router";
 import authStorage from "@/utils/authStorage";
 import DarkVeil from "@/components/DarkVeil";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { Tile, SectionLabel } from "@/components/ui/GameKit";
+import { Tile, ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -51,6 +58,12 @@ type CategoryEntry = {
 };
 
 type CategoriesData = Record<CategoryKey, CategoryEntry[]>;
+
+/** Строка списка: участник, разрыв или кнопка «показать всех». */
+type Row =
+  | { kind: "entry"; entry: CategoryEntry }
+  | { kind: "gap"; count: number }
+  | { kind: "more"; count: number };
 
 const CATEGORIES: {
   key: CategoryKey;
@@ -87,6 +100,9 @@ const SCOPE_OPTIONS: { key: Scope; label: string }[] = [
   { key: "friends", label: "Друзья" },
 ];
 
+/** Сколько участников показываем до сворачивания списка. */
+const VISIBLE_HEAD = 10;
+
 // Metallic place colors: gold, silver, bronze — rendered as real metal gradients
 const PLACE_METALS = [
   { gradient: ["#fff6d0", "#f3cf6a", "#c9971f", "#8a6511"] as const, solid: "#d4af37" }, // gold
@@ -94,6 +110,9 @@ const PLACE_METALS = [
   { gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const, solid: "#c17a3e" }, // bronze
 ];
 const PLACE_COLORS = PLACE_METALS.map(m => m.solid);
+
+/** Высота ступени под каждым местом: 1-е выше 2-го, 2-е выше 3-го. */
+const STEP_HEIGHT = [56, 38, 26];
 
 function pluralRu(n: number, one: string, few: string, many: string): string {
   const mod10 = n % 10;
@@ -154,6 +173,27 @@ function Avatar({ entry, size }: { entry: CategoryEntry; size: number }) {
   );
 }
 
+/**
+ * Ступень подиума под карточкой места.
+ *
+ * Раньше высоту изображали отступами вокруг аватара: второе и третье место
+ * просто опускались ниже, и пьедестал читался как случайный сдвиг. Настоящая
+ * ступень объясняет иерархию мгновенно, даже если имена не прочитаны.
+ */
+function Step({ rank }: { rank: number }) {
+  return (
+    <View style={{
+      width: "100%", height: STEP_HEIGHT[rank - 1],
+      borderTopLeftRadius: 14, borderTopRightRadius: 14,
+      backgroundColor: "rgba(255,255,255,0.14)",
+      borderWidth: 1, borderBottomWidth: 0, borderColor: "rgba(255,255,255,0.2)",
+      alignItems: "center", justifyContent: "center",
+    }}>
+      <Text style={{ fontSize: 15, fontWeight: "900", color: "rgba(255,255,255,0.5)" }}>{rank}</Text>
+    </View>
+  );
+}
+
 // ── Podium card (top 3) ───────────────────────────────────────────────
 function PodiumCard({
   entry, rank, isCenter, activeCat, isMe, onPress,
@@ -165,25 +205,27 @@ function PodiumCard({
   isMe: boolean;
   onPress: () => void;
 }) {
-  const avatarSize = isCenter ? 88 : 72;
+  const avatarSize = isCenter ? 78 : 64;
   const placeColor = PLACE_COLORS[rank - 1];
   const placeMetal = PLACE_METALS[rank - 1];
 
   if (!entry) {
     return (
-      <View style={{ alignItems: "center", flex: 1 }}>
-        <View style={{
-          width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2,
-          backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 2,
-          borderColor: "rgba(255,255,255,0.2)", borderStyle: "dashed",
-          justifyContent: "center", alignItems: "center",
-        }}>
-          {/* Свободное место — замок, а не знак вопроса: место можно занять. */}
-          <Glyph name="lock" size={Math.round(avatarSize * 0.3)} color="rgba(255,255,255,0.45)" />
+      <View style={{ alignItems: "center", flex: isCenter ? 1.18 : 1 }}>
+        <View style={{ alignItems: "center", marginBottom: 10 }}>
+          <View style={{
+            width: avatarSize + 6, height: avatarSize + 6, borderRadius: (avatarSize + 6) / 2,
+            borderWidth: 2, borderColor: "rgba(255,255,255,0.3)", borderStyle: "dashed",
+            justifyContent: "center", alignItems: "center",
+          }}>
+            {/* Свободное место — замок, а не знак вопроса: место можно занять. */}
+            <Glyph name="lock" size={Math.round(avatarSize * 0.3)} color="rgba(255,255,255,0.45)" />
+          </View>
+          <Text style={{ marginTop: 10, fontSize: 11, fontWeight: "600", color: "rgba(255,255,255,0.45)" }}>
+            свободно
+          </Text>
         </View>
-        <Text style={{ marginTop: 10, fontSize: 11, color: "rgba(255,255,255,0.4)" }}>
-          {rank} место свободно
-        </Text>
+        <Step rank={rank} />
       </View>
     );
   }
@@ -192,14 +234,9 @@ function PodiumCard({
     <TouchableOpacity
       activeOpacity={isMe ? 1 : 0.75}
       onPress={isMe ? undefined : onPress}
-      style={{ alignItems: "center", flex: 1 }}
+      style={{ alignItems: "center", flex: isCenter ? 1.18 : 1 }}
     >
-      {/* Avatar + place badge */}
-      <View style={{
-        alignItems: "center",
-        marginBottom: isCenter ? 0 : 18,
-        marginTop: isCenter ? 0 : 18,
-      }}>
+      <View style={{ alignItems: "center", marginBottom: 10 }}>
         <View style={{
           borderRadius: (avatarSize + 6) / 2 + 4,
           shadowColor: placeColor, shadowOffset: { width: 0, height: 0 },
@@ -217,45 +254,54 @@ function PodiumCard({
             <Avatar entry={entry} size={avatarSize} />
           </LinearGradient>
         </View>
+
         {rank === 1 && (
           <View style={{
-            position: "absolute", top: -26, left: 0, right: 0,
+            position: "absolute", top: -24, left: 0, right: 0,
             alignItems: "center", zIndex: 5,
           }}>
             <Crown size={36} />
           </View>
         )}
+
         {/* Place number badge */}
         <LinearGradient
           colors={placeMetal.gradient}
           start={{ x: 0.1, y: 0 }}
           end={{ x: 0.9, y: 1 }}
           style={{
-            marginTop: -15,
-            width: 30, height: 30, borderRadius: 15,
+            marginTop: -14,
+            width: 28, height: 28, borderRadius: 14,
             borderWidth: 2, borderColor: "#fff",
             justifyContent: "center", alignItems: "center",
             shadowColor: "#000", shadowOffset: { width: 0, height: 2 },
             shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
           }}
         >
-          <Text style={{ fontSize: 14, fontWeight: "900", color: "#fff", textShadowColor: "rgba(0,0,0,0.35)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 1 }}>{rank}</Text>
+          <Text style={{
+            fontSize: 13, fontWeight: "900", color: "#fff",
+            textShadowColor: "rgba(0,0,0,0.35)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 1,
+          }}>
+            {rank}
+          </Text>
         </LinearGradient>
+
+        <Text
+          numberOfLines={1}
+          style={{
+            marginTop: 9, fontSize: isCenter ? 15 : 14,
+            fontWeight: "800", color: "#fff",
+            maxWidth: 100, textAlign: "center",
+          }}
+        >
+          {entry.username}{isMe ? " (Я)" : ""}
+        </Text>
+        <Text style={{ marginTop: 3, fontSize: 12.5, color: "rgba(255,255,255,0.8)", fontWeight: "800", fontVariant: ["tabular-nums"] }}>
+          {activeCat.formatValue(entry.value)}
+        </Text>
       </View>
 
-      <Text
-        numberOfLines={1}
-        style={{
-          marginTop: 12, fontSize: isCenter ? 19 : 17,
-          fontWeight: "800", color: "#fff",
-          maxWidth: 110, textAlign: "center",
-        }}
-      >
-        {entry.username}{isMe ? " (Я)" : ""}
-      </Text>
-      <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.75)", fontWeight: "700", fontVariant: ["tabular-nums"] }}>
-        {activeCat.formatValue(entry.value)}
-      </Text>
+      <Step rank={rank} />
     </TouchableOpacity>
   );
 }
@@ -274,11 +320,12 @@ function Segments<T extends string>({
 }) {
   return (
     <View style={{
-      marginHorizontal: 20,
+      marginHorizontal: 18,
       flexDirection: "row",
-      backgroundColor: "rgba(255,255,255,0.12)",
+      backgroundColor: "rgba(255,255,255,0.13)",
       borderRadius: radii.lg,
       padding: 4,
+      gap: 4,
     }}>
       {options.map((opt) => {
         const active = opt.key === value;
@@ -289,7 +336,7 @@ function Segments<T extends string>({
             activeOpacity={0.8}
             style={{
               flex: 1, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6,
-              paddingVertical: 10, borderRadius: radii.md,
+              paddingVertical: 9, borderRadius: radii.md,
               backgroundColor: active ? "#fff" : "transparent",
               ...(active ? {
                 shadowColor: "#2e1065",
@@ -300,8 +347,8 @@ function Segments<T extends string>({
               } : {}),
             }}
           >
-            {opt.icon && <Glyph name={opt.icon} size={14} color={active ? "#6d28d9" : "rgba(255,255,255,0.7)"} />}
-            <Text style={{ fontSize: 13.5, fontWeight: active ? "800" : "700", color: active ? "#6d28d9" : "rgba(255,255,255,0.75)" }}>
+            {opt.icon && <Glyph name={opt.icon} size={13} color={active ? "#6d28d9" : "rgba(255,255,255,0.74)"} />}
+            <Text style={{ fontSize: 12.5, fontWeight: active ? "800" : "700", color: active ? "#6d28d9" : "rgba(255,255,255,0.74)" }}>
               {opt.label}
             </Text>
           </TouchableOpacity>
@@ -323,6 +370,8 @@ export default function LeaderboardScreen() {
   const [data, setData] = useState<CategoriesData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Свёрнутый список: показываем первую десятку и своё окружение.
+  const [showAll, setShowAll] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /**
@@ -351,6 +400,10 @@ export default function LeaderboardScreen() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [scope, load]);
 
+  // Сворачивание сбрасывается при смене среза или категории: в новом списке
+  // своё место другое, и раскрытое состояние прошлого уже не имеет смысла.
+  useEffect(() => { setShowAll(false); }, [scope, activeKey]);
+
   const activeCat = CATEGORIES.find(c => c.key === activeKey)!;
   const entries = data?.[activeKey] ?? [];
   const myEntry = entries.find(e => e.userId === user?.id);
@@ -377,14 +430,88 @@ export default function LeaderboardScreen() {
   };
 
   const myGap = myEntry ? gapToAbove(myEntry) : null;
+  /** Кого именно догоняем: сосед на одну строку выше. */
+  const rival = myEntry ? entries.find(e => e.rank === myEntry.rank - 1) : undefined;
 
-  const renderItem = ({ item }: { item: CategoryEntry }) => {
-    const isMe = item.userId === user?.id;
-    const gap = gapToAbove(item);
+  /**
+   * Строки списка.
+   *
+   * Длинный класс сворачивается: первая десятка, разрыв «ещё N участников» и
+   * своё окружение (сосед сверху, ты, сосед снизу). Раньше на 14-м месте
+   * приходилось прокручивать весь список, чтобы найти себя.
+   */
+  const rows: Row[] = React.useMemo(() => {
+    const all: Row[] = rest.map(entry => ({ kind: "entry" as const, entry }));
+    if (showAll || rest.length <= VISIBLE_HEAD + 3) return all;
+
+    const head = all.slice(0, VISIBLE_HEAD);
+    const tailStart = VISIBLE_HEAD;
+
+    // Своё место внутри показанной части — сворачивать нечего сверх хвоста.
+    if (!myEntry || myEntry.rank <= 3 + VISIBLE_HEAD) {
+      return [...head, { kind: "more", count: rest.length - VISIBLE_HEAD }];
+    }
+
+    const around = rest.filter(e => Math.abs(e.rank - myEntry.rank) <= 1 && e.rank > 3 + VISIBLE_HEAD);
+    const firstAroundIdx = rest.findIndex(e => e.userId === around[0]?.userId);
+    const skipped = Math.max(0, firstAroundIdx - tailStart);
+
+    return [
+      ...head,
+      ...(skipped > 0 ? [{ kind: "gap" as const, count: skipped }] : []),
+      ...around.map(entry => ({ kind: "entry" as const, entry })),
+      { kind: "more" as const, count: rest.length - VISIBLE_HEAD - around.length - skipped },
+    ].filter(r => !(r.kind === "more" && r.count <= 0));
+  }, [rest, showAll, myEntry]);
+
+  const renderRow = ({ item }: { item: Row }) => {
+    // ── Разрыв: сколько участников пропущено ──
+    if (item.kind === "gap") {
+      return (
+        <View style={{
+          flexDirection: "row", alignItems: "center", gap: 9,
+          marginHorizontal: 22, marginTop: 4, marginBottom: 10,
+        }}>
+          <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+          <Text style={{ fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.4 }}>
+            ещё {item.count} {pluralRu(item.count, "участник", "участника", "участников")}
+          </Text>
+          <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+        </View>
+      );
+    }
+
+    // ── Кнопка «показать всех» ──
+    if (item.kind === "more") {
+      return (
+        <Pressable
+          onPress={() => setShowAll(true)}
+          style={({ pressed }) => ({
+            marginHorizontal: 20, marginTop: 2, marginBottom: 10,
+            paddingVertical: 12, borderRadius: radii.md,
+            backgroundColor: colors.primary + "12",
+            borderWidth: 1, borderColor: colors.primary + "2e",
+            flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary }}>
+            Показать всех · ещё {item.count}
+          </Text>
+          <View style={{ transform: [{ rotate: "90deg" }] }}>
+            <Glyph name="chevron" size={14} color={colors.primary} />
+          </View>
+        </Pressable>
+      );
+    }
+
+    const entry = item.entry;
+    const isMe = entry.userId === user?.id;
+    const gap = gapToAbove(entry);
 
     return (
       <Tile
-        onPress={isMe ? undefined : () => router.push(`/(main)/friend/${item.userId}` as any)}
+        onPress={isMe ? undefined : () => router.push(`/(main)/friend/${entry.userId}` as any)}
         glow={isMe ? activeCat.color : accents.violetDeep}
         style={{
           flexDirection: "row", alignItems: "center", gap: 12,
@@ -403,33 +530,34 @@ export default function LeaderboardScreen() {
             fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"],
             color: isMe ? "#fff" : accents.violetDeep,
           }}>
-            {item.rank}
+            {entry.rank}
           </Text>
         </View>
 
-        <Avatar entry={item} size={40} />
+        <Avatar entry={entry} size={40} />
 
         <View style={{ flex: 1 }}>
           <Text
-            style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}
+            style={{ fontSize: 15, fontWeight: isMe ? "800" : "700", color: isMe ? activeCat.color : colors.foreground }}
             numberOfLines={1}
           >
-            {(user?.role === "teacher" || user?.role === "admin") && (item.name || item.surname)
-              ? `${item.username} (${[item.name, item.surname].filter(Boolean).join(" ")})`
-              : item.username}{isMe ? " (Я)" : ""}
+            {(user?.role === "teacher" || user?.role === "admin") && (entry.name || entry.surname)
+              ? `${entry.username} (${[entry.name, entry.surname].filter(Boolean).join(" ")})`
+              : entry.username}{isMe ? " (Я)" : ""}
           </Text>
           {/* Отставание от соседа сверху: превращает таблицу в дистанцию. */}
           {gap !== null && (
             <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
-              отстаёт на {activeCat.formatGap(gap)}
+              {isMe ? "отстаёшь" : "отстаёт"} на {activeCat.formatGap(gap)}
             </Text>
           )}
         </View>
+
         <Text style={{
           fontSize: 15, fontWeight: "900", fontVariant: ["tabular-nums"],
           color: isMe ? activeCat.color : colors.foreground,
         }}>
-          {activeCat.formatValue(item.value)}
+          {activeCat.formatValue(entry.value)}
         </Text>
       </Tile>
     );
@@ -437,7 +565,7 @@ export default function LeaderboardScreen() {
 
   const ListHeader = (
     <>
-      {/* ── Hero gradient section ── */}
+      {/* ── Шапка-герой ── */}
       <LinearGradient
         colors={["#2e1065", "#5b21b6", "#7c3aed"]}
         start={{ x: 0.5, y: 0 }}
@@ -445,36 +573,68 @@ export default function LeaderboardScreen() {
         style={{ paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16), paddingBottom: 0, overflow: "hidden" }}
       >
         {/* Animated veil background (web) — static gradient stays underneath as fallback */}
-        <View
-          style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none" }}
-        >
+        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none" }}>
           <DarkVeil scanlineIntensity={0.03} speed={1} scanlineFrequency={1.7} warpAmount={1.1} />
         </View>
 
-        {/* Title — centered at the top.
-            Подзаголовок теперь отвечает не «что это за категория», а «где я в
-            ней стою»: своё место — первое, что ищут глазами на этом экране. */}
-        <View style={{ paddingHorizontal: 20, marginBottom: 16, alignItems: "center" }}>
-          <Text style={{ fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: "#fff", textAlign: "center" }}>Рейтинг</Text>
-          <Text style={{ fontSize: 12, fontWeight: "600", color: "rgba(255,255,255,0.62)", marginTop: 3, textAlign: "center" }}>
-            {myEntry
-              ? myGap !== null
-                ? `Ты ${myEntry.rank}-й · до следующего места ${activeCat.formatGap(myGap)}`
-                : `Ты ${myEntry.rank}-й · выше никого нет`
-              : activeCat.subtitle}
-          </Text>
+        {/* ── Заголовок и своё место ──
+            Раньше под заголовком стояла подпись категории, а собственное место
+            приходилось искать прокруткой. Теперь номер и дистанция до
+            следующего места стоят прямо в шапке. */}
+        <View style={{ paddingHorizontal: 18, paddingBottom: 14, flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <Text style={{ fontSize: 24, fontWeight: "900", letterSpacing: -0.6, color: "#fff" }}>Рейтинг</Text>
+
+          {myEntry ? (
+            <View style={{
+              marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8,
+              paddingVertical: 7, paddingLeft: 7, paddingRight: 13, borderRadius: radii.pill,
+              backgroundColor: "rgba(255,255,255,0.16)",
+              borderWidth: 1, borderColor: "rgba(255,255,255,0.28)",
+            }}>
+              {/* Тройка призёров — золотой шильд, остальные — фиолетовый. */}
+              {myEntry.rank <= 3 ? (
+                <LinearGradient
+                  colors={[accents.gold, accents.amber]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={{ width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] }}>
+                    {myEntry.rank}
+                  </Text>
+                </LinearGradient>
+              ) : (
+                <View style={{
+                  width: 26, height: 26, borderRadius: 13,
+                  backgroundColor: "rgba(255,255,255,0.24)",
+                  alignItems: "center", justifyContent: "center",
+                }}>
+                  <Text style={{ fontSize: 12, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>
+                    {myEntry.rank}
+                  </Text>
+                </View>
+              )}
+              <View>
+                <Text style={{ fontSize: 11.5, fontWeight: "800", color: "#fff" }}>Твоё место</Text>
+                <Text style={{ fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
+                  {myGap !== null ? `до ${myEntry.rank - 1}-го ${activeCat.formatGap(myGap)}` : "выше никого нет"}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <Text style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: "600", color: "rgba(255,255,255,0.62)", maxWidth: 150, textAlign: "right" }}>
+              {activeCat.subtitle}
+            </Text>
+          )}
         </View>
 
-        {/* Scope segmented control (full width) */}
-        <View style={{ marginBottom: 12 }}>
+        {/* Срез: все ученики / друзья */}
+        <View style={{ marginBottom: 10 }}>
           <Segments options={SCOPE_OPTIONS} value={scope} onChange={setScope} />
         </View>
 
-        {/* Category segmented control (full width) */}
-        {/* Extra bottom margin lifts the categories away from the podium so the
-            winner's crown (rendered at top: -26 above the center avatar) never
-            overlaps the category chips. */}
-        <View style={{ marginBottom: 34 }}>
+        {/* Категория */}
+        <View style={{ marginBottom: 4 }}>
           <Segments
             options={CATEGORIES.map(c => ({ key: c.key, label: c.label, icon: c.icon }))}
             value={activeKey}
@@ -482,15 +642,17 @@ export default function LeaderboardScreen() {
           />
         </View>
 
-        {/* Podium — 2nd | 1st | 3rd */}
+        {/* ── Подиум ──
+            Отступ сверху оставляет место короне: она висит на 24 пикселя выше
+            центрального аватара и иначе наезжала бы на переключатель категорий. */}
         {loading ? (
-          <View style={{ height: 160, justifyContent: "center", alignItems: "center" }}>
+          <View style={{ height: 190, justifyContent: "center", alignItems: "center" }}>
             <ActivityIndicator color="rgba(255,255,255,0.7)" size="large" />
           </View>
         ) : (
           <View style={{
-            flexDirection: "row", alignItems: "flex-end",
-            paddingHorizontal: 10, paddingBottom: 24, minHeight: 160,
+            flexDirection: "row", alignItems: "flex-end", gap: 8,
+            paddingHorizontal: 14, paddingTop: 34,
           }}>
             <PodiumCard
               entry={top3[1]}
@@ -519,69 +681,122 @@ export default function LeaderboardScreen() {
           </View>
         )}
 
-        {/* Wave transition into the list background */}
+        {/* Волна: стык градиента со светлым фоном списка. */}
         <View style={{ marginBottom: -1 }}>
-          <Svg width={width} height={48} viewBox={`0 0 ${width} 48`} preserveAspectRatio="none">
+          <Svg width={width} height={44} viewBox={`0 0 ${width} 44`} preserveAspectRatio="none">
             <Path
-              d={`M0,20 C ${width * 0.3},48 ${width * 0.62},-2 ${width},26 L ${width},48 L 0,48 Z`}
+              d={`M0,18 C ${width * 0.3},44 ${width * 0.62},-2 ${width},24 L ${width},44 L 0,44 Z`}
               fill={colors.background}
             />
           </Svg>
         </View>
       </LinearGradient>
 
-      {/* ── My position banner (if I'm outside top 3) ── */}
-      {!loading && myEntry && myEntry.rank > 3 && (
-        <Tile
-          glow={activeCat.color}
-          style={{
-            marginHorizontal: 20, marginTop: 14, marginBottom: 4,
-            backgroundColor: activeCat.color + "12",
-            borderWidth: 1.5, borderColor: activeCat.color + "45",
-            flexDirection: "row", alignItems: "center", gap: 12,
-          }}
-        >
+      {/* ── Кого догоняешь ──
+          Заменил блок «Моё место»: тот показывал номер, который уже виден в
+          подсвеченной строке, вместо того чтобы назвать соперника и дистанцию. */}
+      {!loading && myEntry && rival && myGap !== null && (
+        <View style={{
+          marginHorizontal: 20, marginTop: 14, marginBottom: 2,
+          flexDirection: "row", alignItems: "center", gap: 11,
+          paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
+          backgroundColor: activeCat.color + "14",
+          borderWidth: 1.5, borderColor: activeCat.color + "3d",
+        }}>
           <LinearGradient
-            colors={gradients.action as unknown as string[]}
+            colors={[accents.magenta, "#a855f7"]}
             start={{ x: 0.1, y: 0 }}
             end={{ x: 0.9, y: 1 }}
-            style={{ width: 38, height: 38, borderRadius: 19, justifyContent: "center", alignItems: "center" }}
+            style={{
+              width: 34, height: 34, borderRadius: 12,
+              alignItems: "center", justifyContent: "center",
+              shadowColor: accents.magenta, shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.4, shadowRadius: 11, elevation: 4,
+            }}
           >
-            <Text style={{ fontSize: 14, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>{myEntry.rank}</Text>
+            <Glyph name="trendUp" size={17} color="#fff" />
           </LinearGradient>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1 }}>Моё место</Text>
-            {/* Вместо имени — расстояние до следующего места: имя своё ученик
-                и так знает, а вот сколько осталось — нет. */}
-            <Text style={{ fontSize: 14, fontWeight: "800", color: activeCat.color, marginTop: 2 }}>
-              {myGap !== null
-                ? `До ${myEntry.rank - 1} места — ${activeCat.formatGap(myGap)}`
-                : "Ты вплотную к тройке"}
+            <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
+              Догоняешь {rival.username}
+            </Text>
+            <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
+              {activeCat.formatGap(myGap)} до {myEntry.rank - 1}-го места
             </Text>
           </View>
-          <Text style={{ fontSize: 19, fontWeight: "900", color: activeCat.color, fontVariant: ["tabular-nums"] }}>
-            {activeCat.formatValue(myEntry.value)}
-          </Text>
-        </Tile>
+        </View>
       )}
 
-      {/* Section label */}
-      {!loading && rest.length > 0 && (
+      {/* Первый в рейтинге: догонять некого, но сказать об этом стоит. */}
+      {!loading && myEntry && myEntry.rank === 1 && (
+        <View style={{
+          marginHorizontal: 20, marginTop: 14, marginBottom: 2,
+          flexDirection: "row", alignItems: "center", gap: 11,
+          paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
+          backgroundColor: accents.gold + "1f",
+          borderWidth: 1.5, borderColor: accents.gold + "55",
+        }}>
+          <LinearGradient
+            colors={[accents.gold, accents.amber]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{ width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center" }}
+          >
+            <Glyph name="crown" size={17} color="#fff" />
+          </LinearGradient>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }}>Ты на первом месте</Text>
+            <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2 }}>
+              Держи отрыв: тебя догоняют
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* Метка секции */}
+      {!loading && rows.length > 0 && (
         <SectionLabel style={{ marginHorizontal: 20, marginTop: 16, marginBottom: 8 }}>
           Участники · {entries.length}
         </SectionLabel>
       )}
 
+      {/* ── Пусто ──
+          Раньше здесь была только надпись. Теперь у экрана есть выход: кнопка
+          ведёт в профиль, где живёт добавление друзей по коду. */}
       {!loading && entries.length === 0 && (
-        <View style={{ alignItems: "center", paddingVertical: 40, gap: 12 }}>
-          <Glyph name="trophy" size={48} color={colors.mutedForeground} />
-          <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>
-            {scope === "friends" ? "Нет друзей в рейтинге" : "Пока никого нет"}
+        <View style={{ alignItems: "center", paddingVertical: 36, paddingHorizontal: 34, gap: 11 }}>
+          <LinearGradient
+            colors={gradients.action as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{
+              width: 66, height: 66, borderRadius: 22,
+              alignItems: "center", justifyContent: "center",
+              shadowColor: colors.primary, shadowOffset: { width: 0, height: 10 },
+              shadowOpacity: 0.35, shadowRadius: 22, elevation: 8,
+            }}
+          >
+            <Glyph name={scope === "friends" ? "users" : "trophy"} size={28} color="#fff" />
+          </LinearGradient>
+
+          <Text style={{ fontSize: 16.5, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3, textAlign: "center" }}>
+            {scope === "friends" ? "Соревноваться пока не с кем" : "Рейтинг пока пуст"}
           </Text>
+          <Text style={{ fontSize: 13, fontWeight: "600", color: colors.mutedForeground, textAlign: "center", lineHeight: 19 }}>
+            {scope === "friends"
+              ? "Добавь друзей по коду, и увидишь, кто из вас впереди по очкам, времени и заданиям."
+              : "Как только ученики начнут выполнять задания, здесь появятся места."}
+          </Text>
+
           {scope === "friends" && (
-            <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", paddingHorizontal: 40 }}>
-              Добавьте друзей через профиль другого ученика
-            </Text>
+            <View style={{ alignSelf: "stretch", marginTop: 6 }}>
+              <ChunkyButton
+                label="Добавить друзей"
+                icon="userPlus"
+                chevron
+                onPress={() => router.push("/(main)/profile" as any)}
+              />
+            </View>
           )}
         </View>
       )}
@@ -591,9 +806,9 @@ export default function LeaderboardScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <FlatList
-        data={rest}
-        keyExtractor={e => String(e.userId)}
-        renderItem={renderItem}
+        data={rows}
+        keyExtractor={(r, i) => r.kind === "entry" ? `u${r.entry.userId}` : `${r.kind}-${i}`}
+        renderItem={renderRow}
         ListHeaderComponent={ListHeader}
         contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
