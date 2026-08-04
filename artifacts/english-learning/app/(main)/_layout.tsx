@@ -1,5 +1,4 @@
 import { Redirect, Tabs } from "expo-router";
-import { Feather } from "@expo/vector-icons";
 import { View, Text, TouchableOpacity, Platform, AppState, ActivityIndicator } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { useColors } from "@/hooks/useColors";
@@ -14,6 +13,8 @@ import { TabGuide, TAB_GUIDE_CONTENT, type TabGuideTab } from "@/components/TabG
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlacementTest } from "@/components/PlacementTest";
 import { fc, apiFetch } from "@/hooks/useFlashcards";
+import { Glyph } from "@/components/ui/Glyph";
+import { accents } from "@/constants/theme";
 
 export const SESSION_START_KEY = "timer_session_start";
 
@@ -102,15 +103,18 @@ function CalendarTabIcon({ color }: { color: string }) {
   const { unreadCount } = useCalendarBadge();
   return (
     <View style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center" }}>
-      <Feather name="calendar" size={22} color={color} />
+      <Glyph name="calendar" size={22} color={color} />
       {unreadCount > 0 && (
         <View style={{
-          position: "absolute", top: -4, right: -6,
-          backgroundColor: "#e11d48", borderRadius: 8,
-          minWidth: 16, height: 16, paddingHorizontal: 3,
+          position: "absolute", top: -6, right: -8,
+          backgroundColor: "#e11d48", borderRadius: 9,
+          minWidth: 18, height: 18, paddingHorizontal: 4,
           alignItems: "center", justifyContent: "center",
+          // Белая обводка отделяет счётчик от иконки, иначе на активной
+          // вкладке красное пятно сливается с фиолетовой заливкой.
+          borderWidth: 2, borderColor: "#ffffff",
         }}>
-          <Text style={{ color: "#fff", fontSize: 10, fontWeight: "800", lineHeight: 14 }}>
+          <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 13 }}>
             {unreadCount > 9 ? "9+" : unreadCount}
           </Text>
         </View>
@@ -134,6 +138,19 @@ interface CustomTabBarProps {
   seenGuidesLoaded: boolean;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Нижняя панель вкладок.
+//
+// Раньше подложка была полупрозрачной (белый на 62%) с размытием. На тёмных
+// экранах это выглядело нормально, но основной фон приложения светло-сиреневый,
+// и панель на нём растворялась: под ней просвечивал контент, край терялся, и
+// было непонятно, где заканчивается страница и начинается навигация.
+//
+// Теперь подложка плотная белая, с цветной тенью и нижней гранью — тем же
+// приёмом, что у ChunkyButton. Панель читается как физический объект, лежащий
+// поверх страницы, а не как её часть. Размытие убрано: под непрозрачным белым
+// оно всё равно ничего не делало, только грузило композитор в вебе.
+// ─────────────────────────────────────────────────────────────────────────────
 function CustomTabBar({
   state, descriptors, navigation,
   onFirstVisit, userId, seenGuides, seenGuidesLoaded,
@@ -161,28 +178,40 @@ function CustomTabBar({
       style={{
         position: "absolute",
         bottom: Math.max(insets.bottom, 8) + 8,
-        left: 16,
-        right: 16,
+        left: 14,
+        right: 14,
       }}
     >
+      {/* Нижняя грань: тёмный слой, выступающий из-под панели на 5 пикселей.
+          Даёт толщину — панель выглядит лежащей на экране, а не нарисованной. */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: 0, right: 0, top: 5, bottom: -5,
+          borderRadius: 30,
+          backgroundColor: accents.violetDeep,
+          opacity: 0.28,
+        }}
+      />
+
       <View
         style={{
-          backgroundColor: "rgba(255,255,255,0.62)",
-          borderRadius: 28,
-          paddingVertical: 8,
+          backgroundColor: "#ffffff",
+          borderRadius: 30,
+          paddingVertical: 9,
           paddingHorizontal: 4,
           flexDirection: "row",
           alignItems: "center",
-          shadowColor: "#6366f1",
-          shadowOffset: { width: 0, height: 8 },
-          shadowOpacity: 0.18,
-          shadowRadius: 20,
-          elevation: 16,
-          borderWidth: 1,
-          borderColor: "rgba(255,255,255,0.8)",
-          ...(Platform.OS === "web"
-            ? { backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }
-            : {}),
+          // Тень в цвете бренда, а не серая: на сиреневом фоне серая читается
+          // как грязь, а фиолетовая — как свечение.
+          shadowColor: accents.indigoDeep,
+          shadowOffset: { width: 0, height: 12 },
+          shadowOpacity: 0.34,
+          shadowRadius: 26,
+          elevation: 20,
+          borderWidth: 1.5,
+          borderColor: "rgba(99,102,241,0.22)",
         }}
       >
         {visibleRoutes.map((route: any) => {
@@ -247,6 +276,13 @@ function CustomTabBar({
                     alignItems: "center",
                     justifyContent: "center",
                     minWidth: 50,
+                    // Активная вкладка светится своим цветом — видно, где ты,
+                    // даже боковым зрением.
+                    shadowColor: "#7c3aed",
+                    shadowOffset: { width: 0, height: 5 },
+                    shadowOpacity: 0.42,
+                    shadowRadius: 12,
+                    elevation: 6,
                   }}
                 >
                   {options.tabBarIcon?.({ color: "#ffffff", size: 22, focused: true })}
@@ -266,8 +302,8 @@ function CustomTabBar({
               )}
               <Text
                 style={{
-                  fontSize: 9,
-                  fontWeight: isFocused ? "700" : "500",
+                  fontSize: 10,
+                  fontWeight: isFocused ? "800" : "600",
                   color: isFocused ? "#7c3aed" : colors.mutedForeground,
                   letterSpacing: 0.1,
                 }}
@@ -376,13 +412,17 @@ function MainLayoutInner() {
           ...({ contentStyle: { backgroundColor: "transparent" } } as object),
         }}
       >
+        {/* Иконки вкладок — из собственного набора (components/ui/Glyph.tsx),
+            а не Feather: у своих глифов одна толщина штриха и один язык форм
+            с иконками внутри экранов. Разнобой был заметнее всего в панели,
+            где иконки стоят в ряд. */}
         <Tabs.Screen
           name="assignments"
           options={isParent
             ? { href: null }
             : {
                 title: "Задания",
-                tabBarIcon: ({ color }) => <Feather name="book-open" size={22} color={color} />,
+                tabBarIcon: ({ color }) => <Glyph name="book" size={22} color={color} />,
               }
           }
         />
@@ -390,7 +430,7 @@ function MainLayoutInner() {
         <Tabs.Screen
           name="progress"
           options={isParent
-            ? { title: "Успеваемость", tabBarIcon: ({ color }) => <Feather name="trending-up" size={22} color={color} /> }
+            ? { title: "Успеваемость", tabBarIcon: ({ color }) => <Glyph name="trendUp" size={22} color={color} /> }
             : { href: null }
           }
         />
@@ -398,7 +438,7 @@ function MainLayoutInner() {
         <Tabs.Screen
           name="flashcards"
           options={isStudent
-            ? { title: "Слова", tabBarIcon: ({ color }) => <Feather name="layers" size={22} color={color} /> }
+            ? { title: "Слова", tabBarIcon: ({ color }) => <Glyph name="cards" size={22} color={color} /> }
             : { href: null }
           }
         />
@@ -408,7 +448,7 @@ function MainLayoutInner() {
         <Tabs.Screen
           name="leaderboard"
           options={isStudent
-            ? { title: "Рейтинг", tabBarIcon: ({ color }) => <Feather name="award" size={22} color={color} /> }
+            ? { title: "Рейтинг", tabBarIcon: ({ color }) => <Glyph name="trophy" size={22} color={color} /> }
             : { href: null }
           }
         />
@@ -420,7 +460,7 @@ function MainLayoutInner() {
           options={(isTeacher || isParent)
             ? {
                 title: isParent ? "Дети" : "Ученики",
-                tabBarIcon: ({ color }) => <Feather name="users" size={22} color={color} />,
+                tabBarIcon: ({ color }) => <Glyph name="users" size={22} color={color} />,
               }
             : { href: null }
           }
@@ -429,7 +469,7 @@ function MainLayoutInner() {
         <Tabs.Screen
           name="analysis"
           options={isTeacher
-            ? { title: "Анализ", tabBarIcon: ({ color }) => <Feather name="bar-chart-2" size={22} color={color} /> }
+            ? { title: "Анализ", tabBarIcon: ({ color }) => <Glyph name="chart" size={22} color={color} /> }
             : { href: null }
           }
         />
@@ -447,7 +487,7 @@ function MainLayoutInner() {
           options={isTeacher
             ? {
                 title: "Друзья",
-                tabBarIcon: ({ color }) => <Feather name="message-circle" size={22} color={color} />,
+                tabBarIcon: ({ color }) => <Glyph name="chat" size={22} color={color} />,
               }
             : { href: null }
           }
@@ -457,7 +497,7 @@ function MainLayoutInner() {
           name="profile"
           options={{
             title: "Профиль",
-            tabBarIcon: ({ color }) => <Feather name="user" size={22} color={color} />,
+            tabBarIcon: ({ color }) => <Glyph name="user" size={22} color={color} />,
           }}
         />
 
