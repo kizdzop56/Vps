@@ -6,6 +6,13 @@
 // старые колоды продолжают работать, а обратно эмодзи превращается в глиф
 // через DeckGlyph — символ ОС на экране не появляется. Тот же приём, что на
 // экране flashcards/new-deck.
+//
+// Выбор типа задания использует те же иллюстрированные значки (TypeArt), что и
+// список заданий: учитель выбирает ровно ту картинку, которую потом увидит на
+// карточке и увидит ученик. Раньше здесь были мелкие линейные глифы в чипах —
+// пять почти одинаковых кнопок, различимых только по подписи.
+//
+// Наклоны убраны по всему экрану — как на остальных вкладках.
 import React, { useState, useRef, useCallback } from "react";
 import {
   View, Text, TextInput, StyleSheet, ScrollView,
@@ -19,8 +26,10 @@ import authStorage from "@/utils/authStorage";
 import { useQueryClient } from "@tanstack/react-query";
 import { fc } from "@/hooks/useFlashcards";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { TypeArt } from "@/components/ui/TypeArt";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import { DUE_PRESETS, type DuePresetKey } from "@/utils/dueDate";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -42,13 +51,14 @@ async function apiFetch(path: string, options?: RequestInit) {
 }
 
 // Типы задания. Цвета совпадают с экранами «Задания», «Анализ» и «История»:
-// один и тот же тип везде одного цвета.
+// один и тот же тип везде одного цвета. Рисунок берётся из TypeArt — того же
+// компонента, что рисует значок в списке заданий.
 const TYPES = [
-  { key: "text_test", label: "Тест",            glyph: "pen"   as GlyphName, color: "#8b5cf6" },
-  { key: "audio",     label: "Аудирование",     glyph: "sound" as GlyphName, color: "#6366f1" },
-  { key: "reading",   label: "Чтение",          glyph: "book"  as GlyphName, color: "#d946ef" },
-  { key: "video",     label: "Видео",           glyph: "video" as GlyphName, color: "#ec4899" },
-  { key: "free_form", label: "Свободный ответ", glyph: "note"  as GlyphName, color: "#f59e0b" },
+  { key: "text_test", label: "Тест",            hint: "Вопросы с проверкой",     color: "#8b5cf6" },
+  { key: "audio",     label: "Аудирование",     hint: "Слушать и отвечать",      color: "#6366f1" },
+  { key: "reading",   label: "Чтение",          hint: "Текст и вопросы",         color: "#d946ef" },
+  { key: "video",     label: "Видео",           hint: "Смотреть и отвечать",     color: "#ec4899" },
+  { key: "free_form", label: "Свободный ответ", hint: "Проверяете вручную",      color: "#f59e0b" },
 ] as const;
 type AssignmentType = typeof TYPES[number]["key"];
 
@@ -98,6 +108,9 @@ const FRESH = () => ({
   audioUrl: "", audioInputMode: "url" as "url" | "file", uploadedAudioName: "",
   videoUrl: "", videoInputMode: "url" as "url" | "file", uploadedVideoName: "",
   timerEnabled: false, timerMinutes: "30",
+  // Срок сдачи по умолчанию. Уходит в задание как число дней и подставляется
+  // в окно отправки — сам срок всё равно считается в момент отправки.
+  duePreset: "none" as DuePresetKey,
   questions: [DEFAULT_QUESTION()],
   formError: "", success: false,
 });
@@ -140,9 +153,10 @@ export default function CreateAssignmentScreen() {
     imageUrl, imageInputMode, uploadedImageName,
     audioUrl, audioInputMode, uploadedAudioName,
     videoUrl, videoInputMode, uploadedVideoName,
-    timerEnabled, timerMinutes, questions, formError, success } = st;
+    timerEnabled, timerMinutes, duePreset, questions, formError, success } = st;
 
   const activeType = TYPES.find((t) => t.key === type) ?? TYPES[0];
+  const dueDays = DUE_PRESETS.find((p) => p.key === duePreset)?.days ?? null;
 
   // ── Question helpers ────────────────────────────────────────────────
   const addQuestion = () => setSt(p => ({ ...p, questions: [...p.questions, DEFAULT_QUESTION()] }));
@@ -332,6 +346,7 @@ export default function CreateAssignmentScreen() {
           imageUrl: imageUrl.trim() || undefined,
           questions: questionPayload,
           timeLimitMinutes: timerEnabled ? parseInt(timerMinutes, 10) : null,
+          defaultDueDays: dueDays,
         }),
       });
       set("success", true);
@@ -354,13 +369,16 @@ export default function CreateAssignmentScreen() {
     headerTitle: { fontSize: 22, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground, flex: 1 },
     scroll: { paddingHorizontal: 20, paddingBottom: insets.bottom + 140 },
     section: { marginBottom: 20 },
-    typeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-    typeBtn: {
-      flexDirection: "row", alignItems: "center", gap: 7,
-      paddingHorizontal: 14, paddingVertical: 11, borderRadius: radii.sm,
+    // Выбор типа: строки-карточки с крупным рисунком. Пять чипов с мелкими
+    // глифами различались только подписью, и выбранный тип не читался.
+    typeCard: {
+      flexDirection: "row", alignItems: "center", gap: 13,
+      paddingHorizontal: 13, paddingVertical: 11, borderRadius: radii.md,
       borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
+      marginBottom: 9,
     },
-    typeBtnText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
+    typeName: { fontSize: 15, fontWeight: "800", color: colors.foreground },
+    typeHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
     // Переключатель «Задание / Колода» — крупные вкладки вверху экрана.
     modeRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
     modeBtn: {
@@ -400,6 +418,12 @@ export default function CreateAssignmentScreen() {
       width: 80, textAlign: "center", fontVariant: ["tabular-nums"],
       ...(Platform.OS === "web" ? { outlineWidth: 0, outlineStyle: "none" } as any : {}),
     },
+    // Пресеты срока сдачи — те же, что в окне отправки задания.
+    duePreset: {
+      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.pill,
+      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
+    },
+    duePresetText: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
     mediaToggle: { flexDirection: "row", gap: 8, marginBottom: 14 },
     mediaBtn: {
       flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
@@ -568,12 +592,12 @@ export default function CreateAssignmentScreen() {
           <Text style={s.headerTitle}>Создать задание</Text>
         </View>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 16 }}>
+          {/* Плашка стоит ровно: наклон убран вместе с остальными наклонами. */}
           <View style={{
             width: 76, height: 76, borderRadius: radii.xl,
             backgroundColor: colors.success + "18",
             justifyContent: "center", alignItems: "center",
             borderWidth: 2, borderColor: colors.success + "55",
-            transform: [{ rotate: "-4deg" }],
             shadowColor: colors.success, shadowOffset: { width: 0, height: 6 },
             shadowOpacity: 0.3, shadowRadius: 16, elevation: 6,
           }}>
@@ -702,37 +726,51 @@ export default function CreateAssignmentScreen() {
         ) : (
           // ── Форма задания ─────────────────────────────────────────────
           <>
-        {/* Тип задания */}
+        {/* Тип задания. Крупный рисунок вместо мелкого глифа: учитель видит
+            ровно тот значок, который потом появится на карточке и у ученика. */}
         <View style={s.section}>
           <SectionLabel>Тип задания</SectionLabel>
-          <View style={s.typeGrid}>
-            {TYPES.map((t) => {
-              const active = type === t.key;
-              return (
-                <TouchableOpacity key={t.key}
-                  activeOpacity={0.85}
-                  style={[
-                    s.typeBtn,
-                    active && {
-                      // Активный тип светится своим цветом: тест, аудирование и
-                      // видео различаются раньше, чем прочитан текст.
-                      borderColor: t.color,
-                      backgroundColor: t.color + "14",
-                      shadowColor: t.color,
-                      shadowOffset: { width: 0, height: 3 },
-                      shadowOpacity: 0.25,
-                      shadowRadius: 9,
-                      elevation: 4,
-                    },
-                  ]}
-                  onPress={() => set("type", t.key)}
-                >
-                  <Glyph name={t.glyph} size={16} color={active ? t.color : colors.mutedForeground} />
-                  <Text style={[s.typeBtnText, active && { color: t.color, fontWeight: "800" }]}>{t.label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {TYPES.map((t) => {
+            const active = type === t.key;
+            return (
+              <TouchableOpacity key={t.key}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                style={[
+                  s.typeCard,
+                  active && {
+                    // Активный тип светится своим цветом: тест, аудирование и
+                    // видео различаются раньше, чем прочитан текст.
+                    borderColor: t.color,
+                    backgroundColor: t.color + "0d",
+                    shadowColor: t.color,
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: 0.28,
+                    shadowRadius: 12,
+                    elevation: 4,
+                  },
+                ]}
+                onPress={() => set("type", t.key)}
+              >
+                <TypeArt type={t.key} size={44} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.typeName, active && { color: t.color }]}>{t.label}</Text>
+                  <Text style={s.typeHint}>{t.hint}</Text>
+                </View>
+                {/* Радио справа: выбранная строка отмечена, а не просто
+                    подсвечена — на цветном фоне это читается однозначно. */}
+                <View style={{
+                  width: 22, height: 22, borderRadius: 11, borderWidth: 2,
+                  alignItems: "center", justifyContent: "center",
+                  borderColor: active ? t.color : colors.border,
+                  backgroundColor: active ? t.color : "transparent",
+                }}>
+                  {active && <Glyph name="check" size={12} color="#fff" />}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* Основная информация */}
@@ -746,9 +784,50 @@ export default function CreateAssignmentScreen() {
             placeholder="Краткое описание задания для ученика" placeholderTextColor={colors.mutedForeground} multiline />
         </View>
 
+        {/* Срок сдачи по умолчанию.
+            Отличается от таймера ниже: таймер ограничивает саму попытку
+            (сколько минут на решение), а срок — когда задание должно быть
+            сдано. По истечении срока задание закрывается само и уходит
+            учителю как несданное. */}
+        <View style={s.section}>
+          <SectionLabel>Срок сдачи</SectionLabel>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            {DUE_PRESETS.map((preset) => {
+              const active = duePreset === preset.key;
+              return (
+                <TouchableOpacity
+                  key={preset.key}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  onPress={() => set("duePreset", preset.key)}
+                  style={[s.duePreset, active && {
+                    borderColor: colors.primary,
+                    backgroundColor: colors.primary + "14",
+                  }]}
+                >
+                  <Text style={[s.duePresetText, active && { color: colors.primary }]}>
+                    {preset.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <View style={[s.hintBox, { marginBottom: 0 }]}>
+            <View style={{ marginTop: 1 }}>
+              <Glyph name={dueDays === null ? "calendar" : "clock"} size={18} color={colors.primary} />
+            </View>
+            <Text style={{ fontSize: 13, color: colors.foreground, flex: 1, lineHeight: 19 }}>
+              {dueDays === null
+                ? "Без срока: задание будет висеть у ученика, пока он его не сдаст. Срок можно выбрать и позже, при отправке."
+                : `Срок подставится при отправке: ${preset_label(duePreset)}. Если ученик не сдаст вовремя, задание закроется само и придёт вам с пометкой «не сдано в срок».`}
+            </Text>
+          </View>
+        </View>
+
         {/* Таймер */}
         <View style={s.section}>
-          <SectionLabel>Таймер</SectionLabel>
+          <SectionLabel>Таймер на решение</SectionLabel>
           <View style={s.timerRow}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
               <View style={{
@@ -761,7 +840,7 @@ export default function CreateAssignmentScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Ограничение по времени</Text>
                 <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 1 }}>
-                  {timerEnabled ? `${timerMinutes} мин — по истечении ответить нельзя` : "Без ограничения"}
+                  {timerEnabled ? `${timerMinutes} мин на саму попытку` : "Без ограничения"}
                 </Text>
               </View>
             </View>
@@ -999,7 +1078,7 @@ export default function CreateAssignmentScreen() {
         ) : (
           <ChunkyButton
             label="Создать задание"
-            sublabel={activeType.label}
+            sublabel={dueDays === null ? activeType.label : `${activeType.label} · срок: ${preset_label(duePreset)}`}
             icon="check"
             onPress={handleSubmit}
             style={{ marginTop: 8 }}
@@ -1011,4 +1090,10 @@ export default function CreateAssignmentScreen() {
       </ScrollView>
     </View>
   );
+}
+
+/** Подпись выбранного пресета срока в нижнем регистре — для строк в тексте. */
+function preset_label(key: DuePresetKey): string {
+  const preset = DUE_PRESETS.find((p) => p.key === key);
+  return (preset?.label ?? "без срока").toLowerCase();
 }
