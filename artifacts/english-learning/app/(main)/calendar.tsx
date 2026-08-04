@@ -21,6 +21,9 @@
 //  • Появилась линия «сейчас» — отсечка текущего момента внутри дня.
 //  • Свободный слот рисуется пунктиром: занятое и незанятое различаются
 //    формой, а не подписью мелким шрифтом.
+//  • Верхний отступ берётся из constants/layout.ts. Раньше здесь было
+//    insets.top + 67: лишние 67 пикселей оставляли над заголовком пустую
+//    полосу примерно в восьмую часть экрана.
 //
 // Цветная полоса слева у карточек (borderLeftWidth: 4) убрана ещё раньше:
 // полоса читается как след от вёрстки, а не как смысл. Статус несут заливка,
@@ -28,7 +31,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
-  ActivityIndicator, TextInput, RefreshControl, Modal, Alert, Platform,
+  ActivityIndicator, TextInput, RefreshControl, Modal, Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect } from "expo-router";
@@ -41,6 +44,7 @@ import { useCalendarBadge } from "@/contexts/CalendarBadgeContext";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
+import { screenTop } from "@/constants/layout";
 
 // ── API helper ────────────────────────────────────────────────────────
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -716,28 +720,26 @@ export default function CalendarScreen() {
     // ── Шапка ──
     // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели, а
     // место наверху дороже. Здесь выбранная дата и главное действие.
-    // В вебе к safe-area добавляется фиксированный отступ под адресную
-    // строку PWA — так же, как на остальных экранах приложения.
     header: {
       flexDirection: "row", alignItems: "flex-start", gap: 12,
-      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 14),
+      paddingTop: screenTop(insets),
       paddingHorizontal: 18, paddingBottom: 2,
     },
-    headDate: { fontSize: 23, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
-    headCaption: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
+    headDate: { fontSize: 26, fontWeight: "900", letterSpacing: -0.8, color: colors.foreground },
+    headCaption: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
     headBtnEdge: {
       position: "absolute", left: 0, right: 0, top: 4, bottom: 0, borderRadius: radii.pill,
     },
     headBtn: {
       flexDirection: "row", alignItems: "center", gap: 7,
-      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.pill,
+      paddingHorizontal: 15, paddingVertical: 11, borderRadius: radii.pill,
     },
-    headBtnText: { fontSize: 12.5, fontWeight: "900", color: "#fff" },
+    headBtnText: { fontSize: 13, fontWeight: "900", color: "#fff" },
 
     // ── Вкладки ──
-    tabRow: { flexDirection: "row", paddingHorizontal: 16, paddingTop: 14, gap: 6 },
+    tabRow: { flexDirection: "row", paddingHorizontal: 16, paddingTop: 12, gap: 6 },
     tab: {
-      flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center",
+      flex: 1, paddingVertical: 10, borderRadius: radii.sm + 2, alignItems: "center",
       flexDirection: "row", justifyContent: "center", gap: 6,
       backgroundColor: "rgba(255,255,255,0.5)",
       borderWidth: 1, borderColor: colors.border,
@@ -747,11 +749,11 @@ export default function CalendarScreen() {
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
       shadowOpacity: 0.24, shadowRadius: 11, elevation: 5,
     },
-    tabText: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground },
+    tabText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
     tabTextActive: { color: accents.violetDeep, fontWeight: "800" },
     badge: {
       backgroundColor: colors.destructive, borderRadius: 9,
-      minWidth: 17, height: 17, justifyContent: "center", alignItems: "center", paddingHorizontal: 4,
+      minWidth: 18, height: 18, justifyContent: "center", alignItems: "center", paddingHorizontal: 4,
     },
     badgeText: { fontSize: 10, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
 
@@ -784,33 +786,35 @@ export default function CalendarScreen() {
       shadowOpacity: 0.11, shadowRadius: 15, elevation: 4,
     },
     weekHead: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4, paddingBottom: 11 },
-    weekMonth: { flex: 1, fontSize: 13.5, fontWeight: "800", color: colors.foreground, letterSpacing: -0.1 },
+    weekMonth: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground, letterSpacing: -0.1 },
     monthBtn: {
       flexDirection: "row", alignItems: "center", gap: 5,
       paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
       backgroundColor: colors.primary + "1a",
     },
-    monthBtnText: { fontSize: 11, fontWeight: "800", color: accents.violetDeep },
+    monthBtnText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
     weekRow: { flexDirection: "row", gap: 4 },
+    // Высота ячейки фиксирована: иначе выбранный день с заливкой выглядел
+    // выше соседних, и полоса недели «прыгала» при переключении.
     dayCell: {
-      flex: 1, borderRadius: 14, paddingTop: 8, paddingBottom: 7,
-      alignItems: "center", overflow: "hidden",
+      flex: 1, height: 62, borderRadius: 14,
+      alignItems: "center", justifyContent: "center", overflow: "hidden",
     },
-    dayW: { fontSize: 10, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.3 },
-    dayN: { fontSize: 16, fontWeight: "800", color: colors.foreground, marginTop: 6, fontVariant: ["tabular-nums"] },
-    dotRow: { flexDirection: "row", gap: 2.5, height: 6, marginTop: 6, alignItems: "center" },
+    dayW: { fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.3 },
+    dayN: { fontSize: 17, fontWeight: "800", color: colors.foreground, marginTop: 5, fontVariant: ["tabular-nums"] },
+    dotRow: { flexDirection: "row", gap: 2.5, height: 5, marginTop: 5, alignItems: "center" },
     dot: { width: 5, height: 5, borderRadius: 2.5 },
 
     // ── Сводка дня ──
     summary: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginBottom: 13 },
-    summaryDone: { marginLeft: "auto", fontSize: 11, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
+    summaryDone: { marginLeft: "auto", fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
 
     // ── Строка расписания ──
     // Время отдельной колонкой: видна вертикаль дня и промежутки между уроками.
     slotRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
     slotTimeCol: { width: 46, paddingTop: 13, alignItems: "flex-end" },
-    slotFrom: { fontSize: 13, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
-    slotTo: { fontSize: 10.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 4, fontVariant: ["tabular-nums"] },
+    slotFrom: { fontSize: 14, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
+    slotTo: { fontSize: 11, fontWeight: "600", color: colors.mutedForeground, marginTop: 4, fontVariant: ["tabular-nums"] },
 
     card: {
       flex: 1, borderRadius: radii.md, borderWidth: 1.5, padding: 12,
@@ -819,10 +823,10 @@ export default function CalendarScreen() {
       shadowOpacity: 0.12, shadowRadius: 13, elevation: 3,
     },
     cardRow: { flexDirection: "row", alignItems: "center", gap: 9 },
-    cardWho: { fontSize: 14, fontWeight: "800", color: colors.foreground },
-    cardMeta: { fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 3 },
+    cardWho: { fontSize: 14.5, fontWeight: "800", color: colors.foreground },
+    cardMeta: { fontSize: 12, fontWeight: "600", color: colors.mutedForeground, marginTop: 3 },
     cardNote: {
-      fontSize: 12, color: colors.mutedForeground, fontStyle: "italic",
+      fontSize: 12.5, color: colors.mutedForeground, fontStyle: "italic",
       marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border,
     },
     avatar: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
@@ -832,13 +836,13 @@ export default function CalendarScreen() {
       flexDirection: "row", gap: 8, marginTop: 10, paddingTop: 10,
       borderTopWidth: 1, borderTopColor: colors.border,
     },
-    act: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center" },
-    actText: { fontSize: 12.5, fontWeight: "800" },
+    act: { flex: 1, paddingVertical: 10, borderRadius: radii.sm, alignItems: "center" },
+    actText: { fontSize: 13, fontWeight: "800" },
 
     // ── Линия «сейчас» ──
     nowLine: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12, marginTop: 2 },
     nowDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: accents.magenta },
-    nowText: { fontSize: 10, fontWeight: "900", color: accents.magenta, letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
+    nowText: { fontSize: 10.5, fontWeight: "900", color: accents.magenta, letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
     nowRule: { flex: 1, height: 1.5, backgroundColor: accents.magenta + "55", borderRadius: 1 },
 
     scroll: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 120 },
@@ -848,7 +852,7 @@ export default function CalendarScreen() {
       textTransform: "uppercase",
     },
     filterChip: {
-      paddingHorizontal: 14, paddingVertical: 7, borderRadius: radii.pill,
+      paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill,
       backgroundColor: colors.muted, borderWidth: 1, borderColor: colors.border,
     },
     filterChipActive: {
@@ -856,17 +860,17 @@ export default function CalendarScreen() {
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 3 },
       shadowOpacity: 0.22, shadowRadius: 8, elevation: 3,
     },
-    filterChipText: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground },
+    filterChipText: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground },
     filterChipTextActive: { color: colors.primary },
 
-    emptyBox: { alignItems: "center", paddingVertical: 30, gap: 11, paddingHorizontal: 24 },
+    emptyBox: { alignItems: "center", paddingVertical: 28, gap: 11, paddingHorizontal: 24 },
     emptyIcon: {
       width: 62, height: 62, borderRadius: 20, alignItems: "center", justifyContent: "center",
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 9 },
       shadowOpacity: 0.32, shadowRadius: 20, elevation: 7,
     },
-    emptyTitle: { fontSize: 15.5, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3, textAlign: "center" },
-    emptyText: { fontSize: 12.5, fontWeight: "600", color: colors.mutedForeground, textAlign: "center", lineHeight: 19 },
+    emptyTitle: { fontSize: 16, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3, textAlign: "center" },
+    emptyText: { fontSize: 13, fontWeight: "600", color: colors.mutedForeground, textAlign: "center", lineHeight: 19 },
 
     warnRow: {
       flexDirection: "row", alignItems: "center", justifyContent: "center",
@@ -879,14 +883,14 @@ export default function CalendarScreen() {
       borderRadius: radii.md, borderWidth: 2, borderStyle: "dashed", borderColor: colors.primary,
       padding: 15, marginTop: 4,
     },
-    addBtnText: { fontSize: 14.5, fontWeight: "800", color: colors.primary },
+    addBtnText: { fontSize: 15, fontWeight: "800", color: colors.primary },
 
     jumpChip: {
       flexDirection: "row", alignItems: "center", gap: 6,
       paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.pill,
       backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "40",
     },
-    jumpChipText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
+    jumpChipText: { fontSize: 12, fontWeight: "800", color: accents.violetDeep },
 
     statusLabel: { fontSize: 12, fontWeight: "800" },
 
@@ -959,11 +963,11 @@ export default function CalendarScreen() {
     reqNote: { fontSize: 13, color: colors.mutedForeground, fontStyle: "italic" },
     btnRow: { flexDirection: "row", gap: 8 },
     btnConfirm: {
-      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
+      paddingHorizontal: 14, paddingVertical: 11, borderRadius: radii.sm,
       backgroundColor: colors.primary, alignItems: "center", justifyContent: "center",
     },
     btnReject: {
-      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
+      paddingHorizontal: 14, paddingVertical: 11, borderRadius: radii.sm,
       backgroundColor: colors.destructive + "18", alignItems: "center", justifyContent: "center",
     },
     btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
@@ -1153,7 +1157,7 @@ export default function CalendarScreen() {
   const renderJumpHints = () => {
     if (nextBusyDates.length === 0) return null;
     return (
-      <View style={{ alignItems: "center", marginTop: -6, marginBottom: 14 }}>
+      <View style={{ alignItems: "center", marginTop: -4, marginBottom: 14 }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, justifyContent: "center" }}>
           {nextBusyDates.map((date) => {
             const m = dayMeta[date] ?? EMPTY_META;
