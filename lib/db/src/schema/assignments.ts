@@ -19,6 +19,18 @@ export const assignmentsTable = pgTable("assignments", {
   content: text("content"),
   isDraft: boolean("is_draft").notNull().default(true),
   timeLimitMinutes: integer("time_limit_minutes"),
+  /**
+   * Срок сдачи по умолчанию, в днях от момента отправки ученику.
+   *
+   * Сам срок живёт на назначении (assigned_tasks.due_at): одно задание
+   * выдаётся разным ученикам в разное время. Здесь хранится только
+   * предустановка, которой заполняется выбор срока в окне отправки —
+   * учитель, создавая контрольную «на неделю», не выставляет неделю руками
+   * при каждой отправке.
+   *
+   * null — «без срока», это валидное и частое состояние.
+   */
+  defaultDueDays: integer("default_due_days"),
   imageUrl: text("image_url"),
   deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
