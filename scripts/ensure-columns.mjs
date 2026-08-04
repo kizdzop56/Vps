@@ -63,6 +63,10 @@ const statements = [
   // Nullable: «без срока» — валидное и частое состояние, старые назначения
   // после добавления колонки продолжают работать как раньше.
   `ALTER TABLE IF EXISTS assigned_tasks ADD COLUMN IF NOT EXISTS due_at timestamp`,
+  // Срок по умолчанию (в днях), которым заполняется выбор при отправке.
+  // Сам срок всё равно пишется в assigned_tasks.due_at — это только
+  // предустановка, чтобы не выбирать одно и то же при каждой отправке.
+  `ALTER TABLE IF EXISTS assignments ADD COLUMN IF NOT EXISTS default_due_days integer`,
 ];
 const client = new pg.Client({
   connectionString: url,
