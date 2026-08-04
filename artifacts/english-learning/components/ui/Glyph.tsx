@@ -25,7 +25,9 @@ export type GlyphName =
   | "chart" | "user" | "users" | "calendar" | "plus"
   | "book" | "globe" | "leaf" | "paw" | "music"
   | "clock" | "handshake" | "chat" | "trendUp" | "trendDown"
-  | "pen" | "video" | "note";
+  | "pen" | "video" | "note"
+  | "camera" | "face" | "trash" | "key" | "copy"
+  | "userPlus" | "userX" | "logout" | "cap";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -204,6 +206,87 @@ function render(name: GlyphName, s: any, color: string) {
           <Path {...s} d="M13.4 2.6H6.4a1.8 1.8 0 0 0-1.8 1.8v15.2a1.8 1.8 0 0 0 1.8 1.8h11.2a1.8 1.8 0 0 0 1.8-1.8V8.6l-6-6Z" />
           <Path {...s} d="M13.4 2.6v6h6" />
           <Path {...s} d="M8.4 13.4h7.2M8.4 17h4.8" />
+        </G>
+      );
+
+    case "camera":
+      return (
+        <G>
+          <Path {...s} d="M4.4 7.4h3.1l1.5-2.4h6l1.5 2.4h3.1a1.8 1.8 0 0 1 1.8 1.8v9a1.8 1.8 0 0 1-1.8 1.8H4.4a1.8 1.8 0 0 1-1.8-1.8v-9a1.8 1.8 0 0 1 1.8-1.8Z" />
+          <Circle {...s} cx={12} cy={13.4} r={3.6} />
+        </G>
+      );
+
+    case "face":
+      // Плейсхолдер выбора аватара. Сам аватар остаётся выбором ученика,
+      // а вот пункт меню рисуем своей иконкой, а не эмодзи.
+      return (
+        <G>
+          <Circle {...s} cx={12} cy={12} r={8.8} />
+          <Path {...s} d="M8.4 14.2a4.4 4.4 0 0 0 7.2 0" />
+          <Circle cx={9.2} cy={9.8} r={1.25} fill={color} />
+          <Circle cx={14.8} cy={9.8} r={1.25} fill={color} />
+        </G>
+      );
+
+    case "trash":
+      return (
+        <G>
+          <Path {...s} d="M3.6 6.4h16.8M8.4 6.4V4.6a1.8 1.8 0 0 1 1.8-1.8h3.6a1.8 1.8 0 0 1 1.8 1.8v1.8" />
+          <Path {...s} d="M6 6.4v13a1.8 1.8 0 0 0 1.8 1.8h8.4a1.8 1.8 0 0 0 1.8-1.8v-13" />
+          <Path {...s} d="M10.2 10.8v6M13.8 10.8v6" />
+        </G>
+      );
+
+    case "key":
+      return (
+        <G>
+          <Circle {...s} cx={7.6} cy={8.4} r={4.4} />
+          <Path {...s} d="m10.9 11.4 9 9M17.4 17.9l2-2M14.6 15.1l2-2" />
+        </G>
+      );
+
+    case "copy":
+      return (
+        <G>
+          <Rect {...s} x={8.4} y={8.4} width={12} height={12} rx={2.2} />
+          <Path {...s} d="M15.6 5.4v-.8a2 2 0 0 0-2-2H5.6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.8" />
+        </G>
+      );
+
+    case "userPlus":
+      return (
+        <G>
+          <Circle {...s} cx={9.6} cy={8} r={4} />
+          <Path {...s} d="M2.6 20.6c0-4 3.1-6.6 7-6.6s7 2.6 7 6.6" />
+          <Path {...s} d="M19.4 7.6v6.2M22.5 10.7h-6.2" />
+        </G>
+      );
+
+    case "userX":
+      return (
+        <G>
+          <Circle {...s} cx={9.6} cy={8} r={4} />
+          <Path {...s} d="M2.6 20.6c0-4 3.1-6.6 7-6.6s7 2.6 7 6.6" />
+          <Path {...s} d="m17.2 8.6 4.6 4.6M21.8 8.6l-4.6 4.6" />
+        </G>
+      );
+
+    case "logout":
+      return (
+        <G>
+          <Path {...s} d="M14.6 3.6h3.8a2 2 0 0 1 2 2v12.8a2 2 0 0 1-2 2h-3.8" />
+          <Path {...s} d="M9.4 16.4 4.6 12l4.8-4.4M4.8 12h10.4" />
+        </G>
+      );
+
+    case "cap":
+      // Академическая шапочка — метка учителя вместо эмодзи 🎓.
+      return (
+        <G>
+          <Path {...s} d="M12 3.4 1.8 8.2 12 13l10.2-4.8L12 3.4Z" />
+          <Path {...s} d="M6 10.4v5.2c0 1.9 2.7 3.4 6 3.4s6-1.5 6-3.4v-5.2" />
+          <Path {...s} d="M22.2 8.2v5.4" />
         </G>
       );
 
