@@ -28,7 +28,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
-  ActivityIndicator, TextInput, RefreshControl, Modal, Alert,
+  ActivityIndicator, TextInput, RefreshControl, Modal, Alert, Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect } from "expo-router";
@@ -39,7 +39,7 @@ import authStorage from "@/utils/authStorage";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useCalendarBadge } from "@/contexts/CalendarBadgeContext";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, Pill } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
 
 // ── API helper ────────────────────────────────────────────────────────
@@ -716,9 +716,11 @@ export default function CalendarScreen() {
     // ── Шапка ──
     // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели, а
     // место наверху дороже. Здесь выбранная дата и главное действие.
+    // В вебе к safe-area добавляется фиксированный отступ под адресную
+    // строку PWA — так же, как на остальных экранах приложения.
     header: {
       flexDirection: "row", alignItems: "flex-start", gap: 12,
-      paddingTop: insets.top + (Platform_OS_WEB ? 67 : 14),
+      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 14),
       paddingHorizontal: 18, paddingBottom: 2,
     },
     headDate: { fontSize: 23, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
@@ -966,11 +968,6 @@ export default function CalendarScreen() {
     },
     btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
     btnTextDanger: { fontSize: 13, fontWeight: "800", color: colors.destructive },
-    btnCancel: {
-      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
-      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.muted,
-    },
-    btnTextGray: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
   });
 
   /**
@@ -1046,8 +1043,8 @@ export default function CalendarScreen() {
   };
 
   // ── Полоса недели ───────────────────────────────────────────────────
-  // Заменяет месячную сетку в обычном режиме: почти всегда нужен ближайший
-  // week, а квадрат из 35 чисел занимал пол-экрана при каждом заходе.
+  // Заменяет месячную сетку в обычном режиме: почти всегда нужна ближайшая
+  // неделя, а квадрат из 35 чисел занимал пол-экрана при каждом заходе.
   const renderWeekStrip = () => {
     const today = todayStr();
     const anchor = new Date(selectedDate + "T00:00:00");
@@ -2177,13 +2174,3 @@ export default function CalendarScreen() {
     </View>
   );
 }
-
-/**
- * Верхний отступ под системную панель в вебе.
- *
- * В браузере safe-area insets не покрывают адресную строку PWA, поэтому на
- * вебе к отступу добавляется фиксированная величина — так же, как на всех
- * остальных экранах приложения.
- */
-const Platform_OS_WEB =
-  typeof navigator !== "undefined" && typeof window !== "undefined";
