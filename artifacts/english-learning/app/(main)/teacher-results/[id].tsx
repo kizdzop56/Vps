@@ -1,3 +1,14 @@
+// Итоги задания у учителя: кто сдал, с каким баллом, кто ещё нет.
+//
+// Здесь же живёт работа со сроком сдачи. Срок ставится при отправке задания
+// (модалка на вкладке «Задания»), но его часто нужно сдвинуть уже потом:
+// ученик заболел, урок перенесли. Сдвиг идёт через PATCH
+// /api/assigned-tasks/:id/due — назначение остаётся тем же, прогресс попытки
+// не теряется.
+//
+// Эмодзи убраны: значки берутся из своего набора (components/ui/Glyph.tsx),
+// как на остальных экранах. Аватар ученика по-прежнему рисует AnimatedAvatar —
+// avatarEmoji там пользовательский выбор, а не наша иконка.
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
@@ -11,6 +22,11 @@ import authStorage from "@/utils/authStorage";
 import { ImageZoomModal } from "@/components/ImageZoomModal";
 import { MediaViewerModal, type MediaKind } from "@/components/MediaViewerModal";
 import { InlineMediaPlayer } from "@/components/InlineMediaPlayer";
+import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { Glyph } from "@/components/ui/Glyph";
+import { Pill } from "@/components/ui/GameKit";
+import { accents, radii } from "@/constants/theme";
+import { DUE_PRESETS, dueDateFromPreset, formatDue, type DuePresetKey } from "@/utils/dueDate";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -39,6 +55,7 @@ type ResultRow = {
   studentName: string;
   studentAvatarEmoji: string | null;
   studentAvatarColor: string | null;
+  studentAvatarUrl?: string | null;
   assignmentId: number;
   assignmentTitle: string;
   assignmentType: string;
@@ -46,6 +63,8 @@ type ResultRow = {
   assignmentMediaUrl: string | null;
   assignmentImageUrl: string | null;
   assignedAt: string;
+  /** Срок сдачи этого назначения. null — срока нет. */
+  dueAt: string | null;
   submission: {
     id: number;
     score: number;
@@ -87,6 +106,11 @@ export default function TeacherResultsScreen() {
   const [gradeFeedback, setGradeFeedback] = useState<Record<number, string>>({});
   const [gradingId, setGradingId] = useState<number | null>(null);
   const [gradeError, setGradeError] = useState<Record<number, string>>({});
+  // Открытая панель сдвига срока: id назначения либо null. Панель разворачивается
+  // прямо в карточке, а не в модалке: это правка одного поля, ради неё незачем
+  // перекрывать весь экран.
+  const [dueEditing, setDueEditing] = useState<number | null>(null);
+  const [dueSaving, setDueSaving] = useState<number | null>(null);
 
   const assignmentTitle = results[0]?.assignmentTitle ?? "Задание";
 
@@ -109,6 +133,29 @@ export default function TeacherResultsScreen() {
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  };
+
+  /**
+   * Сдвиг срока у одного ученика. Обновляем локальный список сразу после
+   * ответа сервера — перезагружать весь экран ради одной даты незачем.
+   */
+  const handleDueChange = async (row: ResultRow, preset: DuePresetKey) => {
+    setDueSaving(row.assignedTaskId);
+    try {
+      const dueAt = dueDateFromPreset(preset);
+      await apiFetch(`/api/assigned-tasks/${row.assignedTaskId}/due`, {
+        method: "PATCH",
+        body: JSON.stringify({ dueAt }),
+      });
+      setResults((prev) => prev.map((r) =>
+        r.assignedTaskId === row.assignedTaskId ? { ...r, dueAt } : r
+      ));
+      setDueEditing(null);
+    } catch (e: any) {
+      Alert.alert("Ошибка", e.message ?? "Не удалось изменить срок");
+    } finally {
+      setDueSaving(null);
+    }
   };
 
   const handleGrade = async (row: ResultRow) => {
@@ -173,30 +220,32 @@ export default function TeacherResultsScreen() {
     },
     headerTitle: { fontSize: 18, fontWeight: "800", color: colors.foreground, flex: 1 },
     scroll: { paddingHorizontal: 20, paddingBottom: insets.bottom + 40 },
-    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
+    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, paddingHorizontal: 32 },
+    // Плашка под глиф в пустых состояниях: цвет из темы, вид одинаков везде.
+    emptyIcon: {
+      width: 68, height: 68, borderRadius: radii.md + 4,
+      justifyContent: "center", alignItems: "center",
+      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
+    },
     statsRow: { flexDirection: "row", gap: 10, marginBottom: 20 },
     statCard: {
       flex: 1, backgroundColor: colors.card, borderRadius: 14, padding: 14,
       alignItems: "center", borderWidth: 0,
-      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 10, elevation: 4,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.12, shadowRadius: 10, elevation: 4,
     },
-    statVal: { fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 6 },
+    statVal: { fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 6, fontVariant: ["tabular-nums"] },
     statLabel: { fontSize: 11, color: colors.mutedForeground },
     studentCard: {
       backgroundColor: colors.card, borderRadius: 16, padding: 16,
-      borderWidth: 0, marginBottom: 10,
-      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 12, elevation: 4,
+      borderWidth: 1, borderColor: colors.border, marginBottom: 10,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.12, shadowRadius: 12, elevation: 4,
     },
     studentRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-    avatar: {
-      width: 46, height: 46, borderRadius: 23,
-      justifyContent: "center", alignItems: "center",
-    },
     scoreBox: { alignItems: "flex-end" },
-    scoreNum: { fontSize: 22, fontWeight: "900" },
-    scoreSub: { fontSize: 11, color: colors.mutedForeground },
+    scoreNum: { fontSize: 22, fontWeight: "900", fontVariant: ["tabular-nums"] },
+    scoreSub: { fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
     answerRow: {
       flexDirection: "row", gap: 10, alignItems: "flex-start",
       marginTop: 10, padding: 10, borderRadius: 10, borderWidth: 1,
@@ -208,19 +257,85 @@ export default function TeacherResultsScreen() {
       gap: 4, marginTop: 12, paddingTop: 10,
       borderTopWidth: 1, borderTopColor: colors.border,
     },
-    pendingTag: {
-      backgroundColor: "#fce7f3", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4,
-    },
     sectionLabel: {
       fontSize: 12, fontWeight: "700", color: colors.mutedForeground,
       textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10,
     },
     deleteBtn: {
       width: 32, height: 32, borderRadius: 10,
-      backgroundColor: "#fff1f2", borderWidth: 1, borderColor: "#fda4af",
+      backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "44",
       justifyContent: "center", alignItems: "center",
     },
+    dueRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 3 },
+    dueText: { fontSize: 12, fontWeight: "800" },
+    duePanel: {
+      marginTop: 12, paddingTop: 12,
+      borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    duePreset: {
+      paddingHorizontal: 13, paddingVertical: 7, borderRadius: radii.pill,
+      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
+    },
+    duePresetText: { fontSize: 12.5, fontWeight: "800", color: colors.mutedForeground },
   });
+
+  /** Цвет срока: красный только для просроченного, иначе тревога обесценится. */
+  const dueTint = (urgency: string) =>
+    urgency === "overdue" ? colors.destructive
+      : urgency === "today" ? accents.amber
+        : urgency === "soon" ? colors.primary
+          : colors.mutedForeground;
+
+  /**
+   * Строка срока плюс кнопка «Изменить». Показывается и когда срока нет:
+   * учителю нужен способ его поставить, а не только сдвинуть.
+   */
+  const renderDue = (row: ResultRow) => {
+    const due = formatDue(row.dueAt);
+    const tint = dueTint(due.urgency);
+    const open = dueEditing === row.assignedTaskId;
+    return (
+      <>
+        <TouchableOpacity
+          onPress={() => setDueEditing(open ? null : row.assignedTaskId)}
+          activeOpacity={0.7}
+          style={s.dueRow}
+          accessibilityRole="button"
+          accessibilityLabel={`Срок: ${due.text}. Изменить`}
+        >
+          <Glyph
+            name={due.urgency === "overdue" ? "alert" : due.urgency === "none" ? "calendar" : "clock"}
+            size={12}
+            color={tint}
+          />
+          <Text style={[s.dueText, { color: tint }]}>{due.text}</Text>
+          <Glyph name="pen" size={11} color={colors.mutedForeground} />
+        </TouchableOpacity>
+
+        {open && (
+          <View style={s.duePanel}>
+            <Text style={[s.sectionLabel, { marginBottom: 8 }]}>Изменить срок</Text>
+            {dueSaving === row.assignedTaskId ? (
+              <ActivityIndicator color={colors.primary} style={{ paddingVertical: 10 }} />
+            ) : (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {DUE_PRESETS.map((preset) => (
+                  <TouchableOpacity
+                    key={preset.key}
+                    style={s.duePreset}
+                    activeOpacity={0.85}
+                    onPress={() => handleDueChange(row, preset.key)}
+                  >
+                    <Text style={s.duePresetText}>{preset.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+      </>
+    );
+  };
 
   if (loading) return (
     <View style={[s.container, s.center]}>
@@ -233,6 +348,9 @@ export default function TeacherResultsScreen() {
   const avgScore = submitted.length > 0
     ? Math.round(submitted.reduce((sum, r) => sum + (r.submission?.score ?? 0), 0) / submitted.length)
     : null;
+  // Сколько ещё не сдавших уже просрочили срок: главное число для учителя
+  // на этом экране, раньше его негде было увидеть.
+  const overdueCount = pending.filter((r) => formatDue(r.dueAt).urgency === "overdue").length;
 
   return (
     <View style={s.container}>
@@ -250,14 +368,18 @@ export default function TeacherResultsScreen() {
 
       {error ? (
         <View style={s.center}>
-          <Text style={{ fontSize: 40 }}>😕</Text>
-          <Text style={{ color: colors.mutedForeground }}>{error}</Text>
+          <View style={[s.emptyIcon, { backgroundColor: colors.destructive + "14", borderColor: colors.destructive + "33" }]}>
+            <Glyph name="alert" size={30} color={colors.destructive} />
+          </View>
+          <Text style={{ color: colors.mutedForeground, textAlign: "center" }}>{error}</Text>
         </View>
       ) : results.length === 0 ? (
         <View style={s.center}>
-          <Text style={{ fontSize: 48 }}>📭</Text>
-          <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>Никому не назначено</Text>
-          <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+          <View style={s.emptyIcon}>
+            <Glyph name="tray" size={30} color={colors.primary} />
+          </View>
+          <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>Никому не назначено</Text>
+          <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", lineHeight: 19 }}>
             Назначьте задание ученикам из экрана «Задания»
           </Text>
         </View>
@@ -288,12 +410,11 @@ export default function TeacherResultsScreen() {
             const aType = results[0].assignmentType;
             const isAudio = (aType === "audio" || /\.(mp3|m4a|wav|ogg|aac)(\?|$)/i.test(mUrl) || mUrl.includes("/upload/audio") || mUrl.includes("kind=audio")) && aType !== "text_test";
             const isVideo = !isAudio && (aType === "video" || aType === "text_test" || mUrl.includes("kind=video") || mUrl.includes("youtube") || mUrl.includes("youtu.be") || /\.(mp4|mov|webm|avi)(\?|$)/i.test(mUrl) || mUrl.includes("/upload/video") || mUrl.includes("/api/storage/objects/"));
-            const openInModal = (kind: MediaKind) => setMediaModal({ url: mUrl, kind });
 
             if (isVideo) return (
               <View style={{ backgroundColor: "#fce7f3", borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: "#ec489940", gap: 8 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Feather name="video" size={16} color="#ec4899" />
+                  <Glyph name="video" size={16} color="#ec4899" />
                   <Text style={{ fontSize: 14, fontWeight: "700", color: "#9d174d" }}>Видео к заданию</Text>
                 </View>
                 <InlineMediaPlayer url={mUrl} kind="video" height={200} />
@@ -316,23 +437,39 @@ export default function TeacherResultsScreen() {
           {/* Summary stats */}
           <View style={s.statsRow}>
             <View style={s.statCard}>
-              <Feather name="users" size={20} color={colors.primary} />
+              <Glyph name="users" size={20} color={colors.primary} />
               <Text style={s.statVal}>{results.length}</Text>
               <Text style={s.statLabel}>Назначено</Text>
             </View>
             <View style={s.statCard}>
-              <Feather name="check-circle" size={20} color="#6366f1" />
+              <Glyph name="check" size={20} color="#6366f1" />
               <Text style={[s.statVal, { color: "#6366f1" }]}>{submitted.length}</Text>
               <Text style={s.statLabel}>Выполнили</Text>
             </View>
             <View style={s.statCard}>
-              <Feather name="star" size={20} color="#ec4899" />
-              <Text style={[s.statVal, { color: "#ec4899" }]}>
+              <Glyph name="star" size={20} color={accents.magenta} />
+              <Text style={[s.statVal, { color: accents.magenta }]}>
                 {avgScore !== null ? `${avgScore}%` : "—"}
               </Text>
               <Text style={s.statLabel}>Средний балл</Text>
             </View>
           </View>
+
+          {/* Просрочившие — отдельной строкой над списками: это то, ради чего
+              учитель чаще всего сюда заходит. */}
+          {overdueCount > 0 && (
+            <View style={{
+              flexDirection: "row", alignItems: "center", gap: 8,
+              backgroundColor: colors.destructive + "0f", borderRadius: radii.sm,
+              borderWidth: 1, borderColor: colors.destructive + "33",
+              paddingHorizontal: 13, paddingVertical: 11, marginBottom: 16,
+            }}>
+              <Glyph name="alert" size={16} color={colors.destructive} />
+              <Text style={{ fontSize: 13, fontWeight: "800", color: colors.destructive, flex: 1 }}>
+                {overdueCount} не сдали в срок
+              </Text>
+            </View>
+          )}
 
           {/* Submitted */}
           {submitted.length > 0 && (
@@ -341,32 +478,40 @@ export default function TeacherResultsScreen() {
               {submitted.map((r) => {
                 const sub = r.submission!;
                 const isPendingReview = sub.status === "pending";
-                const scoreColor = sub.score >= 70 ? "#6366f1" : sub.score >= 50 ? "#ec4899" : "#e11d48";
+                const scoreColor = sub.score >= 70 ? "#6366f1" : sub.score >= 50 ? "#ec4899" : colors.destructive;
                 const isExpanded = expanded.has(r.assignedTaskId);
                 const isDeleting = deletingId === r.assignedTaskId;
                 const isGrading = gradingId === sub.id;
+                // Сдал после срока: важнее самой даты сдачи, поэтому метка.
+                const late = !!r.dueAt && new Date(sub.submittedAt).getTime() > new Date(r.dueAt).getTime();
                 return (
                   <View key={r.assignedTaskId} style={s.studentCard}>
                     <View style={s.studentRow}>
-                      <View style={[s.avatar, { backgroundColor: r.studentAvatarColor ?? "#6366f1" }]}>
-                        <Text style={{ fontSize: 22 }}>{r.studentAvatarEmoji ?? "🦁"}</Text>
-                      </View>
+                      <AnimatedAvatar
+                        size={46}
+                        avatarColor={r.studentAvatarColor ?? "#6366f1"}
+                        avatarEmoji={r.studentAvatarEmoji}
+                        avatarUrl={r.studentAvatarUrl}
+                      />
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>
+                        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
                           {r.studentName}
                         </Text>
                         <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
                           {isPendingReview ? "Ждёт проверки" : `${sub.correctCount}/${sub.totalQuestions} правильных`}
                         </Text>
+                        {late && (
+                          <View style={{ flexDirection: "row", marginTop: 5 }}>
+                            <Pill text="сдал с опозданием" icon="clock" tone="danger" />
+                          </View>
+                        )}
                       </View>
                       {isPendingReview ? (
-                        <View style={s.pendingTag}>
-                          <Text style={{ fontSize: 12, fontWeight: "600", color: "#9d174d" }}>На проверке</Text>
-                        </View>
+                        <Pill text="На проверке" tone="warn" />
                       ) : (
                         <View style={s.scoreBox}>
                           <Text style={[s.scoreNum, { color: scoreColor }]}>{sub.score}%</Text>
-                          <Text style={s.scoreSub}>+{sub.pointsEarned} ⭐</Text>
+                          <Text style={s.scoreSub}>+{sub.pointsEarned}</Text>
                         </View>
                       )}
                       <TouchableOpacity
@@ -375,8 +520,8 @@ export default function TeacherResultsScreen() {
                         disabled={isDeleting}
                       >
                         {isDeleting
-                          ? <ActivityIndicator size="small" color="#be123c" />
-                          : <Feather name="trash-2" size={15} color="#be123c" />
+                          ? <ActivityIndicator size="small" color={colors.destructive} />
+                          : <Glyph name="trash" size={15} color={colors.destructive} />
                         }
                       </TouchableOpacity>
                     </View>
@@ -453,10 +598,10 @@ export default function TeacherResultsScreen() {
                               const t = parseInt(gradeTotal[sub.id] ?? "", 10);
                               if (!isNaN(c) && !isNaN(t) && t > 0) {
                                 const pct = Math.round((c / t) * 100);
-                                const col = pct >= 70 ? "#6366f1" : pct >= 40 ? "#ec4899" : "#e11d48";
+                                const col = pct >= 70 ? "#6366f1" : pct >= 40 ? "#ec4899" : colors.destructive;
                                 return (
                                   <View style={{ alignItems: "center", marginTop: 16 }}>
-                                    <Text style={{ fontSize: 22, fontWeight: "900", color: col }}>{pct}%</Text>
+                                    <Text style={{ fontSize: 22, fontWeight: "900", color: col, fontVariant: ["tabular-nums"] }}>{pct}%</Text>
                                   </View>
                                 );
                               }
@@ -482,8 +627,8 @@ export default function TeacherResultsScreen() {
                           // Hide the validation-specific error as soon as inputs become valid
                           if (inputsOk && gradeError[sub.id] === "Укажите корректное количество правильных ответов и вопросов") return null;
                           return (
-                            <View style={{ backgroundColor: "#fff1f2", borderRadius: 8, padding: 10, marginBottom: 6, borderWidth: 1, borderColor: "#fda4af" }}>
-                              <Text style={{ color: "#be123c", fontSize: 13, fontWeight: "600" }}>{gradeError[sub.id]}</Text>
+                            <View style={{ backgroundColor: colors.destructive + "12", borderRadius: 8, padding: 10, marginBottom: 6, borderWidth: 1, borderColor: colors.destructive + "44" }}>
+                              <Text style={{ color: colors.destructive, fontSize: 13, fontWeight: "600" }}>{gradeError[sub.id]}</Text>
                             </View>
                           );
                         })()}
@@ -499,8 +644,8 @@ export default function TeacherResultsScreen() {
                           {isGrading
                             ? <ActivityIndicator color="#fff" size="small" />
                             : <>
-                                <Feather name="check-circle" size={16} color="#fff" />
-                                <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>Выставить оценку</Text>
+                                <Glyph name="check" size={16} color="#fff" />
+                                <Text style={{ color: "#fff", fontSize: 14, fontWeight: "800" }}>Выставить оценку</Text>
                               </>
                           }
                         </TouchableOpacity>
@@ -512,11 +657,10 @@ export default function TeacherResultsScreen() {
                         style={s.expandBtn}
                         onPress={() => toggleExpand(r.assignedTaskId)}
                       >
-                        <Feather
-                          name={isExpanded ? "chevron-up" : "chevron-down"}
-                          size={16} color={colors.mutedForeground}
-                        />
-                        <Text style={{ fontSize: 13, color: colors.mutedForeground, fontWeight: "600" }}>
+                        <View style={{ transform: [{ rotate: isExpanded ? "-90deg" : "90deg" }] }}>
+                          <Glyph name="chevron" size={16} color={colors.mutedForeground} />
+                        </View>
+                        <Text style={{ fontSize: 13, color: colors.mutedForeground, fontWeight: "700" }}>
                           {isExpanded ? "Скрыть ответы" : "Показать ответы"}
                         </Text>
                       </TouchableOpacity>
@@ -526,19 +670,20 @@ export default function TeacherResultsScreen() {
                       <View
                         key={a.id}
                         style={[s.answerRow, {
-                          borderColor: a.isCorrect ? "#6366f140" : "#e11d4840",
-                          backgroundColor: a.isCorrect ? "#eef2ff" : "#fff1f2",
+                          borderColor: a.isCorrect ? "#6366f140" : colors.destructive + "40",
+                          backgroundColor: a.isCorrect ? "#eef2ff" : colors.destructive + "0d",
                         }]}
                       >
-                        <Feather
-                          name={a.isCorrect ? "check-circle" : "x-circle"}
-                          size={16}
-                          color={a.isCorrect ? "#6366f1" : "#e11d48"}
-                          style={{ marginTop: 2 }}
-                        />
+                        <View style={{ marginTop: 2 }}>
+                          <Glyph
+                            name={a.isCorrect ? "check" : "close"}
+                            size={16}
+                            color={a.isCorrect ? "#6366f1" : colors.destructive}
+                          />
+                        </View>
                         <View style={{ flex: 1 }}>
                           <Text style={s.qText}>{i + 1}. {a.questionText}</Text>
-                          <Text style={[s.aText, { color: a.isCorrect ? "#6366f1" : "#e11d48", fontWeight: "600" }]}>
+                          <Text style={[s.aText, { color: a.isCorrect ? "#6366f1" : colors.destructive, fontWeight: "600" }]}>
                             Ответ: {a.studentAnswer}
                           </Text>
                           {!a.isCorrect && (
@@ -563,26 +708,42 @@ export default function TeacherResultsScreen() {
               </Text>
               {pending.map((r) => {
                 const isDeleting = deletingId === r.assignedTaskId;
+                const overdue = formatDue(r.dueAt).urgency === "overdue";
                 return (
-                  <View key={r.assignedTaskId} style={[s.studentCard, { opacity: isDeleting ? 0.5 : 0.85 }]}>
+                  <View
+                    key={r.assignedTaskId}
+                    style={[
+                      s.studentCard,
+                      { opacity: isDeleting ? 0.5 : 1 },
+                      // Просрочивший не должен выглядеть так же, как тот, у кого
+                      // срок ещё есть: рамка и тень в цвете тревоги.
+                      overdue
+                        ? { borderColor: colors.destructive + "55", shadowColor: colors.destructive }
+                        : { opacity: isDeleting ? 0.5 : 0.9 },
+                    ]}
+                  >
                     <View style={s.studentRow}>
-                      <View style={[s.avatar, { backgroundColor: r.studentAvatarColor ?? "#6366f1" }]}>
-                        <Text style={{ fontSize: 22 }}>{r.studentAvatarEmoji ?? "🦁"}</Text>
+                      <AnimatedAvatar
+                        size={46}
+                        avatarColor={r.studentAvatarColor ?? "#6366f1"}
+                        avatarEmoji={r.studentAvatarEmoji}
+                        avatarUrl={r.studentAvatarUrl}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
+                          {r.studentName}
+                        </Text>
+                        {renderDue(r)}
                       </View>
-                      <Text style={{ flex: 1, fontSize: 15, fontWeight: "700", color: colors.foreground }}>
-                        {r.studentName}
-                      </Text>
-                      <View style={s.pendingTag}>
-                        <Text style={{ fontSize: 12, fontWeight: "600", color: "#9d174d" }}>Ожидает</Text>
-                      </View>
+                      {!overdue && <Pill text="Ожидает" tone="soft" color={colors.primary} />}
                       <TouchableOpacity
                         style={s.deleteBtn}
                         onPress={() => handleUnassign(r)}
                         disabled={isDeleting}
                       >
                         {isDeleting
-                          ? <ActivityIndicator size="small" color="#be123c" />
-                          : <Feather name="trash-2" size={15} color="#be123c" />
+                          ? <ActivityIndicator size="small" color={colors.destructive} />
+                          : <Glyph name="trash" size={15} color={colors.destructive} />
                         }
                       </TouchableOpacity>
                     </View>
