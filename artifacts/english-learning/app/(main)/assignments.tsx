@@ -11,24 +11,17 @@
 //
 // Значок типа задания рисует TypeArt (components/ui/TypeArt.tsx): не пиктограмма
 // в цветном квадрате, а маленькая сцена — лист с галочками и карандашом,
-// наушники с волной, книга с закладкой, экран с play, блокнот с пером. Пять
-// типов теперь различаются рисунком, а не только цветом плашки.
+// наушники с волной, книга с закладкой, экран с play, блокнот с пером.
 //
 // Наклоны убраны везде: карточки, значки и плашки пустых состояний стоят ровно.
-// На плотном списке микро-поворот читался как брак вёрстки, а не как приём;
-// глубину держат цветная тень и отклик на нажатие.
 //
-// Сроки сдачи: учитель выбирает срок прямо в модалке отправки (пресеты «сегодня
-// / завтра / 3 дня / неделя» или без срока), ученик видит его на карточке, а
-// список сортируется по сроку — просроченное сверху. Вся арифметика и формат
-// живут в utils/dueDate.ts, здесь только отображение.
+// Сроки сдачи: учитель выбирает срок в модалке отправки, ученик видит его на
+// карточке, список сортируется по сроку. Просроченное задание закрывается
+// сервером само и приходит учителю как несданное. Арифметика — utils/dueDate.ts.
 //
 // Карточка созданного задания показывает прогресс сдачи сегментами: «6 из 8
-// сдали». Раньше на ней было только название и три кнопки, и главный вопрос
-// учителя — «дошло ли задание и кто уже сдал» — оставался без ответа, за ним
-// надо было заходить в «Итоги» по каждому заданию отдельно. Счётчики приходят
-// с сервера вместе со списком (assignedCount / submittedCount / pendingCount),
-// лишних запросов нет.
+// сдали». Счётчики приходят с сервера вместе со списком (assignedCount /
+// submittedCount / pendingCount), лишних запросов нет.
 import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, Platform,
@@ -56,6 +49,33 @@ import {
   type DuePresetKey, type DueUrgency,
 } from "@/utils/dueDate";
 
+/**
+ * Экран падал молча: при ошибке рендера React разворачивал дерево, и вкладка
+ * оставалась белой без единой подсказки о причине. Expo Router подхватывает
+ * экспорт ErrorBoundary для конкретного роута — теперь вместо пустоты видно
+ * текст ошибки и кнопку повторной загрузки. Тот же приём уже стоит на экране
+ * «Слова» (app/(main)/flashcards.tsx).
+ */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
+  return (
+    <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 80, gap: 14 }}>
+      <Text style={{ fontSize: 20, fontWeight: "900", color: "#e11d48" }}>Экран не открылся</Text>
+      <Text style={{ fontSize: 13, lineHeight: 20, color: "#5b4f8e" }}>
+        {error?.message ?? "Неизвестная ошибка"}
+      </Text>
+      {!!error?.stack && (
+        <Text style={{ fontSize: 10, lineHeight: 15, color: "#8b7fb0" }}>{error.stack}</Text>
+      )}
+      <TouchableOpacity
+        onPress={() => { void retry(); }}
+        style={{ alignSelf: "flex-start", backgroundColor: "#6366f1", borderRadius: 12, paddingHorizontal: 18, paddingVertical: 11 }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Попробовать снова</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+}
+
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
@@ -75,6 +95,15 @@ async function apiFetch(path: string, options?: RequestInit) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Ошибка сервера");
   return data;
+}
+
+/**
+ * Ответ сервера как массив. Если эндпоинт вернул объект ошибки или null,
+ * экран получит пустой список вместо падения на .filter / .reduce — при
+ * несовпадении версий клиента и сервера это спасает вкладку от белого экрана.
+ */
+function asArray(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -165,18 +194,21 @@ function AssignModal({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   // Срок сдачи для этой отправки. Стартует с того, что учитель указал при
-  // создании задания; если там ничего нет — «без срока». Принуждать ставить
-  // дедлайн на каждую отправку не нужно, но и переспрашивать одно и то же у
-  // задания, которое всегда даётся на неделю, тоже.
+  // создании задания; если там ничего нет — «без срока».
   const [duePreset, setDuePreset] = useState<DuePresetKey>("none");
+
+  // Предустановку берём из задания. Отдельная переменная, чтобы не тащить
+  // весь объект в зависимости эффекта: он меняет ссылку на каждом рендере
+  // списка и эффект гонялся бы вхолостую.
+  const defaultDueDays = (assignment as any)?.defaultDueDays ?? null;
 
   useEffect(() => {
     if (!visible) return;
     setSelected(new Set()); setError(""); setStudents([]);
-    setDuePreset(presetFromDays((assignment as any)?.defaultDueDays));
+    setDuePreset(presetFromDays(defaultDueDays));
     setLoading(true);
     apiFetch("/api/connections/teacher/students")
-      .then(setStudents)
+      .then((data) => setStudents(asArray(data)))
       .catch((e: any) => {
         const msg = e?.message ?? "";
         if (msg === "Forbidden") {
@@ -186,7 +218,7 @@ function AssignModal({
         setError(msg || "Не удалось загрузить учеников");
       })
       .finally(() => setLoading(false));
-  }, [visible, logout, assignment]);
+  }, [visible, logout, defaultDueDays]);
 
   const toggle = (id: number) => setSelected((prev) => {
     const next = new Set(prev);
@@ -207,7 +239,7 @@ function AssignModal({
           dueAt: dueDateFromPreset(duePreset),
         }),
       });
-      if (result.assigned > 0) {
+      if (result?.assigned > 0) {
         onDone();
         onClose();
       } else {
@@ -403,9 +435,9 @@ export default function AssignmentsScreen() {
 
   // Колоды учителя — один запрос на весь экран (используется и во вкладке
   // «Колоды», и во вкладке «Все», где колоды подмешиваются к заданиям в общий
-  // список). Раньше запрос жил внутри TeacherDecks, и вкладка «Все» о колодах
-  // просто не знала.
+  // список).
   const decksQ = useQuery({ queryKey: ["fc-my-decks"], queryFn: fc.getMyDecks, enabled: isTeacher });
+  const decks = asArray(decksQ.data);
 
   // Gamification: daily goal bar
   const { stats: gamStats, loadStats, updateDailyGoal } = useGamification();
@@ -418,21 +450,21 @@ export default function AssignmentsScreen() {
   const loadMyTasks = useCallback(async () => {
     if (!isStudent) return;
     setLoadingMyTasks(true);
-    try { setMyTasks(await apiFetch("/api/assignments/my-tasks")); }
+    try { setMyTasks(asArray(await apiFetch("/api/assignments/my-tasks"))); }
     catch { /* silent */ }
     finally { setLoadingMyTasks(false); }
   }, [isStudent]);
 
   const loadMyAssignments = useCallback(async () => {
     if (!isTeacher) return;
-    try { setMyAssignments(await apiFetch("/api/assignments/my-assignments")); }
+    try { setMyAssignments(asArray(await apiFetch("/api/assignments/my-assignments"))); }
     catch { /* silent */ }
   }, [isTeacher]);
 
   const loadTeacherSubs = useCallback(async () => {
     if (!isTeacher) return;
     setLoadingTeacherSubs(true);
-    try { setTeacherSubs(await apiFetch("/api/assignments/teacher-results")); }
+    try { setTeacherSubs(asArray(await apiFetch("/api/assignments/teacher-results"))); }
     catch { /* silent */ }
     finally { setLoadingTeacherSubs(false); }
   }, [isTeacher]);
@@ -440,7 +472,7 @@ export default function AssignmentsScreen() {
   const loadMyCompleted = useCallback(async () => {
     if (!isStudent) return;
     setLoadingCompleted(true);
-    try { setMyCompleted(await apiFetch("/api/assignments/my-submissions")); }
+    try { setMyCompleted(asArray(await apiFetch("/api/assignments/my-submissions"))); }
     catch { /* silent */ }
     finally { setLoadingCompleted(false); }
   }, [isStudent]);
@@ -504,6 +536,9 @@ export default function AssignmentsScreen() {
   };
 
   const searchLower = search.trim().toLowerCase();
+  /** Поиск по названию, устойчивый к записи без title. */
+  const matches = (value: unknown) =>
+    !searchLower || String(value ?? "").toLowerCase().includes(searchLower);
 
   /**
    * Сколько заданий стоит за фильтром. Считается по уже загруженным спискам —
@@ -511,7 +546,7 @@ export default function AssignmentsScreen() {
    * выглядел рабочим и открывал пустой экран.
    */
   const filterCount = (f: Filter): number => {
-    if (f === DECKS_FILTER) return decksQ.data?.length ?? 0;
+    if (f === DECKS_FILTER) return decks.length;
     const source: any[] = isTeacher ? myAssignments : myTasks;
     if (f === "Все") return source.length;
     return source.filter((a) => a.type === f).length;
@@ -670,7 +705,7 @@ export default function AssignmentsScreen() {
         <View style={styles.teacherTag}>
           <Glyph name="send" size={11} color={colors.primary} />
           <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
-            от {item.teacherName}
+            от {item.teacherName ?? "учителя"}
           </Text>
         </View>
         <View style={styles.cardHeader}>
@@ -706,11 +741,13 @@ export default function AssignmentsScreen() {
   const renderMyAssignmentCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const isDraft = item.isDraft;
-    const assigned = item.assignedCount ?? 0;
-    const submitted = item.submittedCount ?? 0;
-    const pending = item.pendingCount ?? 0;
-    const avg = item.avgScore ?? null;
-    const allDone = assigned > 0 && submitted === assigned;
+    // Счётчики приходят с сервера. Старый сервер их не присылает — тогда блок
+    // прогресса просто не рисуется, экран остаётся рабочим.
+    const assigned = Number(item.assignedCount ?? 0);
+    const submitted = Number(item.submittedCount ?? 0);
+    const pending = Number(item.pendingCount ?? 0);
+    const avg = typeof item.avgScore === "number" ? item.avgScore : null;
+    const allDone = assigned > 0 && submitted >= assigned;
     return (
       // Outer View — NOT a Touchable, so inner buttons get touches reliably
       <View
@@ -818,17 +855,16 @@ export default function AssignmentsScreen() {
   // ── Teacher: render one student submission card (tappable → details) ──
   const renderTeacherSubCard = (item: any) => {
     const color = TYPE_COLORS[item.assignmentType] || colors.primary;
-    const hasSub = !!item.submission;
-    if (!hasSub) return null;
-    const score = item.submission.score;
+    const sub = item.submission;
+    if (!sub) return null;
+    const score = Number(sub.score ?? 0);
     // Автозакрытая работа — не результат ученика, а факт пропуска срока.
     // Красим её тревожным цветом независимо от нулевого балла.
-    const expired = item.submission.status === EXPIRED;
+    const expired = sub.status === EXPIRED;
     const tint = expired ? colors.destructive : scoreTint(score);
-    // Сдано после срока: учителю это важнее самой даты сдачи, поэтому метка,
-    // а не строка мелким текстом. Без срока метки нет.
+    // Сдано после срока: учителю это важнее самой даты сдачи, поэтому метка.
     const late = !expired && !!item.dueAt &&
-      new Date(item.submission.submittedAt).getTime() > new Date(item.dueAt).getTime();
+      new Date(sub.submittedAt).getTime() > new Date(item.dueAt).getTime();
     return (
       <TouchableOpacity
         key={`${item.assignedTaskId}`}
@@ -872,12 +908,12 @@ export default function AssignmentsScreen() {
             <Pill text="не сдано в срок" icon="alert" tone="danger" />
           ) : (
             <Text style={styles.ageText}>
-              {item.submission.correctCount}/{item.submission.totalQuestions} правильно
+              {sub.correctCount}/{sub.totalQuestions} правильно
             </Text>
           )}
           {late && <Pill text="с опозданием" icon="clock" tone="danger" />}
           <Text style={styles.ageText}>
-            {new Date(item.submission.submittedAt).toLocaleDateString("ru-RU")}
+            {new Date(sub.submittedAt).toLocaleDateString("ru-RU")}
           </Text>
         </View>
       </TouchableOpacity>
@@ -888,7 +924,7 @@ export default function AssignmentsScreen() {
   const renderCompletedCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const expired = item.status === EXPIRED;
-    const tint = expired ? colors.destructive : scoreTint(item.score);
+    const tint = expired ? colors.destructive : scoreTint(Number(item.score ?? 0));
     return (
       <TouchableOpacity
         key={`${item.submissionId}`}
@@ -963,7 +999,7 @@ export default function AssignmentsScreen() {
         {/* Сводка у учителя: сколько работ ждёт проверки. Раньше это можно было
             узнать, только перейдя во вкладку ответов и пересчитав глазами. */}
         {isTeacher && (() => {
-          const pending = myAssignments.reduce((sum, a) => sum + (a.pendingCount ?? 0), 0);
+          const pending = myAssignments.reduce((sum, a) => sum + Number(a?.pendingCount ?? 0), 0);
           if (pending === 0) return null;
           return (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
@@ -975,8 +1011,7 @@ export default function AssignmentsScreen() {
           );
         })()}
 
-        {/* Сводка по срокам у ученика: сколько заданий горит прямо сейчас.
-            Раньше это можно было понять, только пролистав весь список. */}
+        {/* Сводка по срокам у ученика: сколько заданий горит прямо сейчас. */}
         {isStudent && (() => {
           const urgent = countUrgent(myTasks, (t: any) => t.dueAt);
           if (urgent === 0) return null;
@@ -1084,7 +1119,7 @@ export default function AssignmentsScreen() {
             showsVerticalScrollIndicator={false}
           >
             {isTeacher && (() => {
-              const withSub = teacherSubs.filter(t => !!t.submission);
+              const withSub = teacherSubs.filter(t => !!t?.submission);
               if (withSub.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
                   <View style={styles.emptyIcon}>
@@ -1096,7 +1131,7 @@ export default function AssignmentsScreen() {
               return (
                 <>
                   <SectionLabel>Ответы учеников · {withSub.length}</SectionLabel>
-                  {withSub
+                  {[...withSub]
                     .sort((a, b) => new Date(b.submission.submittedAt).getTime() - new Date(a.submission.submittedAt).getTime())
                     .map((item) => renderTeacherSubCard(item))
                   }
@@ -1134,14 +1169,10 @@ export default function AssignmentsScreen() {
           >
             {/* Teacher: свои колоды слов — отдельная категория «Колоды» */}
             {isTeacher && filter === DECKS_FILTER && (
-              <TeacherDecks colors={colors} styles={styles} search={searchLower} decksQ={decksQ} />
+              <TeacherDecks colors={colors} styles={styles} search={searchLower} decksQ={decksQ} decks={decks} />
             )}
 
-            {/* Teacher: во «Все» — задания и колоды в общем списке, отсортированные
-                по дате создания (новые сверху). Раньше «Все» собирала только
-                задания, и созданная/отправленная колода там не появлялась —
-                увидеть её можно было только во вкладке «Колоды». В остальных
-                фильтрах (по типу задания) колоды не подмешиваются. */}
+            {/* Teacher: во «Все» — задания и колоды в общем списке, новые сверху. */}
             {isTeacher && filter !== DECKS_FILTER && filter === "Все" && (() => {
               if (decksQ.isLoading) {
                 return <ActivityIndicator color={colors.primary} size="large" style={{ marginTop: 20 }} />;
@@ -1150,10 +1181,10 @@ export default function AssignmentsScreen() {
                 | { kind: "assignment"; createdAt: number; data: any }
                 | { kind: "deck"; createdAt: number; data: any };
               const assignmentRows: Row[] = myAssignments
-                .filter((a) => !searchLower || a.title.toLowerCase().includes(searchLower))
+                .filter((a) => matches(a?.title))
                 .map((a) => ({ kind: "assignment", createdAt: a.createdAt ? new Date(a.createdAt).getTime() : 0, data: a }));
-              const deckRows: Row[] = (decksQ.data ?? [])
-                .filter((d: any) => !searchLower || d.title.toLowerCase().includes(searchLower))
+              const deckRows: Row[] = decks
+                .filter((d: any) => matches(d?.title))
                 .map((d: any) => ({ kind: "deck", createdAt: d.createdAt ? new Date(d.createdAt).getTime() : 0, data: d }));
               const combined = [...assignmentRows, ...deckRows].sort((a, b) => b.createdAt - a.createdAt);
 
@@ -1200,10 +1231,7 @@ export default function AssignmentsScreen() {
 
             {/* Teacher: конкретный тип задания — только задания этого типа, без колод */}
             {isTeacher && filter !== DECKS_FILTER && filter !== "Все" && (() => {
-              const filtered = myAssignments.filter(a =>
-                a.type === filter &&
-                (!searchLower || a.title.toLowerCase().includes(searchLower))
-              );
+              const filtered = myAssignments.filter(a => a?.type === filter && matches(a?.title));
               if (filtered.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
                   <View style={styles.emptyIcon}>
@@ -1229,8 +1257,7 @@ export default function AssignmentsScreen() {
             {/* Student: assigned tasks — server already excludes submitted ones */}
             {isStudent && (() => {
               const filtered = myTasks.filter((t: any) =>
-                (filter === "Все" || t.type === filter) &&
-                (!searchLower || t.title.toLowerCase().includes(searchLower))
+                (filter === "Все" || t?.type === filter) && matches(t?.title)
               );
               if (filtered.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
@@ -1246,20 +1273,18 @@ export default function AssignmentsScreen() {
               // конце — задания без срока. Порядок с сервера произвольный.
               const ordered = sortByDue(filtered, (t: any) => t.dueAt);
               const next = ordered[0];
-              const nextDue = formatDue(next.dueAt);
+              const nextDue = formatDue(next?.dueAt);
               return (
                 <>
                   {/* Главное действие ученика — как «Учить слова» в разделе
-                      «Слова». Раньше экран открывался списком, и ученик сам
-                      искал, за что взяться. Кнопка ведёт на самое срочное
-                      задание — то же, что стоит первым в списке. */}
+                      «Слова»: кнопка ведёт на самое срочное задание. */}
                   <ChunkyButton
                     label="Начать задание"
-                    sublabel={nextDue.urgency === "none" ? next.title : `${next.title} · ${nextDue.text}`}
+                    sublabel={nextDue.urgency === "none" ? next?.title : `${next?.title} · ${nextDue.text}`}
                     icon="play"
                     chevron
                     tone={nextDue.urgency === "overdue" ? "warm" : "primary"}
-                    onPress={() => router.push(`/(main)/assignment/${next.assignmentId}` as any)}
+                    onPress={() => router.push(`/(main)/assignment/${next?.assignmentId}` as any)}
                     style={{ marginBottom: 16 }}
                   />
                   <SectionLabel>
@@ -1321,15 +1346,15 @@ function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: (
 // ─── Колоды слов учителя ──────────────────────────────────────────────
 // Отдельная категория внутри созданных заданий. Раньше у учителя не было
 // никакого входа в свои колоды: вкладка «Слова» для него скрыта, а страница
-// колоды открывалась только сразу после создания — вернуться к ней потом
-// было нельзя. Список берём быстрым запросом только своих колод (?mine=1).
-// Запрос теперь общий для всего экрана (decksQ передаётся сверху) — вкладка
-// «Все» подмешивает те же колоды к заданиям в единый список.
-function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles: any; search: string; decksQ: any }) {
+// колоды открывалась только сразу после создания. Список приходит сверху
+// (decks) — тот же запрос используется во вкладке «Все».
+function TeacherDecks({
+  colors, styles, search, decksQ, decks,
+}: { colors: any; styles: any; search: string; decksQ: any; decks: any[] }) {
   const router = useRouter();
 
-  const decks = (decksQ.data ?? []).filter(
-    (d: any) => !search || d.title.toLowerCase().includes(search),
+  const visible = decks.filter(
+    (d: any) => !search || String(d?.title ?? "").toLowerCase().includes(search),
   );
 
   if (decksQ.isLoading) {
@@ -1365,9 +1390,9 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
         style={{ marginBottom: 16 }}
       />
 
-      <SectionLabel>Колоды слов · {decks.length}</SectionLabel>
+      <SectionLabel>Колоды слов · {visible.length}</SectionLabel>
 
-      {decks.length === 0 ? (
+      {visible.length === 0 ? (
         <View style={[styles.empty, { paddingTop: 30 }]}>
           <View style={styles.emptyIcon}>
             <Glyph name="cards" size={32} color={colors.primary} />
@@ -1377,7 +1402,7 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
           </Text>
         </View>
       ) : (
-        decks.map((d: any) => (
+        visible.map((d: any) => (
           <DeckRow
             key={d.id}
             colors={colors}
