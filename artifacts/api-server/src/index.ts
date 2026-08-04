@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { db, usersTable, timeSessionsTable, submissionsTable, authTokensTable } from "@workspace/db";
 import { sql, eq, and, or, isNull } from "drizzle-orm";
+import { startOverdueWatcher } from "./lib/autoCloseOverdue";
 
 // One-time cleanup: earlier avatar uploads stored uncompressed base64 data
 // URIs (up to several MB) directly in avatar_url. Any user row that still has
@@ -135,4 +136,11 @@ app.listen(port, (err) => {
     .then(() => deleteAnnaUser())
     .then(() => verifyUsersWithoutEmail())
     .catch((err) => logger.error({ err }, "Startup background cleanup failed"));
+
+  // Сторож сроков сдачи: закрывает задания, которые ученик не сдал вовремя,
+  // и отправляет их учителю как «не сдано в срок». Идемпотентно, поэтому
+  // безопасно и при старте, и по таймеру. На бесплатном Render сервис засыпает
+  // после простоя — при следующем пробуждении задача догонит все пропущенные
+  // сроки за время сна.
+  startOverdueWatcher();
 });
