@@ -3,24 +3,28 @@
 //
 // Эмодзи в интерфейсе не используются: в пустых состояниях, предупреждениях и
 // на кнопках подтверждения стоят глифы из своего набора. Аватары учеников
-// приходят из профиля (avatarEmoji) — там, где картинки нет, показываем первую
-// букву имени, а не подставляем случайный символ.
+// приходят из профиля — там, где картинки нет, показываем первую букву имени.
 //
 // Оформление собрано из GameKit: физические кнопки и вкладки, карточки с
 // цветной тенью в цвете статуса, пилюли. Логика экрана не менялась.
 //
-// Статус слота раньше показывался цветной полосой слева (borderLeftWidth: 4).
-// Приём убран по всему экрану: полоса на карточке читается как след от
-// вёрстки, а не как смысл, и на узком экране съедает место под текст. Теперь
-// статус несут сама карточка (лёгкая заливка и рамка в цвете статуса), точка
-// слева и пилюля справа — те же три сигнала, но без лишней геометрии.
+// Что переделано в разборе:
+//  • Месячная сетка занимала пол-экрана при каждом заходе, а сами занятия
+//    начинались за сгибом. Теперь наверху полоса из семи дней, а месяц
+//    выезжает снизу по кнопке — он нужен, чтобы прыгнуть на другую дату,
+//    а не чтобы смотреть на него постоянно.
+//  • Заголовок «Календарь» дублировал подпись вкладки внизу экрана. Вместо
+//    него — выбранная дата и день недели.
+//  • Слоты стояли одинаковыми плитками, время пряталось внутри карточки.
+//    Теперь время отдельной колонкой слева: видна вертикаль дня и промежутки
+//    между уроками.
+//  • Появилась линия «сейчас» — отсечка текущего момента внутри дня.
+//  • Свободный слот рисуется пунктиром: занятое и незанятое различаются
+//    формой, а не подписью мелким шрифтом.
 //
-// Наклоны тоже убраны — как на «Заданиях», «Учениках», «Анализе» и «Профиле».
-//
-// Новое: карточка ближайшего занятия над сеткой. Главный вопрос к календарю —
-// «когда у меня следующий урок», и раньше ответ на него приходилось искать,
-// листая дни. Теперь он первым же блоком, вместе с кнопкой перехода на нужный
-// день.
+// Цветная полоса слева у карточек (borderLeftWidth: 4) убрана ещё раньше:
+// полоса читается как след от вёрстки, а не как смысл. Статус несут заливка,
+// рамка и пилюля. Наклоны тоже убраны — как на остальных вкладках.
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
@@ -100,8 +104,13 @@ type LessonHistoryItem = {
 
 // ── Date / time helpers ───────────────────────────────────────────────
 const DAY_SHORT = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+const DAY_FULL = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
 const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
-// Полные названия месяцев — заголовок месячной сетки.
+/** Родительный падеж — для строки «4 августа». */
+const MONTH_GEN = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
 const MONTH_FULL = [
   "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
   "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
@@ -139,10 +148,40 @@ function humanDay(dateStr: string): string {
   return formatDateWithDay(dateStr);
 }
 
+/** «сегодня» / «завтра» / «вторник» — подпись под крупной датой в шапке. */
+function dayCaption(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  const weekday = DAY_FULL[d.getDay()];
+  const today = todayStr();
+  if (dateStr === today) return `${weekday} · сегодня`;
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dateStr === localDateStr(tomorrow)) return `${weekday} · завтра`;
+  return weekday;
+}
+
 /** Первая буква имени для аватара без картинки. Пропускаем знаки и пробелы. */
 function initialOf(name?: string | null, fallback = "У") {
   const m = (name ?? "").match(/[\p{L}\p{N}]/u);
   return (m?.[0] ?? fallback).toUpperCase();
+}
+
+/** Понедельник недели, в которую попадает дата. */
+function weekStart(dateStr: string): Date {
+  const d = new Date(dateStr + "T00:00:00");
+  const offset = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - offset);
+  return d;
+}
+
+/** Семь дат недели, начиная с понедельника. */
+function buildWeek(anchor: string): string[] {
+  const start = weekStart(anchor);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return localDateStr(d);
+  });
 }
 
 /**
@@ -172,6 +211,24 @@ function isPastSlot(date: string, endTime: string): boolean {
   const slotEnd = new Date();
   slotEnd.setHours(h, m, 0, 0);
   return slotEnd <= now;
+}
+
+/** «через 12 минут» / «идёт сейчас» — подпись у ближайшего слота дня. */
+function untilLabel(date: string, startTime: string, endTime: string): string | null {
+  if (date !== todayStr()) return null;
+  const now = new Date();
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  if (nowMin >= startMin && nowMin < endMin) return "идёт сейчас";
+  const diff = startMin - nowMin;
+  if (diff <= 0 || diff > 180) return null;
+  if (diff < 60) return `через ${diff} мин`;
+  const h = Math.floor(diff / 60);
+  const m = diff % 60;
+  return m === 0 ? `через ${h} ч` : `через ${h} ч ${m} мин`;
 }
 
 // Wheel picker data
@@ -300,8 +357,7 @@ const BOOKING_CFG: Record<string, { label: string; color: string; icon: GlyphNam
   rejected:  { label: "Отклонено",    color: "#e11d48", icon: "close" },
 };
 
-// Цвета точек занятости в сетке месяца. Совпадают с палитрой:
-// success / warning / primary из constants/colors.ts.
+// Цвета точек занятости. Совпадают с палитрой: success / warning / primary.
 const DOT_LESSON  = "#8b5cf6"; // занятие подтверждено
 const DOT_PENDING = "#ec4899"; // есть заявка в ожидании
 const DOT_FREE    = "#6366f1"; // есть свободный слот
@@ -327,14 +383,16 @@ export default function CalendarScreen() {
   const [lessonHistory, setLessonHistory] = useState<LessonHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Обзор месяца: все слоты (без параметра date) — нужен только для точек
-  // занятости в сетке и подсказки «ближайшие дни со слотами».
+  // Обзор месяца: все слоты (без параметра date) — нужен для точек занятости
+  // в полосе недели, в сетке месяца и для карточки ближайшего занятия.
   const [monthSlots, setMonthSlots] = useState<(TeacherSlot | StudentSlot)[]>([]);
-  // Первое число отображаемого месяца.
+  // Первое число месяца, открытого в модалке.
   const [monthAnchor, setMonthAnchor] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  // Сетка месяца открывается по кнопке: в обычном режиме хватает недели.
+  const [showMonth, setShowMonth] = useState(false);
 
   // Delete confirm
   const [deleteSlotId, setDeleteSlotId] = useState<number | null>(null);
@@ -463,7 +521,7 @@ export default function CalendarScreen() {
     setRefreshing(false);
   }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests, loadHistory, activeTab]);
 
-  // ── Занятость по дням (для сетки месяца) ────────────────────────────
+  // ── Занятость по дням ───────────────────────────────────────────────
   // Каждый слот попадает ровно в одну корзину: прошедший / занятие /
   // ожидает / свободен — иначе точки в ячейке врали бы о состоянии дня.
   const dayMeta = useMemo(() => {
@@ -492,10 +550,8 @@ export default function CalendarScreen() {
   /**
    * Ближайшее подтверждённое занятие.
    *
-   * Главный вопрос к календарю — «когда у меня следующий урок». Раньше ответ
-   * приходилось искать перелистыванием дней: сетка показывает точки, но не
-   * говорит, какая из них ближайшая. Ищем среди уже загруженных слотов месяца,
-   * лишнего запроса не нужно.
+   * Главный вопрос к календарю — «когда у меня следующий урок». Ищем среди уже
+   * загруженных слотов месяца, лишнего запроса не нужно.
    */
   const nextLesson = useMemo(() => {
     const upcoming = monthSlots
@@ -520,6 +576,15 @@ export default function CalendarScreen() {
   }, [dayMeta, selectedDate]);
 
   const selectedMeta = dayMeta[selectedDate] ?? EMPTY_META;
+  const weekDates = useMemo(() => buildWeek(selectedDate), [selectedDate]);
+
+  /** Перейти на дату: синхронизируем и неделю, и месяц в модалке. */
+  const goToDate = useCallback((date: string) => {
+    const d = new Date(date + "T00:00:00");
+    setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
+    setSelectedDate(date);
+    setShowMonth(false);
+  }, []);
 
   // ── Actions ─────────────────────────────────────────────────────────
   const handleAddSlot = async () => {
@@ -647,113 +712,134 @@ export default function CalendarScreen() {
   // ── Styles ──────────────────────────────────────────────────────────
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    header: {
-      flexDirection: "row", alignItems: "center",
-      paddingTop: insets.top + 16, paddingHorizontal: 20, paddingBottom: 12,
-    },
-    headerTitle: { flex: 1, fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
 
-    tabRow: {
-      flexDirection: "row", marginHorizontal: 16, marginBottom: 8, gap: 10,
+    // ── Шапка ──
+    // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели, а
+    // место наверху дороже. Здесь выбранная дата и главное действие.
+    header: {
+      flexDirection: "row", alignItems: "flex-start", gap: 12,
+      paddingTop: insets.top + (Platform_OS_WEB ? 67 : 14),
+      paddingHorizontal: 18, paddingBottom: 2,
     },
+    headDate: { fontSize: 23, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
+    headCaption: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
+    headBtnEdge: {
+      position: "absolute", left: 0, right: 0, top: 4, bottom: 0, borderRadius: radii.pill,
+    },
+    headBtn: {
+      flexDirection: "row", alignItems: "center", gap: 7,
+      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.pill,
+    },
+    headBtnText: { fontSize: 12.5, fontWeight: "900", color: "#fff" },
+
+    // ── Вкладки ──
+    tabRow: { flexDirection: "row", paddingHorizontal: 16, paddingTop: 14, gap: 6 },
     tab: {
-      flex: 1, paddingVertical: 11, borderRadius: radii.sm + 2, alignItems: "center",
+      flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center",
       flexDirection: "row", justifyContent: "center", gap: 6,
-      backgroundColor: "rgba(255,255,255,0.35)",
-      borderWidth: 1, borderColor: "rgba(255,255,255,0.5)",
+      backgroundColor: "rgba(255,255,255,0.5)",
+      borderWidth: 1, borderColor: colors.border,
     },
-    // Активная вкладка приподнята: тот же физический приём, что у кнопок.
     tabActive: {
-      backgroundColor: colors.card,
+      backgroundColor: colors.card, borderColor: "transparent",
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.28, shadowRadius: 10, elevation: 6,
-      borderColor: "transparent",
+      shadowOpacity: 0.24, shadowRadius: 11, elevation: 5,
     },
-    tabText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
-    tabTextActive: { color: colors.primary, fontWeight: "800" },
+    tabText: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground },
+    tabTextActive: { color: accents.violetDeep, fontWeight: "800" },
     badge: {
       backgroundColor: colors.destructive, borderRadius: 9,
-      minWidth: 18, height: 18, justifyContent: "center", alignItems: "center", paddingHorizontal: 4,
+      minWidth: 17, height: 17, justifyContent: "center", alignItems: "center", paddingHorizontal: 4,
     },
     badgeText: { fontSize: 10, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
 
     // ── Ближайшее занятие ──
-    // Заливка градиентом бренда: это не «ещё одна карточка в списке», а ответ
-    // на главный вопрос экрана, и он должен читаться первым.
     nextCard: {
-      borderRadius: radii.lg, padding: 16, marginBottom: 14,
-      flexDirection: "row", alignItems: "center", gap: 14,
-      shadowColor: colors.primary, shadowOffset: { width: 0, height: 7 },
-      shadowOpacity: 0.34, shadowRadius: 18, elevation: 7,
+      borderRadius: radii.lg, padding: 15, marginBottom: 14,
+      flexDirection: "row", alignItems: "center", gap: 13,
+      shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.36, shadowRadius: 20, elevation: 7,
+      overflow: "hidden",
     },
     nextIcon: {
-      width: 50, height: 50, borderRadius: radii.md,
-      backgroundColor: "rgba(255,255,255,0.22)",
+      width: 48, height: 48, borderRadius: radii.md,
+      backgroundColor: "rgba(255,255,255,0.2)",
       alignItems: "center", justifyContent: "center",
     },
     nextLabel: {
-      fontSize: 10.5, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase",
-      color: "rgba(255,255,255,0.75)",
+      fontSize: 10, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase",
+      color: "rgba(255,255,255,0.72)",
     },
-    nextWhen: { fontSize: 19, fontWeight: "900", letterSpacing: -0.4, color: "#fff", marginTop: 3 },
-    nextWho: { fontSize: 12.5, color: "rgba(255,255,255,0.85)", marginTop: 3 },
+    nextWhen: { fontSize: 18, fontWeight: "900", letterSpacing: -0.4, color: "#fff", marginTop: 4 },
+    nextWho: { fontSize: 12, color: "rgba(255,255,255,0.82)", marginTop: 4 },
 
-    // ── Месячная сетка ──
-    monthCard: {
-      backgroundColor: colors.card, borderRadius: radii.lg, padding: 14, marginBottom: 14,
+    // ── Полоса недели ──
+    weekCard: {
+      backgroundColor: colors.card, borderRadius: radii.lg,
+      paddingVertical: 12, paddingHorizontal: 10, marginBottom: 14,
       borderWidth: 1, borderColor: colors.border,
       shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.14, shadowRadius: 16, elevation: 5,
+      shadowOpacity: 0.11, shadowRadius: 15, elevation: 4,
     },
-    monthHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14 },
-    monthTitle: { flex: 1, fontSize: 19, fontWeight: "900", letterSpacing: -0.3, color: colors.foreground },
-    monthNavBtn: {
-      width: 34, height: 34, borderRadius: radii.sm, alignItems: "center", justifyContent: "center",
-      backgroundColor: colors.muted,
+    weekHead: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4, paddingBottom: 11 },
+    weekMonth: { flex: 1, fontSize: 13.5, fontWeight: "800", color: colors.foreground, letterSpacing: -0.1 },
+    monthBtn: {
+      flexDirection: "row", alignItems: "center", gap: 5,
+      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
+      backgroundColor: colors.primary + "1a",
     },
-    todayBtn: {
-      paddingHorizontal: 12, height: 34, borderRadius: radii.sm,
-      alignItems: "center", justifyContent: "center",
-      backgroundColor: colors.primary + "14",
-    },
-    todayBtnText: { fontSize: 12, fontWeight: "800", color: colors.primary },
-    weekRow: { flexDirection: "row", marginBottom: 4 },
-    weekHeadCell: { flex: 1, alignItems: "center", paddingBottom: 6 },
-    weekHeadText: { fontSize: 11, fontWeight: "800", color: colors.mutedForeground, letterSpacing: 0.4 },
+    monthBtnText: { fontSize: 11, fontWeight: "800", color: accents.violetDeep },
+    weekRow: { flexDirection: "row", gap: 4 },
     dayCell: {
-      flex: 1, aspectRatio: 1, marginHorizontal: 2, borderRadius: radii.sm + 2,
-      alignItems: "center", justifyContent: "center", overflow: "hidden",
+      flex: 1, borderRadius: 14, paddingTop: 8, paddingBottom: 7,
+      alignItems: "center", overflow: "hidden",
     },
-    dayCellFilled: { backgroundColor: colors.muted },
-    dayCellToday: { borderWidth: 1.5, borderColor: colors.primary },
-    // Выбранный день светится в цвете бренда — он главный объект экрана.
-    dayCellActive: {
-      shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.42, shadowRadius: 10, elevation: 6,
+    dayW: { fontSize: 10, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.3 },
+    dayN: { fontSize: 16, fontWeight: "800", color: colors.foreground, marginTop: 6, fontVariant: ["tabular-nums"] },
+    dotRow: { flexDirection: "row", gap: 2.5, height: 6, marginTop: 6, alignItems: "center" },
+    dot: { width: 5, height: 5, borderRadius: 2.5 },
+
+    // ── Сводка дня ──
+    summary: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginBottom: 13 },
+    summaryDone: { marginLeft: "auto", fontSize: 11, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
+
+    // ── Строка расписания ──
+    // Время отдельной колонкой: видна вертикаль дня и промежутки между уроками.
+    slotRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
+    slotTimeCol: { width: 46, paddingTop: 13, alignItems: "flex-end" },
+    slotFrom: { fontSize: 13, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
+    slotTo: { fontSize: 10.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 4, fontVariant: ["tabular-nums"] },
+
+    card: {
+      flex: 1, borderRadius: radii.md, borderWidth: 1.5, padding: 12,
+      backgroundColor: colors.card,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.12, shadowRadius: 13, elevation: 3,
     },
-    // Числа календаря — табличные: колонки дней стоят ровно.
-    dayNum: { fontSize: 16, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] },
-    dayNumMuted: { color: colors.mutedForeground },
-    dayNumActive: { color: "#fff", fontWeight: "900" },
-    dotRow: { flexDirection: "row", gap: 3, marginTop: 4, height: 6, alignItems: "center" },
-    dot: { width: 6, height: 6, borderRadius: 3 },
-    legendRow: {
-      flexDirection: "row", flexWrap: "wrap", gap: 14, marginTop: 12, paddingTop: 12,
+    cardRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+    cardWho: { fontSize: 14, fontWeight: "800", color: colors.foreground },
+    cardMeta: { fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 3 },
+    cardNote: {
+      fontSize: 12, color: colors.mutedForeground, fontStyle: "italic",
+      marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    avatar: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+    avatarText: { color: "#fff", fontWeight: "900", fontSize: 14 },
+
+    acts: {
+      flexDirection: "row", gap: 8, marginTop: 10, paddingTop: 10,
       borderTopWidth: 1, borderTopColor: colors.border,
     },
-    legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-    legendText: { fontSize: 11, color: colors.mutedForeground, fontWeight: "700" },
+    act: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center" },
+    actText: { fontSize: 12.5, fontWeight: "800" },
 
-    // ── Счётчики по выбранному дню (без даты — она видна в сетке) ──
-    dayCard: {
-      backgroundColor: colors.card, borderRadius: radii.md, padding: 12, marginBottom: 12,
-      borderWidth: 1, borderColor: colors.border,
-      flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
-    },
+    // ── Линия «сейчас» ──
+    nowLine: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12, marginTop: 2 },
+    nowDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: accents.magenta },
+    nowText: { fontSize: 10, fontWeight: "900", color: accents.magenta, letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
+    nowRule: { flex: 1, height: 1.5, backgroundColor: accents.magenta + "55", borderRadius: 1 },
 
-    scroll: { paddingHorizontal: 16, paddingTop: 2, paddingBottom: 120 },
+    scroll: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 120 },
     historyLabel: {
       fontSize: 11, fontWeight: "800", color: colors.mutedForeground,
       textAlign: "center", marginVertical: 14, letterSpacing: 1.2,
@@ -770,81 +856,43 @@ export default function CalendarScreen() {
     },
     filterChipText: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground },
     filterChipTextActive: { color: colors.primary },
-    emptyBox: { alignItems: "center", paddingVertical: 28, gap: 12 },
-    // Плашка под глиф вместо крупного эмодзи. Стоит ровно: наклон убран
-    // вместе с остальными наклонами в проекте.
-    emptyIcon: {
-      width: 66, height: 66, borderRadius: radii.md + 4, alignItems: "center", justifyContent: "center",
-      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
-    },
-    emptyText: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 22 },
 
-    // Предупреждение в модалках: иконка плюс текст вместо символа ⚠.
+    emptyBox: { alignItems: "center", paddingVertical: 30, gap: 11, paddingHorizontal: 24 },
+    emptyIcon: {
+      width: 62, height: 62, borderRadius: 20, alignItems: "center", justifyContent: "center",
+      shadowColor: colors.primary, shadowOffset: { width: 0, height: 9 },
+      shadowOpacity: 0.32, shadowRadius: 20, elevation: 7,
+    },
+    emptyTitle: { fontSize: 15.5, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3, textAlign: "center" },
+    emptyText: { fontSize: 12.5, fontWeight: "600", color: colors.mutedForeground, textAlign: "center", lineHeight: 19 },
+
     warnRow: {
       flexDirection: "row", alignItems: "center", justifyContent: "center",
       gap: 6, marginBottom: 10, paddingHorizontal: 8,
     },
     warnText: { fontSize: 13, fontWeight: "700", flexShrink: 1 },
 
-    // Карточка слота. Статус несут заливка, рамка и тень в цвете статуса —
-    // цветной полосы слева больше нет (см. комментарий к файлу).
-    slotCard: {
-      borderRadius: radii.md, borderWidth: 1.5,
-      backgroundColor: colors.card, marginBottom: 12, overflow: "hidden",
-      shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.15, shadowRadius: 14, elevation: 5,
-    },
-    slotTop: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
-    slotDot: { width: 12, height: 12, borderRadius: 6 },
-    slotTime: { flex: 1, fontSize: 17, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
-    slotSub: { fontSize: 12, color: colors.mutedForeground, marginTop: 1 },
-
-    bookingRow: {
-      flexDirection: "row", alignItems: "center", gap: 10,
-      paddingHorizontal: 14, paddingVertical: 11,
-      borderTopWidth: 1, borderTopColor: colors.border,
-    },
-    bookingName: { fontWeight: "800", fontSize: 14, color: colors.foreground },
-    bookingNote: { fontSize: 12, color: colors.mutedForeground, marginTop: 2, fontStyle: "italic" },
-
-    btnRow: { flexDirection: "row", gap: 8 },
-    // Кнопки ответа на заявку: внутри глифы, поэтому квадрат и центрирование.
-    btnConfirm: {
-      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.sm - 2,
-      backgroundColor: colors.primary, alignItems: "center", justifyContent: "center",
-    },
-    btnReject: {
-      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.sm - 2,
-      backgroundColor: colors.destructive, alignItems: "center", justifyContent: "center",
-    },
-    btnCancel: {
-      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.sm - 2,
-      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.muted,
-    },
-    btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
-    btnTextGray: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
-
     addBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
       borderRadius: radii.md, borderWidth: 2, borderStyle: "dashed", borderColor: colors.primary,
-      padding: 16, marginTop: 4,
+      padding: 15, marginTop: 4,
     },
-    addBtnText: { fontSize: 15, fontWeight: "800", color: colors.primary },
+    addBtnText: { fontSize: 14.5, fontWeight: "800", color: colors.primary },
 
     jumpChip: {
       flexDirection: "row", alignItems: "center", gap: 6,
-      paddingHorizontal: 12, paddingVertical: 9, borderRadius: radii.sm,
-      backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "40",
+      paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.pill,
+      backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "40",
     },
-    jumpChipText: { fontSize: 12, fontWeight: "800", color: colors.primary },
+    jumpChipText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
 
     statusLabel: { fontSize: 12, fontWeight: "800" },
 
-    // Modals
+    // ── Модалки ──
     overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
     sheet: {
       backgroundColor: colors.card,
-      borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg,
+      borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
       paddingTop: 12, paddingHorizontal: 20, paddingBottom: insets.bottom + 24,
     },
     handle: {
@@ -869,7 +917,31 @@ export default function CalendarScreen() {
       flexDirection: "row", alignItems: "center", gap: 9,
     },
 
-    // Request / booking cards. Как и слоты — без полосы слева.
+    // ── Сетка месяца в модалке ──
+    monthHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14 },
+    monthTitle: { flex: 1, fontSize: 17, fontWeight: "900", letterSpacing: -0.35, color: colors.foreground, textAlign: "center" },
+    monthNav: {
+      width: 32, height: 32, borderRadius: 11, alignItems: "center", justifyContent: "center",
+      backgroundColor: colors.muted,
+    },
+    mWeekRow: { flexDirection: "row" },
+    mHeadCell: { flex: 1, alignItems: "center", paddingBottom: 8 },
+    mHeadText: { fontSize: 10, fontWeight: "800", color: colors.mutedForeground },
+    mCell: {
+      flex: 1, aspectRatio: 1, margin: 1.5, borderRadius: 12,
+      alignItems: "center", justifyContent: "center", overflow: "hidden",
+    },
+    mCellFilled: { backgroundColor: colors.muted },
+    mNum: { fontSize: 14, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] },
+    mNumActive: { color: "#fff", fontWeight: "900" },
+    legendRow: {
+      flexDirection: "row", gap: 14, marginTop: 14, paddingTop: 13,
+      borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+    legendText: { fontSize: 11, color: colors.mutedForeground, fontWeight: "700" },
+
+    // ── Карточки запросов / записей ──
     reqCard: {
       borderRadius: radii.md, borderWidth: 1.5,
       backgroundColor: colors.card, marginBottom: 12, padding: 14, gap: 10,
@@ -883,10 +955,22 @@ export default function CalendarScreen() {
     reqName: { flex: 1, fontSize: 15, fontWeight: "800", color: colors.foreground },
     reqTime: { fontSize: 12, color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] },
     reqNote: { fontSize: 13, color: colors.mutedForeground, fontStyle: "italic" },
-
-    // Аватар без картинки: буква в круге вместо случайного эмодзи.
-    letterAvatar: { justifyContent: "center", alignItems: "center" },
-    letterAvatarText: { color: "#fff", fontWeight: "900" },
+    btnRow: { flexDirection: "row", gap: 8 },
+    btnConfirm: {
+      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
+      backgroundColor: colors.primary, alignItems: "center", justifyContent: "center",
+    },
+    btnReject: {
+      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
+      backgroundColor: colors.destructive + "18", alignItems: "center", justifyContent: "center",
+    },
+    btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
+    btnTextDanger: { fontSize: 13, fontWeight: "800", color: colors.destructive },
+    btnCancel: {
+      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.sm,
+      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.muted,
+    },
+    btnTextGray: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
   });
 
   /**
@@ -900,16 +984,19 @@ export default function CalendarScreen() {
     shadowColor: muted ? accents.violetDeep : color,
   });
 
-  /** Пустое состояние: глиф в плашке плюс поясняющий текст. */
-  const renderEmpty = (glyph: GlyphName, text: string, tone: "primary" | "success" = "primary") => (
+  /** Пустое состояние: глиф в градиентной плашке плюс текст. */
+  const renderEmpty = (glyph: GlyphName, title: string, text?: string) => (
     <View style={s.emptyBox}>
-      <View style={[
-        s.emptyIcon,
-        tone === "success" && { backgroundColor: colors.success + "14", borderColor: colors.success + "30" },
-      ]}>
-        <Glyph name={glyph} size={30} color={tone === "success" ? colors.success : colors.primary} />
-      </View>
-      <Text style={s.emptyText}>{text}</Text>
+      <LinearGradient
+        colors={gradients.action as unknown as string[]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={s.emptyIcon}
+      >
+        <Glyph name={glyph} size={27} color="#ffffff" />
+      </LinearGradient>
+      <Text style={s.emptyTitle}>{title}</Text>
+      {!!text && <Text style={s.emptyText}>{text}</Text>}
     </View>
   );
 
@@ -923,8 +1010,8 @@ export default function CalendarScreen() {
 
   /** Аватар из буквы имени: используется, когда картинки профиля нет. */
   const renderLetterAvatar = (name: string | null | undefined, bg: string | null, size: number) => (
-    <View style={[s.letterAvatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg ?? colors.primary }]}>
-      <Text style={[s.letterAvatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
+    <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg ?? colors.primary }]}>
+      <Text style={[s.avatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
     </View>
   );
 
@@ -935,14 +1022,7 @@ export default function CalendarScreen() {
       ? ((nextLesson as TeacherSlot).bookings ?? []).find((b) => b.status === "confirmed")?.studentName ?? "Ученик"
       : (nextLesson as StudentSlot).teacherName ?? "Учитель";
     return (
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={() => {
-          const d = new Date(nextLesson.date + "T00:00:00");
-          setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
-          setSelectedDate(nextLesson.date);
-        }}
-      >
+      <TouchableOpacity activeOpacity={0.9} onPress={() => goToDate(nextLesson.date)}>
         <LinearGradient
           colors={gradients.action as unknown as string[]}
           start={{ x: 0.1, y: 0 }}
@@ -950,193 +1030,86 @@ export default function CalendarScreen() {
           style={s.nextCard}
         >
           <View style={s.nextIcon}>
-            <Glyph name="calendar" size={24} color="#ffffff" />
+            <Glyph name="calendar" size={23} color="#ffffff" />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={s.nextLabel}>Ближайшее занятие</Text>
-            <Text style={s.nextWhen}>
-              {humanDay(nextLesson.date)} в {nextLesson.startTime}
-            </Text>
+            <Text style={s.nextWhen}>{humanDay(nextLesson.date)} в {nextLesson.startTime}</Text>
             <Text style={s.nextWho}>
               {isTeacherRole ? `с ${who}` : who} · до {nextLesson.endTime}
             </Text>
           </View>
-          <Glyph name="chevron" size={20} color="#ffffff" />
+          <Glyph name="chevron" size={19} color="#ffffff" />
         </LinearGradient>
       </TouchableOpacity>
     );
   };
 
-  // ── Месячная сетка ──────────────────────────────────────────────────
-  const renderMonthCalendar = () => {
-    const year = monthAnchor.getFullYear();
-    const month = monthAnchor.getMonth();
-    const weeks = buildMonthGrid(year, month);
+  // ── Полоса недели ───────────────────────────────────────────────────
+  // Заменяет месячную сетку в обычном режиме: почти всегда нужен ближайший
+  // week, а квадрат из 35 чисел занимал пол-экрана при каждом заходе.
+  const renderWeekStrip = () => {
     const today = todayStr();
-    const now = new Date();
-    // Назад не листаем дальше текущего месяца: в прошлом слот всё равно
-    // нельзя ни создать, ни занять (см. isInPast на сервере).
-    const canGoBack = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth());
-    const shiftMonth = (delta: number) => setMonthAnchor(new Date(year, month + delta, 1));
-
+    const anchor = new Date(selectedDate + "T00:00:00");
     return (
-      <View style={s.monthCard}>
-        <View style={s.monthHead}>
-          {/* Стрелка назад — тот же chevron, развёрнутый на 180°. */}
-          <TouchableOpacity
-            style={[s.monthNavBtn, !canGoBack && { opacity: 0.35 }]}
-            onPress={() => canGoBack && shiftMonth(-1)}
-            disabled={!canGoBack}
-            accessibilityLabel="Предыдущий месяц"
-          >
-            <View style={{ transform: [{ rotate: "180deg" }] }}>
-              <Glyph name="chevron" size={18} color={colors.foreground} />
-            </View>
-          </TouchableOpacity>
-          <Text style={s.monthTitle}>{MONTH_FULL[month]} {year}</Text>
-          <TouchableOpacity
-            style={s.todayBtn}
+      <View style={s.weekCard}>
+        <View style={s.weekHead}>
+          <Text style={s.weekMonth}>{MONTH_FULL[anchor.getMonth()]} {anchor.getFullYear()}</Text>
+          <Pressable
+            style={({ pressed }) => [s.monthBtn, pressed && { opacity: 0.8 }]}
             onPress={() => {
-              setMonthAnchor(new Date(now.getFullYear(), now.getMonth(), 1));
-              setSelectedDate(today);
+              setMonthAnchor(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+              setShowMonth(true);
             }}
           >
-            <Text style={s.todayBtnText}>Сегодня</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.monthNavBtn} onPress={() => shiftMonth(1)} accessibilityLabel="Следующий месяц">
-            <Glyph name="chevron" size={18} color={colors.foreground} />
-          </TouchableOpacity>
+            <Glyph name="calendar" size={12} color={accents.violetDeep} />
+            <Text style={s.monthBtnText}>Месяц</Text>
+          </Pressable>
         </View>
 
         <View style={s.weekRow}>
-          {WEEK_HEAD.map((w) => (
-            <View key={w} style={s.weekHeadCell}><Text style={s.weekHeadText}>{w}</Text></View>
-          ))}
-        </View>
-
-        {weeks.map((week, wi) => (
-          <View key={wi} style={s.weekRow}>
-            {week.map((date, di) => {
-              if (!date) return <View key={`e-${di}`} style={s.dayCell} />;
-              const meta = dayMeta[date] ?? EMPTY_META;
-              const hasAnything = meta.free + meta.pending + meta.lesson > 0;
-              const active = date === selectedDate;
-              const isToday = date === today;
-              const isPastDay = date < today;
-              return (
-                <TouchableOpacity
-                  key={date}
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedDate(date)}
-                  style={[
-                    s.dayCell,
-                    hasAnything && !active && s.dayCellFilled,
-                    isToday && !active && s.dayCellToday,
-                    active && s.dayCellActive,
-                    isPastDay && !active && { opacity: 0.4 },
-                  ]}
-                >
-                  {/* Заливка выбранного дня градиентом бренда, а не плоским цветом. */}
-                  {active && (
-                    <LinearGradient
-                      colors={gradients.action as unknown as string[]}
-                      start={{ x: 0.1, y: 0 }}
-                      end={{ x: 0.9, y: 1 }}
-                      style={StyleSheet.absoluteFill}
-                    />
-                  )}
-                  <Text style={[
-                    s.dayNum,
-                    (di >= 5 || isPastDay) && s.dayNumMuted,
-                    active && s.dayNumActive,
-                  ]}>
-                    {new Date(date + "T00:00:00").getDate()}
-                  </Text>
-                  <View style={s.dotRow}>
-                    {meta.lesson > 0 && (
-                      <View style={[s.dot, { backgroundColor: active ? "#fff" : DOT_LESSON }]} />
-                    )}
-                    {meta.pending > 0 && (
-                      <View style={[s.dot, { backgroundColor: active ? "#ffffffcc" : DOT_PENDING }]} />
-                    )}
-                    {meta.free > 0 && (
-                      <View style={[s.dot, { backgroundColor: active ? "#ffffff99" : DOT_FREE }]} />
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ))}
-
-        <View style={s.legendRow}>
-          <View style={s.legendItem}>
-            <View style={[s.dot, { backgroundColor: DOT_LESSON }]} />
-            <Text style={s.legendText}>Занятие</Text>
-          </View>
-          <View style={s.legendItem}>
-            <View style={[s.dot, { backgroundColor: DOT_PENDING }]} />
-            <Text style={s.legendText}>Ожидает</Text>
-          </View>
-          <View style={s.legendItem}>
-            <View style={[s.dot, { backgroundColor: DOT_FREE }]} />
-            <Text style={s.legendText}>Свободно</Text>
-          </View>
-        </View>
-      </View>
-    );
-  };
-
-  // ── Счётчики по выбранному дню ──────────────────────────────────────
-  // Дату не печатаем: выбранный день и так подсвечен в сетке выше.
-  const renderDaySummary = () => {
-    const chips: { icon: GlyphName; color: string; text: string }[] = [];
-    if (selectedMeta.free > 0)    chips.push({ icon: "target", color: DOT_FREE,    text: `${selectedMeta.free} свободно` });
-    if (selectedMeta.pending > 0) chips.push({ icon: "clock",  color: DOT_PENDING, text: `${selectedMeta.pending} ожидает` });
-    if (selectedMeta.lesson > 0)  chips.push({ icon: "check",  color: DOT_LESSON,  text: `${selectedMeta.lesson} занятие` });
-
-    // Нечего показать — не рисуем пустую рамку.
-    if (chips.length === 0 && selectedMeta.past === 0) return null;
-
-    return (
-      <View style={s.dayCard}>
-        {chips.map((c) => (
-          <Pill key={c.text} text={c.text} icon={c.icon} tone="soft" color={c.color} />
-        ))}
-        {selectedMeta.past > 0 && (
-          <Text style={{ fontSize: 11, color: colors.mutedForeground, marginLeft: "auto", fontVariant: ["tabular-nums"] }}>
-            завершено: {selectedMeta.past}
-          </Text>
-        )}
-      </View>
-    );
-  };
-
-  // Подсказка «где слоты есть» — чтобы пустой день не был пустым экраном.
-  const renderJumpHints = () => {
-    if (nextBusyDates.length === 0) return null;
-    return (
-      <View style={{ marginBottom: 16 }}>
-        <SectionLabel>Ближайшие дни со слотами</SectionLabel>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {nextBusyDates.map((date) => {
-            const m = dayMeta[date] ?? EMPTY_META;
+          {weekDates.map((date, i) => {
+            const meta = dayMeta[date] ?? EMPTY_META;
+            const active = date === selectedDate;
+            const isToday = date === today;
+            const isPastDay = date < today;
+            const d = new Date(date + "T00:00:00");
             return (
-              <TouchableOpacity
+              <Pressable
                 key={date}
-                style={s.jumpChip}
-                activeOpacity={0.8}
-                onPress={() => {
-                  const d = new Date(date + "T00:00:00");
-                  setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
-                  setSelectedDate(date);
-                }}
+                onPress={() => setSelectedDate(date)}
+                style={[
+                  s.dayCell,
+                  isToday && !active && { borderWidth: 1.5, borderColor: colors.primary + "70" },
+                  isPastDay && !active && { opacity: 0.42 },
+                  active && {
+                    shadowColor: colors.primary, shadowOffset: { width: 0, height: 5 },
+                    shadowOpacity: 0.4, shadowRadius: 12, elevation: 6,
+                  },
+                ]}
               >
-                <Glyph name="chevron" size={13} color={colors.primary} />
-                <Text style={s.jumpChipText}>
-                  {formatDateWithDay(date)} · {m.free + m.pending + m.lesson}
+                {active && (
+                  <LinearGradient
+                    colors={gradients.action as unknown as string[]}
+                    start={{ x: 0.1, y: 0 }}
+                    end={{ x: 0.9, y: 1 }}
+                    style={StyleSheet.absoluteFill}
+                  />
+                )}
+                <Text style={[s.dayW, active && { color: "rgba(255,255,255,0.75)" }]}>{WEEK_HEAD[i]}</Text>
+                <Text style={[
+                  s.dayN,
+                  active && { color: "#fff", fontWeight: "900" },
+                  !active && isToday && { color: accents.violetDeep },
+                ]}>
+                  {d.getDate()}
                 </Text>
-              </TouchableOpacity>
+                <View style={s.dotRow}>
+                  {meta.lesson > 0 && <View style={[s.dot, { backgroundColor: active ? "#fff" : DOT_LESSON }]} />}
+                  {meta.pending > 0 && <View style={[s.dot, { backgroundColor: active ? "#ffffffcc" : DOT_PENDING }]} />}
+                  {meta.free > 0 && <View style={[s.dot, { backgroundColor: active ? "#ffffff99" : DOT_FREE }]} />}
+                </View>
+              </Pressable>
             );
           })}
         </View>
@@ -1144,102 +1117,244 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Reusable slot card (teacher) ────────────────────────────────────
-  const renderTeacherSlotCard = (slot: TeacherSlot, dimmed = false) => {
-    const pending = slot.bookings.filter((b) => b.status === "pending");
-    const confirmed = slot.bookings.find((b) => b.status === "confirmed");
-    const isBusy = !!confirmed;
-    // Цвет статуса: занятие — фиолетовый success, ожидание — розовый,
-    // свободный слот — индиго. Карточка целиком окрашивается в этот цвет
-    // (рамка, лёгкая заливка, тень) — см. statusSkin.
-    const accent = isBusy ? colors.success : pending.length > 0 ? colors.warning : colors.primary;
-    const dotColor = dimmed ? colors.mutedForeground : accent;
+  // ── Сводка дня ──────────────────────────────────────────────────────
+  const renderDaySummary = () => {
+    const chips: { icon: GlyphName; color: string; text: string }[] = [];
+    if (selectedMeta.lesson > 0)  chips.push({ icon: "check",  color: DOT_LESSON,  text: `${selectedMeta.lesson} занятие` });
+    if (selectedMeta.pending > 0) chips.push({ icon: "clock",  color: DOT_PENDING, text: `${selectedMeta.pending} ожидает` });
+    if (selectedMeta.free > 0)    chips.push({ icon: "target", color: DOT_FREE,    text: `${selectedMeta.free} свободно` });
+
+    if (chips.length === 0 && selectedMeta.past === 0) return null;
+
     return (
-      <View
-        key={slot.id}
-        style={[s.slotCard, statusSkin(accent, dimmed), dimmed && { opacity: 0.55 }]}
-      >
-        <View style={s.slotTop}>
-          <View style={[s.slotDot, { backgroundColor: dotColor }]} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.slotTime}>{slot.startTime} – {slot.endTime}</Text>
-            <Text style={s.slotSub}>
-              {dimmed ? "Завершён" : isBusy ? "Занято" : "Свободно"}
-            </Text>
-          </View>
-          {!dimmed && pending.length > 0 && (
-            <View style={s.badge}><Text style={s.badgeText}>{pending.length}</Text></View>
-          )}
-          <Pressable
-            onPress={() => handleDeleteSlot(slot.id)}
-            hitSlop={8}
-            style={{ padding: 4 }}
-            accessibilityLabel="Удалить слот"
-          >
-            <Glyph name="trash" size={17} color={colors.mutedForeground} />
-          </Pressable>
-        </View>
-
-        {confirmed && (
-          <View style={s.bookingRow}>
-            <Glyph name="check" size={16} color={colors.success} />
-            <View style={{ flex: 1 }}>
-              <Text style={s.bookingName}>{confirmed.studentName ?? "Ученик"}</Text>
-              {confirmed.note ? <Text style={s.bookingNote}>«{confirmed.note}»</Text> : null}
-            </View>
-            <Text style={[s.statusLabel, { color: colors.success }]}>Подтверждено</Text>
-          </View>
-        )}
-
-        {!dimmed && pending.map((b) => (
-          <View key={b.id} style={s.bookingRow}>
-            <Glyph name="user" size={16} color={colors.mutedForeground} />
-            <View style={{ flex: 1 }}>
-              <Text style={s.bookingName}>{b.studentName ?? "Ученик"}</Text>
-              {b.note ? <Text style={s.bookingNote}>«{b.note}»</Text> : null}
-            </View>
-            <View style={s.btnRow}>
-              {/* Раньше внутри стояли символы ✓ и ✗ — они рисуются шрифтом ОС
-                  и на Android выглядят иначе, чем на iOS. Теперь глифы. */}
-              <TouchableOpacity
-                style={s.btnConfirm}
-                activeOpacity={0.85}
-                onPress={() => handleRespond(b.id, "confirmed")}
-                accessibilityLabel="Подтвердить запись"
-              >
-                <Glyph name="check" size={15} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={s.btnReject}
-                activeOpacity={0.85}
-                onPress={() => handleRespond(b.id, "rejected")}
-                accessibilityLabel="Отклонить запись"
-              >
-                <Glyph name="close" size={15} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          </View>
+      <View style={s.summary}>
+        {chips.map((c) => (
+          <Pill key={c.text} text={c.text} icon={c.icon} tone="soft" color={c.color} />
         ))}
-
-        {!dimmed && !isBusy && pending.length === 0 && (
-          <TouchableOpacity
-            activeOpacity={0.8}
-            style={{
-              flexDirection: "row", alignItems: "center", gap: 7,
-              paddingHorizontal: 14, paddingVertical: 11,
-              borderTopWidth: 1, borderTopColor: colors.border,
-            }}
-            onPress={() => handleOpenAssign(slot)}
-          >
-            <Glyph name="userPlus" size={15} color={colors.primary} />
-            <Text style={{ fontSize: 13, color: colors.primary, fontWeight: "800" }}>Назначить ученика</Text>
-          </TouchableOpacity>
+        {selectedMeta.past > 0 && (
+          <Text style={s.summaryDone}>завершено: {selectedMeta.past}</Text>
         )}
       </View>
     );
   };
 
-  // ── Teacher: schedule tab ───────────────────────────────────────────
+  /** Отсечка текущего момента внутри дня. */
+  const renderNowLine = () => {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    return (
+      <View style={s.nowLine}>
+        <View style={s.nowDot} />
+        <Text style={s.nowText}>{hh}:{mm}</Text>
+        <View style={s.nowRule} />
+      </View>
+    );
+  };
+
+  // Подсказка «где слоты есть» — чтобы пустой день не был тупиком.
+  const renderJumpHints = () => {
+    if (nextBusyDates.length === 0) return null;
+    return (
+      <View style={{ alignItems: "center", marginTop: -6, marginBottom: 14 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7, justifyContent: "center" }}>
+          {nextBusyDates.map((date) => {
+            const m = dayMeta[date] ?? EMPTY_META;
+            return (
+              <Pressable
+                key={date}
+                style={({ pressed }) => [s.jumpChip, pressed && { opacity: 0.8 }]}
+                onPress={() => goToDate(date)}
+              >
+                <Glyph name="chevron" size={12} color={accents.violetDeep} />
+                <Text style={s.jumpChipText}>
+                  {formatDateWithDay(date)} · {m.free + m.pending + m.lesson}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
+
+  /** Обёртка строки расписания: колонка времени слева, карточка справа. */
+  const renderSlotRow = (startTime: string, endTime: string, card: React.ReactNode, key: React.Key) => (
+    <View key={key} style={s.slotRow}>
+      <View style={s.slotTimeCol}>
+        <Text style={s.slotFrom}>{startTime}</Text>
+        <Text style={s.slotTo}>{endTime}</Text>
+      </View>
+      {card}
+    </View>
+  );
+
+  // ── Слот учителя ────────────────────────────────────────────────────
+  const renderTeacherSlotCard = (slot: TeacherSlot, dimmed = false) => {
+    const pending = slot.bookings.filter((b) => b.status === "pending");
+    const confirmed = slot.bookings.find((b) => b.status === "confirmed");
+    const isBusy = !!confirmed;
+    const accent = isBusy ? colors.success : pending.length > 0 ? colors.warning : colors.primary;
+    const until = untilLabel(slot.date, slot.startTime, slot.endTime);
+
+    const card = (
+      <View style={[
+        s.card,
+        statusSkin(accent, dimmed),
+        dimmed && { opacity: 0.5 },
+        // Свободный слот — пунктир без заливки: пустое место должно выглядеть
+        // пустым, а не такой же плотной карточкой, как занятое.
+        !dimmed && !isBusy && pending.length === 0 && {
+          borderStyle: "dashed", backgroundColor: "transparent",
+          shadowOpacity: 0, elevation: 0,
+        },
+      ]}>
+        <View style={s.cardRow}>
+          {confirmed
+            ? renderLetterAvatar(confirmed.studentName, null, 34)
+            : pending.length > 0
+              ? renderLetterAvatar(pending[0].studentName, colors.warning, 34)
+              : null}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[s.cardWho, !isBusy && pending.length === 0 && { color: colors.mutedForeground }]} numberOfLines={1}>
+              {confirmed?.studentName ?? (pending.length > 0 ? pending[0].studentName ?? "Ученик" : "Никто не записан")}
+            </Text>
+            <Text style={s.cardMeta}>
+              {dimmed ? "урок прошёл"
+                : until ? until
+                : isBusy ? "занятие подтверждено"
+                : pending.length > 0 ? `${pending.length} заявк${pending.length === 1 ? "а" : "и"}`
+                : "окно открыто для учеников"}
+            </Text>
+          </View>
+          <Pill
+            text={dimmed ? "Завершён" : isBusy ? "Занятие" : pending.length > 0 ? "Заявка" : "Свободно"}
+            tone="soft"
+            color={dimmed ? colors.mutedForeground : accent}
+          />
+          <Pressable onPress={() => handleDeleteSlot(slot.id)} hitSlop={8} accessibilityLabel="Удалить слот">
+            <Glyph name="trash" size={16} color={colors.mutedForeground} />
+          </Pressable>
+        </View>
+
+        {!!confirmed?.note && <Text style={s.cardNote}>«{confirmed.note}»</Text>}
+
+        {/* Заявки решаются прямо здесь: раньше ради двух кнопок приходилось
+            уходить на вкладку «Запросы» и терять контекст дня. */}
+        {!dimmed && pending.map((b) => (
+          <View key={b.id}>
+            {!!b.note && <Text style={s.cardNote}>«{b.note}»</Text>}
+            <View style={s.acts}>
+              <Pressable
+                style={({ pressed }) => [s.act, { backgroundColor: colors.primary }, pressed && { opacity: 0.85 }]}
+                onPress={() => handleRespond(b.id, "confirmed")}
+              >
+                <Text style={[s.actText, { color: "#fff" }]}>Подтвердить</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [s.act, { backgroundColor: colors.destructive + "18" }, pressed && { opacity: 0.85 }]}
+                onPress={() => handleRespond(b.id, "rejected")}
+              >
+                <Text style={[s.actText, { color: colors.destructive }]}>Отклонить</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+
+        {!dimmed && !isBusy && pending.length === 0 && (
+          <Pressable
+            style={({ pressed }) => [
+              s.act,
+              { backgroundColor: colors.primary + "14", marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={() => handleOpenAssign(slot)}
+          >
+            <Text style={[s.actText, { color: accents.violetDeep }]}>Назначить ученика</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+
+    return renderSlotRow(slot.startTime, slot.endTime, card, slot.id);
+  };
+
+  // ── Слот ученика ────────────────────────────────────────────────────
+  const renderStudentSlotCard = (slot: StudentSlot, dimmed = false) => {
+    const meta = STATUS_CFG[slot.status];
+    const until = untilLabel(slot.date, slot.startTime, slot.endTime);
+    const isFree = slot.status === "available";
+
+    const card = (
+      <View style={[
+        s.card,
+        statusSkin(meta.color, dimmed),
+        dimmed && { opacity: 0.5 },
+        !dimmed && isFree && {
+          borderStyle: "dashed", backgroundColor: "transparent",
+          shadowOpacity: 0, elevation: 0,
+        },
+      ]}>
+        <View style={s.cardRow}>
+          {!isFree && renderLetterAvatar(slot.teacherName, null, 34)}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[s.cardWho, isFree && { color: colors.mutedForeground }]} numberOfLines={1}>
+              {slot.teacherName ?? "Учитель"}
+            </Text>
+            <Text style={s.cardMeta}>
+              {dimmed ? "урок прошёл"
+                : until ? until
+                : isFree ? "окно для записи"
+                : slot.status === "pending" ? "ждём ответа учителя"
+                : "вы записаны"}
+            </Text>
+          </View>
+          <Pill text={meta.label} tone="soft" color={dimmed ? colors.mutedForeground : meta.color} />
+        </View>
+
+        {!dimmed && isFree && (
+          <View style={{ marginTop: 10 }}>
+            <ChunkyButton label="Записаться" icon="check" onPress={() => setBookSlot(slot)} />
+          </View>
+        )}
+
+        {!dimmed && slot.status === "pending" && slot.myBookingId && (
+          <Pressable
+            style={({ pressed }) => [
+              s.act, { backgroundColor: colors.muted, borderWidth: 1.5, borderColor: colors.border, marginTop: 10 },
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={() => handleCancelBooking(slot.myBookingId!)}
+          >
+            <Text style={[s.actText, { color: colors.mutedForeground }]}>Отменить запрос</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+
+    return renderSlotRow(slot.startTime, slot.endTime, card, slot.id);
+  };
+
+  /**
+   * День расписания: прошедшие слоты, линия «сейчас», предстоящие.
+   * Линия рисуется только сегодня и только если день реально разделён.
+   */
+  const renderDaySchedule = (
+    past: (TeacherSlot | StudentSlot)[],
+    active: (TeacherSlot | StudentSlot)[],
+    renderCard: (slot: any, dimmed: boolean) => React.ReactNode,
+  ) => {
+    const isToday = selectedDate === todayStr();
+    return (
+      <>
+        {past.map((slot) => renderCard(slot, true))}
+        {isToday && past.length > 0 && active.length > 0 && renderNowLine()}
+        {active.map((slot) => renderCard(slot, false))}
+      </>
+    );
+  };
+
+  // ── Учитель: расписание ─────────────────────────────────────────────
   const renderTeacherSchedule = () => {
     const daySlots = slots as TeacherSlot[];
     const active = daySlots.filter((sl) => !isPastSlot(sl.date, sl.endTime));
@@ -1252,29 +1367,29 @@ export default function CalendarScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
         {renderNextLesson()}
-        {renderMonthCalendar()}
+        {renderWeekStrip()}
         {renderDaySummary()}
 
-        {active.length === 0 && past.length === 0 && (
+        {daySlots.length === 0 && (
           <>
-            {renderEmpty("calendar", `Нет слотов на ${formatDate(selectedDate)}\nДобавьте время для занятий`)}
+            {renderEmpty("calendar", `На ${formatDate(selectedDate)} слотов нет`, "Добавьте время, и ученики смогут записаться")}
             {renderJumpHints()}
           </>
         )}
-        {active.length === 0 && past.length > 0 &&
-          renderEmpty("check", "Все занятия сегодня завершены", "success")}
+        {daySlots.length > 0 && active.length === 0 && past.length > 0 &&
+          renderEmpty("check", "Все занятия завершены", "На этот день больше ничего не запланировано")}
 
-        {active.map((slot) => renderTeacherSlotCard(slot, false))}
+        {renderDaySchedule(past, active, (slot, dimmed) => renderTeacherSlotCard(slot as TeacherSlot, dimmed))}
 
         <TouchableOpacity style={s.addBtn} onPress={() => setShowAdd(true)} activeOpacity={0.8}>
-          <Glyph name="plus" size={18} color={colors.primary} />
+          <Glyph name="plus" size={17} color={colors.primary} />
           <Text style={s.addBtnText}>Добавить слот</Text>
         </TouchableOpacity>
       </ScrollView>
     );
   };
 
-  // ── Teacher: requests tab ───────────────────────────────────────────
+  // ── Учитель: запросы ────────────────────────────────────────────────
   const renderTeacherRequests = () => {
     const totalCount = bookings.length + customRequests.length;
     return (
@@ -1283,15 +1398,12 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
-        {totalCount === 0 && renderEmpty("tray", "Нет новых запросов")}
+        {totalCount === 0 && renderEmpty("tray", "Новых запросов нет", "Заявки учеников появятся здесь")}
 
-        {/* Regular slot bookings */}
         {bookings.map((b) => (
           <View key={`sb-${b.id}`} style={[s.reqCard, statusSkin(colors.primary)]}>
             <View style={s.reqTop}>
-              <View style={[s.reqAvatar, { backgroundColor: colors.primary + "20" }]}>
-                <Glyph name="user" size={18} color={colors.primary} />
-              </View>
+              {renderLetterAvatar(b.studentName, null, 40)}
               <View style={{ flex: 1 }}>
                 <Text style={s.reqName}>{b.studentName ?? "Ученик"}</Text>
                 <Text style={s.reqTime}>{formatDateWithDay(b.date)}, {b.startTime} – {b.endTime}</Text>
@@ -1303,13 +1415,12 @@ export default function CalendarScreen() {
                 <Text style={s.btnText}>Подтвердить</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[s.btnReject, { flex: 1 }]} activeOpacity={0.85} onPress={() => handleRespond(b.id, "rejected")}>
-                <Text style={s.btnText}>Отклонить</Text>
+                <Text style={s.btnTextDanger}>Отклонить</Text>
               </TouchableOpacity>
             </View>
           </View>
         ))}
 
-        {/* Custom time requests from students */}
         {customRequests.length > 0 && bookings.length > 0 && (
           <Text style={s.historyLabel}>Запросы своего времени</Text>
         )}
@@ -1331,7 +1442,7 @@ export default function CalendarScreen() {
                 <Text style={s.btnText}>Принять</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[s.btnReject, { flex: 1 }]} activeOpacity={0.85} onPress={() => handleRespondCustom(cr.id, "rejected")}>
-                <Text style={s.btnText}>Отклонить</Text>
+                <Text style={s.btnTextDanger}>Отклонить</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1340,7 +1451,7 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Student: schedule tab ───────────────────────────────────────────
+  // ── Ученик: расписание ──────────────────────────────────────────────
   const renderStudentSchedule = () => {
     const daySlots = slots as StudentSlot[];
     const active = daySlots.filter((sl) => !isPastSlot(sl.date, sl.endTime));
@@ -1352,64 +1463,37 @@ export default function CalendarScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
         {renderNextLesson()}
-        {renderMonthCalendar()}
+        {renderWeekStrip()}
         {renderDaySummary()}
 
-        {active.length === 0 && past.length === 0 && (
+        {daySlots.length === 0 && (
           <>
-            {renderEmpty("calendar", `Нет доступных слотов на ${formatDate(selectedDate)}`)}
+            {renderEmpty(
+              "calendar",
+              `На ${formatDate(selectedDate)} окон нет`,
+              "Учитель ещё не открыл время на этот день. Можно предложить своё.",
+            )}
             {renderJumpHints()}
           </>
         )}
-        {active.length === 0 && past.length > 0 &&
-          renderEmpty("check", "Все занятия сегодня завершены", "success")}
+        {daySlots.length > 0 && active.length === 0 && past.length > 0 &&
+          renderEmpty("check", "Все занятия завершены", "На этот день больше ничего не запланировано")}
 
-        {active.map((slot) => {
-          const meta = STATUS_CFG[slot.status];
-          return (
-            <View key={slot.id} style={[s.slotCard, statusSkin(meta.color)]}>
-              <View style={s.slotTop}>
-                <View style={[s.slotDot, { backgroundColor: meta.color }]} />
-                <View style={{ flex: 1 }}>
-                  <Text style={s.slotTime}>{slot.startTime} – {slot.endTime}</Text>
-                  {slot.teacherName && <Text style={s.slotSub}>{slot.teacherName}</Text>}
-                </View>
-                <Pill text={meta.label} icon={meta.icon} tone="soft" color={meta.color} />
-              </View>
+        {renderDaySchedule(past, active, (slot, dimmed) => renderStudentSlotCard(slot as StudentSlot, dimmed))}
 
-              {slot.status === "available" && (
-                <View style={{ paddingHorizontal: 12, paddingBottom: 12 }}>
-                  <ChunkyButton label="Записаться" icon="check" onPress={() => setBookSlot(slot)} />
-                </View>
-              )}
-
-              {slot.status === "pending" && slot.myBookingId && (
-                <TouchableOpacity
-                  style={[s.btnCancel, { margin: 12, marginTop: 0, alignItems: "center" }]}
-                  activeOpacity={0.85}
-                  onPress={() => handleCancelBooking(slot.myBookingId!)}
-                >
-                  <Text style={s.btnTextGray}>Отменить запрос</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          );
-        })}
-
-        {/* Button to request custom time */}
         <TouchableOpacity
           style={[s.addBtn, { borderColor: colors.success }]}
           activeOpacity={0.8}
           onPress={handleOpenCustomReq}
         >
-          <Glyph name="clock" size={18} color={colors.success} />
+          <Glyph name="clock" size={17} color={colors.success} />
           <Text style={[s.addBtnText, { color: colors.success }]}>Предложить своё время</Text>
         </TouchableOpacity>
       </ScrollView>
     );
   };
 
-  // ── Student: my bookings tab ────────────────────────────────────────
+  // ── Ученик: мои записи ──────────────────────────────────────────────
   const renderStudentBookings = () => {
     const FILTERS: { key: "all"|"pending"|"confirmed"|"rejected"; label: string }[] = [
       { key: "all",      label: "Все"         },
@@ -1434,7 +1518,6 @@ export default function CalendarScreen() {
     const renderBookingCard = (b: BookingRow, isPast: boolean) => {
       const cfg = BOOKING_CFG[b.status];
       const isRejected = b.status === "rejected";
-      // Rejected bookings always shown prominently, never treated as generic "Завершено"
       const cardColor = isRejected ? colors.destructive : isPast ? colors.border : (cfg?.color ?? colors.border);
       const iconColor = isRejected ? colors.destructive : isPast ? colors.mutedForeground : (cfg?.color ?? colors.primary);
       const statusLabel = isRejected ? "Отклонено" : isPast ? "Завершено" : (cfg?.label ?? b.status);
@@ -1474,7 +1557,6 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
-        {/* Filter chips */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
           <View style={{ flexDirection: "row", gap: 8 }}>
             {FILTERS.map((f) => {
@@ -1495,9 +1577,8 @@ export default function CalendarScreen() {
 
         {upcoming.length === 0 && past.length === 0 && renderEmpty(
           "cards",
-          bookingFilter === "all"
-            ? "Нет записей\nПерейдите в расписание и запишитесь к учителю"
-            : "Нет записей с таким статусом",
+          bookingFilter === "all" ? "Записей пока нет" : "Нет записей с таким статусом",
+          bookingFilter === "all" ? "Откройте расписание и запишитесь к учителю" : undefined,
         )}
 
         {upcoming.map((b) => renderBookingCard(b, false))}
@@ -1509,7 +1590,6 @@ export default function CalendarScreen() {
           </>
         )}
 
-        {/* Custom time requests sent by student */}
         {bookingFilter === "all" && customRequests.length > 0 && (
           <>
             <Text style={s.historyLabel}>Предложения своего времени</Text>
@@ -1555,13 +1635,12 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Teacher: history tab ────────────────────────────────────────────
+  // ── Учитель: история ────────────────────────────────────────────────
   const renderTeacherHistory = () => {
     if (historyLoading) {
       return <ActivityIndicator style={{ marginTop: 48 }} color={colors.primary} size="large" />;
     }
 
-    // Group by month
     const grouped: Record<string, LessonHistoryItem[]> = {};
     for (const item of lessonHistory) {
       const d = new Date(item.date + "T00:00:00");
@@ -1584,39 +1663,39 @@ export default function CalendarScreen() {
       >
         {lessonHistory.length === 0 && renderEmpty(
           "book",
-          "История уроков пуста\nПодтверждённые занятия появятся здесь",
+          "История пуста",
+          "Подтверждённые занятия появятся здесь",
         )}
 
         {monthKeys.map((mk) => (
           <View key={mk}>
             <Text style={[s.historyLabel, { marginTop: 8 }]}>{monthLabel(mk)}</Text>
             {grouped[mk].map((item) => {
-              const isPast = item.date < todayStr() || (item.date === todayStr() && item.endTime <= `${new Date().getHours().toString().padStart(2,"0")}:${new Date().getMinutes().toString().padStart(2,"0")}`);
-              // Проведённый урок — фиолетовый success, запланированный — индиго.
+              const isPast = isPastSlot(item.date, item.endTime);
               const accent = isPast ? colors.success : colors.primary;
               const statusLabel = isPast ? "Проведён" : "Запланирован";
-              return (
-                <View key={item.id} style={[s.slotCard, statusSkin(accent)]}>
-                  <View style={s.slotTop}>
-                    <View style={[s.slotDot, { backgroundColor: accent }]} />
+              const card = (
+                <View style={[s.card, statusSkin(accent)]}>
+                  <View style={s.cardRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={s.slotTime}>{item.startTime} – {item.endTime}</Text>
-                      <Text style={s.slotSub}>{formatDateWithDay(item.date)}</Text>
+                      <Text style={s.cardWho}>{formatDateWithDay(item.date)}</Text>
+                      <Text style={s.cardMeta}>
+                        {item.confirmedBookings.length} {item.confirmedBookings.length === 1 ? "ученик" : "ученика"}
+                      </Text>
                     </View>
-                    <Text style={[s.statusLabel, { color: accent }]}>{statusLabel}</Text>
+                    <Pill text={statusLabel} tone="soft" color={accent} />
                   </View>
                   {item.confirmedBookings.map((b) => {
                     const displayName = b.studentName && b.studentSurname
                       ? `${b.studentName} ${b.studentSurname}`
                       : b.studentName ?? b.studentUsername ?? "Ученик";
                     return (
-                      <View key={b.bookingId} style={[s.bookingRow, { marginTop: 4 }]}>
-                        {/* Аватар из буквы имени вместо эмодзи-заглушки. */}
+                      <View key={b.bookingId} style={[s.cardRow, { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border }]}>
                         {renderLetterAvatar(displayName, b.studentColor, 32)}
-                        <View style={{ flex: 1, marginLeft: 8 }}>
-                          <Text style={s.bookingName}>{displayName}</Text>
-                          {b.studentUsername ? <Text style={[s.bookingNote, { color: colors.mutedForeground }]}>@{b.studentUsername}</Text> : null}
-                          {b.note ? <Text style={s.bookingNote}>«{b.note}»</Text> : null}
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.cardWho}>{displayName}</Text>
+                          {b.studentUsername ? <Text style={s.cardMeta}>@{b.studentUsername}</Text> : null}
+                          {b.note ? <Text style={[s.cardMeta, { fontStyle: "italic" }]}>«{b.note}»</Text> : null}
                         </View>
                         <Glyph name={isPast ? "check" : "target"} size={16} color={accent} />
                       </View>
@@ -1624,10 +1703,116 @@ export default function CalendarScreen() {
                   })}
                 </View>
               );
+              return renderSlotRow(item.startTime, item.endTime, card, item.id);
             })}
           </View>
         ))}
       </ScrollView>
+    );
+  };
+
+  // ── Модалка месяца ──────────────────────────────────────────────────
+  // Открывается кнопкой из полосы недели: нужна, чтобы прыгнуть на далёкую
+  // дату, а не чтобы висеть на экране всё время.
+  const renderMonthModal = () => {
+    const year = monthAnchor.getFullYear();
+    const month = monthAnchor.getMonth();
+    const weeks = buildMonthGrid(year, month);
+    const today = todayStr();
+    const now = new Date();
+    // Назад не листаем дальше текущего месяца: в прошлом слот всё равно
+    // нельзя ни создать, ни занять (см. isInPast на сервере).
+    const canGoBack = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth());
+    const shiftMonth = (delta: number) => setMonthAnchor(new Date(year, month + delta, 1));
+
+    return (
+      <Modal visible={showMonth} transparent animationType="slide" onRequestClose={() => setShowMonth(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowMonth(false)}>
+          <TouchableOpacity style={s.sheet} activeOpacity={1}>
+            <View style={s.handle} />
+
+            <View style={s.monthHead}>
+              <Pressable
+                style={[s.monthNav, !canGoBack && { opacity: 0.35 }]}
+                onPress={() => canGoBack && shiftMonth(-1)}
+                disabled={!canGoBack}
+                accessibilityLabel="Предыдущий месяц"
+              >
+                <View style={{ transform: [{ rotate: "180deg" }] }}>
+                  <Glyph name="chevron" size={17} color={colors.foreground} />
+                </View>
+              </Pressable>
+              <Text style={s.monthTitle}>{MONTH_FULL[month]} {year}</Text>
+              <Pressable style={s.monthNav} onPress={() => shiftMonth(1)} accessibilityLabel="Следующий месяц">
+                <Glyph name="chevron" size={17} color={colors.foreground} />
+              </Pressable>
+            </View>
+
+            <View style={s.mWeekRow}>
+              {WEEK_HEAD.map((w) => (
+                <View key={w} style={s.mHeadCell}><Text style={s.mHeadText}>{w}</Text></View>
+              ))}
+            </View>
+
+            {weeks.map((week, wi) => (
+              <View key={wi} style={s.mWeekRow}>
+                {week.map((date, di) => {
+                  if (!date) return <View key={`e-${di}`} style={s.mCell} />;
+                  const meta = dayMeta[date] ?? EMPTY_META;
+                  const hasAnything = meta.free + meta.pending + meta.lesson > 0;
+                  const active = date === selectedDate;
+                  const isToday = date === today;
+                  const isPastDay = date < today;
+                  return (
+                    <Pressable
+                      key={date}
+                      onPress={() => goToDate(date)}
+                      style={[
+                        s.mCell,
+                        hasAnything && !active && s.mCellFilled,
+                        isToday && !active && { borderWidth: 1.5, borderColor: colors.primary },
+                        isPastDay && !active && { opacity: 0.4 },
+                      ]}
+                    >
+                      {active && (
+                        <LinearGradient
+                          colors={gradients.action as unknown as string[]}
+                          start={{ x: 0.1, y: 0 }}
+                          end={{ x: 0.9, y: 1 }}
+                          style={StyleSheet.absoluteFill}
+                        />
+                      )}
+                      <Text style={[s.mNum, active && s.mNumActive]}>
+                        {new Date(date + "T00:00:00").getDate()}
+                      </Text>
+                      <View style={[s.dotRow, { marginTop: 4, height: 5 }]}>
+                        {meta.lesson > 0 && <View style={[s.dot, { width: 4, height: 4, backgroundColor: active ? "#fff" : DOT_LESSON }]} />}
+                        {meta.pending > 0 && <View style={[s.dot, { width: 4, height: 4, backgroundColor: active ? "#ffffffcc" : DOT_PENDING }]} />}
+                        {meta.free > 0 && <View style={[s.dot, { width: 4, height: 4, backgroundColor: active ? "#ffffff99" : DOT_FREE }]} />}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ))}
+
+            <View style={s.legendRow}>
+              <View style={s.legendItem}>
+                <View style={[s.dot, { backgroundColor: DOT_LESSON }]} />
+                <Text style={s.legendText}>Занятие</Text>
+              </View>
+              <View style={s.legendItem}>
+                <View style={[s.dot, { backgroundColor: DOT_PENDING }]} />
+                <Text style={s.legendText}>Ожидает</Text>
+              </View>
+              <View style={s.legendItem}>
+                <View style={[s.dot, { backgroundColor: DOT_FREE }]} />
+                <Text style={s.legendText}>Свободно</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     );
   };
 
@@ -1642,9 +1827,7 @@ export default function CalendarScreen() {
           <View style={s.handle} />
           <Text style={s.sheetTitle}>Добавить слот — {formatDate(selectedDate)}</Text>
 
-          {/* Time pickers row */}
           <View style={{ flexDirection: "row", justifyContent: "space-around", marginBottom: 20 }}>
-            {/* Start time */}
             <View style={{ alignItems: "center" }}>
               <Text style={s.timeLabel}>Начало</Text>
               <View style={s.wheelRow}>
@@ -1662,10 +1845,8 @@ export default function CalendarScreen() {
               </View>
             </View>
 
-            {/* Divider */}
             <View style={{ width: 1, backgroundColor: colors.border, marginHorizontal: 4 }} />
 
-            {/* End time */}
             <View style={{ alignItems: "center" }}>
               <Text style={s.timeLabel}>Конец</Text>
               <View style={s.wheelRow}>
@@ -1718,7 +1899,6 @@ export default function CalendarScreen() {
           <View style={s.handle} />
           <Text style={s.sheetTitle}>Предложить своё время{"\n"}{formatDate(selectedDate)}</Text>
 
-          {/* Teacher selector */}
           {crTeachers.length > 1 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
               <View style={{ flexDirection: "row", gap: 8 }}>
@@ -1749,7 +1929,6 @@ export default function CalendarScreen() {
             </Text>
           )}
 
-          {/* Time pickers */}
           <View style={{ flexDirection: "row", justifyContent: "space-around", marginBottom: 16 }}>
             <View style={{ alignItems: "center" }}>
               <Text style={s.timeLabel}>Начало</Text>
@@ -1847,14 +2026,7 @@ export default function CalendarScreen() {
           </Text>
 
           {assignStudents.length === 0 ? (
-            <View style={{ alignItems: "center", paddingVertical: 24, gap: 12 }}>
-              <View style={s.emptyIcon}>
-                <Glyph name="users" size={30} color={colors.primary} />
-              </View>
-              <Text style={{ color: colors.mutedForeground, fontSize: 14, textAlign: "center" }}>
-                Нет подключённых учеников.{"\n"}Сначала добавьте ученика.
-              </Text>
-            </View>
+            renderEmpty("users", "Нет подключённых учеников", "Сначала добавьте ученика в разделе «Ученики»")
           ) : (
             <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
               {assignStudents.map((st) => {
@@ -1914,6 +2086,7 @@ export default function CalendarScreen() {
   );
 
   const pendingCount = isTeacherRole ? bookings.length + customRequests.length : 0;
+  const headDateObj = new Date(selectedDate + "T00:00:00");
 
   return (
     <View style={s.container}>
@@ -1921,6 +2094,7 @@ export default function CalendarScreen() {
       {renderCustomReqModal()}
       {renderBookModal()}
       {renderAssignModal()}
+      {renderMonthModal()}
       <ConfirmModal
         visible={deleteSlotId !== null}
         title="Удалить слот?"
@@ -1931,8 +2105,33 @@ export default function CalendarScreen() {
         onCancel={() => setDeleteSlotId(null)}
       />
 
+      {/* ── Шапка: дата вместо слова «Календарь» ── */}
       <View style={s.header}>
-        <Text style={s.headerTitle}>Календарь</Text>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={s.headDate}>
+            {headDateObj.getDate()} {MONTH_GEN[headDateObj.getMonth()]}
+          </Text>
+          <Text style={s.headCaption}>{dayCaption(selectedDate)}</Text>
+        </View>
+
+        {/* Главное действие роли — сразу в шапке, а не в конце прокрутки. */}
+        {activeTab === "schedule" && (
+          <View>
+            <View style={[s.headBtnEdge, { backgroundColor: accents.indigoDeep }]} />
+            <Pressable onPress={() => (isTeacherRole ? setShowAdd(true) : handleOpenCustomReq())}>
+              <LinearGradient
+                colors={gradients.action as unknown as string[]}
+                start={{ x: 0.1, y: 0 }}
+                end={{ x: 0.9, y: 1 }}
+                style={s.headBtn}
+              >
+                <Glyph name="plus" size={14} color="#fff" />
+                <Text style={s.headBtnText}>{isTeacherRole ? "Слот" : "Своё время"}</Text>
+              </LinearGradient>
+            </Pressable>
+            <View style={{ height: 4 }} />
+          </View>
+        )}
       </View>
 
       <View style={s.tabRow}>
@@ -1941,7 +2140,7 @@ export default function CalendarScreen() {
           activeOpacity={0.85}
           onPress={() => setActiveTab("schedule")}
         >
-          <Glyph name="calendar" size={14} color={activeTab === "schedule" ? colors.primary : colors.mutedForeground} />
+          <Glyph name="calendar" size={13} color={activeTab === "schedule" ? accents.violetDeep : colors.mutedForeground} />
           <Text style={[s.tabText, activeTab === "schedule" && s.tabTextActive]}>Расписание</Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -1949,7 +2148,7 @@ export default function CalendarScreen() {
           activeOpacity={0.85}
           onPress={() => { setActiveTab("requests"); loadBookings(); loadCustomRequests(); if (isTeacherRole) markSeen(); }}
         >
-          <Glyph name={isTeacherRole ? "tray" : "cards"} size={14} color={activeTab === "requests" ? colors.primary : colors.mutedForeground} />
+          <Glyph name={isTeacherRole ? "tray" : "cards"} size={13} color={activeTab === "requests" ? accents.violetDeep : colors.mutedForeground} />
           <Text style={[s.tabText, activeTab === "requests" && s.tabTextActive]}>
             {isTeacherRole ? "Запросы" : "Мои записи"}
           </Text>
@@ -1961,7 +2160,7 @@ export default function CalendarScreen() {
             activeOpacity={0.85}
             onPress={() => { setActiveTab("history"); loadHistory(); }}
           >
-            <Glyph name="book" size={14} color={activeTab === "history" ? colors.primary : colors.mutedForeground} />
+            <Glyph name="book" size={13} color={activeTab === "history" ? accents.violetDeep : colors.mutedForeground} />
             <Text style={[s.tabText, activeTab === "history" && s.tabTextActive]}>История</Text>
           </TouchableOpacity>
         )}
@@ -1978,3 +2177,13 @@ export default function CalendarScreen() {
     </View>
   );
 }
+
+/**
+ * Верхний отступ под системную панель в вебе.
+ *
+ * В браузере safe-area insets не покрывают адресную строку PWA, поэтому на
+ * вебе к отступу добавляется фиксированная величина — так же, как на всех
+ * остальных экранах приложения.
+ */
+const Platform_OS_WEB =
+  typeof navigator !== "undefined" && typeof window !== "undefined";
