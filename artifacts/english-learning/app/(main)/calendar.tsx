@@ -11,8 +11,7 @@
 // Что переделано в разборе:
 //  • Месячная сетка занимала пол-экрана при каждом заходе, а сами занятия
 //    начинались за сгибом. Теперь наверху полоса из семи дней, а месяц
-//    выезжает снизу по кнопке — он нужен, чтобы прыгнуть на другую дату,
-//    а не чтобы смотреть на него постоянно.
+//    выезжает снизу по кнопке.
 //  • Заголовок «Календарь» дублировал подпись вкладки внизу экрана. Вместо
 //    него — выбранная дата и день недели.
 //  • Слоты стояли одинаковыми плитками, время пряталось внутри карточки.
@@ -24,6 +23,9 @@
 //  • Верхний отступ берётся из constants/layout.ts. Раньше здесь было
 //    insets.top + 67: лишние 67 пикселей оставляли над заголовком пустую
 //    полосу примерно в восьмую часть экрана.
+//  • Время в окнах «Добавить слот» и «Предложить своё время» выбирается
+//    компонентом TimeRangePicker: начало плюс длительность вместо двух
+//    независимых барабанов. Подробности и причины — в самом компоненте.
 //
 // Цветная полоса слева у карточек (borderLeftWidth: 4) убрана ещё раньше:
 // полоса читается как след от вёрстки, а не как смысл. Статус несут заливка,
@@ -43,6 +45,7 @@ import ConfirmModal from "@/components/ConfirmModal";
 import { useCalendarBadge } from "@/contexts/CalendarBadgeContext";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
+import { TimeRangePicker, toMinutes, toTime } from "@/components/ui/TimeRangePicker";
 import { accents, gradients, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 
@@ -140,8 +143,7 @@ function formatDateWithDay(dateStr: string | null) {
 
 /**
  * Человеческая подпись дня: «сегодня», «завтра» или дата с днём недели.
- * Нужна карточке ближайшего занятия — «завтра в 17:00» читается быстрее,
- * чем «5 авг, Ср, 17:00».
+ * «завтра в 17:00» читается быстрее, чем «5 авг, Ср, 17:00».
  */
 function humanDay(dateStr: string): string {
   const today = todayStr();
@@ -189,9 +191,8 @@ function buildWeek(anchor: string): string[] {
 }
 
 /**
- * Сетка месяца: массив недель по 7 ячеек, null — «чужой» день (до 1-го или
- * после последнего числа). Смещение считается от понедельника:
- * getDay() отдаёт 0 для воскресенья, поэтому (getDay() + 6) % 7.
+ * Сетка месяца: массив недель по 7 ячеек, null — «чужой» день. Смещение
+ * считается от понедельника: getDay() отдаёт 0 для воскресенья.
  */
 function buildMonthGrid(year: number, month: number): (string | null)[][] {
   const first = new Date(year, month, 1);
@@ -235,116 +236,16 @@ function untilLabel(date: string, startTime: string, endTime: string): string | 
   return m === 0 ? `через ${h} ч` : `через ${h} ч ${m} мин`;
 }
 
-// Wheel picker data
-const HOURS   = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
-const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
-
-const WHEEL_ITEM_H = 52;
-const WHEEL_VISIBLE = 5;
-
-// ── WheelColumn ───────────────────────────────────────────────────────
-// Scrollable drum-roll column — iOS style
-type WheelColumnProps = {
-  items: string[]; value: string; onChange: (v: string) => void;
-  fg: string; muted: string; hlColor: string;
-};
-function WheelColumn({ items, value, onChange, fg, muted, hlColor }: WheelColumnProps) {
-  const ref        = useRef<ScrollView>(null);
-  const lastY      = useRef(0);
-  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [localVal, setLocalVal] = useState(value);
-
-  const scrollTo = (i: number, animated = true) =>
-    ref.current?.scrollTo({ y: i * WHEEL_ITEM_H, animated });
-
-  useEffect(() => {
-    const i = items.indexOf(value);
-    if (i >= 0) setTimeout(() => scrollTo(i, false), 50);
-  }, []);
-
-  // Re-sync the wheel when `value` is changed externally (e.g. auto-advance
-  // after adding a slot), not just from the user's own scroll gesture.
-  useEffect(() => {
-    if (value === localVal) return;
-    const i = items.indexOf(value);
-    if (i >= 0) {
-      setLocalVal(value);
-      scrollTo(i, false);
-    }
-  }, [value]);
-
-  const commit = (y: number) => {
-    const i = Math.max(0, Math.min(Math.round(y / WHEEL_ITEM_H), items.length - 1));
-    scrollTo(i, true);
-    setLocalVal(items[i]);
-    onChange(items[i]);
-  };
-
-  const handleScroll = (e: any) => {
-    const y = e.nativeEvent.contentOffset.y;
-    lastY.current = y;
-    // Live visual highlight
-    const i = Math.max(0, Math.min(Math.round(y / WHEEL_ITEM_H), items.length - 1));
-    if (items[i] !== localVal) setLocalVal(items[i]);
-    // Debounce-commit after 160ms without scroll
-    if (commitTimer.current) clearTimeout(commitTimer.current);
-    commitTimer.current = setTimeout(() => commit(lastY.current), 160);
-  };
-
-  const handleScrollEnd = (e: any) => {
-    if (commitTimer.current) clearTimeout(commitTimer.current);
-    commit(e.nativeEvent.contentOffset.y);
-  };
-
-  return (
-    <View style={{ width: 70, height: WHEEL_ITEM_H * WHEEL_VISIBLE, overflow: "hidden" }}>
-      {/* Selection highlight bar */}
-      <View
-        pointerEvents="none"
-        style={{
-          position: "absolute",
-          top: WHEEL_ITEM_H * 2, height: WHEEL_ITEM_H,
-          left: 0, right: 0, zIndex: 1,
-          backgroundColor: hlColor,
-          borderRadius: radii.sm - 2,
-        }}
-      />
-      <ScrollView
-        ref={ref}
-        showsVerticalScrollIndicator={false}
-        snapToInterval={WHEEL_ITEM_H}
-        decelerationRate="fast"
-        scrollEventThrottle={16}
-        contentContainerStyle={{ paddingVertical: WHEEL_ITEM_H * 2 }}
-        onScroll={handleScroll}
-        onMomentumScrollEnd={handleScrollEnd}
-        onScrollEndDrag={handleScrollEnd}
-      >
-        {items.map((item, i) => {
-          const sel = item === localVal;
-          return (
-            <TouchableOpacity
-              key={item}
-              style={{ height: WHEEL_ITEM_H, justifyContent: "center", alignItems: "center" }}
-              onPress={() => { setLocalVal(item); onChange(item); scrollTo(i); }}
-              activeOpacity={0.7}
-            >
-              {/* Табличные цифры: при прокрутке колонка не «дышит» по ширине. */}
-              <Text style={{
-                fontSize: sel ? 28 : 20,
-                fontWeight: sel ? "800" : "500",
-                color: sel ? fg : muted,
-                opacity: sel ? 1 : 0.55,
-                fontVariant: ["tabular-nums"],
-              }}>
-                {item}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
-    </View>
-  );
+/**
+ * Разумное начало для нового слота: следующий круглый получас от текущего
+ * времени, если день сегодняшний, иначе девять утра. Раньше окно всегда
+ * открывалось на 09:00, и вечером приходилось крутить колесо через полдня.
+ */
+function defaultStartFor(date: string): string {
+  if (date !== todayStr()) return "09:00";
+  const now = new Date();
+  const rounded = Math.ceil((now.getHours() * 60 + now.getMinutes() + 5) / 30) * 30;
+  return toTime(Math.min(rounded, 23 * 60 + 30));
 }
 
 // Статусы слота для ученика. Значки — из собственного набора: цвет управляется
@@ -366,7 +267,6 @@ const DOT_LESSON  = "#8b5cf6"; // занятие подтверждено
 const DOT_PENDING = "#ec4899"; // есть заявка в ожидании
 const DOT_FREE    = "#6366f1"; // есть свободный слот
 
-// Сколько дней в месяце занимает один день сетки — для сводки по дню.
 type DayMeta = { free: number; pending: number; lesson: number; past: number };
 const EMPTY_META: DayMeta = { free: 0, pending: 0, lesson: 0, past: 0 };
 
@@ -390,7 +290,6 @@ export default function CalendarScreen() {
   // Обзор месяца: все слоты (без параметра date) — нужен для точек занятости
   // в полосе недели, в сетке месяца и для карточки ближайшего занятия.
   const [monthSlots, setMonthSlots] = useState<(TeacherSlot | StudentSlot)[]>([]);
-  // Первое число месяца, открытого в модалке.
   const [monthAnchor, setMonthAnchor] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -398,40 +297,34 @@ export default function CalendarScreen() {
   // Сетка месяца открывается по кнопке: в обычном режиме хватает недели.
   const [showMonth, setShowMonth] = useState(false);
 
-  // Delete confirm
   const [deleteSlotId, setDeleteSlotId] = useState<number | null>(null);
   const scheduleScrollRef = useRef<import("react-native").ScrollView>(null);
 
-  // Bookings filter (student)
   const [bookingFilter, setBookingFilter] = useState<"all" | "pending" | "confirmed" | "rejected">("all");
 
-  // Add-slot modal (teacher)
+  // ── Окно «Добавить слот» (учитель) ──
+  // Время хранится строками HH:MM, а не четырьмя числами: так его напрямую
+  // отдаём и на сервер, и в TimeRangePicker.
   const [showAdd, setShowAdd] = useState(false);
-  const [addStartH, setAddStartH] = useState("09");
-  const [addStartM, setAddStartM] = useState("00");
-  const [addEndH, setAddEndH] = useState("10");
-  const [addEndM, setAddEndM] = useState("00");
+  const [addStart, setAddStart] = useState("09:00");
+  const [addEnd, setAddEnd] = useState("10:00");
   const [saving, setSaving] = useState(false);
 
-  // Book-slot modal (student)
   const [bookSlot, setBookSlot] = useState<StudentSlot | null>(null);
   const [bookNote, setBookNote] = useState("");
   const [booking, setBooking] = useState(false);
 
-  // Custom time request (student)
+  // ── Запрос своего времени (ученик) ──
   const [customRequests, setCustomRequests] = useState<CustomRequest[]>([]);
   const [showCustomReq, setShowCustomReq] = useState(false);
   const [crTeachers, setCrTeachers] = useState<TeacherBasic[]>([]);
   const [crTeacherId, setCrTeacherId] = useState<number | null>(null);
-  const [crStartH, setCrStartH] = useState("09");
-  const [crStartM, setCrStartM] = useState("00");
-  const [crEndH, setCrEndH] = useState("10");
-  const [crEndM, setCrEndM] = useState("00");
+  const [crStart, setCrStart] = useState("09:00");
+  const [crEnd, setCrEnd] = useState("10:00");
   const [crNote, setCrNote] = useState("");
   const [crSaving, setCrSaving] = useState(false);
   const [crError, setCrError] = useState<string | null>(null);
 
-  // Assign student modal (teacher)
   const [assignSlot, setAssignSlot] = useState<TeacherSlot | null>(null);
   const [assignStudents, setAssignStudents] = useState<{ id: number; name: string | null; surname: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null }[]>([]);
   const [assignStudentId, setAssignStudentId] = useState<number | null>(null);
@@ -444,8 +337,6 @@ export default function CalendarScreen() {
     setSlots(data);
   }, []);
 
-  // Тот же роут без date отдаёт все слоты (учителю — свои, ученику — от
-  // сегодня и дальше), поэтому обзор месяца не требует отдельного эндпоинта.
   const loadMonthSlots = useCallback(async () => {
     const data = await apiFetch("/api/calendar/slots").catch(() => []);
     setMonthSlots(Array.isArray(data) ? data : []);
@@ -476,10 +367,6 @@ export default function CalendarScreen() {
 
   useEffect(() => { loadSlots(selectedDate); }, [selectedDate]);
 
-  // Refresh every time this screen comes into focus (e.g. switching tabs,
-  // coming back from another screen, or right after a teacher adds a
-  // student) so newly available slots/connections show up immediately
-  // instead of waiting on the polling interval below.
   useFocusEffect(
     useCallback(() => {
       loadSlots(selectedDate);
@@ -489,8 +376,8 @@ export default function CalendarScreen() {
     }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]),
   );
 
-  // Auto-refresh every 10 s so past slots disappear and new ones/connections
-  // appear without needing a manual tab switch.
+  // Автообновление раз в 10 с: прошедшие слоты уходят, новые появляются без
+  // ручного переключения вкладок.
   useEffect(() => {
     const id = setInterval(() => {
       loadSlots(selectedDate);
@@ -501,7 +388,6 @@ export default function CalendarScreen() {
     return () => clearInterval(id);
   }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]);
 
-  // Also refresh when browser tab becomes visible (web)
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
@@ -551,12 +437,7 @@ export default function CalendarScreen() {
     return map;
   }, [monthSlots, isTeacherRole]);
 
-  /**
-   * Ближайшее подтверждённое занятие.
-   *
-   * Главный вопрос к календарю — «когда у меня следующий урок». Ищем среди уже
-   * загруженных слотов месяца, лишнего запроса не нужно.
-   */
+  /** Ближайшее подтверждённое занятие — среди уже загруженных слотов. */
   const nextLesson = useMemo(() => {
     const upcoming = monthSlots
       .filter((slot) => {
@@ -570,7 +451,6 @@ export default function CalendarScreen() {
     return upcoming[0] ?? null;
   }, [monthSlots, isTeacherRole]);
 
-  // Ближайшие дни, где что-то есть — подсказка вместо пустого экрана.
   const nextBusyDates = useMemo(() => {
     return Object.entries(dayMeta)
       .filter(([date, m]) => date > selectedDate && (m.free + m.pending + m.lesson) > 0)
@@ -591,24 +471,28 @@ export default function CalendarScreen() {
   }, []);
 
   // ── Actions ─────────────────────────────────────────────────────────
+  const openAddSlot = () => {
+    const start = defaultStartFor(selectedDate);
+    setAddStart(start);
+    setAddEnd(toTime(toMinutes(start) + 60));
+    setShowAdd(true);
+  };
+
   const handleAddSlot = async () => {
     if (saving) return;
     setSaving(true);
     try {
       await apiFetch("/api/calendar/slots", {
         method: "POST",
-        body: JSON.stringify({ date: selectedDate, startTime: `${addStartH}:${addStartM}`, endTime: `${addEndH}:${addEndM}` }),
+        body: JSON.stringify({ date: selectedDate, startTime: addStart, endTime: addEnd }),
       });
       setShowAdd(false);
-      // Advance the picker to start right after this slot's end time,
-      // so re-opening "Добавить слот" doesn't offer the same (now taken) time again.
-      setAddStartH(addEndH);
-      setAddStartM(addEndM);
-      const nextEndTotal = (Number(addEndH) * 60 + Number(addEndM) + 60) % (24 * 60);
-      setAddEndH(String(Math.floor(nextEndTotal / 60)).padStart(2, "0"));
-      setAddEndM(String(nextEndTotal % 60).padStart(2, "0"));
+      // Следующий слот предлагаем сразу после этого: обычно учитель ставит
+      // несколько подряд, и возвращать 09:00 каждый раз бессмысленно.
+      const nextStart = addEnd;
+      setAddStart(nextStart);
+      setAddEnd(toTime(toMinutes(nextStart) + 60));
       await Promise.all([loadSlots(selectedDate), loadMonthSlots()]);
-      // Defer scroll until after React re-renders with the new slot
       setTimeout(() => scheduleScrollRef.current?.scrollTo({ y: 0, animated: false }), 50);
     } catch (e: any) { Alert.alert("Ошибка", e.message); }
     finally { setSaving(false); }
@@ -664,21 +548,26 @@ export default function CalendarScreen() {
     const teachers = await apiFetch("/api/connections/student/teachers").catch(() => []);
     setCrTeachers(teachers);
     if (teachers.length > 0) setCrTeacherId(teachers[0].id);
-    setCrStartH("09"); setCrStartM("00"); setCrEndH("10"); setCrEndM("00"); setCrNote("");
+    const start = defaultStartFor(selectedDate);
+    setCrStart(start);
+    setCrEnd(toTime(toMinutes(start) + 60));
+    setCrNote("");
+    setCrError(null);
     setShowCustomReq(true);
   };
 
   const handleSendCustomReq = async () => {
     if (!crTeacherId || crSaving) return;
-    const startTime = `${crStartH}:${crStartM}`;
-    const endTime   = `${crEndH}:${crEndM}`;
-    if (endTime <= startTime) return;
     setCrSaving(true);
     setCrError(null);
     try {
       await apiFetch("/api/calendar/custom-requests", {
         method: "POST",
-        body: JSON.stringify({ teacherId: crTeacherId, date: selectedDate, startTime, endTime, note: crNote.trim() || undefined }),
+        body: JSON.stringify({
+          teacherId: crTeacherId, date: selectedDate,
+          startTime: crStart, endTime: crEnd,
+          note: crNote.trim() || undefined,
+        }),
       });
       setShowCustomReq(false);
       await loadCustomRequests();
@@ -718,8 +607,7 @@ export default function CalendarScreen() {
     container: { flex: 1, backgroundColor: colors.background },
 
     // ── Шапка ──
-    // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели, а
-    // место наверху дороже. Здесь выбранная дата и главное действие.
+    // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели.
     header: {
       flexDirection: "row", alignItems: "flex-start", gap: 12,
       paddingTop: screenTop(insets),
@@ -794,8 +682,8 @@ export default function CalendarScreen() {
     },
     monthBtnText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
     weekRow: { flexDirection: "row", gap: 4 },
-    // Высота ячейки фиксирована: иначе выбранный день с заливкой выглядел
-    // выше соседних, и полоса недели «прыгала» при переключении.
+    // Высота ячейки фиксирована: иначе выбранный день с заливкой выглядит
+    // выше соседних, и полоса недели «прыгает» при переключении.
     dayCell: {
       flex: 1, height: 62, borderRadius: 14,
       alignItems: "center", justifyContent: "center", overflow: "hidden",
@@ -810,7 +698,6 @@ export default function CalendarScreen() {
     summaryDone: { marginLeft: "auto", fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
 
     // ── Строка расписания ──
-    // Время отдельной колонкой: видна вертикаль дня и промежутки между уроками.
     slotRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
     slotTimeCol: { width: 46, paddingTop: 13, alignItems: "flex-end" },
     slotFrom: { fontSize: 14, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
@@ -872,12 +759,6 @@ export default function CalendarScreen() {
     emptyTitle: { fontSize: 16, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3, textAlign: "center" },
     emptyText: { fontSize: 13, fontWeight: "600", color: colors.mutedForeground, textAlign: "center", lineHeight: 19 },
 
-    warnRow: {
-      flexDirection: "row", alignItems: "center", justifyContent: "center",
-      gap: 6, marginBottom: 10, paddingHorizontal: 8,
-    },
-    warnText: { fontSize: 13, fontWeight: "700", flexShrink: 1 },
-
     addBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
       borderRadius: radii.md, borderWidth: 2, borderStyle: "dashed", borderColor: colors.primary,
@@ -900,25 +781,28 @@ export default function CalendarScreen() {
       backgroundColor: colors.card,
       borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
       paddingTop: 12, paddingHorizontal: 20, paddingBottom: insets.bottom + 24,
+      maxHeight: "92%",
     },
     handle: {
       width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border,
-      alignSelf: "center", marginBottom: 18,
+      alignSelf: "center", marginBottom: 16,
     },
-    sheetTitle: { fontSize: 19, fontWeight: "900", letterSpacing: -0.3, color: colors.foreground, marginBottom: 18 },
-    timeLabel: {
-      fontSize: 11, fontWeight: "800", color: colors.mutedForeground, marginBottom: 12,
-      textTransform: "uppercase", letterSpacing: 1, textAlign: "center",
+    // Заголовок листа: дата уходит в подпись, а не во вторую строку названия.
+    sheetHead: { marginBottom: 18 },
+    sheetTitle: { fontSize: 20, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground },
+    sheetSub: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 4 },
+
+    fieldLabel: {
+      fontSize: 10.5, fontWeight: "800", color: colors.mutedForeground, marginBottom: 9,
+      textTransform: "uppercase", letterSpacing: 1.1,
     },
-    wheelRow: { flexDirection: "row", alignItems: "center" },
-    wheelColon: { fontSize: 32, fontWeight: "800", color: colors.foreground, marginHorizontal: 2, lineHeight: WHEEL_ITEM_H * WHEEL_VISIBLE },
     noteInput: {
       borderWidth: 1.5, borderColor: colors.border, borderRadius: radii.sm,
       padding: 12, fontSize: 14, color: colors.foreground,
-      backgroundColor: colors.muted, minHeight: 64, textAlignVertical: "top", marginBottom: 10,
+      backgroundColor: colors.muted, minHeight: 62, textAlignVertical: "top", marginBottom: 14,
     },
     errorBox: {
-      backgroundColor: colors.destructive + "12", borderRadius: radii.sm, padding: 11, marginBottom: 10,
+      backgroundColor: colors.destructive + "12", borderRadius: radii.sm, padding: 11, marginBottom: 12,
       borderWidth: 1, borderColor: colors.destructive + "44",
       flexDirection: "row", alignItems: "center", gap: 9,
     },
@@ -972,6 +856,14 @@ export default function CalendarScreen() {
     },
     btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
     btnTextDanger: { fontSize: 13, fontWeight: "800", color: colors.destructive },
+
+    // Выбор учителя в запросе своего времени.
+    teacherRow: {
+      flexDirection: "row", alignItems: "center", gap: 10,
+      padding: 11, borderRadius: radii.sm, marginBottom: 16,
+      backgroundColor: colors.muted,
+    },
+    teacherName: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground },
   });
 
   /**
@@ -998,14 +890,6 @@ export default function CalendarScreen() {
       </LinearGradient>
       <Text style={s.emptyTitle}>{title}</Text>
       {!!text && <Text style={s.emptyText}>{text}</Text>}
-    </View>
-  );
-
-  /** Предупреждение в модалке. */
-  const renderWarn = (text: string, color: string) => (
-    <View style={s.warnRow}>
-      <Glyph name="alert" size={15} color={color} />
-      <Text style={[s.warnText, { color }]}>{text}</Text>
     </View>
   );
 
@@ -1047,8 +931,6 @@ export default function CalendarScreen() {
   };
 
   // ── Полоса недели ───────────────────────────────────────────────────
-  // Заменяет месячную сетку в обычном режиме: почти всегда нужна ближайшая
-  // неделя, а квадрат из 35 чисел занимал пол-экрана при каждом заходе.
   const renderWeekStrip = () => {
     const today = todayStr();
     const anchor = new Date(selectedDate + "T00:00:00");
@@ -1336,10 +1218,7 @@ export default function CalendarScreen() {
     return renderSlotRow(slot.startTime, slot.endTime, card, slot.id);
   };
 
-  /**
-   * День расписания: прошедшие слоты, линия «сейчас», предстоящие.
-   * Линия рисуется только сегодня и только если день реально разделён.
-   */
+  /** День расписания: прошедшие слоты, линия «сейчас», предстоящие. */
   const renderDaySchedule = (
     past: (TeacherSlot | StudentSlot)[],
     active: (TeacherSlot | StudentSlot)[],
@@ -1382,7 +1261,7 @@ export default function CalendarScreen() {
 
         {renderDaySchedule(past, active, (slot, dimmed) => renderTeacherSlotCard(slot as TeacherSlot, dimmed))}
 
-        <TouchableOpacity style={s.addBtn} onPress={() => setShowAdd(true)} activeOpacity={0.8}>
+        <TouchableOpacity style={s.addBtn} onPress={openAddSlot} activeOpacity={0.8}>
           <Glyph name="plus" size={17} color={colors.primary} />
           <Text style={s.addBtnText}>Добавить слот</Text>
         </TouchableOpacity>
@@ -1713,8 +1592,6 @@ export default function CalendarScreen() {
   };
 
   // ── Модалка месяца ──────────────────────────────────────────────────
-  // Открывается кнопкой из полосы недели: нужна, чтобы прыгнуть на далёкую
-  // дату, а не чтобы висеть на экране всё время.
   const renderMonthModal = () => {
     const year = monthAnchor.getFullYear();
     const month = monthAnchor.getMonth();
@@ -1817,190 +1694,168 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Add-slot modal (teacher) ────────────────────────────────────────
-  const addStart = `${addStartH}:${addStartM}`;
-  const addEnd   = `${addEndH}:${addEndM}`;
-  const addBlocked = addEnd <= addStart || isPastSlot(selectedDate, addEnd);
+  // ── Окно «Добавить слот» ────────────────────────────────────────────
+  // Валидность теперь сводится к одному условию: время не в прошлом.
+  // «Конец раньше начала» невозможно — конец считается из длительности.
+  const addPast = isPastSlot(selectedDate, addEnd);
   const renderAddSlotModal = () => (
     <Modal visible={showAdd} transparent animationType="slide" onRequestClose={() => setShowAdd(false)}>
       <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowAdd(false)}>
         <TouchableOpacity style={s.sheet} activeOpacity={1}>
           <View style={s.handle} />
-          <Text style={s.sheetTitle}>Добавить слот — {formatDate(selectedDate)}</Text>
-
-          <View style={{ flexDirection: "row", justifyContent: "space-around", marginBottom: 20 }}>
-            <View style={{ alignItems: "center" }}>
-              <Text style={s.timeLabel}>Начало</Text>
-              <View style={s.wheelRow}>
-                <WheelColumn
-                  items={HOURS} value={addStartH} onChange={setAddStartH}
-                  fg={colors.foreground} muted={colors.mutedForeground}
-                  hlColor={colors.primary + "28"}
-                />
-                <Text style={s.wheelColon}>:</Text>
-                <WheelColumn
-                  items={MINUTES} value={addStartM} onChange={setAddStartM}
-                  fg={colors.foreground} muted={colors.mutedForeground}
-                  hlColor={colors.primary + "28"}
-                />
-              </View>
-            </View>
-
-            <View style={{ width: 1, backgroundColor: colors.border, marginHorizontal: 4 }} />
-
-            <View style={{ alignItems: "center" }}>
-              <Text style={s.timeLabel}>Конец</Text>
-              <View style={s.wheelRow}>
-                <WheelColumn
-                  items={HOURS} value={addEndH} onChange={setAddEndH}
-                  fg={colors.foreground} muted={colors.mutedForeground}
-                  hlColor={colors.primary + "28"}
-                />
-                <Text style={s.wheelColon}>:</Text>
-                <WheelColumn
-                  items={MINUTES} value={addEndM} onChange={setAddEndM}
-                  fg={colors.foreground} muted={colors.mutedForeground}
-                  hlColor={colors.primary + "28"}
-                />
-              </View>
-            </View>
+          <View style={s.sheetHead}>
+            <Text style={s.sheetTitle}>Новый слот</Text>
+            <Text style={s.sheetSub}>{formatDateWithDay(selectedDate)}</Text>
           </View>
 
-          {addEnd <= addStart && renderWarn(`Конец раньше начала: ${addStart} → ${addEnd}`, colors.destructive)}
-          {addEnd > addStart && isPastSlot(selectedDate, addEnd) &&
-            renderWarn("Это время уже прошло — слот не сохранится", colors.warning)}
+          <TimeRangePicker
+            start={addStart}
+            end={addEnd}
+            onChange={(st, en) => { setAddStart(st); setAddEnd(en); }}
+            hint={addPast ? { text: "Это время уже прошло — слот не сохранится", tone: "warn" } : null}
+          />
 
-          {saving ? (
-            <View style={{ paddingVertical: 20, alignItems: "center" }}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          ) : (
-            <ChunkyButton
-              label="Добавить слот"
-              sublabel={`${addStart} – ${addEnd}`}
-              icon="plus"
-              disabled={addBlocked}
-              onPress={handleAddSlot}
-              style={{ marginTop: 4 }}
-            />
-          )}
+          <View style={{ marginTop: 20 }}>
+            {saving ? (
+              <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                <ActivityIndicator color={colors.primary} />
+              </View>
+            ) : (
+              <ChunkyButton
+                label="Добавить слот"
+                sublabel={`${addStart} – ${addEnd}`}
+                icon="plus"
+                disabled={addPast}
+                onPress={handleAddSlot}
+              />
+            )}
+          </View>
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
   );
 
-  // ── Custom time request modal (student) ────────────────────────────
-  const crStart = `${crStartH}:${crStartM}`;
-  const crEnd   = `${crEndH}:${crEndM}`;
-  const crBlocked = crEnd <= crStart || isPastSlot(selectedDate, crEnd) || !crTeacherId;
+  // ── Окно «Предложить своё время» ────────────────────────────────────
+  const crPast = isPastSlot(selectedDate, crEnd);
+  const crBlocked = crPast || !crTeacherId;
   const renderCustomReqModal = () => (
     <Modal visible={showCustomReq} transparent animationType="slide" onRequestClose={() => setShowCustomReq(false)}>
       <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowCustomReq(false)}>
         <TouchableOpacity style={s.sheet} activeOpacity={1}>
           <View style={s.handle} />
-          <Text style={s.sheetTitle}>Предложить своё время{"\n"}{formatDate(selectedDate)}</Text>
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={s.sheetHead}>
+              <Text style={s.sheetTitle}>Предложить своё время</Text>
+              <Text style={s.sheetSub}>{formatDateWithDay(selectedDate)}</Text>
+            </View>
 
-          {crTeachers.length > 1 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {crTeachers.map((t) => {
-                  const active = crTeacherId === t.id;
-                  return (
-                    <TouchableOpacity
-                      key={t.id}
-                      onPress={() => setCrTeacherId(t.id)}
-                      activeOpacity={0.85}
-                      style={[s.filterChip, active && { backgroundColor: colors.success + "20", borderColor: colors.success }]}
-                    >
-                      <Text style={[s.filterChipText, active && { color: colors.success }]}>{t.name ?? t.username}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+            {/* Один учитель — просто строка с именем: выбирать не из чего,
+                а раньше здесь всё равно висел ряд чипов. */}
+            {crTeachers.length === 0 ? (
+              <View style={s.errorBox}>
+                <Glyph name="alert" size={16} color={colors.destructive} />
+                <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>
+                  Нет подключённых учителей
+                </Text>
               </View>
-            </ScrollView>
-          )}
-          {crTeachers.length === 0 && (
-            <Text style={{ color: colors.mutedForeground, textAlign: "center", marginBottom: 16 }}>
-              Нет подключённых учителей
-            </Text>
-          )}
-          {crTeachers.length === 1 && (
-            <Text style={{ color: colors.mutedForeground, marginBottom: 12, fontSize: 14 }}>
-              Учитель: {crTeachers[0].name ?? crTeachers[0].username}
-            </Text>
-          )}
-
-          <View style={{ flexDirection: "row", justifyContent: "space-around", marginBottom: 16 }}>
-            <View style={{ alignItems: "center" }}>
-              <Text style={s.timeLabel}>Начало</Text>
-              <View style={s.wheelRow}>
-                <WheelColumn items={HOURS}   value={crStartH} onChange={setCrStartH} fg={colors.foreground} muted={colors.mutedForeground} hlColor={colors.success + "28"} />
-                <Text style={s.wheelColon}>:</Text>
-                <WheelColumn items={MINUTES} value={crStartM} onChange={setCrStartM} fg={colors.foreground} muted={colors.mutedForeground} hlColor={colors.success + "28"} />
+            ) : crTeachers.length === 1 ? (
+              <View style={s.teacherRow}>
+                {renderLetterAvatar(crTeachers[0].name ?? crTeachers[0].username, null, 32)}
+                <Text style={s.teacherName}>{crTeachers[0].name ?? crTeachers[0].username}</Text>
+                <Glyph name="check" size={16} color={colors.success} />
               </View>
-            </View>
-            <View style={{ width: 1, backgroundColor: colors.border, marginHorizontal: 4 }} />
-            <View style={{ alignItems: "center" }}>
-              <Text style={s.timeLabel}>Конец</Text>
-              <View style={s.wheelRow}>
-                <WheelColumn items={HOURS}   value={crEndH} onChange={setCrEndH} fg={colors.foreground} muted={colors.mutedForeground} hlColor={colors.success + "28"} />
-                <Text style={s.wheelColon}>:</Text>
-                <WheelColumn items={MINUTES} value={crEndM} onChange={setCrEndM} fg={colors.foreground} muted={colors.mutedForeground} hlColor={colors.success + "28"} />
-              </View>
-            </View>
-          </View>
+            ) : (
+              <>
+                <Text style={s.fieldLabel}>Кому</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    {crTeachers.map((t) => {
+                      const active = crTeacherId === t.id;
+                      return (
+                        <TouchableOpacity
+                          key={t.id}
+                          onPress={() => setCrTeacherId(t.id)}
+                          activeOpacity={0.85}
+                          style={[s.filterChip, active && { backgroundColor: colors.success + "20", borderColor: colors.success }]}
+                        >
+                          <Text style={[s.filterChipText, active && { color: colors.success }]}>
+                            {t.name ?? t.username}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </>
+            )}
 
-          {crEnd <= crStart && renderWarn(`Конец раньше начала: ${crStart} → ${crEnd}`, colors.destructive)}
-          {crEnd > crStart && isPastSlot(selectedDate, crEnd) &&
-            renderWarn("Это время уже прошло — выберите будущее время", colors.warning)}
-
-          <Text style={[s.timeLabel, { marginBottom: 8 }]}>Сообщение учителю (необязательно)</Text>
-          <TextInput
-            style={s.noteInput}
-            placeholder="Например: хочу разобрать Present Perfect..."
-            placeholderTextColor={colors.mutedForeground}
-            value={crNote} onChangeText={setCrNote}
-            multiline returnKeyType="done"
-          />
-
-          {crError && (
-            <View style={s.errorBox}>
-              <Glyph name="alert" size={16} color={colors.destructive} />
-              <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>{crError}</Text>
-            </View>
-          )}
-
-          {crSaving ? (
-            <View style={{ paddingVertical: 20, alignItems: "center" }}>
-              <ActivityIndicator color={colors.success} />
-            </View>
-          ) : (
-            <ChunkyButton
-              label="Отправить запрос"
-              sublabel={`${crStart} – ${crEnd}`}
-              icon="send"
-              disabled={crBlocked}
-              onPress={handleSendCustomReq}
+            <TimeRangePicker
+              start={crStart}
+              end={crEnd}
+              tint={colors.success}
+              onChange={(st, en) => { setCrStart(st); setCrEnd(en); }}
+              hint={crPast ? { text: "Это время уже прошло — выберите будущее", tone: "warn" } : null}
             />
-          )}
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Сообщение учителю (необязательно)</Text>
+            <TextInput
+              style={s.noteInput}
+              placeholder="Например: хочу разобрать Present Perfect…"
+              placeholderTextColor={colors.mutedForeground}
+              value={crNote} onChangeText={setCrNote}
+              multiline returnKeyType="done"
+            />
+
+            {crError && (
+              <View style={s.errorBox}>
+                <Glyph name="alert" size={16} color={colors.destructive} />
+                <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>{crError}</Text>
+              </View>
+            )}
+
+            {crSaving ? (
+              <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                <ActivityIndicator color={colors.success} />
+              </View>
+            ) : (
+              <ChunkyButton
+                label="Отправить запрос"
+                sublabel={`${crStart} – ${crEnd}`}
+                icon="send"
+                disabled={crBlocked}
+                onPress={handleSendCustomReq}
+              />
+            )}
+          </ScrollView>
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
   );
 
-  // ── Book-slot modal (student) ───────────────────────────────────────
+  // ── Окно записи на слот (ученик) ────────────────────────────────────
   const renderBookModal = () => (
     <Modal visible={!!bookSlot} transparent animationType="slide" onRequestClose={() => setBookSlot(null)}>
       <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setBookSlot(null)}>
         <TouchableOpacity style={s.sheet} activeOpacity={1}>
           <View style={s.handle} />
-          <Text style={s.sheetTitle}>
-            Запись на {formatDate(bookSlot?.date ?? null)}{"\n"}{bookSlot?.startTime} – {bookSlot?.endTime}
-          </Text>
-          <Text style={[s.timeLabel, { marginBottom: 8 }]}>Сообщение учителю (необязательно)</Text>
+          <View style={s.sheetHead}>
+            <Text style={s.sheetTitle}>Записаться на занятие</Text>
+            <Text style={s.sheetSub}>
+              {formatDateWithDay(bookSlot?.date ?? null)} · {bookSlot?.startTime} – {bookSlot?.endTime}
+            </Text>
+          </View>
+
+          {!!bookSlot?.teacherName && (
+            <View style={s.teacherRow}>
+              {renderLetterAvatar(bookSlot.teacherName, null, 32)}
+              <Text style={s.teacherName}>{bookSlot.teacherName}</Text>
+            </View>
+          )}
+
+          <Text style={s.fieldLabel}>Сообщение учителю (необязательно)</Text>
           <TextInput
             style={s.noteInput}
-            placeholder="Например: хочу разобрать Present Perfect..."
+            placeholder="Например: хочу разобрать Present Perfect…"
             placeholderTextColor={colors.mutedForeground}
             value={bookNote} onChangeText={setBookNote}
             multiline returnKeyType="done"
@@ -2022,14 +1877,17 @@ export default function CalendarScreen() {
       <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setAssignSlot(null)}>
         <TouchableOpacity style={s.sheet} activeOpacity={1}>
           <View style={s.handle} />
-          <Text style={s.sheetTitle}>
-            Назначить ученика{"\n"}{assignSlot?.startTime} – {assignSlot?.endTime} · {formatDate(assignSlot?.date ?? null)}
-          </Text>
+          <View style={s.sheetHead}>
+            <Text style={s.sheetTitle}>Назначить ученика</Text>
+            <Text style={s.sheetSub}>
+              {formatDateWithDay(assignSlot?.date ?? null)} · {assignSlot?.startTime} – {assignSlot?.endTime}
+            </Text>
+          </View>
 
           {assignStudents.length === 0 ? (
             renderEmpty("users", "Нет подключённых учеников", "Сначала добавьте ученика в разделе «Ученики»")
           ) : (
-            <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
               {assignStudents.map((st) => {
                 const selected = st.id === assignStudentId;
                 const displayName = st.name && st.surname
@@ -2119,7 +1977,7 @@ export default function CalendarScreen() {
         {activeTab === "schedule" && (
           <View>
             <View style={[s.headBtnEdge, { backgroundColor: accents.indigoDeep }]} />
-            <Pressable onPress={() => (isTeacherRole ? setShowAdd(true) : handleOpenCustomReq())}>
+            <Pressable onPress={() => (isTeacherRole ? openAddSlot() : handleOpenCustomReq())}>
               <LinearGradient
                 colors={gradients.action as unknown as string[]}
                 start={{ x: 0.1, y: 0 }}
