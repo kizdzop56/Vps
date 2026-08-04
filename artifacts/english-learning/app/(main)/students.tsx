@@ -1,5 +1,11 @@
 // Список учеников (для учителя) или детей (для родителя).
 //
+// Раньше карточка показывала имя, уровень и число очков — по ней нельзя было
+// понять ни как ученик учится, ни когда он последний раз заходил, ни что с ним
+// делать. Теперь на карточке средний балл полосой, последняя активность
+// словами и два действия: назначить задание и написать. Данные для этого уже
+// были на сервере (lastSeenAt, category-stats), просто не показывались.
+//
 // Эмодзи в интерфейсе не используются: в пустых состояниях и на экране ошибки
 // вместо них глифы из своего набора. Аватары пользователей это отдельная
 // история — там avatarEmoji приходит из профиля и остаётся как есть, его
@@ -7,21 +13,24 @@
 //
 // Оформление собрано из GameKit и сдержаннее ученических экранов: экран
 // рабочий, здесь важнее скорость чтения списка, а не игровые эффекты.
+// Наклоны убраны — как на «Заданиях» и «Анализе».
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView, Platform,
-  ActivityIndicator, Modal, TextInput, KeyboardAvoidingView,
+  ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, RefreshControl,
 } from "react-native";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import { formatDue } from "@/utils/dueDate";
+import { overallScore, type CategoryStat } from "@/utils/insights";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -54,68 +63,183 @@ type PersonItem = {
   totalPoints: number;
   inviteCode: string | null;
   isOnline?: boolean;
+  lastSeenAt?: string | null;
 };
 
-function UserCard({ item, onRemove, onPress, colors }: { item: PersonItem; onRemove: () => void; onPress: () => void; colors: any }) {
+/** Что подгружается к ученику отдельно: успеваемость и просрочки. */
+type PersonExtras = {
+  /** Средний балл по всем видам работ. null — работ ещё нет. */
+  score: number | null;
+  /** Работ на проверке у этого ученика. */
+  pending: number;
+  /** Просроченных назначений. */
+  overdue: number;
+};
+
+/**
+ * «Был в сети» словами. Точная дата учителю не нужна — нужен ответ на вопрос
+ * «стоит ли писать». Порог в неделю дальше используется для метки «молчит».
+ */
+function lastSeenText(lastSeenAt: string | null | undefined, isOnline: boolean | undefined): string {
+  if (isOnline) return "в сети";
+  if (!lastSeenAt) return "ещё не заходил";
+  const seen = new Date(lastSeenAt);
+  if (Number.isNaN(seen.getTime())) return "ещё не заходил";
+  const days = Math.floor((Date.now() - seen.getTime()) / 86400000);
+  if (days <= 0) return "был сегодня";
+  if (days === 1) return "был вчера";
+  if (days < 7) return `был ${days} дня назад`;
+  if (days < 30) return `не заходил ${days} дней`;
+  return "не заходил больше месяца";
+}
+
+/** Дней с последнего захода. null — неизвестно. */
+function daysSinceSeen(lastSeenAt: string | null | undefined): number | null {
+  if (!lastSeenAt) return null;
+  const seen = new Date(lastSeenAt);
+  if (Number.isNaN(seen.getTime())) return null;
+  return Math.floor((Date.now() - seen.getTime()) / 86400000);
+}
+
+function UserCard({
+  item, extras, onRemove, onPress, onAssign, onMessage, colors, showActions,
+}: {
+  item: PersonItem;
+  extras: PersonExtras | undefined;
+  onRemove: () => void;
+  onPress: () => void;
+  onAssign: () => void;
+  onMessage: () => void;
+  colors: any;
+  /** У родителя действий учителя нет — только просмотр. */
+  showActions: boolean;
+}) {
+  const score = extras?.score ?? null;
+  const quiet = (daysSinceSeen(item.lastSeenAt) ?? 0) >= 7 && !item.isOnline;
+  // Цвет балла в фирменной гамме: зелёного в палитре нет намеренно.
+  const tint = score === null ? colors.mutedForeground
+    : score >= 70 ? colors.success
+      : score >= 50 ? accents.amber
+        : colors.destructive;
+
   return (
-    <TouchableOpacity
-      activeOpacity={0.75}
-      onPress={onPress}
+    <View
       style={{
         backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
-        borderWidth: 1, borderColor: colors.border, marginBottom: 10,
-        flexDirection: "row", alignItems: "center", gap: 12,
+        borderWidth: 1, borderColor: colors.border, marginBottom: 11,
         // Цветная тень вместо серой — как на остальных экранах.
         shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.12, shadowRadius: 13, elevation: 3,
       }}
     >
-      <View style={{ width: 48, height: 48 }}>
-        <View style={{ position: "absolute", left: -16, top: -16 }}>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={onPress}
+        style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
+      >
+        <View style={{ width: 50, height: 50 }}>
           <AnimatedAvatar
-            size={48}
+            size={50}
             avatarColor={item.avatarColor ?? "#6366f1"}
             avatarEmoji={item.avatarEmoji}
             avatarUrl={item.avatarUrl}
           />
+          {item.isOnline && (
+            // Зелёного в палитре нет: «в сети» тоже фиолетовый success.
+            <View style={{
+              position: "absolute", bottom: -1, right: -1,
+              width: 15, height: 15, borderRadius: 8,
+              backgroundColor: colors.success,
+              borderWidth: 2.5, borderColor: colors.card,
+            }} />
+          )}
         </View>
-        {item.isOnline && (
-          // Зелёного в палитре нет: «в сети» тоже фиолетовый success.
-          <View style={{
-            position: "absolute", bottom: 1, right: 1,
-            width: 14, height: 14, borderRadius: 7,
-            backgroundColor: colors.success,
-            borderWidth: 2, borderColor: colors.card,
-          }} />
-        )}
-      </View>
 
-      <View style={{ flex: 1, gap: 4 }}>
-        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
-          {item.username}{item.name || item.surname ? ` (${[item.name, item.surname].filter(Boolean).join(" ")})` : ""}
-        </Text>
-        {/* Уровень уже приходит с сервера, но раньше нигде не показывался —
-            учителю он полезен прямо в списке. */}
-        {!!item.knowledgeLevel && (
-          <View style={{ flexDirection: "row" }}>
-            <Pill text={item.knowledgeLevel} tone="soft" color={colors.primary} />
-          </View>
-        )}
-      </View>
-
-      <View style={{ alignItems: "flex-end", gap: 8 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Glyph name="star" size={12} color={accents.magenta} />
-          {/* Табличные цифры: очки в столбце карточек не пляшут по ширине. */}
-          <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
-            {item.totalPoints}
+        <View style={{ flex: 1, gap: 3 }}>
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
+            {item.username}
+          </Text>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground }} numberOfLines={1}>
+            {[item.name, item.surname].filter(Boolean).join(" ") || "без имени"}
+            {" · "}{lastSeenText(item.lastSeenAt, item.isOnline)}
           </Text>
         </View>
-        <Pressable onPress={(e) => { e.stopPropagation(); onRemove(); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Glyph name="userX" size={18} color={colors.mutedForeground} />
-        </Pressable>
-      </View>
-    </TouchableOpacity>
+
+        <View style={{ alignItems: "flex-end", gap: 6 }}>
+          <View style={{ flexDirection: "row", gap: 5 }}>
+            {!!item.knowledgeLevel && <Pill text={item.knowledgeLevel} tone="soft" color={colors.primary} />}
+            <Pill text={`${item.totalPoints}`} icon="star" tone="gold" />
+          </View>
+          {/* Средний балл словами и цифрой: без него список — просто имена. */}
+          <Text style={{ fontSize: 11.5, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+            {score === null
+              ? "работ нет"
+              : <>средний <Text style={{ fontWeight: "900", color: tint }}>{score}%</Text></>}
+          </Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* Полоса успеваемости: сравнивать учеников глазами по числам медленно,
+          по полосам — мгновенно. */}
+      {score !== null && (
+        <View style={{ height: 8, backgroundColor: colors.muted, borderRadius: 4, marginTop: 11, overflow: "hidden" }}>
+          <View style={{ height: 8, width: `${score}%` as any, backgroundColor: tint, borderRadius: 4 }} />
+        </View>
+      )}
+
+      {/* Что требует внимания прямо сейчас. */}
+      {(extras?.overdue || extras?.pending || quiet) ? (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 11 }}>
+          {!!extras?.overdue && <Pill text={`просрочено ${extras.overdue}`} icon="alert" tone="danger" />}
+          {!!extras?.pending && <Pill text={`${extras.pending} на проверке`} icon="clock" tone="warn" />}
+          {quiet && <Pill text="давно не заходил" tone="soft" color={colors.mutedForeground} />}
+        </View>
+      ) : null}
+
+      {showActions && (
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={onAssign}
+            style={{
+              flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+              paddingVertical: 10, borderRadius: 12, backgroundColor: colors.primary,
+              shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3, shadowRadius: 10, elevation: 3,
+            }}
+          >
+            <Glyph name="send" size={14} color="#fff" />
+            <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>Задание</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={onMessage}
+            style={{
+              flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+              paddingVertical: 10, borderRadius: 12,
+              borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
+            }}
+          >
+            <Glyph name="chat" size={14} color={colors.mutedForeground} />
+            <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground }}>Написать</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={onRemove}
+            accessibilityRole="button"
+            accessibilityLabel="Убрать ученика"
+            style={{
+              paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12,
+              borderWidth: 1, borderColor: colors.destructive + "44",
+              backgroundColor: colors.destructive + "0d",
+              alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <Glyph name="userX" size={15} color={colors.destructive} />
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -297,7 +421,7 @@ function AddByCodeModal({
               >
                 {searching
                   ? <ActivityIndicator color="#fff" size="small" />
-                  : <Glyph name="compass" size={20} color="#fff" />
+                  : <Glyph name="search" size={20} color="#fff" />
                 }
               </TouchableOpacity>
             </View>
@@ -367,6 +491,16 @@ type PendingRequest = {
   status: "pending";
 };
 
+/** Фильтры появляются только когда список длинный — иначе он и так весь виден. */
+type ListFilter = "all" | "help" | "quiet" | "online";
+const FILTER_LABELS: Record<ListFilter, string> = {
+  all: "Все",
+  help: "Нужна помощь",
+  quiet: "Молчат",
+  online: "В сети",
+};
+const FILTERS_FROM = 5;
+
 export default function StudentsScreen() {
   const colors = useColors();
   const { user } = useAuth();
@@ -377,12 +511,16 @@ export default function StudentsScreen() {
   const isParent = user?.role === "parent";
 
   const [items, setItems] = useState<PersonItem[]>([]);
+  const [extras, setExtras] = useState<Record<number, PersonExtras>>({});
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<PersonItem | null>(null);
   const [confirmCancel, setConfirmCancel] = useState<PendingRequest | null>(null);
+  const [filter, setFilter] = useState<ListFilter>("all");
+  const [search, setSearch] = useState("");
 
   const listEndpoint = isTeacher
     ? "/api/connections/teacher/students"
@@ -395,8 +533,47 @@ export default function StudentsScreen() {
       ? `/api/connections/teacher/students/${id}`
       : `/api/connections/parent/children/${id}`;
 
-  const load = React.useCallback(async () => {
-    setLoading(true);
+  /**
+   * Успеваемость и просрочки грузятся отдельно и НЕ блокируют список: имена
+   * и аватары появляются сразу, полосы дорисовываются через мгновение.
+   * Раньше карточка вообще не показывала успеваемость, хотя данные лежали
+   * в тех же эндпоинтах, что использует «Анализ».
+   */
+  const loadExtras = React.useCallback(async (people: PersonItem[]) => {
+    if (!isTeacher || people.length === 0) return;
+
+    let overdueBy = new Map<number, number>();
+    try {
+      const results: any[] = await apiFetch("/api/assignments/teacher-results");
+      overdueBy = results.reduce((acc: Map<number, number>, r: any) => {
+        if (r.submission) return acc;
+        if (formatDue(r.dueAt).urgency !== "overdue") return acc;
+        acc.set(r.studentId, (acc.get(r.studentId) ?? 0) + 1);
+        return acc;
+      }, new Map<number, number>());
+    } catch {
+      // Без этих данных карточка просто не покажет метку просрочки.
+    }
+
+    const pairs = await Promise.all(people.map(async (p) => {
+      try {
+        const stats: CategoryStat[] = await apiFetch(`/api/students/${p.id}/category-stats`);
+        const pending = (stats ?? []).reduce((sum, s) => sum + (s.pending ?? 0), 0);
+        return [p.id, {
+          score: overallScore(stats ?? []),
+          pending,
+          overdue: overdueBy.get(p.id) ?? 0,
+        }] as const;
+      } catch {
+        return [p.id, { score: null, pending: 0, overdue: overdueBy.get(p.id) ?? 0 }] as const;
+      }
+    }));
+
+    setExtras(Object.fromEntries(pairs));
+  }, [isTeacher]);
+
+  const load = React.useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [accepted, pending] = await Promise.all([
@@ -405,13 +582,17 @@ export default function StudentsScreen() {
       ]);
       setItems(accepted);
       setPendingRequests(pending);
+      void loadExtras(accepted);
     } catch (e: any) {
       setError(e.message ?? "Не удалось загрузить");
     }
-    finally { setLoading(false); }
-  }, [listEndpoint, isTeacher]);
+    finally { setLoading(false); setRefreshing(false); }
+  }, [listEndpoint, isTeacher, loadExtras]);
 
   React.useEffect(() => { load(); }, [load]);
+  // Возврат на вкладку обновляет цифры молча: список уже на экране, мигать им
+  // спиннером незачем.
+  useFocusEffect(React.useCallback(() => { load(true); }, [load]));
 
   const doRemove = async (item: PersonItem) => {
     try {
@@ -437,16 +618,39 @@ export default function StudentsScreen() {
   const title = isTeacher ? "Мои ученики" : "Мои дети";
   const addTitle = isTeacher ? "Добавить ученика" : "Добавить ребёнка";
 
+  // ── Сводка и фильтрация ───────────────────────────────────────────
+  const quietCount = items.filter(
+    (i) => !i.isOnline && (daysSinceSeen(i.lastSeenAt) ?? 0) >= 7,
+  ).length;
+  const needHelp = items.filter((i) => {
+    const score = extras[i.id]?.score;
+    return score !== null && score !== undefined && score < 60;
+  }).length;
+
+  const searchLower = search.trim().toLowerCase();
+  const visible = items.filter((i) => {
+    if (searchLower) {
+      const haystack = `${i.username} ${i.name ?? ""} ${i.surname ?? ""}`.toLowerCase();
+      if (!haystack.includes(searchLower)) return false;
+    }
+    if (filter === "help") {
+      const score = extras[i.id]?.score;
+      return score !== null && score !== undefined && score < 60;
+    }
+    if (filter === "quiet") return !i.isOnline && (daysSinceSeen(i.lastSeenAt) ?? 0) >= 7;
+    if (filter === "online") return !!i.isOnline;
+    return true;
+  });
+
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     header: {
       paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
-      paddingHorizontal: 20, paddingBottom: 16,
-      flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between",
+      paddingHorizontal: 20, paddingBottom: 12,
     },
-    headerText: { flex: 1 },
+    headerRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
     titleText: { fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
-    subtitleText: { fontSize: 14, color: colors.mutedForeground, marginTop: 2 },
+    subtitleText: { fontSize: 13.5, color: colors.mutedForeground, marginTop: 4, lineHeight: 19 },
     addBtn: {
       backgroundColor: colors.primary, borderRadius: radii.sm + 2,
       paddingHorizontal: 14, paddingVertical: 11,
@@ -456,13 +660,50 @@ export default function StudentsScreen() {
       shadowOpacity: 0.32, shadowRadius: 10, elevation: 4,
     },
     addBtnText: { fontSize: 14, fontWeight: "800", color: "#fff" },
+    // Лента из трёх чисел одной поверхностью, как на «Анализе»: это одна мысль,
+    // а не три отдельные карточки.
+    strip: {
+      flexDirection: "row", backgroundColor: colors.card,
+      borderRadius: radii.md, borderWidth: 1, borderColor: colors.border,
+      overflow: "hidden", marginTop: 14,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.13, shadowRadius: 15, elevation: 3,
+    },
+    stripCell: { flex: 1, paddingVertical: 13, paddingHorizontal: 8, alignItems: "center" },
+    stripDivider: { width: 1, backgroundColor: colors.border },
+    stripNum: { fontSize: 21, fontWeight: "900", letterSpacing: -0.5, fontVariant: ["tabular-nums"], color: colors.foreground },
+    stripLabel: {
+      fontSize: 10, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase",
+      color: colors.mutedForeground, marginTop: 6,
+    },
+    searchBox: {
+      flexDirection: "row", alignItems: "center", gap: 8,
+      backgroundColor: colors.muted, borderRadius: radii.sm, paddingHorizontal: 12,
+      paddingVertical: Platform.OS === "web" ? 9 : 8, marginTop: 12,
+      borderWidth: 1, borderColor: colors.border,
+    },
+    searchInput: {
+      flex: 1, fontSize: 14, color: colors.foreground,
+      ...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {}),
+    },
+    chips: { flexDirection: "row", gap: 8, marginTop: 12, flexWrap: "wrap" },
+    chip: {
+      paddingHorizontal: 14, paddingVertical: 7, borderRadius: radii.pill,
+      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
+    },
+    chipActive: {
+      borderColor: colors.primary, backgroundColor: colors.secondary,
+      shadowColor: colors.primary, shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.25, shadowRadius: 8, elevation: 3,
+    },
+    chipText: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground },
+    chipTextActive: { color: colors.primary },
     content: { paddingHorizontal: 20, paddingBottom: insets.bottom + 100 },
     empty: { alignItems: "center", paddingTop: 60, gap: 12, paddingHorizontal: 24 },
-    // Плашка вместо крупного эмодзи: наклон и цвет темы вместо символа ОС.
+    // Плашка вместо крупного эмодзи. Стоит ровно: наклоны убраны по всему проекту.
     emptyIcon: {
       width: 72, height: 72, borderRadius: radii.lg, justifyContent: "center", alignItems: "center",
       backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "2e",
-      transform: [{ rotate: "-4deg" }],
     },
     emptyTitle: { fontSize: 18, fontWeight: "800", color: colors.foreground },
     emptyText: { fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 },
@@ -479,16 +720,86 @@ export default function StudentsScreen() {
       />
 
       <View style={s.header}>
-        <View style={s.headerText}>
-          <Text style={s.titleText}>{title}</Text>
-          <Text style={s.subtitleText}>
-            {items.length > 0 ? `${items.length} чел.` : "Список пуст"}
-          </Text>
+        <View style={s.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.titleText}>{title}</Text>
+            {/* Подзаголовок отвечает на вопрос «что здесь требует меня», а не
+                просто считает строки. */}
+            <Text style={s.subtitleText}>
+              {items.length === 0 && pendingRequests.length === 0
+                ? "Список пуст"
+                : pendingRequests.length > 0
+                  ? `${pendingRequests.length} ${pendingRequests.length === 1 ? "заявка ждёт" : "заявки ждут"} ответа ученика`
+                  : needHelp > 0
+                    ? `${needHelp} ${needHelp === 1 ? "ученику" : "ученикам"} нужна помощь`
+                    : "Все идут ровно"}
+            </Text>
+          </View>
+          <TouchableOpacity style={s.addBtn} onPress={() => setModalOpen(true)} activeOpacity={0.85}>
+            <Glyph name="userPlus" size={16} color="#fff" />
+            <Text style={s.addBtnText}>Добавить</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={s.addBtn} onPress={() => setModalOpen(true)} activeOpacity={0.85}>
-          <Glyph name="userPlus" size={16} color="#fff" />
-          <Text style={s.addBtnText}>Добавить</Text>
-        </TouchableOpacity>
+
+        {isTeacher && (items.length > 0 || pendingRequests.length > 0) && (
+          <View style={s.strip}>
+            <View style={s.stripCell}>
+              <Text style={s.stripNum}>{items.length}</Text>
+              <Text style={s.stripLabel}>Учеников</Text>
+            </View>
+            <View style={s.stripDivider} />
+            <View style={s.stripCell}>
+              <Text style={[s.stripNum, pendingRequests.length > 0 && { color: accents.magenta }]}>
+                {pendingRequests.length}
+              </Text>
+              <Text style={s.stripLabel}>Заявок</Text>
+            </View>
+            <View style={s.stripDivider} />
+            <View style={s.stripCell}>
+              <Text style={[s.stripNum, quietCount > 0 && { color: colors.destructive }]}>
+                {quietCount}
+              </Text>
+              <Text style={s.stripLabel}>Молчат</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Поиск и фильтры — только на длинном списке. */}
+        {items.length >= FILTERS_FROM && (
+          <>
+            <View style={s.searchBox}>
+              <Glyph name="search" size={16} color={colors.mutedForeground} />
+              <TextInput
+                style={s.searchInput}
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Имя или псевдоним"
+                placeholderTextColor={colors.mutedForeground}
+                returnKeyType="search"
+                clearButtonMode="while-editing"
+              />
+              {search.length > 0 && (
+                <Pressable onPress={() => setSearch("")} hitSlop={8}>
+                  <Glyph name="close" size={16} color={colors.mutedForeground} />
+                </Pressable>
+              )}
+            </View>
+            <View style={s.chips}>
+              {(Object.keys(FILTER_LABELS) as ListFilter[]).map((key) => (
+                <TouchableOpacity
+                  key={key}
+                  activeOpacity={0.85}
+                  onPress={() => setFilter(key)}
+                  style={[s.chip, filter === key && s.chipActive]}
+                >
+                  <Text style={[s.chipText, filter === key && s.chipTextActive]}>
+                    {FILTER_LABELS[key]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        )}
       </View>
 
       {loading ? (
@@ -501,23 +812,34 @@ export default function StudentsScreen() {
           <Text style={s.emptyTitle}>Ошибка загрузки</Text>
           <Text style={s.emptyText}>{error}</Text>
           <TouchableOpacity
-            onPress={load}
+            onPress={() => load()}
             style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: radii.sm, paddingHorizontal: 20, paddingVertical: 11 }}
           >
             <Text style={{ color: "#fff", fontWeight: "800" }}>Повторить</Text>
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={s.content}>
+        <ScrollView
+          contentContainerStyle={s.content}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => { setRefreshing(true); load(true); }}
+            />
+          }
+        >
           {/* Pending requests (teacher only) */}
           {isTeacher && pendingRequests.length > 0 && (
             <View style={{ marginBottom: 20 }}>
               <SectionLabel>Ожидают подтверждения · {pendingRequests.length}</SectionLabel>
               {pendingRequests.map((req) => (
+                // Пунктирная рамка и другая заливка: заявку нельзя спутать с
+                // добавленным учеником, даже не читая подпись.
                 <View key={req.requestId} style={{
                   flexDirection: "row", alignItems: "center", gap: 12,
-                  backgroundColor: accents.magenta + "12", borderRadius: radii.sm + 2, padding: 14,
-                  borderWidth: 1, borderColor: accents.magenta + "33", marginBottom: 8,
+                  backgroundColor: accents.magenta + "0f", borderRadius: radii.md, padding: 14,
+                  borderWidth: 1.5, borderColor: accents.magenta + "44", borderStyle: "dashed",
+                  marginBottom: 9,
                 }}>
                   <AnimatedAvatar
                     size={46}
@@ -529,8 +851,8 @@ export default function StudentsScreen() {
                     <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
                       {req.student.username}{req.student.name || req.student.surname ? ` (${[req.student.name, req.student.surname].filter(Boolean).join(" ")})` : ""}
                     </Text>
-                    <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 1 }}>
-                      Ожидает ответа…
+                    <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                      Ждёт, пока ученик примет заявку
                     </Text>
                   </View>
                   <Pressable
@@ -566,13 +888,31 @@ export default function StudentsScreen() {
                 style={{ alignSelf: "stretch", marginTop: 8 }}
               />
             </View>
-          ) : items.length === 0 ? null : (
+          ) : items.length === 0 ? null : visible.length === 0 ? (
+            <View style={s.empty}>
+              <View style={s.emptyIcon}>
+                <Glyph name="search" size={32} color={colors.primary} />
+              </View>
+              <Text style={s.emptyTitle}>Никого не нашлось</Text>
+              <Text style={s.emptyText}>Попробуйте другой фильтр или очистите поиск.</Text>
+            </View>
+          ) : (
             <>
-              {items.length > 0 && pendingRequests.length > 0 && (
-                <SectionLabel>Добавлены · {items.length}</SectionLabel>
+              {(pendingRequests.length > 0 || items.length >= FILTERS_FROM) && (
+                <SectionLabel>Добавлены · {visible.length}</SectionLabel>
               )}
-              {items.map((item) => (
-                <UserCard key={item.id} item={item} colors={colors} onRemove={() => handleRemove(item)} onPress={() => router.push(`/(main)/${isParent ? "student" : "friend"}/${item.id}` as any)} />
+              {visible.map((item) => (
+                <UserCard
+                  key={item.id}
+                  item={item}
+                  extras={extras[item.id]}
+                  colors={colors}
+                  showActions={isTeacher}
+                  onRemove={() => handleRemove(item)}
+                  onPress={() => router.push(`/(main)/${isParent ? "student" : "friend"}/${item.id}` as any)}
+                  onAssign={() => router.push("/(main)/assignments" as any)}
+                  onMessage={() => router.push(`/(main)/chat/${item.id}` as any)}
+                />
               ))}
             </>
           )}
