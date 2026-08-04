@@ -1,19 +1,28 @@
+// Экран «Профиль»: шапка с аватаром, описание, статистика ученика, цель дня,
+// витрина наград, друзья и быстрые действия.
+//
+// Эмодзи интерфейса не используются — значки рисует собственный набор
+// (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
+// ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
+// AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
+//
+// Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью,
+// пилюли. Логика экрана при переходе на GameKit не менялась.
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
   Platform, AppState, TextInput, Modal, FlatList, ActivityIndicator,
-  Clipboard, Image, Alert, KeyboardAvoidingView,
+  Clipboard, Alert, KeyboardAvoidingView,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
-import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { useAuth, isTeacherOrAdmin, type AuthUser } from "@/contexts/AuthContext";
+import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useGetStudentSubmissions, useGetStudentTimeStats } from "@workspace/api-client-react";
-import { ACHIEVEMENTS, getUnlockedAchievements, getLockedAchievements, type AchievementStats } from "@/constants/achievements";
+import { getUnlockedAchievements, getLockedAchievements, type AchievementStats } from "@/constants/achievements";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
@@ -22,6 +31,9 @@ import { AchievementToast } from "@/components/AchievementToast";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { accents, radii } from "@/constants/theme";
 
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
@@ -45,6 +57,8 @@ const ROLE_LABELS: Record<string, string> = {
   student: "Ученик", parent: "Родитель", teacher: "Учитель", admin: "Администратор",
 };
 
+// Аватар-эмодзи — выбор ученика, а не элемент интерфейса: этот список
+// намеренно остаётся эмодзи (см. комментарий к файлу).
 const AVATAR_EMOJIS = [
   "🦁","🐯","🐻","🐼","🦊","🐸","🦅","🦋","🐬","🦄",
   "🐲","🦝","🦉","🐺","🐮","🐷","🐙","🦀","🐧","🦜",
@@ -52,8 +66,8 @@ const AVATAR_EMOJIS = [
 ];
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#ec4899","#e11d48",
-  "#ec4899","#6366f1","#6366f1","#6366f1",
-  "#818cf8","#ec4899","#64748b","#1e293b",
+  "#a855f7","#d946ef","#4338ca","#6d28d9",
+  "#818cf8","#f59e0b","#64748b","#1e293b",
 ];
 
 function formatTime(minutes: number) {
@@ -158,20 +172,26 @@ function AvatarPickerModal({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" }}>
-        <View style={{ backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 }}>
-          <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground, marginBottom: 16 }}>
+        <View style={{ backgroundColor: colors.card, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24 }}>
+          <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, marginBottom: 16 }}>
             Выбери аватар
           </Text>
 
           {/* Preview */}
           <View style={{ alignItems: "center", marginBottom: 20 }}>
-            <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: color, justifyContent: "center", alignItems: "center" }}>
-              <Text style={{ fontSize: 40 }}>{emoji}</Text>
+            <View style={{
+              width: 84, height: 84, borderRadius: 42, backgroundColor: color,
+              justifyContent: "center", alignItems: "center",
+              // Свечение в цвете самого аватара — превью выглядит объектом.
+              shadowColor: color, shadowOffset: { width: 0, height: 6 },
+              shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
+            }}>
+              <Text style={{ fontSize: 42 }}>{emoji}</Text>
             </View>
           </View>
 
           {/* Emoji grid */}
-          <Text style={{ fontSize: 13, fontWeight: "700", color: colors.mutedForeground, marginBottom: 8 }}>ЭМОДЗИ</Text>
+          <SectionLabel>Аватар</SectionLabel>
           <FlatList
             data={AVATAR_EMOJIS}
             numColumns={8}
@@ -194,7 +214,7 @@ function AvatarPickerModal({
           />
 
           {/* Color row */}
-          <Text style={{ fontSize: 13, fontWeight: "700", color: colors.mutedForeground, marginBottom: 8 }}>ЦВЕТ ФОНА</Text>
+          <SectionLabel>Цвет фона</SectionLabel>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
             <View style={{ flexDirection: "row", gap: 8 }}>
               {AVATAR_COLORS.map((c) => (
@@ -210,12 +230,7 @@ function AvatarPickerModal({
             </View>
           </ScrollView>
 
-          <TouchableOpacity
-            style={{ backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 14, alignItems: "center" }}
-            onPress={() => { onSave(emoji, color); onClose(); }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: "700", color: "#fff" }}>Сохранить</Text>
-          </TouchableOpacity>
+          <ChunkyButton label="Сохранить" icon="check" onPress={() => { onSave(emoji, color); onClose(); }} />
           <TouchableOpacity onPress={onClose} style={{ paddingVertical: 12, alignItems: "center" }}>
             <Text style={{ fontSize: 15, color: colors.mutedForeground }}>Отмена</Text>
           </TouchableOpacity>
@@ -388,72 +403,88 @@ function FriendsModal({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={{ flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" }}>
-        <View style={{ backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, maxHeight: "85%" }}>
+        <View style={{ backgroundColor: colors.card, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24, maxHeight: "85%" }}>
           {/* Header */}
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <Text style={{ fontSize: 20, fontWeight: "800", color: colors.foreground }}>Друзья</Text>
-            <TouchableOpacity onPress={onClose}><Feather name="x" size={22} color={colors.mutedForeground} /></TouchableOpacity>
+            <Text style={{ fontSize: 21, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground }}>Друзья</Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Glyph name="close" size={22} color={colors.mutedForeground} />
+            </Pressable>
           </View>
 
           {/* ── Мой код (только на вкладке «Добавить») ── */}
           {!!inviteCode && tab === "add" && (
             <View style={{
               marginBottom: 16,
-              backgroundColor: colors.primary + "10", borderRadius: 16, padding: 16,
+              backgroundColor: colors.primary + "10", borderRadius: radii.md, padding: 16,
               borderWidth: 1.5, borderColor: colors.primary + "30",
               flexDirection: "row", alignItems: "center", gap: 14,
             }}>
               <View style={{
-                width: 44, height: 44, borderRadius: 12,
+                width: 44, height: 44, borderRadius: radii.sm,
                 backgroundColor: colors.primary + "20",
                 justifyContent: "center", alignItems: "center",
               }}>
-                <Feather name="key" size={20} color={colors.primary} />
+                <Glyph name="key" size={20} color={colors.primary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontWeight: "700", color: colors.primary, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary, textTransform: "uppercase", letterSpacing: 1 }}>
                   Мой код
                 </Text>
-                <Text style={{ fontSize: 22, fontWeight: "900", color: colors.primary, letterSpacing: 4 }}>
+                {/* Код — объект, а не строка текста: моноширинные цифры и трекинг,
+                    чтобы его было удобно диктовать вслух. */}
+                <Text style={{ fontSize: 23, fontWeight: "900", color: colors.primary, letterSpacing: 5, fontVariant: ["tabular-nums"] }}>
                   {inviteCode}
                 </Text>
                 <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 1 }}>
                   Поделись с учителем, родителем или другом
                 </Text>
               </View>
-              <TouchableOpacity
+              <Pressable
                 onPress={() => {
                   Clipboard.setString(inviteCode ?? "");
                   setCodeCopied(true);
                   setTimeout(() => setCodeCopied(false), 2000);
                 }}
-                style={{
-                  backgroundColor: codeCopied ? "#6366f1" : colors.primary,
-                  borderRadius: 10, padding: 10,
-                }}
+                style={({ pressed }) => ({
+                  backgroundColor: codeCopied ? colors.success : colors.primary,
+                  borderRadius: radii.sm - 2, padding: 11,
+                  opacity: pressed ? 0.85 : 1,
+                })}
               >
-                <Feather name={codeCopied ? "check" : "copy"} size={18} color="#fff" />
-              </TouchableOpacity>
+                <Glyph name={codeCopied ? "check" : "copy"} size={18} color="#fff" />
+              </Pressable>
             </View>
           )}
 
-          {/* Tab switcher */}
+          {/* Tab switcher: активная вкладка приподнята, как физическая клавиша. */}
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 20 }}>
-            {(["list", "add"] as const).map((t) => (
-              <TouchableOpacity
-                key={t}
-                onPress={() => setTab(t)}
-                style={{
-                  flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: "center",
-                  backgroundColor: tab === t ? colors.primary : colors.card,
-                  borderWidth: 1, borderColor: tab === t ? colors.primary : colors.border,
-                }}
-              >
-                <Text style={{ fontSize: 14, fontWeight: "700", color: tab === t ? "#fff" : colors.foreground }}>
-                  {t === "list" ? `Мои друзья (${accepted.length})` : "Добавить"}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {(["list", "add"] as const).map((t) => {
+              const active = tab === t;
+              return (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => setTab(t)}
+                  activeOpacity={0.85}
+                  style={{
+                    flex: 1, paddingVertical: 11, borderRadius: radii.sm, alignItems: "center",
+                    backgroundColor: active ? colors.primary : colors.card,
+                    borderWidth: 1, borderColor: active ? colors.primary : colors.border,
+                    ...(active ? {
+                      shadowColor: colors.primary,
+                      shadowOffset: { width: 0, height: 3 },
+                      shadowOpacity: 0.32,
+                      shadowRadius: 9,
+                      elevation: 4,
+                    } : {}),
+                  }}
+                >
+                  <Text style={{ fontSize: 14, fontWeight: "800", color: active ? "#fff" : colors.foreground }}>
+                    {t === "list" ? `Мои друзья (${accepted.length})` : "Добавить"}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
           {tab === "list" ? (
@@ -464,7 +495,11 @@ function FriendsModal({
                 <>
                   {/* Incoming requests */}
                   {pending.filter((f) => f.direction === "received").map((f) => (
-                    <View key={f.friendshipId} style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: "#fce7f3", borderRadius: 14, padding: 12 }}>
+                    <View key={f.friendshipId} style={{
+                      flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10,
+                      backgroundColor: accents.magenta + "14", borderRadius: radii.sm + 2, padding: 12,
+                      borderWidth: 1, borderColor: accents.magenta + "33",
+                    }}>
                       <AnimatedAvatar
                         size={42}
                         avatarColor={f.user.avatarColor ?? "#6366f1"}
@@ -472,15 +507,15 @@ function FriendsModal({
                         avatarUrl={(f.user as any).avatarUrl}
                       />
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "700", color: "#9d174d" }}>{f.user.name}</Text>
-                        <Text style={{ fontSize: 12, color: "#9d174d99" }}>Хочет дружить</Text>
+                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
+                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Хочет дружить</Text>
                       </View>
-                      <TouchableOpacity onPress={() => acceptRequest(f.friendshipId)} style={{ backgroundColor: "#6366f1", borderRadius: 8, padding: 6 }}>
-                        <Feather name="check" size={16} color="#fff" />
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => removeOrDecline(f.friendshipId)} style={{ backgroundColor: "#e11d48", borderRadius: 8, padding: 6 }}>
-                        <Feather name="x" size={16} color="#fff" />
-                      </TouchableOpacity>
+                      <Pressable onPress={() => acceptRequest(f.friendshipId)} style={{ backgroundColor: colors.primary, borderRadius: 9, padding: 7 }}>
+                        <Glyph name="check" size={16} color="#fff" />
+                      </Pressable>
+                      <Pressable onPress={() => removeOrDecline(f.friendshipId)} style={{ backgroundColor: colors.destructive, borderRadius: 9, padding: 7 }}>
+                        <Glyph name="close" size={16} color="#fff" />
+                      </Pressable>
                     </View>
                   ))}
 
@@ -490,7 +525,7 @@ function FriendsModal({
                       key={f.friendshipId}
                       activeOpacity={0.7}
                       onPress={() => { onClose(); onOpenFriend(f.user.id); }}
-                      style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: colors.border }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border }}
                     >
                       <View style={{ position: "relative" }}>
                         <AnimatedAvatar
@@ -503,30 +538,39 @@ function FriendsModal({
                           <View style={{
                             position: "absolute", bottom: 0, right: 0,
                             width: 13, height: 13, borderRadius: 7,
-                            backgroundColor: "#22c55e",
+                            backgroundColor: colors.success,
                             borderWidth: 2, borderColor: colors.card,
                           }} />
                         )}
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>{f.user.name}</Text>
-                        <Text style={{ fontSize: 12, color: f.user.isOnline ? "#16a34a" : colors.mutedForeground }}>
-                          {f.user.isOnline ? "В сети" : `⭐ ${f.user.totalPoints} очков`}
-                        </Text>
+                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 1 }}>
+                          {f.user.isOnline ? (
+                            <Text style={{ fontSize: 12, fontWeight: "700", color: colors.success }}>В сети</Text>
+                          ) : (
+                            <>
+                              <Glyph name="star" size={11} color={colors.mutedForeground} />
+                              <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                                {f.user.totalPoints} очков
+                              </Text>
+                            </>
+                          )}
+                        </View>
                       </View>
-                      <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
-                      <TouchableOpacity
+                      <Glyph name="chevron" size={16} color={colors.mutedForeground} />
+                      <Pressable
                         onPress={(e) => { e.stopPropagation(); removeOrDecline(f.friendshipId); }}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        <Feather name="user-x" size={18} color={colors.mutedForeground} />
-                      </TouchableOpacity>
+                        <Glyph name="userX" size={18} color={colors.mutedForeground} />
+                      </Pressable>
                     </TouchableOpacity>
                   ))}
 
                   {/* Pending sent */}
                   {pending.filter((f) => f.direction === "sent").map((f) => (
-                    <View key={f.friendshipId} style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: colors.border, opacity: 0.6 }}>
+                    <View key={f.friendshipId} style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border, opacity: 0.6 }}>
                       <AnimatedAvatar
                         size={42}
                         avatarColor={f.user.avatarColor ?? "#6366f1"}
@@ -534,8 +578,8 @@ function FriendsModal({
                         avatarUrl={(f.user as any).avatarUrl}
                       />
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>{f.user.name}</Text>
-                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Запрос отправлен...</Text>
+                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
+                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Запрос отправлен…</Text>
                       </View>
                     </View>
                   ))}
@@ -543,53 +587,59 @@ function FriendsModal({
                   {/* My teachers section */}
                   {teachers.length > 0 && (
                     <>
-                      <Text style={{
-                        fontSize: 11, fontWeight: "700", color: colors.mutedForeground,
-                        textTransform: "uppercase", letterSpacing: 0.6,
-                        marginTop: friends.length > 0 ? 16 : 0, marginBottom: 8,
-                      }}>
+                      <SectionLabel style={{ marginTop: friends.length > 0 ? 16 : 0 }}>
                         Мои учителя · {teachers.length}
-                      </Text>
+                      </SectionLabel>
                       {teachers.map((t) => (
                         <TouchableOpacity
                           key={t.id}
                           activeOpacity={0.75}
                           onPress={() => { onClose(); onOpenFriend(t.id); }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: colors.border }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border }}
                         >
                           <View style={{ position: "relative" }}>
                             <AnimatedAvatar
                               size={42}
                               avatarColor={t.avatarColor ?? "#6366f1"}
-                              avatarEmoji={t.avatarEmoji ?? "🎓"}
+                              avatarEmoji={t.avatarEmoji}
                               avatarUrl={(t as any).avatarUrl}
                             />
                             {t.isOnline && (
                               <View style={{
                                 position: "absolute", bottom: 0, right: 0,
                                 width: 13, height: 13, borderRadius: 7,
-                                backgroundColor: "#22c55e",
+                                backgroundColor: colors.success,
                                 borderWidth: 2, borderColor: colors.card,
                               }} />
                             )}
                           </View>
                           <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>{t.name}</Text>
-                            <Text style={{ fontSize: 12, color: t.isOnline ? "#16a34a" : colors.mutedForeground }}>
-                              {t.isOnline ? "В сети" : "🎓 Учитель"}
-                            </Text>
+                            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{t.name}</Text>
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 1 }}>
+                              {t.isOnline ? (
+                                <Text style={{ fontSize: 12, fontWeight: "700", color: colors.success }}>В сети</Text>
+                              ) : (
+                                <>
+                                  {/* Шапочка вместо 🎓: одинаково выглядит на всех платформах. */}
+                                  <Glyph name="cap" size={12} color={colors.mutedForeground} />
+                                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Учитель</Text>
+                                </>
+                              )}
+                            </View>
                           </View>
-                          <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+                          <Glyph name="chevron" size={16} color={colors.mutedForeground} />
                         </TouchableOpacity>
                       ))}
                     </>
                   )}
 
                   {friends.length === 0 && teachers.length === 0 && (
-                    <View style={{ alignItems: "center", paddingVertical: 40, gap: 10 }}>
-                      <Text style={{ fontSize: 40 }}>👫</Text>
-                      <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>Нет друзей</Text>
-                      <Text style={{ fontSize: 13, color: colors.mutedForeground }}>Поделись кодом или введи код друга</Text>
+                    <View style={{ alignItems: "center", paddingVertical: 40, gap: 12 }}>
+                      <Glyph name="handshake" size={44} color={colors.mutedForeground} />
+                      <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>Пока никого нет</Text>
+                      <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+                        Поделись своим кодом или введи код друга
+                      </Text>
                     </View>
                   )}
                 </>
@@ -604,12 +654,12 @@ function FriendsModal({
                     key={m}
                     onPress={() => { setAddMode(m); resetAddForm(); }}
                     style={{
-                      flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: "center",
+                      flex: 1, paddingVertical: 9, borderRadius: radii.sm - 2, alignItems: "center",
                       backgroundColor: addMode === m ? colors.primary + "18" : "transparent",
                       borderWidth: 1.5, borderColor: addMode === m ? colors.primary : colors.border,
                     }}
                   >
-                    <Text style={{ fontSize: 13, fontWeight: "700", color: addMode === m ? colors.primary : colors.mutedForeground }}>
+                    <Text style={{ fontSize: 13, fontWeight: "800", color: addMode === m ? colors.primary : colors.mutedForeground }}>
                       {m === "code" ? "По коду" : "По псевдониму"}
                     </Text>
                   </TouchableOpacity>
@@ -624,9 +674,9 @@ function FriendsModal({
                   <View style={{ position: "relative", marginBottom: 6 }}>
                     <TextInput
                       style={{
-                        backgroundColor: colors.card, borderRadius: 14,
+                        backgroundColor: colors.card, borderRadius: radii.sm + 2,
                         borderWidth: 2,
-                        borderColor: addError ? colors.destructive : found ? "#6366f1" : colors.border,
+                        borderColor: addError ? colors.destructive : found ? colors.primary : colors.border,
                         paddingHorizontal: 16, paddingVertical: 16,
                         fontSize: 28, fontWeight: "900", letterSpacing: 8,
                         color: colors.foreground, textAlign: "center", textTransform: "uppercase",
@@ -657,9 +707,9 @@ function FriendsModal({
                   <View style={{ position: "relative", marginBottom: 14 }}>
                     <TextInput
                       style={{
-                        backgroundColor: colors.card, borderRadius: 14,
+                        backgroundColor: colors.card, borderRadius: radii.sm + 2,
                         borderWidth: 2,
-                        borderColor: addError ? colors.destructive : found ? "#6366f1" : colors.border,
+                        borderColor: addError ? colors.destructive : found ? colors.primary : colors.border,
                         paddingHorizontal: 16, paddingVertical: 14,
                         fontSize: 16, color: colors.foreground,
                       }}
@@ -682,11 +732,11 @@ function FriendsModal({
               {/* Error */}
               {!!addError && (
                 <View style={{
-                  flexDirection: "row", alignItems: "center", gap: 8,
-                  backgroundColor: "#fff1f2", borderRadius: 12, padding: 12, marginBottom: 12,
-                  borderWidth: 1, borderColor: "#fda4af",
+                  flexDirection: "row", alignItems: "center", gap: 9,
+                  backgroundColor: colors.destructive + "12", borderRadius: radii.sm, padding: 12, marginBottom: 12,
+                  borderWidth: 1, borderColor: colors.destructive + "44",
                 }}>
-                  <Feather name="alert-circle" size={16} color={colors.destructive} />
+                  <Glyph name="alert" size={16} color={colors.destructive} />
                   <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>{addError}</Text>
                 </View>
               )}
@@ -695,8 +745,8 @@ function FriendsModal({
               {found && (
                 <View style={{
                   flexDirection: "row", alignItems: "center", gap: 12,
-                  backgroundColor: "#eef2ff", borderRadius: 14, padding: 14,
-                  marginBottom: 14, borderWidth: 1.5, borderColor: "#6366f140",
+                  backgroundColor: colors.primary + "12", borderRadius: radii.sm + 2, padding: 14,
+                  marginBottom: 14, borderWidth: 1.5, borderColor: colors.primary + "40",
                 }}>
                   <AnimatedAvatar
                     size={48}
@@ -705,29 +755,22 @@ function FriendsModal({
                     avatarUrl={found.avatarUrl}
                   />
                   <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 16, fontWeight: "800", color: "#3730a3" }}>{found.name}</Text>
-                    <Text style={{ fontSize: 13, color: "#3730a3bb" }}>@{found.username}</Text>
+                    <Text style={{ fontSize: 16, fontWeight: "900", color: accents.indigoDeep }}>{found.name}</Text>
+                    <Text style={{ fontSize: 13, color: accents.indigoDeep + "bb" }}>@{found.username}</Text>
                   </View>
-                  <Feather name="check-circle" size={24} color="#6366f1" />
+                  <Glyph name="check" size={24} color={colors.primary} />
                 </View>
               )}
 
               {/* Confirm button — only visible after user found */}
               {found && (
-                <TouchableOpacity
-                  style={{
-                    backgroundColor: "#6366f1", borderRadius: 14, paddingVertical: 15,
-                    alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8,
-                  }}
-                  onPress={sendRequest} disabled={confirming}
-                >
-                  {confirming
-                    ? <ActivityIndicator color="#fff" />
-                    : <>
-                        <Feather name="user-plus" size={18} color="#fff" />
-                        <Text style={{ fontSize: 16, fontWeight: "700", color: "#fff" }}>Подтвердить</Text>
-                      </>}
-                </TouchableOpacity>
+                confirming ? (
+                  <View style={{ paddingVertical: 18, alignItems: "center" }}>
+                    <ActivityIndicator color={colors.primary} />
+                  </View>
+                ) : (
+                  <ChunkyButton label="Подтвердить" icon="userPlus" onPress={sendRequest} />
+                )
               )}
             </View>
           )}
@@ -1174,102 +1217,64 @@ export default function ProfileScreen() {
       paddingHorizontal: 20, paddingBottom: 24,
       alignItems: "center",
     },
-    avatarWrap: { position: "relative", marginBottom: 14 },
-    avatar: { width: 90, height: 90, borderRadius: 45, justifyContent: "center", alignItems: "center" },
-    avatarEmoji: { fontSize: 44 },
     editAvatarBtn: {
       position: "absolute", bottom: 0, right: 0,
-      width: 28, height: 28, borderRadius: 14,
+      width: 30, height: 30, borderRadius: 15,
       backgroundColor: colors.primary, justifyContent: "center", alignItems: "center",
-      borderWidth: 2, borderColor: "#ffffff",
+      borderWidth: 2.5, borderColor: "#ffffff",
     },
-    name: { fontSize: 22, fontWeight: "800", color: colors.foreground, marginBottom: 3 },
-    username: { fontSize: 14, color: colors.mutedForeground, marginBottom: 10 },
+    name: { fontSize: 24, fontWeight: "900", letterSpacing: -0.5, color: colors.foreground, marginBottom: 3 },
+    username: { fontSize: 14, color: colors.mutedForeground },
     badgeRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 12 },
-    badge: { paddingHorizontal: 14, paddingVertical: 5, borderRadius: 20, flexDirection: "row", alignItems: "center", gap: 4 },
-    badgeText: { fontSize: 13, fontWeight: "700" },
 
     // Bio
     bioBox: {
-      backgroundColor: colors.card, borderRadius: 14, padding: 14,
+      backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 14,
       borderWidth: 1, borderColor: colors.border, marginHorizontal: 20, marginBottom: 20,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
     },
-    bioLabel: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground, marginBottom: 4, textTransform: "uppercase" },
     bioText: { fontSize: 14, color: colors.foreground, lineHeight: 20 },
     bioPlaceholder: { fontSize: 14, color: colors.mutedForeground, fontStyle: "italic" },
     bioInput: { fontSize: 14, color: colors.foreground, lineHeight: 20, minHeight: 60 },
     bioActions: { flexDirection: "row", gap: 8, marginTop: 8, justifyContent: "flex-end" },
-    bioSaveBtn: { backgroundColor: colors.primary, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 6 },
-    bioSaveText: { fontSize: 13, fontWeight: "700", color: "#fff" },
-    bioCancelBtn: { paddingHorizontal: 14, paddingVertical: 6 },
+    bioSaveBtn: { backgroundColor: colors.primary, borderRadius: 9, paddingHorizontal: 15, paddingVertical: 7 },
+    bioSaveText: { fontSize: 13, fontWeight: "800", color: "#fff" },
+    bioCancelBtn: { paddingHorizontal: 14, paddingVertical: 7 },
     bioCancelText: { fontSize: 13, color: colors.mutedForeground },
 
     // Section
     section: { paddingHorizontal: 20, marginBottom: 20 },
-    sectionTitle: {
-      fontSize: 12, fontWeight: "700", color: colors.mutedForeground,
-      marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.6,
-    },
 
     // Stats
     statsRow: { flexDirection: "row", gap: 10 },
     statCard: {
-      flex: 1, backgroundColor: colors.card, borderRadius: 14, padding: 14,
-      alignItems: "center", borderWidth: 0,
-      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 10, elevation: 4,
+      flex: 1, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12,
+      alignItems: "center", borderWidth: 1, borderColor: colors.border,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.14, shadowRadius: 13, elevation: 4,
     },
-    statValue: { fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 6, marginBottom: 2 },
+    statValue: {
+      fontSize: 22, fontWeight: "900", letterSpacing: -0.7,
+      color: colors.foreground, marginTop: 7, marginBottom: 2,
+      fontVariant: ["tabular-nums"],
+    },
     statLabel: { fontSize: 11, color: colors.mutedForeground, textAlign: "center" },
 
     // Timer
-    timerCard: {
-      backgroundColor: colors.primary + "12", borderRadius: 16, padding: 16,
-      borderWidth: 1.5, borderColor: colors.primary + "35",
-      flexDirection: "row", alignItems: "center", gap: 14,
-    },
-    timerIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: colors.primary + "20", justifyContent: "center", alignItems: "center" },
-    timerValue: { fontSize: 22, fontWeight: "900", color: colors.primary },
+    timerIcon: { width: 50, height: 50, borderRadius: radii.sm + 2, backgroundColor: colors.primary + "20", justifyContent: "center", alignItems: "center" },
+    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: colors.primary, fontVariant: ["tabular-nums"] },
     timerLabel: { fontSize: 13, color: colors.mutedForeground, marginTop: 2 },
-
-    // Level card
-    levelCard: {
-      borderRadius: 16, padding: 16,
-      flexDirection: "row", alignItems: "center", gap: 14, borderWidth: 1.5,
-    },
-    levelIcon: { width: 50, height: 50, borderRadius: 14, justifyContent: "center", alignItems: "center" },
-    levelTitle: { fontSize: 16, fontWeight: "800" },
-    levelSub: { fontSize: 13, marginTop: 1 },
-    levelAge: { fontSize: 12, fontWeight: "600", marginTop: 3 },
-
-    // Achievements
-    achieveGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-    achieveCard: {
-      borderRadius: 14, padding: 12, borderWidth: 1.5,
-      width: "47%", alignItems: "flex-start",
-    },
-    achieveEmoji: { fontSize: 28, marginBottom: 6 },
-    achieveBadgeImg: { width: 56, height: 56, borderRadius: 28, marginBottom: 6 },
-    achieveTitle: { fontSize: 13, fontWeight: "700" },
-    achieveDesc: { fontSize: 11, marginTop: 2, lineHeight: 15 },
 
     // Quick actions
     row: {
       flexDirection: "row", alignItems: "center", gap: 14,
-      backgroundColor: colors.card, borderRadius: 14, padding: 16,
-      marginBottom: 8, borderWidth: 0,
-      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
+      backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 16,
+      marginBottom: 8, borderWidth: 1, borderColor: colors.border,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1, shadowRadius: 12, elevation: 3,
     },
-    rowText: { flex: 1, fontSize: 15, fontWeight: "600", color: colors.foreground },
-
-    logoutBtn: {
-      marginHorizontal: 20, marginBottom: 8,
-      backgroundColor: "#fff1f2", borderRadius: 14,
-      padding: 16, alignItems: "center",
-      borderWidth: 1, borderColor: "#fda4af",
-    },
-    logoutText: { fontSize: 15, fontWeight: "700", color: colors.destructive },
+    rowText: { flex: 1, fontSize: 15, fontWeight: "700", color: colors.foreground },
   });
 
   return (
@@ -1305,29 +1310,29 @@ export default function ProfileScreen() {
       {/* Avatar choice modal */}
       <Modal visible={avatarMenuOpen} transparent animationType="slide" onRequestClose={() => setAvatarMenuOpen(false)}>
         <View style={{ flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 36 }}>
-            <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground, marginBottom: 20 }}>Сменить аватар</Text>
+          <View style={{ backgroundColor: colors.card, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24, paddingBottom: 36 }}>
+            <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, marginBottom: 20 }}>Сменить аватар</Text>
             <TouchableOpacity
               onPress={handlePhotoUpload}
-              style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: 14, backgroundColor: colors.primary + "12", paddingHorizontal: 16, marginBottom: 10 }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: radii.sm + 2, backgroundColor: colors.primary + "12", paddingHorizontal: 16, marginBottom: 10 }}
             >
-              <Feather name="camera" size={20} color={colors.primary} />
-              <Text style={{ fontSize: 16, fontWeight: "700", color: colors.primary }}>Загрузить фото из галереи</Text>
+              <Glyph name="camera" size={20} color={colors.primary} />
+              <Text style={{ fontSize: 16, fontWeight: "800", color: colors.primary }}>Загрузить фото из галереи</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => { setAvatarMenuOpen(false); setAvatarPickerOpen(true); }}
-              style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: 14, backgroundColor: colors.muted, paddingHorizontal: 16, marginBottom: 10 }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: radii.sm + 2, backgroundColor: colors.muted, paddingHorizontal: 16, marginBottom: 10 }}
             >
-              <Feather name="smile" size={20} color={colors.foreground} />
-              <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>Выбрать эмодзи</Text>
+              <Glyph name="face" size={20} color={colors.foreground} />
+              <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>Выбрать аватар</Text>
             </TouchableOpacity>
             {avatarUrl && (
               <TouchableOpacity
                 onPress={handleRemovePhoto}
-                style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: 14, backgroundColor: "#fff1f2", paddingHorizontal: 16, marginBottom: 10 }}
+                style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderRadius: radii.sm + 2, backgroundColor: colors.destructive + "12", paddingHorizontal: 16, marginBottom: 10 }}
               >
-                <Feather name="trash-2" size={20} color={colors.destructive} />
-                <Text style={{ fontSize: 16, fontWeight: "700", color: colors.destructive }}>Удалить фото</Text>
+                <Glyph name="trash" size={20} color={colors.destructive} />
+                <Text style={{ fontSize: 16, fontWeight: "800", color: colors.destructive }}>Удалить фото</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity onPress={() => setAvatarMenuOpen(false)} style={{ paddingVertical: 12, alignItems: "center" }}>
@@ -1351,10 +1356,12 @@ export default function ProfileScreen() {
             <TouchableOpacity
               style={[s.editAvatarBtn, { position: "absolute", bottom: 22, right: 22 }]}
               onPress={() => setAvatarMenuOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Сменить аватар"
             >
               {saving
                 ? <ActivityIndicator size={12} color="#fff" />
-                : <Feather name="edit-2" size={13} color="#fff" />
+                : <Glyph name="pen" size={13} color="#fff" />
               }
             </TouchableOpacity>
           </View>
@@ -1365,30 +1372,25 @@ export default function ProfileScreen() {
             <Text style={s.username}>@{username}</Text>
           </View>
 
-          {/* Online status badge */}
+          {/* Online status badge. Зелёного в палитре нет — статус фиолетовый. */}
           <View style={{
-            flexDirection: "row", alignItems: "center", gap: 5,
-            backgroundColor: "#dcfce7",
-            paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20,
-            marginBottom: 6,
+            flexDirection: "row", alignItems: "center", gap: 6,
+            backgroundColor: colors.success + "1f",
+            paddingHorizontal: 11, paddingVertical: 4, borderRadius: radii.pill,
+            marginBottom: 8,
           }}>
-            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: "#22c55e" }} />
-            <Text style={{ fontSize: 12, fontWeight: "700", color: "#15803d" }}>В сети</Text>
+            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.success }} />
+            <Text style={{ fontSize: 12, fontWeight: "800", color: colors.success }}>В сети</Text>
           </View>
 
           <View style={s.badgeRow}>
             {/* Роль */}
-            <View style={[s.badge, { backgroundColor: avatarColor + "20" }]}>
-              <Text style={[s.badgeText, { color: avatarColor }]}>{ROLE_LABELS[user.role]}</Text>
-            </View>
+            <Pill text={ROLE_LABELS[user.role] ?? user.role} tone="soft" color={avatarColor} />
             {/* Возраст (если есть дата рождения) */}
             {(() => {
               const age = calcAge(user.dateOfBirth);
               return age !== null ? (
-                <View style={[s.badge, { backgroundColor: "#6366f118" }]}>
-                  <Feather name="calendar" size={12} color="#6366f1" />
-                  <Text style={[s.badgeText, { color: "#6366f1" }]}>{ageWord(age)}</Text>
-                </View>
+                <Pill text={ageWord(age)} icon="calendar" tone="soft" color={colors.primary} />
               ) : null;
             })()}
           </View>
@@ -1396,47 +1398,44 @@ export default function ProfileScreen() {
 
         {/* ── Входящие заявки от учителей (только ученик) ── */}
         {isStudent && teacherRequests.length > 0 && (
-          <View style={{
-            marginHorizontal: 20, marginBottom: 14,
-          }}>
-            <Text style={{
-              fontSize: 12, fontWeight: "700", color: colors.mutedForeground,
-              textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10,
-            }}>
-              Заявки от учителей · {teacherRequests.length}
-            </Text>
+          <View style={{ marginHorizontal: 20, marginBottom: 14 }}>
+            <SectionLabel>Заявки от учителей · {teacherRequests.length}</SectionLabel>
             {teacherRequests.map((req) => (
               <View key={req.requestId} style={{
                 flexDirection: "row", alignItems: "center", gap: 12,
-                backgroundColor: colors.card, borderRadius: 14, padding: 14,
+                backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 14,
                 borderWidth: 1, borderColor: colors.border, marginBottom: 8,
+                shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
               }}>
                 <View style={{
                   width: 46, height: 46, borderRadius: 23,
                   backgroundColor: req.teacher.avatarColor ?? "#6366f1",
                   justifyContent: "center", alignItems: "center",
                 }}>
-                  <Text style={{ fontSize: 22 }}>{req.teacher.avatarEmoji ?? "🎓"}</Text>
+                  {req.teacher.avatarEmoji
+                    ? <Text style={{ fontSize: 22 }}>{req.teacher.avatarEmoji}</Text>
+                    : <Glyph name="cap" size={22} color="#fff" />}
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>
+                  <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
                     {req.teacher.name}
                   </Text>
                   <Text style={{ fontSize: 12, color: colors.mutedForeground }}>хочет добавить вас как ученика</Text>
                 </View>
                 <View style={{ flexDirection: "row", gap: 8 }}>
-                  <TouchableOpacity
+                  <Pressable
                     onPress={() => respondToTeacherRequest(req.requestId, false)}
-                    style={{ backgroundColor: colors.destructive + "20", borderRadius: 8, padding: 8 }}
+                    style={{ backgroundColor: colors.destructive + "1f", borderRadius: 9, padding: 9 }}
                   >
-                    <Feather name="x" size={16} color={colors.destructive} />
-                  </TouchableOpacity>
-                  <TouchableOpacity
+                    <Glyph name="close" size={16} color={colors.destructive} />
+                  </Pressable>
+                  <Pressable
                     onPress={() => respondToTeacherRequest(req.requestId, true)}
-                    style={{ backgroundColor: "#6366f1" + "20", borderRadius: 8, padding: 8 }}
+                    style={{ backgroundColor: colors.primary, borderRadius: 9, padding: 9 }}
                   >
-                    <Feather name="check" size={16} color="#6366f1" />
-                  </TouchableOpacity>
+                    <Glyph name="check" size={16} color="#fff" />
+                  </Pressable>
                 </View>
               </View>
             ))}
@@ -1446,11 +1445,11 @@ export default function ProfileScreen() {
         {/* ── Описание (bio) ── */}
         <View style={s.bioBox}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-            <Text style={s.bioLabel}>О себе</Text>
+            <SectionLabel style={{ marginBottom: 0 }}>О себе</SectionLabel>
             {!editingBio && (
-              <TouchableOpacity onPress={() => { setBioInput(bio); setEditingBio(true); }}>
-                <Feather name="edit-2" size={14} color={colors.primary} />
-              </TouchableOpacity>
+              <Pressable onPress={() => { setBioInput(bio); setEditingBio(true); }} hitSlop={10}>
+                <Glyph name="pen" size={14} color={colors.primary} />
+              </Pressable>
             )}
           </View>
 
@@ -1486,28 +1485,13 @@ export default function ProfileScreen() {
           <>
             {/* Статистика */}
             <View style={s.section}>
-              <Text style={s.sectionTitle}>Мои достижения</Text>
+              <SectionLabel>Мои достижения</SectionLabel>
               <View style={s.statsRow}>
-                <View style={s.statCard}>
-                  <Feather name="star" size={22} color="#ec4899" />
-                  <Text style={s.statValue}>{achievementStats.totalPoints}</Text>
-                  <Text style={s.statLabel}>Очки</Text>
-                </View>
-                <View style={s.statCard}>
-                  <Feather name="check-circle" size={22} color="#6366f1" />
-                  <Text style={s.statValue}>{achievementStats.completedAssignments}</Text>
-                  <Text style={s.statLabel}>Заданий</Text>
-                </View>
-                <View style={s.statCard}>
-                  <Feather name="award" size={22} color={colors.primary} />
-                  <Text style={s.statValue}>{unlocked.length}</Text>
-                  <Text style={s.statLabel}>Наград</Text>
-                </View>
-                <View style={s.statCard}>
-                  <Text style={{ fontSize: 20 }}>🔥</Text>
-                  <Text style={s.statValue}>{achievementStats.loginStreak}</Text>
-                  <Text style={s.statLabel}>Стрик</Text>
-                </View>
+                <StatCard s={s} icon="star" tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" />
+                <StatCard s={s} icon="check" tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" />
+                <StatCard s={s} icon="trophy" tint={accents.gold} value={unlocked.length} label="Наград" />
+                {/* Стрик: огонь глифом вместо 🔥 — красится темой и одинаков везде. */}
+                <StatCard s={s} icon="flame" tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" />
               </View>
             </View>
 
@@ -1515,7 +1499,7 @@ export default function ProfileScreen() {
             {/* Daily Goal */}
             {gamStats && (
               <View style={s.section}>
-                <Text style={s.sectionTitle}>Ежедневная цель</Text>
+                <SectionLabel>Ежедневная цель</SectionLabel>
                 <DailyGoalBar
                   todayMinutes={gamStats.todayMinutes}
                   goalMinutes={gamStats.dailyGoalMinutes}
@@ -1530,23 +1514,23 @@ export default function ProfileScreen() {
             <View style={s.section}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
                 <View style={{
-                  flex: 1, backgroundColor: colors.card, borderRadius: 16, padding: 14,
+                  flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
                   borderWidth: 1, borderColor: colors.border,
+                  shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+                  shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
                 }}>
-                  <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>
-                    Мои задания
-                  </Text>
+                  <SectionLabel>Мои задания</SectionLabel>
                   <AssignmentRingsChart stats={categoryStats} colors={colors} />
                 </View>
 
                 <View style={{
-                  flex: 1, backgroundColor: colors.primary + "12", borderRadius: 16, padding: 14,
+                  flex: 1, backgroundColor: colors.primary + "12", borderRadius: radii.md, padding: 14,
                   borderWidth: 1.5, borderColor: colors.primary + "35",
                   justifyContent: "center",
                 }}>
                   <View style={{ alignItems: "center", gap: 8 }}>
                     <View style={s.timerIcon}>
-                      <Feather name="clock" size={24} color={colors.primary} />
+                      <Glyph name="clock" size={24} color={colors.primary} />
                     </View>
                     <Text style={[s.timerValue, { textAlign: "center" }]}>
                       {formatTime(gamStats?.totalTimeMinutes ?? totalMinutes)}
@@ -1571,33 +1555,30 @@ export default function ProfileScreen() {
 
             {/* ── Друзья ── */}
             <View style={s.section}>
-              <Text style={s.sectionTitle}>Друзья</Text>
+              <SectionLabel>Друзья</SectionLabel>
               <TouchableOpacity
-                style={{
-                  backgroundColor: colors.card, borderRadius: 16, padding: 16,
-                  borderWidth: 1, borderColor: colors.border,
-                  flexDirection: "row", alignItems: "center", gap: 14,
-                }}
+                activeOpacity={0.85}
+                style={s.row}
                 onPress={() => setFriendsOpen(true)}
               >
-                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#ec489918", justifyContent: "center", alignItems: "center" }}>
-                  <Feather name="users" size={20} color="#ec4899" />
+                <View style={{ width: 44, height: 44, borderRadius: radii.sm, backgroundColor: accents.magenta + "1a", justifyContent: "center", alignItems: "center" }}>
+                  <Glyph name="users" size={20} color={accents.magenta} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>Мои друзья</Text>
+                  <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Мои друзья</Text>
                   <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Добавляй друзей по коду</Text>
                 </View>
                 {/* Badge for incoming friend requests */}
                 {pendingCount > 0 && (
                   <View style={{
                     minWidth: 22, height: 22, borderRadius: 11,
-                    backgroundColor: "#e11d48", justifyContent: "center", alignItems: "center",
+                    backgroundColor: colors.destructive, justifyContent: "center", alignItems: "center",
                     paddingHorizontal: 5,
                   }}>
-                    <Text style={{ fontSize: 12, fontWeight: "800", color: "#fff" }}>{pendingCount}</Text>
+                    <Text style={{ fontSize: 12, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>{pendingCount}</Text>
                   </View>
                 )}
-                <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+                <Glyph name="chevron" size={18} color={colors.mutedForeground} />
               </TouchableOpacity>
             </View>
           </>
@@ -1605,27 +1586,35 @@ export default function ProfileScreen() {
 
         {/* ── Быстрые действия ── */}
         <View style={s.section}>
-          <Text style={s.sectionTitle}>Действия</Text>
+          <SectionLabel>Действия</SectionLabel>
 
           {isTeacherOrAdmin(user.role) && (
-            <TouchableOpacity style={s.row} onPress={() => router.push("/(main)/create-assignment" as any)}>
-              <Feather name="plus-circle" size={20} color={colors.primary} />
+            <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/create-assignment" as any)}>
+              <Glyph name="plus" size={20} color={colors.primary} />
               <Text style={s.rowText}>Создать задание</Text>
-              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+              <Glyph name="chevron" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
           )}
 
           {(isTeacherOrAdmin(user.role) || user.role === "parent") && (
-            <TouchableOpacity style={s.row} onPress={() => router.push("/(main)/students" as any)}>
-              <Feather name="users" size={20} color={colors.primary} />
+            <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/students" as any)}>
+              <Glyph name="users" size={20} color={colors.primary} />
               <Text style={s.rowText}>{user.role === "parent" ? "Мои дети" : "Все ученики"}</Text>
-              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+              <Glyph name="chevron" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
           )}
         </View>
 
-        <TouchableOpacity
-          style={s.logoutBtn}
+        {/* Выход — опасное действие, поэтому отделён и подписан цветом. */}
+        <Pressable
+          style={({ pressed }) => ({
+            marginHorizontal: 20, marginBottom: 8,
+            backgroundColor: colors.destructive + "10", borderRadius: radii.sm + 2,
+            padding: 16, alignItems: "center",
+            flexDirection: "row", justifyContent: "center", gap: 9,
+            borderWidth: 1, borderColor: colors.destructive + "44",
+            opacity: pressed ? 0.85 : 1,
+          })}
           onPress={() => {
             if (Platform.OS === "web") {
               if (window.confirm("Выйти из аккаунта?")) logout();
@@ -1642,10 +1631,36 @@ export default function ProfileScreen() {
             }
           }}
         >
-          <Text style={s.logoutText}>Выйти из аккаунта</Text>
-        </TouchableOpacity>
+          <Glyph name="logout" size={17} color={colors.destructive} />
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Выйти из аккаунта</Text>
+        </Pressable>
       </ScrollView>
 
+    </View>
+  );
+}
+
+/** Счётчик в строке «Мои достижения»: значок в плашке + крупное число. */
+function StatCard({
+  s, icon, tint, value, label,
+}: {
+  s: any;
+  icon: GlyphName;
+  tint: string;
+  value: number;
+  label: string;
+}) {
+  return (
+    <View style={s.statCard}>
+      <View style={{
+        width: 30, height: 30, borderRadius: 9,
+        backgroundColor: tint + "1f",
+        alignItems: "center", justifyContent: "center",
+      }}>
+        <Glyph name={icon} size={17} color={tint} />
+      </View>
+      <Text style={s.statValue}>{value}</Text>
+      <Text style={s.statLabel}>{label}</Text>
     </View>
   );
 }
