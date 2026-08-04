@@ -1,8 +1,41 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Экран прохождения задания.
+//
+// Один экран обслуживает все пять типов (тест, аудирование, чтение, видео,
+// свободный ответ), три роли (ученик, учитель, результат) и таймер с
+// автосдачей. Логика загрузки, отправки, таймера и загрузки фото не менялась —
+// переписан только разбор.
+//
+// Что было не так:
+//  • Сверху висела одинокая цифра «1» — номер вопроса без подписи, а сам тип
+//    задания шёл капслоком отдельной строкой. Все пять типов выглядели
+//    одинаково, отличаясь только этой надписью.
+//  • Снизу плавал пузырь с процентом. Он перекрывал ответы, дублировал
+//    название задания и показывал «0%» — цифру, которая ученику ничего не
+//    говорит: важно не сколько процентов, а сколько вопросов осталось.
+//  • Вопрос лежал на глухой сиреневой плашке, текст на ней тонул.
+//  • Варианты ответа были строками с радиокружком — не выглядели нажимаемыми.
+//
+// Что стало:
+//  • Шапка в одну строку: выход, чип с иконкой типа и названием, таймер.
+//    Иконка типа — та же, что на карточке в списке заданий.
+//  • Лестница шагов вверху: по полоске на вопрос, видно пройденное и
+//    оставшееся. Место внизу экрана освободилось.
+//  • Номер вопроса стал кружком слева от текста, а не отдельной цифрой.
+//  • Варианты — клавиши с буквой и физической нижней гранью, как ChunkyButton
+//    в разделе «Слова».
+//  • У каждого типа своя сцена: тёмный плеер с волной, кадр видео, раскрытый
+//    текст для чтения, поле со счётчиком символов.
+//
+// Значки — из собственного набора (components/ui/Glyph.tsx), эмодзи нет.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Platform, Alert, TextInput, Image, Animated,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
+  ActivityIndicator, Platform, Alert, TextInput, Image, Animated, Easing,
 } from "react-native";
+import Svg, { Circle } from "react-native-svg";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImageZoomModal } from "@/components/ImageZoomModal";
@@ -10,10 +43,11 @@ import { MediaViewerModal, type MediaKind } from "@/components/MediaViewerModal"
 import { InlineMediaPlayer } from "@/components/InlineMediaPlayer";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { accents, gradients, radii, chunky } from "@/constants/theme";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -34,6 +68,11 @@ async function apiFetch(path: string, options?: RequestInit) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? `Ошибка ${res.status}`);
   return data;
+}
+
+/** Ответ API может прийти не массивом — не даём этому уронить рендер. */
+function asArray<T>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : [];
 }
 
 type Question = {
@@ -57,16 +96,26 @@ type AssignmentDetail = {
   imageUrl: string | null;
   isDraft: boolean;
   timeLimitMinutes: number | null;
+  dueAt?: string | null;
   questions: Question[];
 };
 
-const TYPE_LABELS: Record<string, string> = {
-  text_test: "Тест",
-  audio: "Аудирование",
-  reading: "Чтение",
-  video: "Видео",
-  free_form: "Свободный ответ",
+/**
+ * Оформление типа задания: подпись, значок и градиент значка.
+ * Цвета совпадают с карточками в списке заданий и с TypeArt — тип узнаётся
+ * по одному и тому же значку на всех экранах.
+ */
+const TYPE_META: Record<string, { label: string; icon: GlyphName; grad: readonly string[] }> = {
+  text_test: { label: "Тест",             icon: "check", grad: ["#8b5cf6", accents.indigoDeep] },
+  audio:     { label: "Аудирование",      icon: "sound", grad: ["#6366f1", accents.indigoDeep] },
+  reading:   { label: "Чтение",           icon: "book",  grad: [accents.magenta, "#a855f7"] },
+  video:     { label: "Видео",            icon: "video", grad: ["#ec4899", accents.magenta] },
+  free_form: { label: "Свободный ответ",  icon: "pen",   grad: [accents.amber, accents.gold] },
 };
+
+function typeMeta(type: string) {
+  return TYPE_META[type] ?? { label: type, icon: "note" as GlyphName, grad: ["#8b5cf6", accents.indigoDeep] };
+}
 
 function formatTime(seconds: number) {
   const m = Math.floor(seconds / 60);
@@ -74,35 +123,287 @@ function formatTime(seconds: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// ─── Colour palette (light quiz theme) ───────────────────────────────────────
-// Transparent so the app-wide gradient (same as the Задания tab) shows through.
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]) {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+// ─── Палитра экрана ──────────────────────────────────────────────────────────
+// Фон прозрачный: сквозь него светит общий градиент приложения (_layout.tsx),
+// тот же, что на вкладке «Задания».
 const QUIZ_BG = "transparent";
 const CARD_BG = "#ffffff";
 const PRIMARY = "#7c3aed";
-const PRIMARY_LIGHT = "#f5f3ff";
-const PRIMARY_DARK = "#6d28d9";
-const ORANGE = "#ec4899";
-const AUDIO_BG = "#cbb8ef";
-const QUESTION_BG = "#d3c2f2";
-const WAVE_START = "#6d28d9";
-const WAVE_END = "#c4b5fd";
-const lerpColor = (c1: string, c2: string, t: number) => {
-  const clamp = Math.max(0, Math.min(1, t));
-  const p = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
-  const [r1, g1, b1] = p(c1);
-  const [r2, g2, b2] = p(c2);
-  const r = Math.round(r1 + (r2 - r1) * clamp);
-  const g = Math.round(g1 + (g2 - g1) * clamp);
-  const b = Math.round(b1 + (b2 - b1) * clamp);
-  return `rgb(${r}, ${g}, ${b})`;
-};
-const SUCCESS = "#818cf8";
+const PRIMARY_DARK = accents.violetDeep;
+const SUCCESS = "#a855f7";
 const DANGER = "#e11d48";
 const TEXT_DARK = "#1e1b4b";
 const TEXT_MID = "#4b5563";
-const TEXT_MUTED = "#94a3b8";
-const BORDER = "#e2e8f0";
-const SLATE = "#64748b";
+const TEXT_MUTED = "#8b83a8";
+const BORDER = "#e6e2f2";
+const EDGE = "#ddd7ec";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Мелкие детали разбора
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Круглая кнопка шапки: выход, назад. */
+function RoundBtn({ icon, onPress, flip }: { icon: GlyphName; onPress: () => void; flip?: boolean }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [s.roundBtn, pressed && { transform: [{ scale: 0.93 }] }]}
+      accessibilityRole="button"
+      accessibilityLabel={flip ? "Назад" : "Закрыть"}
+      hitSlop={8}
+    >
+      <View style={flip ? { transform: [{ rotate: "180deg" }] } : undefined}>
+        <Glyph name={icon} size={17} color={TEXT_MID} />
+      </View>
+    </Pressable>
+  );
+}
+
+/**
+ * Чип типа задания. Занимает середину шапки и несёт две строки: чем это
+ * является (тип) и что именно решаем (название). Раньше название висело
+ * в плавающем пузыре внизу экрана, а тип — капслоком в пустоте.
+ */
+function TypeChip({ type, title }: { type: string; title: string }) {
+  const meta = typeMeta(type);
+  return (
+    <View style={s.typeChip}>
+      <LinearGradient
+        colors={meta.grad as unknown as string[]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={s.typeChipIcon}
+      >
+        <Glyph name={meta.icon} size={15} color="#fff" />
+      </LinearGradient>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.typeChipLabel} numberOfLines={1}>{meta.label}</Text>
+        <Text style={s.typeChipSub} numberOfLines={1}>{title}</Text>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Лестница шагов: по полоске на вопрос.
+ *
+ * Показывает не процент, а количество: «вопрос 3 из 5, осталось 3». Процент
+ * абстрактен, а число оставшихся вопросов ученик может сопоставить с тем,
+ * сколько он готов ещё просидеть.
+ */
+function StepLadder({
+  total, index, answered, submitted, rightNote,
+}: {
+  total: number;
+  index: number;
+  answered: number;
+  submitted?: boolean;
+  /** Своя подпись справа вместо «осталось N». */
+  rightNote?: string;
+}) {
+  const left = Math.max(0, total - index - 1);
+  return (
+    <View style={s.ladder}>
+      <View style={s.ladderBars}>
+        {Array.from({ length: total }, (_, i) => {
+          const done = submitted || i < index;
+          const now = !submitted && i === index;
+          return (
+            <View key={i} style={s.ladderBar}>
+              {done && (
+                <LinearGradient
+                  colors={["#6366f1", "#a855f7"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={StyleSheet.absoluteFill}
+                />
+              )}
+              {now && (
+                <LinearGradient
+                  colors={["#a855f7", accents.magenta]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "45%" }}
+                />
+              )}
+            </View>
+          );
+        })}
+      </View>
+      <View style={s.ladderMeta}>
+        <Text style={s.ladderLeft}>
+          {total === 1 ? "Одно задание" : `Вопрос ${Math.min(index + 1, total)} из ${total}`}
+        </Text>
+        <Text style={s.ladderRight}>
+          {rightNote ?? (left === 0 ? "последний" : `осталось ${left}`)}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/** Заголовок вопроса: номер кружком слева, текст справа. */
+function QuestionHead({ n, text }: { n: number; text: string }) {
+  return (
+    <View style={s.qRow}>
+      <LinearGradient
+        colors={["#8b5cf6", "#6366f1"]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={s.qNum}
+      >
+        <Text style={s.qNumText}>{n}</Text>
+      </LinearGradient>
+      <Text style={s.qText}>{text}</Text>
+    </View>
+  );
+}
+
+/**
+ * Вариант ответа как физическая клавиша.
+ *
+ * Нижняя грань — отдельный слой под корпусом (в RN у View не бывает двух
+ * теней), при нажатии корпус проседает ровно на её высоту. Буква слева вместо
+ * радиокружка: она заодно даёт вариантам имена, на которые можно ссылаться.
+ */
+function OptionKey({
+  letter, text, state, disabled, onPress,
+}: {
+  letter: string;
+  text: string;
+  state: "idle" | "selected" | "correct" | "wrong";
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: Platform.OS !== "web",
+    }).start();
+
+  const skin = {
+    idle:     { border: BORDER,  fill: CARD_BG,   edge: EDGE,          key: "#f1eefb", keyText: TEXT_MID, text: TEXT_DARK,    weight: "600" as const },
+    selected: { border: "#8b5cf6", fill: "#f6f2ff", edge: PRIMARY_DARK, key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
+    correct:  { border: SUCCESS,   fill: "#f7f0ff", edge: PRIMARY_DARK, key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
+    wrong:    { border: DANGER,    fill: "#fff1f3", edge: "#9f1239",    key: "",        keyText: "#fff",   text: DANGER,       weight: "800" as const },
+  }[state];
+
+  const filledKey = state !== "idle";
+
+  return (
+    <View style={{ marginBottom: 9 }}>
+      <View style={[s.optEdge, { backgroundColor: skin.edge }]} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(4)}
+          onPressOut={() => set(0)}
+          accessibilityRole="radio"
+          accessibilityState={{ selected: state !== "idle", disabled: !!disabled }}
+          accessibilityLabel={`Вариант ${letter}. ${text}`}
+          style={[s.opt, { borderColor: skin.border, backgroundColor: skin.fill }]}
+        >
+          {filledKey ? (
+            <LinearGradient
+              colors={state === "wrong"
+                ? [DANGER, "#9f1239"]
+                : state === "correct"
+                  ? ["#a855f7", "#8b5cf6"]
+                  : ["#8b5cf6", "#6366f1"]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={s.optKey}
+            >
+              <Text style={[s.optKeyText, { color: "#fff" }]}>{letter}</Text>
+            </LinearGradient>
+          ) : (
+            <View style={[s.optKey, { backgroundColor: skin.key, borderWidth: 1.5, borderColor: BORDER }]}>
+              <Text style={[s.optKeyText, { color: skin.keyText }]}>{letter}</Text>
+            </View>
+          )}
+
+          <Text style={[s.optText, { color: skin.text, fontWeight: skin.weight }]}>{text}</Text>
+
+          {state === "selected" && <Glyph name="check" size={17} color={PRIMARY_DARK} />}
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: 4 }} />
+    </View>
+  );
+}
+
+/** Крупная кнопка внизу экрана. Тот же физический приём, что у ChunkyButton. */
+function Cta({
+  label, icon, onPress, disabled, busy,
+}: {
+  label: string;
+  icon?: GlyphName;
+  onPress: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: Platform.OS !== "web",
+    }).start();
+
+  const off = disabled || busy;
+
+  return (
+    <View>
+      <View style={[s.ctaEdge, { backgroundColor: off ? "#cdc7dd" : accents.indigoDeep }]} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={off ? undefined : onPress}
+          onPressIn={() => !off && set(chunky.pressDepth)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ disabled: !!off }}
+        >
+          <LinearGradient
+            colors={(off ? ["#ded9ea", "#d0cae0"] : gradients.action) as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={s.cta}
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Text style={[s.ctaText, off && { color: "#8b83a8" }]}>{label}</Text>
+                {icon && <Glyph name={icon} size={18} color={off ? "#8b83a8" : "#fff"} />}
+              </>
+            )}
+          </LinearGradient>
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: chunky.edge }} />
+    </View>
+  );
+}
+
+/** Плитка со стандартной цветной тенью. */
+function Plate({ children, style }: { children: React.ReactNode; style?: any }) {
+  return <View style={[s.plate, style]}>{children}</View>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function AssignmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -125,36 +426,39 @@ export default function AssignmentDetailScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
 
-  // Step-by-step navigation
+  // Пошаговая навигация
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [readingExpanded, setReadingExpanded] = useState(false);
+  // Текст для чтения раскрыт сразу: прятать его за «нажмите, чтобы раскрыть»
+  // означало заставлять ученика открывать то, без чего вопрос не решается.
+  const [readingExpanded, setReadingExpanded] = useState(true);
 
-  // Плавная анимация полосы прогресса — заполняется ПОСЛЕ ответа на вопрос.
-  const progressAnim = useRef(new Animated.Value(0)).current;
-
-  // Free-form
+  // Свободный ответ
   const [freeFormText, setFreeFormText] = useState("");
   const [freeFormAttachment, setFreeFormAttachment] = useState<string | null>(null);
   const [freeFormUploading, setFreeFormUploading] = useState(false);
+  const [freeFormFocused, setFreeFormFocused] = useState(false);
 
-  // Timer
+  // Таймер
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [timerExpired, setTimerExpired] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoSubmitRef = useRef(false);
   const answersRef = useRef<Record<number, string>>({});
 
-  // Audio player (web only — hidden <audio> element)
+  // Аудио (веб — скрытый <audio>)
   const audioRef = useRef<any>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioSpeed, setAudioSpeed] = useState(1);
+  // Сколько раз прослушано целиком: ученику полезно знать, что попыток
+  // сколько угодно, а учителю в будущем — сколько их понадобилось.
+  const [audioPlays, setAudioPlays] = useState(0);
 
   const isTeacherRole = user?.role === "teacher" || user?.role === "admin";
   const isStudent = user?.role === "student";
 
-  // Load assignment
+  // Загрузка задания
   useEffect(() => {
     if (!assignmentId) return;
     setAssignment(null);
@@ -174,7 +478,7 @@ export default function AssignmentDetailScreen() {
       .finally(() => setIsLoading(false));
   }, [assignmentId]);
 
-  // Timer
+  // Таймер
   useEffect(() => {
     if (!assignment || !isStudent || submitted) return;
     if (!assignment.timeLimitMinutes) return;
@@ -204,7 +508,7 @@ export default function AssignmentDetailScreen() {
           body: JSON.stringify({ textAnswer: freeFormText, attachmentUrl: freeFormAttachment }),
         });
       } else {
-        const answerList = (assignment.questions || []).map((q: Question) => ({
+        const answerList = asArray<Question>(assignment.questions).map((q: Question) => ({
           questionId: q.id,
           answer: currentAnswers[q.id] || "",
         }));
@@ -239,7 +543,7 @@ export default function AssignmentDetailScreen() {
       const ext = match ? match[1] : "jpg";
       const contentType = `image/${ext === "jpg" ? "jpeg" : ext}`;
 
-      // Web (the VPS deployment is Expo web): presigned PUT into object storage.
+      // Веб (боевой деплой — Expo web): presigned PUT в объектное хранилище.
       if (Platform.OS === "web") {
         const blobRes = await fetch(asset.uri);
         const blob = await blobRes.blob();
@@ -264,8 +568,7 @@ export default function AssignmentDetailScreen() {
         if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
         setFreeFormAttachment(`${BASE_URL}/api/storage${objectPath}?kind=image`);
       } else {
-        // Native fallback (not used by the VPS web deployment): multer multipart
-        // — kept so the native app still builds/works. Files land on disk only.
+        // Нативный фолбэк (в вебе не используется): multer multipart.
         const form = new FormData();
         form.append("file", { uri: asset.uri, name: filename, type: contentType } as any);
         const uploadRes = await fetch(`${BASE_URL}/api/upload/image`, {
@@ -293,7 +596,7 @@ export default function AssignmentDetailScreen() {
       handleSubmit();
       return;
     }
-    const questions = assignment?.questions ?? [];
+    const questions = asArray<Question>(assignment?.questions);
     if (questions.length === 0) { handleSubmit(); return; }
     const empty = questions.filter((q: Question) => !answers[q.id]?.trim());
     if (empty.length === 0) {
@@ -313,21 +616,7 @@ export default function AssignmentDetailScreen() {
     }
   }, [timerExpired]);
 
-  // Плавно догоняем полосу прогресса до текущего значения. Значение зависит от
-  // числа отвеченных вопросов, поэтому эффект срабатывает ПОСЛЕ ответа (когда
-  // меняется answers) — полоса растёт после ответа, а не до него.
-  useEffect(() => {
-    const qs = assignment?.questions ?? [];
-    const answered = qs.filter(q => !!answers[q.id]?.trim()).length;
-    const pct = submitted ? 100 : qs.length > 0 ? (answered / qs.length) * 100 : 0;
-    Animated.timing(progressAnim, {
-      toValue: pct,
-      duration: 450,
-      useNativeDriver: false, // анимируем width (layout-свойство)
-    }).start();
-  }, [assignment, answers, submitted, progressAnim]);
-
-  // ─── Loading ──────────────────────────────────────────────────────────────
+  // ─── Загрузка ──────────────────────────────────────────────────────────────
   if (isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: QUIZ_BG, justifyContent: "center", alignItems: "center" }}>
@@ -339,30 +628,45 @@ export default function AssignmentDetailScreen() {
   if (fetchError || !assignment) {
     return (
       <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
-        <View style={{ paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16), paddingHorizontal: 20, flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <TouchableOpacity onPress={() => router.back()} style={s.iconBtn}>
-            <Feather name="arrow-left" size={20} color={SLATE} />
-          </TouchableOpacity>
+        <View style={{ paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16), paddingHorizontal: 16, flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <RoundBtn icon="chevron" flip onPress={() => router.back()} />
           <Text style={s.headerTitle}>Задание</Text>
         </View>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 40 }}>
-          <Feather name="alert-circle" size={40} color={DANGER} />
-          <Text style={{ marginTop: 12, fontSize: 15, color: TEXT_MID, textAlign: "center" }}>{fetchError ?? "Задание не найдено"}</Text>
-          <TouchableOpacity
-            style={{ marginTop: 16, backgroundColor: PRIMARY, borderRadius: 12, paddingHorizontal: 24, paddingVertical: 12 }}
-            onPress={() => { setIsLoading(true); setFetchError(null); apiFetch(`/api/assignments/${assignmentId}`).then(setAssignment).catch((e: Error) => setFetchError(e.message)).finally(() => setIsLoading(false)); }}
+        <View style={s.stateBox}>
+          <LinearGradient
+            colors={["#8b5cf6", accents.indigoDeep]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={s.stateBadge}
           >
-            <Text style={{ color: "#fff", fontWeight: "700" }}>Повторить</Text>
-          </TouchableOpacity>
+            <Glyph name="alert" size={28} color="#fff" />
+          </LinearGradient>
+          <Text style={s.stateTitle}>Не удалось открыть</Text>
+          <Text style={s.stateText}>{fetchError ?? "Задание не найдено"}</Text>
+          <View style={{ alignSelf: "stretch", marginTop: 6 }}>
+            <Cta
+              label="Попробовать снова"
+              icon="repeat"
+              onPress={() => {
+                setIsLoading(true);
+                setFetchError(null);
+                apiFetch(`/api/assignments/${assignmentId}`)
+                  .then(setAssignment)
+                  .catch((e: Error) => setFetchError(e.message))
+                  .finally(() => setIsLoading(false));
+              }}
+            />
+          </View>
         </View>
       </View>
     );
   }
 
-  const questions = assignment.questions || [];
+  const questions = asArray<Question>(assignment.questions);
   const mediaUrl = assignment.mediaUrl || (assignment.type !== "reading" ? assignment.content : null);
   const textContent = assignment.type === "reading" ? assignment.content : null;
   const imageUrl = assignment.imageUrl;
+  const meta = typeMeta(assignment.type);
 
   const isAudioUrl = (url: string) => url.includes("kind=audio") || /\.(mp3|m4a|wav|ogg|aac)(\?|$)/i.test(url) || url.includes("/upload/audio") || url.includes("/upload/student-recording");
   const isVideoUrl = (url: string) => url.includes("kind=video") || url.includes("youtube") || url.includes("youtu.be") || /\.(mp4|mov|webm|avi)(\?|$)/i.test(url) || url.includes("/upload/video") || url.includes("/api/storage/objects/");
@@ -398,6 +702,12 @@ export default function AssignmentDetailScreen() {
     setAudioPlaying(true);
   };
 
+  const skipAudio = () => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.currentTime = Math.min((el.currentTime ?? 0) + 10, el.duration ?? 0);
+  };
+
   const toggleAudioSpeed = () => {
     const next = audioSpeed === 1 ? 0.5 : 1;
     setAudioSpeed(next);
@@ -407,92 +717,126 @@ export default function AssignmentDetailScreen() {
 
   const formatAudioTime = (sec: number) => {
     const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
+    const ss = Math.floor(sec % 60);
+    return `${m}:${ss.toString().padStart(2, "0")}`;
   };
 
   const hasTimer = isStudent && !!assignment.timeLimitMinutes && !submitted;
   const timerWarning = timeLeft !== null && timeLeft < 60;
   const timerDanger = timeLeft !== null && timeLeft < 30;
-  const timerColor = timerDanger ? DANGER : timerWarning ? ORANGE : SUCCESS;
   const inputsDisabled = submitted || timerExpired;
 
-  const totalSteps = questions.length > 0 ? questions.length : 1;
-  const answeredCount = questions.filter(q => !!answers[q.id]?.trim()).length;
-  const progressPct = submitted ? 100 : questions.length > 0 ? (answeredCount / questions.length) * 100 : 0;
-
-  // ─── TEACHER VIEW: classic scroll layout ─────────────────────────────────
+  // ═════════════════ УЧИТЕЛЬ: обычная прокрутка с ответами ═════════════════
   if (isTeacherRole) {
     return (
       <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
         <ImageZoomModal uri={zoomImg} onClose={() => setZoomImg(null)} />
         <MediaViewerModal url={mediaModal?.url ?? null} kind={mediaModal?.kind ?? "other"} title={mediaModal?.title} onClose={() => setMediaModal(null)} />
-        {/* Header */}
-        <View style={[s.header, { paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16) }]}>
-          <TouchableOpacity style={s.iconBtn} onPress={() => router.back()}>
-            <Feather name="arrow-left" size={20} color={SLATE} />
-          </TouchableOpacity>
-          <Text style={s.headerTitle} numberOfLines={1}>{assignment.title}</Text>
+
+        <View style={[s.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16) }]}>
+          <RoundBtn icon="chevron" flip onPress={() => router.back()} />
+          <TypeChip type={assignment.type} title={assignment.title} />
         </View>
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 120, gap: 12 }}>
-          {/* Info */}
-          <View style={s.card}>
+
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 120, paddingTop: 14, gap: 12 }}>
+          <Plate style={{ padding: 14 }}>
             <Text style={s.assignTitle}>{assignment.title}</Text>
             {!!assignment.description?.trim() && (
               <Text style={[s.bodyText, { marginBottom: 10 }]}>{assignment.description}</Text>
             )}
             <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
               <View style={[s.badge, { backgroundColor: "#ede9fe" }]}>
-                <Text style={[s.badgeText, { color: PRIMARY }]}>{TYPE_LABELS[assignment.type] ?? assignment.type}</Text>
+                <Text style={[s.badgeText, { color: PRIMARY }]}>{meta.label}</Text>
               </View>
               <View style={[s.badge, { backgroundColor: "#fce7f3" }]}>
-                <Feather name="star" size={11} color="#9d174d" />
-                <Text style={[s.badgeText, { color: "#9d174d" }]}>{assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}</Text>
+                <Glyph name="star" size={11} color="#9d174d" />
+                <Text style={[s.badgeText, { color: "#9d174d" }]}>
+                  {assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}
+                </Text>
               </View>
+              {questions.length > 0 && (
+                <View style={[s.badge, { backgroundColor: "#e0e7ff" }]}>
+                  <Text style={[s.badgeText, { color: accents.indigoDeep }]}>
+                    {questions.length} {plural(questions.length, ["вопрос", "вопроса", "вопросов"])}
+                  </Text>
+                </View>
+              )}
             </View>
-          </View>
-          {/* Image */}
+          </Plate>
+
           {imageUrl && (
-            <TouchableOpacity onPress={() => setZoomImg(imageUrl)} style={[s.card, { padding: 0, overflow: "hidden" }]} activeOpacity={0.9}>
-              <Image source={{ uri: imageUrl }} style={{ width: "100%", height: 200, borderRadius: 14 }} resizeMode="cover" />
+            <TouchableOpacity onPress={() => setZoomImg(imageUrl)} activeOpacity={0.9} style={[s.plate, { padding: 0, overflow: "hidden" }]}>
+              <Image source={{ uri: imageUrl }} style={{ width: "100%", height: 200 }} resizeMode="cover" />
             </TouchableOpacity>
           )}
-          {/* Media */}
-          {textContent && <View style={s.card}><Text style={s.sectionTitle}>Текст для чтения</Text><Text style={s.bodyText}>{textContent}</Text></View>}
+
+          {textContent && (
+            <Plate style={{ padding: 14 }}>
+              <Text style={s.sectionTitle}>Текст для чтения</Text>
+              <Text style={s.bodyText}>{textContent}</Text>
+            </Plate>
+          )}
           {showAudioBlock && mediaUrl && (
-            <View style={s.card}>
+            <Plate style={{ padding: 14 }}>
               <InlineMediaPlayer url={mediaUrl} kind="audio" title={assignment.title} />
-            </View>
+            </Plate>
           )}
           {showVideoBlock && mediaUrl && (
-            <View style={s.card}>
+            <Plate style={{ padding: 14 }}>
               <InlineMediaPlayer url={mediaUrl} kind="video" height={200} title={assignment.title} />
-            </View>
+            </Plate>
           )}
           {showOtherBlock && mediaUrl && (
-            <View style={s.card}>
+            <Plate style={{ padding: 14 }}>
               <InlineMediaPlayer url={mediaUrl} kind="other" height={200} title={assignment.title} />
-            </View>
+            </Plate>
           )}
-          {/* Questions — teacher sees correct answers */}
+
           {questions.length > 0 && (
             <View>
-              <Text style={[s.sectionTitle, { marginBottom: 10 }]}>Вопросы</Text>
+              <Text style={[s.lbl, { marginBottom: 10, marginTop: 4 }]}>Вопросы и верные ответы</Text>
               {questions.map((q, i) => (
-                <View key={q.id} style={[s.card, { marginBottom: 10 }]}>
-                  <Text style={[s.bodyText, { fontWeight: "600", color: TEXT_DARK, marginBottom: 8 }]}>{i + 1}. {q.text}</Text>
-                  {q.correctAnswer && (
-                    <View style={{ backgroundColor: "#eef2ff", borderRadius: 10, padding: 10, borderWidth: 1.5, borderColor: SUCCESS }}>
-                      <Text style={{ color: SUCCESS, fontWeight: "600", fontSize: 14 }}>✓ {q.correctAnswer}</Text>
+                <Plate key={q.id} style={{ padding: 14, marginBottom: 10 }}>
+                  <View style={s.qRow}>
+                    <View style={[s.qNum, { backgroundColor: "#ede9fe" }]}>
+                      <Text style={[s.qNumText, { color: PRIMARY_DARK }]}>{i + 1}</Text>
                     </View>
-                  )}
-                  {Array.isArray(q.options) && q.options.map((opt, oi) => (
-                    <View key={oi} style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 }}>
-                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: opt === q.correctAnswer ? SUCCESS : BORDER }} />
-                      <Text style={{ fontSize: 13, color: opt === q.correctAnswer ? SUCCESS : TEXT_MID, fontWeight: opt === q.correctAnswer ? "600" : "400" }}>{opt}</Text>
+                    <Text style={[s.qText, { fontSize: 15 }]}>{q.text}</Text>
+                  </View>
+                  {Array.isArray(q.options) && q.options.length > 0 ? (
+                    <View style={{ marginTop: 10, gap: 7 }}>
+                      {q.options.map((opt, oi) => {
+                        const right = opt === q.correctAnswer;
+                        return (
+                          <View
+                            key={oi}
+                            style={{
+                              flexDirection: "row", alignItems: "center", gap: 9,
+                              paddingVertical: 8, paddingHorizontal: 11, borderRadius: radii.sm,
+                              backgroundColor: right ? "#f6f2ff" : "#f7f6fb",
+                              borderWidth: 1.5, borderColor: right ? SUCCESS : "transparent",
+                            }}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: "900", color: right ? PRIMARY_DARK : TEXT_MUTED, width: 14 }}>
+                              {String.fromCharCode(65 + oi)}
+                            </Text>
+                            <Text style={{ flex: 1, fontSize: 13.5, color: right ? PRIMARY_DARK : TEXT_MID, fontWeight: right ? "800" : "500" }}>
+                              {opt}
+                            </Text>
+                            {right && <Glyph name="check" size={15} color={SUCCESS} />}
+                          </View>
+                        );
+                      })}
                     </View>
-                  ))}
-                </View>
+                  ) : q.correctAnswer ? (
+                    <View style={{ marginTop: 10, backgroundColor: "#f6f2ff", borderRadius: radii.sm, padding: 11, borderWidth: 1.5, borderColor: SUCCESS }}>
+                      <Text style={{ fontSize: 10, fontWeight: "800", color: TEXT_MUTED, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>
+                        Верный ответ
+                      </Text>
+                      <Text style={{ color: PRIMARY_DARK, fontWeight: "800", fontSize: 14 }}>{q.correctAnswer}</Text>
+                    </View>
+                  ) : null}
+                </Plate>
               ))}
             </View>
           )}
@@ -501,109 +845,128 @@ export default function AssignmentDetailScreen() {
     );
   }
 
-  // ─── SUBMITTED RESULT SCREEN ─────────────────────────────────────────────
+  // ═════════════════ РЕЗУЛЬТАТ ═════════════════
   if (submitted && result) {
     const isFreeForm = assignment.type === "free_form";
     const score = result.score ?? 0;
     const passed = score >= 70;
+    const ringSize = 116;
+    const stroke = 11;
+    const r = (ringSize - stroke) / 2;
+    const circumference = 2 * Math.PI * r;
+    const results = asArray<any>(result.results);
 
     return (
       <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
         <ImageZoomModal uri={zoomImg} onClose={() => setZoomImg(null)} />
         <MediaViewerModal url={mediaModal?.url ?? null} kind={mediaModal?.kind ?? "other"} title={mediaModal?.title} onClose={() => setMediaModal(null)} />
-        <View style={[s.header, { paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16) }]}>
-          <TouchableOpacity style={s.iconBtn} onPress={() => router.back()}>
-            <Feather name="arrow-left" size={20} color={SLATE} />
-          </TouchableOpacity>
+
+        <View style={[s.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16) }]}>
+          <RoundBtn icon="chevron" flip onPress={() => router.back()} />
           <Text style={s.headerTitle}>Результат</Text>
         </View>
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 120 }}>
-          {/* Score card */}
-          <View style={[s.card, { alignItems: "center", paddingVertical: 30, marginBottom: 16 }]}>
-            <View style={{
-              width: 90, height: 90, borderRadius: 45, marginBottom: 16,
-              backgroundColor: passed ? "#eef2ff" : "#fff1f2",
-              borderWidth: 3, borderColor: passed ? SUCCESS : DANGER,
-              justifyContent: "center", alignItems: "center",
-            }}>
-              <Text style={{ fontSize: 28, fontWeight: "900", color: passed ? SUCCESS : DANGER }}>
-                {isFreeForm ? "✓" : `${score}%`}
-              </Text>
-            </View>
-            <Text style={{ fontSize: 20, fontWeight: "800", color: TEXT_DARK, marginBottom: 4 }}>
-              {isFreeForm ? "Ответ отправлен!" : passed ? "Отлично!" : "Можно лучше!"}
-            </Text>
-            {!isFreeForm && (
-              <Text style={{ fontSize: 14, color: TEXT_MID, marginBottom: 14 }}>
-                {result.correctCount}/{result.totalQuestions} правильных ответов
-              </Text>
-            )}
-            {result.pointsEarned > 0 && (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#fce7f3", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 }}>
-                <Feather name="star" size={15} color="#9d174d" />
-                <Text style={{ fontSize: 15, fontWeight: "700", color: "#9d174d" }}>+{result.pointsEarned} очков!</Text>
-              </View>
-            )}
-            {isFreeForm && (
-              <Text style={{ fontSize: 13, color: TEXT_MUTED, textAlign: "center", marginTop: 8, lineHeight: 19 }}>
-                Баллы начислятся после проверки учителем
-              </Text>
-            )}
-            {timerExpired && (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 }}>
-                <Feather name="clock" size={13} color={TEXT_MUTED} />
-                <Text style={{ fontSize: 12, color: TEXT_MUTED }}>Сдано автоматически по истечении времени</Text>
-              </View>
-            )}
-          </View>
 
-          {/* Per-question results */}
-          {!isFreeForm && questions.length > 0 && result.results && (
-            <View>
-              <Text style={[s.sectionTitle, { marginBottom: 10 }]}>Ответы</Text>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: insets.bottom + 30, gap: 12 }}>
+          {/* Кольцо вместо цифры в кружке: доля читается формой, а не только
+              числом, и одинаково понятна на любом балле. */}
+          <LinearGradient
+            colors={[accents.violetDeep, accents.indigoDeep, "#7e22ce"]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={s.resultHero}
+          >
+            <View style={{ width: ringSize, height: ringSize, alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+              <Svg width={ringSize} height={ringSize} style={{ position: "absolute" }}>
+                <Circle
+                  cx={ringSize / 2} cy={ringSize / 2} r={r}
+                  stroke="rgba(255,255,255,0.22)" strokeWidth={stroke} fill="none"
+                />
+                <Circle
+                  cx={ringSize / 2} cy={ringSize / 2} r={r}
+                  stroke={isFreeForm ? accents.gold : passed ? "#e9d5ff" : "#fda4af"}
+                  strokeWidth={stroke} fill="none" strokeLinecap="round"
+                  strokeDasharray={`${circumference}`}
+                  strokeDashoffset={circumference * (1 - (isFreeForm ? 1 : score / 100))}
+                  transform={`rotate(-90 ${ringSize / 2} ${ringSize / 2})`}
+                />
+              </Svg>
+              {isFreeForm
+                ? <Glyph name="check" size={40} color="#fff" />
+                : <Text style={s.ringValue}>{score}%</Text>}
+            </View>
+
+            <Text style={s.resultTitle}>
+              {isFreeForm ? "Ответ отправлен" : passed ? "Отлично!" : "Можно лучше"}
+            </Text>
+            <Text style={s.resultSub}>
+              {isFreeForm
+                ? "Учитель проверит и поставит баллы"
+                : `${result.correctCount} из ${result.totalQuestions} ${plural(result.totalQuestions ?? 0, ["правильный", "правильных", "правильных"])} · «${assignment.title}»`}
+            </Text>
+
+            {result.pointsEarned > 0 && (
+              <LinearGradient
+                colors={[accents.gold, accents.amber]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={s.earned}
+              >
+                <Glyph name="star" size={15} color="#42200a" />
+                <Text style={s.earnedText}>+{result.pointsEarned} очков</Text>
+              </LinearGradient>
+            )}
+
+            {timerExpired && (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 }}>
+                <Glyph name="clock" size={13} color="rgba(255,255,255,0.75)" />
+                <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", fontWeight: "600" }}>
+                  Сдано автоматически по истечении времени
+                </Text>
+              </View>
+            )}
+          </LinearGradient>
+
+          {!isFreeForm && questions.length > 0 && results.length > 0 && (
+            <>
+              <Text style={s.lbl}>Разбор ответов</Text>
               {questions.map((q, i) => {
-                const qr = result.results.find((r: any) => r.questionId === q.id);
-                const correct = qr?.isCorrect;
+                const qr = results.find((x: any) => x.questionId === q.id);
+                const correct = !!qr?.isCorrect;
                 return (
-                  <View key={q.id} style={[s.card, { marginBottom: 10, borderWidth: 1.5, borderColor: correct ? SUCCESS + "60" : DANGER + "60" }]}>
-                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-                      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: correct ? SUCCESS : DANGER, justifyContent: "center", alignItems: "center", marginTop: 1 }}>
-                        <Feather name={correct ? "check" : "x"} size={13} color="#fff" />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 13, fontWeight: "600", color: TEXT_DARK, marginBottom: 4 }}>{i + 1}. {q.text}</Text>
-                        <Text style={{ fontSize: 12, color: correct ? SUCCESS : DANGER, fontWeight: "600" }}>
-                          {correct ? "Верно!" : `Ваш ответ: ${answers[q.id] || "(пусто)"}`}
-                        </Text>
-                        {!correct && qr?.correctAnswer && (
-                          <Text style={{ fontSize: 12, color: TEXT_MID, marginTop: 2 }}>
-                            Правильно: {qr.correctAnswer}
-                          </Text>
-                        )}
-                      </View>
+                  <Plate key={q.id} style={{ padding: 13, flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+                    <View style={[s.revMark, { backgroundColor: correct ? SUCCESS : DANGER }]}>
+                      <Glyph name={correct ? "check" : "close"} size={13} color="#fff" />
                     </View>
-                  </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.revQ}>{i + 1}. {q.text}</Text>
+                      <Text style={[s.revA, { color: correct ? PRIMARY_DARK : DANGER }]}>
+                        {correct ? (answers[q.id] || "Верно") : `Вы ответили: ${answers[q.id] || "(пусто)"}`}
+                      </Text>
+                      {!correct && !!qr?.correctAnswer && (
+                        <Text style={s.revFix}>Правильно: {qr.correctAnswer}</Text>
+                      )}
+                    </View>
+                  </Plate>
                 );
               })}
-            </View>
+            </>
           )}
 
-          <TouchableOpacity
-            style={[s.nextBtn, { marginTop: 8 }]}
-            onPress={() => router.back()}
-          >
-            <Text style={s.nextBtnText}>Вернуться к заданиям</Text>
-          </TouchableOpacity>
+          <View style={{ marginTop: 6 }}>
+            <Cta label="К списку заданий" icon="arrowRight" onPress={() => router.back()} />
+          </View>
         </ScrollView>
       </View>
     );
   }
 
-  // ─── STEP-BY-STEP STUDENT QUIZ ────────────────────────────────────────────
+  // ═════════════════ УЧЕНИК: пошаговое прохождение ═════════════════
   const isFreeForm = assignment.type === "free_form";
   const currentQ = isFreeForm ? null : questions[currentQuestionIndex];
   const isLastStep = isFreeForm ? true : currentQuestionIndex >= questions.length - 1;
   const currentAnswered = currentQ ? !!answers[currentQ.id]?.trim() : false;
+  const answeredCount = questions.filter(q => !!answers[q.id]?.trim()).length;
+  const freeFormReady = !!freeFormText.trim() || !!freeFormAttachment;
 
   const goNext = () => {
     if (!isLastStep) {
@@ -615,6 +978,20 @@ export default function AssignmentDetailScreen() {
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
 
+  const ctaLabel = isFreeForm
+    ? (freeFormReady ? "Отправить учителю" : "Напишите ответ")
+    : !currentAnswered
+      ? "Выберите ответ"
+      : isLastStep
+        ? "Завершить и отправить"
+        : "Следующий вопрос";
+
+  const ctaIcon: GlyphName | undefined = isFreeForm
+    ? (freeFormReady ? "send" : undefined)
+    : !currentAnswered
+      ? undefined
+      : isLastStep ? "send" : "arrowRight";
+
   return (
     <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
       <ImageZoomModal uri={zoomImg} onClose={() => setZoomImg(null)} />
@@ -622,7 +999,7 @@ export default function AssignmentDetailScreen() {
       <ConfirmModal
         visible={showUnansweredModal}
         title="Не все вопросы отвечены"
-        message={`Вы оставили без ответа ${unansweredCount} ${unansweredCount === 1 ? "вопрос" : unansweredCount < 5 ? "вопроса" : "вопросов"}. Отправить с пустыми полями?`}
+        message={`Вы оставили без ответа ${unansweredCount} ${plural(unansweredCount, ["вопрос", "вопроса", "вопросов"])}. Отправить с пустыми полями?`}
         confirmText="Отправить всё равно"
         cancelText="Вернуться и ответить"
         onConfirm={() => { setShowUnansweredModal(false); handleSubmit(); }}
@@ -630,453 +1007,603 @@ export default function AssignmentDetailScreen() {
       />
       <ConfirmModal
         visible={showExitModal}
-        title="Выйти из теста?"
-        message="Если вы выйдете сейчас, тест будет завершён и отправлен на проверку с текущими ответами. Продолжить его позже будет нельзя."
+        title="Выйти из задания?"
+        message="Задание будет завершено и отправлено учителю с текущими ответами. Продолжить его позже нельзя."
         confirmText="Завершить"
         cancelText="Остаться"
         onConfirm={() => { setShowExitModal(false); handleSubmit(); }}
         onCancel={() => setShowExitModal(false)}
       />
 
-      {/* ── Floating exit button — sits higher, above the step-counter row ── */}
-      <TouchableOpacity
-        style={[s.floatingCloseBtn, { top: insets.top + (Platform.OS === "web" ? 20 : 8) }]}
-        onPress={() => setShowExitModal(true)}
-      >
-        <Feather name="x" size={18} color={SLATE} />
-      </TouchableOpacity>
-
-      {/* ── Top bar ── */}
+      {/* ── Шапка: выход, тип задания, таймер ──
+          Раньше здесь была одинокая цифра, крестик висел отдельно поверх
+          экрана, а тип шёл капслоком строкой ниже. */}
       <View style={[s.topBar, { paddingTop: topPad }]}>
-        <View style={{ width: 36 }} />
-
-        {/* Номер вопроса убран — прогресс показывает полоса внизу экрана */}
-        <Text style={s.stepCounter}>
-          {isFreeForm ? assignment.title : ""}
-        </Text>
-
-        {hasTimer && timeLeft !== null ? (
-          <View style={[s.timerBadge, { borderColor: timerColor + "50", backgroundColor: timerColor + "15" }]}>
-            <Feather name="clock" size={13} color={timerColor} />
-            <Text style={[s.timerText, { color: timerColor }]}>{formatTime(timeLeft)}</Text>
+        <RoundBtn icon="close" onPress={() => setShowExitModal(true)} />
+        <TypeChip type={assignment.type} title={assignment.title} />
+        {hasTimer && timeLeft !== null && (
+          <View style={[
+            s.timer,
+            timerDanger
+              ? { backgroundColor: "rgba(225,29,72,0.13)", borderColor: "rgba(225,29,72,0.4)" }
+              : timerWarning
+                ? { backgroundColor: "rgba(245,158,11,0.16)", borderColor: "rgba(245,158,11,0.45)" }
+                : null,
+          ]}>
+            <Glyph name="clock" size={13} color={timerDanger ? DANGER : timerWarning ? "#b45309" : PRIMARY_DARK} />
+            <Text style={[s.timerText, { color: timerDanger ? DANGER : timerWarning ? "#b45309" : PRIMARY_DARK }]}>
+              {formatTime(timeLeft)}
+            </Text>
           </View>
-        ) : (
-          <View style={{ width: 36 }} />
         )}
       </View>
 
-      {/* ── Type label ── */}
-      <Text style={s.typeLabel}>{TYPE_LABELS[assignment.type] ?? assignment.type}</Text>
+      {/* ── Лестница шагов ── */}
+      <StepLadder
+        total={isFreeForm ? 1 : Math.max(questions.length, 1)}
+        index={isFreeForm ? 0 : currentQuestionIndex}
+        answered={answeredCount}
+        rightNote={isFreeForm ? (assignment.points > 0 ? `${assignment.points} очков` : "проверит учитель") : undefined}
+      />
 
-      {/* ── Scrollable content ── */}
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 140 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 20 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        {/* Timer expired banner */}
         {timerExpired && !submitted && (
-          <View style={{ backgroundColor: "#fff1f2", borderRadius: 14, padding: 14, borderWidth: 1.5, borderColor: "#fda4af", marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <Feather name="clock" size={18} color={DANGER} />
-            <Text style={{ fontSize: 14, fontWeight: "700", color: DANGER, flex: 1 }}>
-              {submitting ? "Ответы отправляются…" : "Время вышло!"}
+          <View style={s.expired}>
+            <Glyph name="clock" size={18} color={DANGER} />
+            <Text style={s.expiredText}>
+              {submitting ? "Ответы отправляются…" : "Время вышло"}
             </Text>
           </View>
         )}
 
-        {/* ── Description card (only if the teacher added one) ── */}
+        {/* ── Задание от учителя ──
+            Для свободного ответа это единственная постановка задачи, поэтому
+            блок называется «Задание», а не безымянное «Описание». */}
         {!!assignment.description?.trim() && (
-          <View style={[s.card, { marginBottom: 12 }]}>
-            <Text style={[s.sectionTitle, { marginBottom: 6 }]}>Описание</Text>
-            <Text style={s.bodyText}>{assignment.description}</Text>
-          </View>
+          <Plate style={{ padding: 14, marginBottom: 12 }}>
+            <Text style={[s.lbl, { marginBottom: 7 }]}>{isFreeForm ? "Задание" : "Описание"}</Text>
+            <Text style={isFreeForm ? s.taskText : s.bodyText}>{assignment.description}</Text>
+            {isFreeForm && (
+              <View style={{ flexDirection: "row", gap: 7, marginTop: 11, flexWrap: "wrap" }}>
+                <View style={[s.badge, { backgroundColor: "rgba(251,191,36,0.22)" }]}>
+                  <Glyph name="star" size={11} color="#92400e" />
+                  <Text style={[s.badgeText, { color: "#92400e" }]}>
+                    {assignment.points > 0 ? `${assignment.points} очков после проверки` : "Баллы после проверки"}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </Plate>
         )}
 
-        {/* ── Audio player card ── */}
+        {/* ── Аудио ──
+            Тёмная карта: плеер — главный объект экрана, а не строка над
+            вопросом. На белом фоне он терялся среди остальных карточек. */}
         {showAudioBlock && (
-          <View style={[s.card, { marginBottom: 12, backgroundColor: AUDIO_BG }]}>
-            {/* Hidden web audio element — no controls */}
+          <LinearGradient
+            colors={[accents.violetDeep, accents.indigoDeep]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={s.audio}
+          >
             {Platform.OS === "web" && mediaUrl && (
-              // @ts-ignore
+              // @ts-ignore — веб-элемент внутри RN-дерева
               <audio
                 ref={audioRef}
                 src={mediaUrl}
                 style={{ display: "none" }}
-                onEnded={() => setAudioPlaying(false)}
+                onEnded={() => { setAudioPlaying(false); setAudioPlays(n => n + 1); }}
                 onLoadedMetadata={(e: any) => setAudioDuration(e.target.duration)}
                 onTimeUpdate={(e: any) => setAudioCurrentTime(e.target.currentTime)}
               />
             )}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <TouchableOpacity
-                style={{ borderRadius: 24, overflow: "hidden" }}
+
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 13 }}>
+              <Pressable
                 onPress={Platform.OS === "web" ? toggleAudio : openMedia}
+                style={({ pressed }) => [s.play, pressed && { transform: [{ scale: 0.93 }] }]}
+                accessibilityRole="button"
+                accessibilityLabel={audioPlaying ? "Пауза" : "Слушать"}
               >
-                <LinearGradient
-                  colors={[PRIMARY, "#a78bfa"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ width: 48, height: 48, borderRadius: 24, justifyContent: "center", alignItems: "center" }}
-                >
-                  <Feather name={audioPlaying ? "pause" : "play"} size={20} color="#fff" />
-                </LinearGradient>
-              </TouchableOpacity>
-              <View style={{ flex: 1 }}>
-                {/* Waveform bars — purple gradient for played portion, grey for rest — stretched to fill available width */}
-                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", height: 32, width: "100%" }}>
-                  {Array.from({ length: 30 }).map((_, i) => {
-                    const fraction = audioDuration ? audioCurrentTime / audioDuration : 0;
-                    const played = i / 30 < fraction;
-                    return (
-                      <View
-                        key={i}
-                        style={{
-                          width: 3, borderRadius: 2,
-                          height: 6 + Math.abs(Math.sin(i * 0.7 + 1) * 14),
-                          backgroundColor: played ? lerpColor(WAVE_START, WAVE_END, i / 30) : BORDER,
-                        }}
-                      />
-                    );
-                  })}
+                <View style={audioPlaying ? undefined : { marginLeft: 3 }}>
+                  <Glyph name={audioPlaying ? "pause" : "play"} size={20} color={accents.violetDeep} />
                 </View>
+              </Pressable>
+
+              {/* Волна: высоты детерминированы формулой, а не случайны — иначе
+                  рисунок прыгал бы на каждом ре-рендере во время проигрывания. */}
+              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", height: 38, gap: 2.5 }}>
+                {Array.from({ length: 30 }).map((_, i) => {
+                  const fraction = audioDuration ? audioCurrentTime / audioDuration : 0;
+                  const played = i / 30 < fraction;
+                  return (
+                    <View
+                      key={i}
+                      style={{
+                        flex: 1, borderRadius: 2,
+                        height: 7 + Math.abs(Math.sin(i * 0.62 + 1) * 22),
+                        backgroundColor: played ? "#f0abfc" : "rgba(255,255,255,0.28)",
+                      }}
+                    />
+                  );
+                })}
               </View>
-              <Text style={{ fontSize: 12, color: TEXT_MUTED, fontWeight: "600", minWidth: 36 }}>
+
+              <Text style={s.audioTime}>
                 {audioDuration ? formatAudioTime(audioDuration) : "—:——"}
               </Text>
             </View>
-            <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-              <TouchableOpacity
-                style={[s.chipBtn]}
-                onPress={Platform.OS === "web" ? replayAudio : openMedia}
-              >
-                <Feather name="refresh-cw" size={12} color={SLATE} />
-                <Text style={s.chipBtnText}>Слушать снова</Text>
-              </TouchableOpacity>
+
+            <View style={{ flexDirection: "row", gap: 7, marginTop: 12, flexWrap: "wrap" }}>
+              <Pressable style={s.gchip} onPress={Platform.OS === "web" ? replayAudio : openMedia}>
+                <Glyph name="repeat" size={12} color="#fff" />
+                <Text style={s.gchipText}>Сначала</Text>
+              </Pressable>
               {Platform.OS === "web" && (
-                <TouchableOpacity
-                  style={[s.chipBtn, audioSpeed === 0.5 && { backgroundColor: PRIMARY + "20", borderWidth: 1.5, borderColor: PRIMARY }]}
-                  onPress={toggleAudioSpeed}
-                >
-                  <Feather name="zap" size={12} color={audioSpeed === 0.5 ? PRIMARY : SLATE} />
-                  <Text style={[s.chipBtnText, audioSpeed === 0.5 && { color: PRIMARY }]}>{audioSpeed === 1 ? "1x" : "0.5x"}</Text>
-                </TouchableOpacity>
+                <>
+                  <Pressable
+                    style={[s.gchip, audioSpeed === 0.5 && s.gchipOn]}
+                    onPress={toggleAudioSpeed}
+                  >
+                    <Text style={[s.gchipText, audioSpeed === 0.5 && { color: accents.violetDeep }]}>
+                      {audioSpeed === 1 ? "1×" : "0.5×"}
+                    </Text>
+                  </Pressable>
+                  <Pressable style={s.gchip} onPress={skipAudio}>
+                    <Glyph name="forward" size={12} color="#fff" />
+                    <Text style={s.gchipText}>+10 с</Text>
+                  </Pressable>
+                </>
               )}
             </View>
-          </View>
+
+            <Text style={s.audioHint}>
+              {audioPlays > 0
+                ? `Прослушано ${audioPlays} ${plural(audioPlays, ["раз", "раза", "раз"])} · слушайте сколько нужно`
+                : "Слушать можно сколько угодно раз"}
+            </Text>
+          </LinearGradient>
         )}
 
-        {/* ── Video card ── */}
+        {/* ── Видео ── */}
         {showVideoBlock && mediaUrl && (
-          <View style={[s.card, { marginBottom: 12 }]}>
-            <InlineMediaPlayer url={mediaUrl} kind="video" height={200} />
+          <View style={s.videoWrap}>
+            <InlineMediaPlayer url={mediaUrl} kind="video" height={200} title={assignment.title} />
           </View>
         )}
 
-        {/* ── Attached file card (unrecognized type) ── */}
         {showOtherBlock && mediaUrl && (
-          <View style={[s.card, { marginBottom: 12 }]}>
+          <Plate style={{ padding: 14, marginBottom: 12 }}>
             <InlineMediaPlayer url={mediaUrl} kind="other" height={200} title={assignment.title} />
-          </View>
+          </Plate>
         )}
 
-        {/* ── Reading text card (collapsible) ── */}
+        {/* ── Текст для чтения ──
+            Раскрыт по умолчанию: без него на вопрос не ответить. Свернуть
+            можно, когда текст уже прочитан и мешает видеть варианты. */}
         {textContent && (
-          <View style={[s.card, { marginBottom: 12 }]}>
-            <TouchableOpacity style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }} onPress={() => setReadingExpanded(e => !e)}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: "#e0e7ff", justifyContent: "center", alignItems: "center" }}>
-                  <Feather name="book-open" size={14} color={SUCCESS} />
-                </View>
-                <Text style={[s.sectionTitle, { marginBottom: 0 }]}>Текст для чтения</Text>
+          <Plate style={{ padding: 14, marginBottom: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 11 }}>
+              <LinearGradient
+                colors={[accents.magenta, "#a855f7"]}
+                start={{ x: 0.1, y: 0 }}
+                end={{ x: 0.9, y: 1 }}
+                style={s.readIcon}
+              >
+                <Glyph name="book" size={15} color="#fff" />
+              </LinearGradient>
+              <Text style={s.readTitle}>Текст</Text>
+              <Text style={s.readCount}>
+                {textContent.trim().split(/\s+/).length} {plural(textContent.trim().split(/\s+/).length, ["слово", "слова", "слов"])}
+              </Text>
+            </View>
+
+            <Text
+              style={s.readBody}
+              numberOfLines={readingExpanded ? undefined : 4}
+            >
+              {textContent}
+            </Text>
+
+            <Pressable style={s.readMore} onPress={() => setReadingExpanded(e => !e)}>
+              <Text style={s.readMoreText}>{readingExpanded ? "Свернуть текст" : "Показать весь текст"}</Text>
+              <View style={{ transform: [{ rotate: readingExpanded ? "-90deg" : "90deg" }] }}>
+                <Glyph name="chevron" size={14} color={PRIMARY_DARK} />
               </View>
-              <Feather name={readingExpanded ? "chevron-up" : "chevron-down"} size={16} color={SLATE} />
-            </TouchableOpacity>
-            {readingExpanded && (
-              <Text style={[s.bodyText, { marginTop: 12, lineHeight: 22 }]}>{textContent}</Text>
-            )}
-            {!readingExpanded && (
-              <Text style={{ fontSize: 12, color: TEXT_MUTED, marginTop: 6 }}>Нажмите, чтобы раскрыть текст</Text>
-            )}
-          </View>
+            </Pressable>
+          </Plate>
         )}
 
-        {/* ── Assignment image ── */}
+        {/* ── Картинка задания ── */}
         {imageUrl && (
           <TouchableOpacity
             activeOpacity={0.92}
             onPress={() => setZoomImg(imageUrl)}
-            style={[s.card, { padding: 4, overflow: "hidden", marginBottom: 12, borderWidth: 1.5, borderColor: BORDER }]}
+            style={[s.plate, { padding: 4, overflow: "hidden", marginBottom: 12 }]}
           >
-            <Image
-              source={{ uri: imageUrl }}
-              style={{ width: "100%", height: 160, borderRadius: 10 }}
-              resizeMode="cover"
-            />
-            <View style={{ position: "absolute", bottom: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,255,255,0.9)", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 }}>
-              <Feather name="maximize-2" size={11} color={SLATE} />
-              <Text style={{ fontSize: 11, color: SLATE, fontWeight: "600" }}>Увеличить</Text>
+            <Image source={{ uri: imageUrl }} style={{ width: "100%", height: 170, borderRadius: radii.sm + 2 }} resizeMode="cover" />
+            <View style={s.zoomHint}>
+              <Glyph name="search" size={12} color={TEXT_MID} />
+              <Text style={{ fontSize: 11.5, color: TEXT_MID, fontWeight: "700" }}>Увеличить</Text>
             </View>
           </TouchableOpacity>
         )}
 
-        {/* ── Current question card ── */}
-        {currentQ && (
-          <View style={[s.card, { marginBottom: 12, backgroundColor: QUESTION_BG }]}>
-            {/* Solid colour instead of the background-clip gradient hack: the
-                gradient text caused ghost/duplicate rendering artifacts in
-                iOS Safari when the question card scrolls. */}
-            <Text style={[s.questionText, Platform.OS === "web" && { color: "#4c1d95" }]}>
-              {currentQ.text}
-            </Text>
-          </View>
-        )}
+        {/* ── Вопрос ── */}
+        {currentQ && <QuestionHead n={currentQuestionIndex + 1} text={currentQ.text} />}
 
-        {/* ── Answer options ── */}
+        {/* ── Варианты или поле ответа ── */}
         {currentQ && (() => {
-          const hasOptions = Array.isArray(currentQ.options) && currentQ.options.length > 0;
+          const opts = Array.isArray(currentQ.options) ? currentQ.options : [];
           const selected = answers[currentQ.id];
 
-          if (hasOptions) {
+          if (opts.length > 0) {
             return (
-              <View style={{ gap: 10, marginBottom: 12 }}>
-                {(currentQ.options as string[]).map((opt, oi) => {
-                  const isSelected = selected === opt;
-                  return (
-                    <TouchableOpacity
-                      key={oi}
-                      onPress={() => !inputsDisabled && setAnswers(prev => ({ ...prev, [currentQ.id]: opt }))}
-                      activeOpacity={inputsDisabled ? 1 : 0.7}
-                      style={[s.optionBtn, {
-                        borderColor: isSelected ? PRIMARY : BORDER,
-                        backgroundColor: isSelected ? "#ede9fe" : CARD_BG,
-                        shadowColor: isSelected ? PRIMARY : "#000",
-                        shadowOpacity: isSelected ? 0.12 : 0.04,
-                        shadowRadius: isSelected ? 8 : 4,
-                        shadowOffset: { width: 0, height: 2 },
-                        elevation: isSelected ? 4 : 1,
-                      }]}
-                    >
-                      <View style={[s.optionRadio, {
-                        borderColor: isSelected ? PRIMARY : "#cbd5e1",
-                        backgroundColor: isSelected ? PRIMARY : "transparent",
-                      }]}>
-                        {isSelected && <Feather name="check" size={12} color="#fff" />}
-                      </View>
-                      <Text style={[s.optionText, { color: isSelected ? PRIMARY_DARK : TEXT_DARK, fontWeight: isSelected ? "600" : "400" }]}>{opt}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              <View style={{ marginTop: 14 }}>
+                {opts.map((opt, oi) => (
+                  <OptionKey
+                    key={oi}
+                    letter={String.fromCharCode(65 + oi)}
+                    text={opt}
+                    state={selected === opt ? "selected" : "idle"}
+                    disabled={inputsDisabled}
+                    onPress={() => setAnswers(prev => ({ ...prev, [currentQ.id]: opt }))}
+                  />
+                ))}
               </View>
             );
           }
 
-          // Text answer
           return (
             <TextInput
-              style={[s.textInput, { marginBottom: 12 }]}
+              style={[s.field, { marginTop: 14, minHeight: 96 }]}
               value={answers[currentQ.id] || ""}
               onChangeText={v => !inputsDisabled && setAnswers(prev => ({ ...prev, [currentQ.id]: v }))}
-              placeholder={inputsDisabled ? "Время вышло" : "Ваш ответ..."}
+              placeholder={inputsDisabled ? "Время вышло" : "Ваш ответ…"}
               placeholderTextColor={TEXT_MUTED}
               editable={!inputsDisabled}
               multiline
-              numberOfLines={3}
+              textAlignVertical="top"
               {...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {})}
             />
           );
         })()}
 
-        {/* ── Free-form answer ── */}
-        {isFreeForm && !isTeacherRole && (
-          <View style={{ marginBottom: 12 }}>
-            <TextInput
-              style={[s.textInput, { minHeight: 120, textAlignVertical: "top", marginBottom: 10 }]}
-              value={freeFormText}
-              onChangeText={setFreeFormText}
-              placeholder="Напишите ответ..."
-              placeholderTextColor={TEXT_MUTED}
-              multiline
-              editable={!inputsDisabled}
-              {...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {})}
-            />
-            {freeFormAttachment ? (
-              <View style={{ marginBottom: 10 }}>
-                <TouchableOpacity onPress={() => setZoomImg(freeFormAttachment)} activeOpacity={0.9} style={{ borderRadius: 12, overflow: "hidden" }}>
-                  <Image source={{ uri: freeFormAttachment }} style={{ width: "100%", height: 180, borderRadius: 12 }} resizeMode="cover" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setFreeFormAttachment(null)} style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 }}>
-                  <Feather name="x-circle" size={14} color={DANGER} />
-                  <Text style={{ fontSize: 13, color: DANGER, fontWeight: "600" }}>Убрать фото</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={[s.chipBtn, { alignSelf: "flex-start", paddingVertical: 10, paddingHorizontal: 14 }]}
+        {/* ── Свободный ответ ── */}
+        {isFreeForm && (
+          <View>
+            <View>
+              <TextInput
+                style={[
+                  s.field,
+                  { minHeight: 126, paddingBottom: 26 },
+                  freeFormFocused && { borderColor: "#8b5cf6" },
+                ]}
+                value={freeFormText}
+                onChangeText={setFreeFormText}
+                onFocus={() => setFreeFormFocused(true)}
+                onBlur={() => setFreeFormFocused(false)}
+                placeholder="Напишите ответ…"
+                placeholderTextColor={TEXT_MUTED}
+                multiline
+                textAlignVertical="top"
+                maxLength={2000}
+                editable={!inputsDisabled}
+                {...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {})}
+              />
+              {/* Счётчик символов: раньше поле молчало, и было непонятно,
+                  ждут от тебя строчку или сочинение. */}
+              <Text style={s.fieldCount}>{freeFormText.length} / 2000</Text>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 9, marginTop: 11, alignItems: "center", flexWrap: "wrap" }}>
+              {freeFormAttachment && (
+                <View>
+                  <TouchableOpacity onPress={() => setZoomImg(freeFormAttachment)} activeOpacity={0.9}>
+                    <Image source={{ uri: freeFormAttachment }} style={s.thumb} resizeMode="cover" />
+                  </TouchableOpacity>
+                  <Pressable style={s.thumbX} onPress={() => setFreeFormAttachment(null)} hitSlop={8}>
+                    <Glyph name="close" size={11} color="#fff" />
+                  </Pressable>
+                </View>
+              )}
+              <Pressable
+                style={s.attach}
                 onPress={handleAttachPhoto}
                 disabled={freeFormUploading || inputsDisabled}
               >
-                {freeFormUploading
-                  ? <ActivityIndicator color={SLATE} size="small" />
-                  : <><Feather name="camera" size={14} color={SLATE} /><Text style={s.chipBtnText}>Прикрепить фото</Text></>
-                }
-              </TouchableOpacity>
-            )}
+                {freeFormUploading ? (
+                  <ActivityIndicator color={PRIMARY_DARK} size="small" />
+                ) : (
+                  <>
+                    <Glyph name="camera" size={16} color={PRIMARY_DARK} />
+                    <Text style={s.attachText}>
+                      {freeFormAttachment ? "Заменить фото" : "Прикрепить фото"}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
           </View>
-        )}
-
-        {/* ── Next / Submit button ── */}
-        {!inputsDisabled && (
-          <TouchableOpacity
-            style={[s.nextBtn, { opacity: (!isFreeForm && !currentAnswered) ? 0.45 : 1 }]}
-            onPress={goNext}
-            disabled={submitting || (!isFreeForm && !currentAnswered)}
-          >
-            {submitting
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={s.nextBtnText}>
-                  {isFreeForm
-                    ? "Отправить ответ"
-                    : isLastStep
-                    ? "Завершить и отправить"
-                    : "Следующий вопрос →"}
-                </Text>
-            }
-          </TouchableOpacity>
         )}
       </ScrollView>
 
-      {/* ── Progress bubble ── */}
-      <View style={[s.progressOuter, { bottom: insets.bottom + (Platform.OS === "web" ? 16 : 12) }]}>
-        <View style={s.progressBubble}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={{ fontSize: 15 }}>📚</Text>
-              {/* Solid colour — the background-clip gradient hack ghosted on iOS Safari */}
-              <Text
-                style={[s.progressLabel, Platform.OS === "web" && { color: "#6d28d9" }]}
-                numberOfLines={1}
-              >
-                {assignment.title}
-              </Text>
-            </View>
-            <Text style={s.progressPct}>{Math.round(progressPct)}%</Text>
-          </View>
-          <View style={s.progressTrack}>
-            {/* Плавно анимируемая заливка — растёт после ответа на вопрос */}
-            <Animated.View
-              style={[s.progressFill, {
-                width: progressAnim.interpolate({
-                  inputRange: [0, 100],
-                  outputRange: ["0%", "100%"],
-                }),
-              }]}
-            />
-          </View>
+      {/* ── Нижняя кнопка ── */}
+      {!inputsDisabled && (
+        <View style={[s.foot, { paddingBottom: insets.bottom + 12 }]}>
+          <Cta
+            label={ctaLabel}
+            icon={ctaIcon}
+            busy={submitting}
+            disabled={isFreeForm ? !freeFormReady : !currentAnswered}
+            onPress={goNext}
+          />
+          {!isFreeForm && !currentAnswered && (
+            <Text style={s.footNote}>Кнопка оживёт, как только выберете вариант</Text>
+          )}
+          {isFreeForm && freeFormReady && (
+            <Text style={s.footNote}>Изменить ответ после отправки нельзя</Text>
+          )}
         </View>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Аварийный экран роута.
+ *
+ * Expo Router подхватывает экспорт с этим именем и показывает его вместо
+ * белого экрана, если рендер упал. Тот же приём, что на вкладках «Задания» и
+ * «Слова»: ошибка в одном задании не должна выглядеть как поломка приложения.
+ */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => void }) {
+  return (
+    <View style={[s.stateBox, { flex: 1, backgroundColor: QUIZ_BG }]}>
+      <LinearGradient
+        colors={["#8b5cf6", accents.indigoDeep]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={s.stateBadge}
+      >
+        <Glyph name="alert" size={28} color="#fff" />
+      </LinearGradient>
+      <Text style={s.stateTitle}>Задание не открылось</Text>
+      <Text style={s.stateText}>{error?.message ?? "Неизвестная ошибка"}</Text>
+      <View style={{ alignSelf: "stretch", marginTop: 6 }}>
+        <Cta label="Попробовать снова" icon="repeat" onPress={retry} />
       </View>
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  header: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    paddingHorizontal: 20, paddingBottom: 12,
-  },
+  // ── Шапка ──
   topBar: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    paddingHorizontal: 16, paddingBottom: 4,
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingHorizontal: 16, paddingBottom: 2,
   },
-  headerTitle: { fontSize: 17, fontWeight: "800", color: TEXT_DARK, flex: 1 },
-  stepCounter: { fontSize: 14, fontWeight: "600", color: TEXT_MID },
-  iconBtn: {
+  headerTitle: { flex: 1, fontSize: 17, fontWeight: "900", color: TEXT_DARK, letterSpacing: -0.3 },
+  roundBtn: {
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.07)",
-    justifyContent: "center", alignItems: "center",
+    backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER,
+    alignItems: "center", justifyContent: "center",
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16, shadowRadius: 8, elevation: 3,
   },
-  floatingCloseBtn: {
-    position: "absolute", left: 16, zIndex: 20,
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: "#fff",
-    justifyContent: "center", alignItems: "center",
-    shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+  typeChip: {
+    flex: 1, minWidth: 0,
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingVertical: 7, paddingLeft: 8, paddingRight: 14,
+    borderRadius: radii.pill,
+    backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER,
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.14, shadowRadius: 9, elevation: 3,
   },
-  typeLabel: {
-    fontSize: 11, fontWeight: "700", color: PRIMARY, letterSpacing: 1.5,
-    textTransform: "uppercase", paddingHorizontal: 16, marginBottom: 10, marginTop: 2,
+  typeChipIcon: { width: 26, height: 26, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  typeChipLabel: { fontSize: 13, fontWeight: "800", color: TEXT_DARK, letterSpacing: -0.1 },
+  typeChipSub: { fontSize: 10.5, fontWeight: "600", color: TEXT_MUTED, marginTop: 2 },
+  timer: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill,
+    backgroundColor: "rgba(139,92,246,0.13)",
+    borderWidth: 1.5, borderColor: "rgba(139,92,246,0.3)",
   },
-  timerBadge: {
-    flexDirection: "row", alignItems: "center", gap: 4,
-    borderWidth: 1, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4,
+  timerText: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
+
+  // ── Лестница шагов ──
+  ladder: { paddingHorizontal: 16, paddingTop: 14 },
+  ladderBars: { flexDirection: "row", gap: 5 },
+  ladderBar: {
+    flex: 1, height: 6, borderRadius: radii.pill,
+    backgroundColor: "rgba(139,92,246,0.18)", overflow: "hidden",
   },
-  timerText: { fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"] as any },
-  card: {
-    backgroundColor: CARD_BG, borderRadius: 16, padding: 14, marginBottom: 0,
-    shadowColor: PRIMARY, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07, shadowRadius: 10, elevation: 2,
+  ladderMeta: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 8 },
+  ladderLeft: { fontSize: 12, fontWeight: "800", color: TEXT_MID, fontVariant: ["tabular-nums"] },
+  ladderRight: { fontSize: 11.5, fontWeight: "700", color: TEXT_MUTED },
+
+  // ── Плитка ──
+  plate: {
+    backgroundColor: CARD_BG, borderRadius: radii.md,
+    borderWidth: 1, borderColor: BORDER,
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.1, shadowRadius: 14, elevation: 3,
   },
-  assignTitle: { fontSize: 18, fontWeight: "800", color: TEXT_DARK, marginBottom: 6 },
-  sectionTitle: { fontSize: 14, fontWeight: "700", color: TEXT_DARK, marginBottom: 4 },
+  lbl: {
+    fontSize: 10, fontWeight: "800", letterSpacing: 1.2,
+    textTransform: "uppercase", color: TEXT_MUTED,
+  },
+  sectionTitle: { fontSize: 14, fontWeight: "800", color: TEXT_DARK, marginBottom: 6 },
   bodyText: { fontSize: 14, color: TEXT_MID, lineHeight: 21 },
+  taskText: { fontSize: 15, fontWeight: "700", color: TEXT_DARK, lineHeight: 22, letterSpacing: -0.15 },
+  assignTitle: { fontSize: 18, fontWeight: "900", color: TEXT_DARK, marginBottom: 6, letterSpacing: -0.3 },
   badge: {
-    flexDirection: "row", alignItems: "center", gap: 4,
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
   },
-  badgeText: { fontSize: 12, fontWeight: "600" },
-  mediaBtn: {
-    borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16,
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+  badgeText: { fontSize: 11.5, fontWeight: "800" },
+
+  // ── Вопрос ──
+  qRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  qNum: {
+    width: 34, height: 34, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.36, shadowRadius: 12, elevation: 5,
   },
-  chipBtn: {
+  qNumText: { fontSize: 15, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
+  qText: {
+    flex: 1, fontSize: 16.5, fontWeight: "800", color: TEXT_DARK,
+    lineHeight: 23, letterSpacing: -0.3, paddingTop: 4,
+  },
+
+  // ── Вариант-клавиша ──
+  optEdge: { position: "absolute", left: 0, right: 0, top: 4, bottom: 0, borderRadius: 14 },
+  opt: {
+    flexDirection: "row", alignItems: "center", gap: 11,
+    paddingVertical: 13, paddingHorizontal: 14,
+    borderRadius: 14, borderWidth: 2,
+  },
+  optKey: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  optKeyText: { fontSize: 13, fontWeight: "900" },
+  optText: { flex: 1, fontSize: 14.5, lineHeight: 20 },
+
+  // ── Поля ввода ──
+  field: {
+    borderWidth: 2, borderColor: BORDER, borderRadius: radii.md,
+    paddingHorizontal: 14, paddingVertical: 13,
+    fontSize: 14.5, lineHeight: 21, color: TEXT_DARK,
+    backgroundColor: CARD_BG,
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.08, shadowRadius: 14, elevation: 2,
+  },
+  fieldCount: {
+    position: "absolute", right: 13, bottom: 9,
+    fontSize: 11, fontWeight: "700", color: TEXT_MUTED, fontVariant: ["tabular-nums"],
+  },
+  attach: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 14, paddingVertical: 12, borderRadius: radii.sm,
+    backgroundColor: CARD_BG,
+    borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.45)",
+  },
+  attachText: { fontSize: 13, fontWeight: "800", color: PRIMARY_DARK },
+  thumb: {
+    width: 74, height: 74, borderRadius: radii.sm,
+    borderWidth: 2, borderColor: CARD_BG,
+  },
+  thumbX: {
+    position: "absolute", top: 3, right: 3,
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: "rgba(30,27,75,0.72)",
+    alignItems: "center", justifyContent: "center",
+  },
+
+  // ── Аудио ──
+  audio: {
+    borderRadius: radii.md, padding: 15, marginBottom: 12,
+    shadowColor: accents.indigoDeep, shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.36, shadowRadius: 22, elevation: 8,
+  },
+  play: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: "#fff",
+    alignItems: "center", justifyContent: "center",
+    shadowColor: "#1e1b4b", shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4, shadowRadius: 14, elevation: 6,
+  },
+  audioTime: {
+    fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.8)",
+    fontVariant: ["tabular-nums"], minWidth: 34, textAlign: "right",
+  },
+  gchip: {
     flexDirection: "row", alignItems: "center", gap: 6,
-    backgroundColor: "#f1f5f9", borderRadius: 10,
-    paddingHorizontal: 12, paddingVertical: 8,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.pill,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.26)",
   },
-  chipBtnText: { fontSize: 13, color: SLATE, fontWeight: "600" },
-  questionText: { fontSize: 15, fontWeight: "700", color: TEXT_DARK, lineHeight: 22 },
-  optionBtn: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    padding: 14, borderRadius: 14, borderWidth: 2,
-    backgroundColor: CARD_BG,
+  gchipOn: { backgroundColor: "#fff", borderColor: "#fff" },
+  gchipText: { fontSize: 12, fontWeight: "800", color: "#fff" },
+  audioHint: { marginTop: 11, fontSize: 11.5, fontWeight: "600", color: "rgba(255,255,255,0.7)", lineHeight: 16 },
+
+  // ── Видео ──
+  videoWrap: {
+    borderRadius: radii.md, overflow: "hidden", marginBottom: 12,
+    backgroundColor: "#1e1b4b",
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3, shadowRadius: 22, elevation: 7,
   },
-  optionRadio: {
-    width: 22, height: 22, borderRadius: 11, borderWidth: 2,
-    justifyContent: "center", alignItems: "center",
+
+  // ── Чтение ──
+  readIcon: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  readTitle: { fontSize: 13.5, fontWeight: "800", color: TEXT_DARK, letterSpacing: -0.1 },
+  readCount: { marginLeft: "auto", fontSize: 11, fontWeight: "700", color: TEXT_MUTED },
+  readBody: { fontSize: 14, lineHeight: 22.5, color: TEXT_MID },
+  readMore: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    marginTop: 11, paddingVertical: 9, borderRadius: radii.sm,
+    backgroundColor: "rgba(139,92,246,0.1)",
   },
-  optionText: { fontSize: 14, flex: 1, lineHeight: 20 },
-  textInput: {
-    borderWidth: 1.5, borderColor: BORDER, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 14, color: TEXT_DARK,
-    backgroundColor: CARD_BG,
+  readMoreText: { fontSize: 12.5, fontWeight: "800", color: PRIMARY_DARK },
+
+  zoomHint: {
+    position: "absolute", right: 12, bottom: 12,
+    flexDirection: "row", alignItems: "center", gap: 5,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: radii.sm - 2,
   },
-  nextBtn: {
-    backgroundColor: PRIMARY, borderRadius: 14,
-    paddingVertical: 16, alignItems: "center",
-    shadowColor: PRIMARY, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 6,
+
+  // ── Время вышло ──
+  expired: {
+    flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12,
+    backgroundColor: "#fff1f3", borderRadius: radii.md, padding: 14,
+    borderWidth: 1.5, borderColor: "#fda4af",
   },
-  nextBtnText: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  progressOuter: {
-    position: "absolute",
-    left: 16, right: 16,
+  expiredText: { flex: 1, fontSize: 14, fontWeight: "800", color: DANGER },
+
+  // ── Нижняя кнопка ──
+  foot: { paddingHorizontal: 16, paddingTop: 8 },
+  ctaEdge: { position: "absolute", left: 0, right: 0, top: chunky.edge, bottom: 0, borderRadius: radii.md },
+  cta: {
+    borderRadius: radii.md, paddingVertical: 16,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9,
   },
-  progressBubble: {
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    paddingHorizontal: 16, paddingVertical: 12,
-    shadowColor: "#7c3aed",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
+  ctaText: { fontSize: 15.5, fontWeight: "900", color: "#fff", letterSpacing: -0.2 },
+  footNote: { marginTop: 9, textAlign: "center", fontSize: 11.5, fontWeight: "600", color: TEXT_MUTED },
+
+  // ── Результат ──
+  resultHero: {
+    borderRadius: radii.lg, paddingVertical: 26, paddingHorizontal: 18,
+    alignItems: "center", overflow: "hidden",
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.4, shadowRadius: 30, elevation: 10,
   },
-  progressLabel: { fontSize: 12, fontWeight: "600", color: TEXT_MID, maxWidth: 200 },
-  progressPct: { fontSize: 12, fontWeight: "700", color: PRIMARY },
-  progressTrack: { height: 8, borderRadius: 4, backgroundColor: "#ede9fe", overflow: "hidden" },
-  progressFill: {
-    height: "100%", borderRadius: 4,
-    backgroundColor: ORANGE,
+  ringValue: { fontSize: 29, fontWeight: "900", color: "#fff", letterSpacing: -1.2, fontVariant: ["tabular-nums"] },
+  resultTitle: { fontSize: 21, fontWeight: "900", color: "#fff", letterSpacing: -0.5 },
+  resultSub: { marginTop: 6, fontSize: 13, fontWeight: "600", color: "rgba(255,255,255,0.78)", textAlign: "center", lineHeight: 19 },
+  earned: {
+    flexDirection: "row", alignItems: "center", gap: 7, marginTop: 14,
+    paddingHorizontal: 16, paddingVertical: 9, borderRadius: radii.pill,
+    shadowColor: accents.amber, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45, shadowRadius: 16, elevation: 6,
   },
+  earnedText: { fontSize: 14, fontWeight: "900", color: "#42200a" },
+  revMark: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", marginTop: 1 },
+  revQ: { fontSize: 13, fontWeight: "800", color: TEXT_DARK, lineHeight: 18 },
+  revA: { fontSize: 12.5, fontWeight: "800", marginTop: 3, lineHeight: 17 },
+  revFix: { fontSize: 12.5, fontWeight: "600", color: TEXT_MID, marginTop: 2, lineHeight: 17 },
+
+  // ── Пустые состояния ──
+  stateBox: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 34, gap: 12 },
+  stateBadge: {
+    width: 66, height: 66, borderRadius: 22, alignItems: "center", justifyContent: "center",
+    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.36, shadowRadius: 22, elevation: 8,
+  },
+  stateTitle: { fontSize: 17, fontWeight: "900", color: TEXT_DARK, letterSpacing: -0.3 },
+  stateText: { fontSize: 13.5, fontWeight: "600", color: TEXT_MID, textAlign: "center", lineHeight: 20 },
 });
