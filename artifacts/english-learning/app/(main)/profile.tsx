@@ -1,24 +1,34 @@
-// Экран «Профиль»: шапка-герой с аватаром, описание, статистика ученика,
-// цель дня, витрина наград, друзья и быстрые действия.
+// Экран «Профиль»: шапка-герой с аватаром и полосой опыта, описание, цель дня,
+// успеваемость, статистика ученика, витрина наград и друзья.
 //
 // Эмодзи интерфейса не используются — значки рисует собственный набор
 // (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
 // ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
 // AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
 //
-// Оформление повторяет раздел «Слова» — те же три приёма:
-//   • значок в градиентной плашке с наклоном и свечением (см. StatCard),
-//     а не бледная заливка цветом с прозрачностью;
-//   • одно главное действие физической кнопкой ChunkyButton;
-//   • чередующийся микро-наклон карточек ±0.4°.
+// Оформление повторяет раздел «Слова» — те же приёмы:
+//   • значок в градиентной плашке со свечением (см. StatCard), а не бледная
+//     заливка цветом с прозрачностью;
+//   • одно главное действие физической кнопкой ChunkyButton.
 // Градиент шапки взят тот же, что у «Рейтинга», чтобы экраны выглядели
-// одной семьёй. Логика экрана при этом не менялась.
+// одной семьёй.
+//
+// Наклоны убраны по всему экрану: карточки, плашки значков и заявки стоят
+// ровно. В плотной сетке микро-поворот читался как брак вёрстки, а не как
+// приём; глубину держат цветная тень и отклик на нажатие. То же сделано на
+// «Заданиях», «Учениках» и «Анализе».
+//
+// Порядок блоков собран по частоте обращения: сначала «сколько я сегодня
+// прошёл» (цель дня), потом «как я учусь» (успеваемость), и только затем
+// накопительные счётчики и награды. Блока «Действия» у ученика больше нет —
+// он состоял из одной метки без содержимого.
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
   Platform, AppState, TextInput, Modal, FlatList, ActivityIndicator,
   Clipboard, Alert, KeyboardAvoidingView,
 } from "react-native";
+import Svg, { Circle } from "react-native-svg";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -29,6 +39,7 @@ import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useGetStudentSubmissions, useGetStudentTimeStats } from "@workspace/api-client-react";
 import { getUnlockedAchievements, getLockedAchievements, type AchievementStats } from "@/constants/achievements";
+import { getXpProgress } from "@/constants/xpLevels";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
@@ -77,6 +88,14 @@ const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#ec4899","#e11d48",
   "#a855f7","#d946ef","#4338ca","#6d28d9",
   "#818cf8","#f59e0b","#64748b","#1e293b",
+];
+
+/** Период, за который считается успеваемость. */
+type StatsPeriod = "week" | "month" | "all";
+const PERIODS: { key: StatsPeriod; label: string; days: number | null }[] = [
+  { key: "week", label: "Неделя", days: 7 },
+  { key: "month", label: "Месяц", days: 30 },
+  { key: "all", label: "Всё время", days: null },
 ];
 
 function formatTime(minutes: number) {
@@ -162,6 +181,36 @@ function useLiveTimer() {
   }, [syncFromStorage, startTicking, stopTicking]);
 
   return seconds;
+}
+
+/**
+ * Кольцо среднего балла. Кольцо, а не полоса: это единственное число на экране,
+ * которое отвечает на вопрос «как я учусь», и оно должно читаться как объект,
+ * а не как ещё одна строка статистики.
+ */
+function ScoreRing({ score, color, size = 64 }: { score: number | null; color: string; size?: number }) {
+  const stroke = 8;
+  const r = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score ?? 0));
+  return (
+    <Svg width={size} height={size}>
+      <Circle
+        cx={size / 2} cy={size / 2} r={r}
+        stroke="rgba(99,102,241,0.16)" strokeWidth={stroke} fill="none"
+      />
+      {score !== null && (
+        <Circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke={color} strokeWidth={stroke} fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${circumference}`}
+          strokeDashoffset={circumference * (1 - pct / 100)}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      )}
+    </Svg>
+  );
 }
 
 // Avatar picker modal
@@ -813,6 +862,9 @@ export default function ProfileScreen() {
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  // Период для блока успеваемости. По умолчанию «всё время»: это привычная
+  // цифра, а недельный срез — уточнение для тех, кто следит за прогрессом.
+  const [period, setPeriod] = useState<StatsPeriod>("all");
   const [teacherRequests, setTeacherRequests] = useState<Array<{
     requestId: number;
     teacher: { id: number; name: string; username: string; avatarEmoji: string | null; avatarColor: string | null; role: string };
@@ -908,6 +960,32 @@ export default function ProfileScreen() {
     ? Math.max(0, Math.floor((timeStats.todayMinutes ?? 0) * 60 + (Date.now() - timeStatsAt) / 1000))
     : sessionSeconds;
 
+  /**
+   * Успеваемость за выбранный период.
+   *
+   * Считается на клиенте из уже загруженного списка сдач: у каждой есть дата и
+   * балл, отдельный запрос не нужен. Средний балл ученик до этого не видел
+   * нигде, хотя сервер его считает — и именно он отвечает на вопрос «как я
+   * учусь», в отличие от накопительных очков.
+   */
+  const periodStats = React.useMemo(() => {
+    const rows: any[] = (submissions as any[]) ?? [];
+    const days = PERIODS.find((p) => p.key === period)?.days ?? null;
+    const cutoff = days === null ? 0 : Date.now() - days * 86400000;
+    const inPeriod = days === null
+      ? rows
+      : rows.filter((r) => {
+          const t = new Date(r.submittedAt).getTime();
+          return Number.isFinite(t) && t >= cutoff;
+        });
+    const scored = inPeriod.filter((r) => typeof r.score === "number");
+    const average = scored.length > 0
+      ? Math.round(scored.reduce((sum, r) => sum + r.score, 0) / scored.length)
+      : null;
+    const points = inPeriod.reduce((sum, r) => sum + (r.pointsEarned ?? 0), 0);
+    return { count: inPeriod.length, average, points };
+  }, [submissions, period]);
+
   // График «Мои задания». Профиль — экран таба и не размонтируется при
   // переключении вкладок, поэтому загрузку нельзя оставлять в useEffect с
   // зависимостью от user.id: запрос ушёл бы один раз за сессию, и после сдачи
@@ -989,6 +1067,14 @@ export default function ProfileScreen() {
   };
   const unlocked = getUnlockedAchievements(achievementStats);
   const locked = getLockedAchievements(achievementStats);
+
+  /**
+   * Прогресс до следующего уровня. Считается по тем же таблицам, что и сам
+   * уровень (constants/xpLevels.ts) — своей математики здесь нет.
+   * gamStats.totalPoints и есть XP: очки и опыт в этом проекте одно и то же.
+   */
+  const xp = gamStats?.totalPoints ?? 0;
+  const xpProgress = getXpProgress(xp);
 
   const baseUrl = process.env["EXPO_PUBLIC_DOMAIN"]
     ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -1216,6 +1302,13 @@ export default function ProfileScreen() {
 
   if (!user) return null;
 
+  /** Цвет балла в фирменной гамме: зелёного в палитре нет намеренно. */
+  const scoreTint = periodStats.average === null
+    ? colors.mutedForeground
+    : periodStats.average >= 70 ? colors.success
+      : periodStats.average >= 50 ? accents.amber
+        : colors.destructive;
+
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { paddingBottom: insets.bottom + 100 },
@@ -1225,7 +1318,7 @@ export default function ProfileScreen() {
     // пустом фоне и стал главным объектом экрана.
     hero: {
       paddingTop: insets.top + (Platform.OS === "web" ? 67 : 20),
-      paddingHorizontal: 20, paddingBottom: 26,
+      paddingHorizontal: 20, paddingBottom: 24,
       alignItems: "center",
       borderBottomLeftRadius: radii.xl,
       borderBottomRightRadius: radii.xl,
@@ -1258,6 +1351,16 @@ export default function ProfileScreen() {
     glassPillText: { fontSize: 12, fontWeight: "800", color: "#ffffff" },
     badgeRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 12 },
 
+    // ── Полоса опыта в шапке ──
+    // Уровень раньше был просто числом в пилюле: сколько до следующего и что
+    // для этого сделать, ученик не знал.
+    xpBlock: { alignSelf: "stretch", marginTop: 20 },
+    xpHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 },
+    xpTitle: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
+    xpNum: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"] },
+    xpTrack: { height: 13, borderRadius: radii.pill, backgroundColor: "rgba(255,255,255,0.18)", overflow: "hidden" },
+    xpNext: { fontSize: 12, color: "rgba(255,255,255,0.72)", marginTop: 7, lineHeight: 17 },
+
     // Bio
     bioBox: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 15,
@@ -1276,6 +1379,35 @@ export default function ProfileScreen() {
 
     // Section
     section: { paddingHorizontal: 20, marginBottom: 20 },
+
+    // Переключатель периода: тот же сегментный вид, что на «Заданиях».
+    seg: {
+      flexDirection: "row", backgroundColor: colors.muted,
+      borderRadius: radii.sm + 2, padding: 3, marginBottom: 12,
+    },
+    segBtn: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
+    segBtnActive: {
+      backgroundColor: colors.card,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
+    },
+    segText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
+    segTextActive: { color: colors.foreground, fontWeight: "800" },
+
+    // Карточка среднего балла: шире остальных, потому что это главное число.
+    scoreCard: {
+      flexDirection: "row", alignItems: "center", gap: 14,
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
+      borderWidth: 1, borderColor: colors.border, marginBottom: 10,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
+    },
+    scoreLabel: {
+      fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase",
+      color: colors.mutedForeground,
+    },
+    scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
+    scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
 
     // Stats
     statsRow: { flexDirection: "row", gap: 10 },
@@ -1411,9 +1543,10 @@ export default function ProfileScreen() {
 
           <View style={s.badgeRow}>
             {/* Уровень XP — награда, поэтому золотая пилюля. Показываем только
-                ученику и только когда серверные статы загружены. */}
+                ученику и только когда серверные статы загружены. Наклон убран:
+                на экране больше нет ни одного повёрнутого элемента. */}
             {isStudent && gamStats && (
-              <Pill text={`Уровень ${gamStats.xpLevel}`} icon="rank" tone="gold" tilt={-2} />
+              <Pill text={`${xpProgress.current.level} · ${xpProgress.current.title}`} icon="rank" tone="gold" />
             )}
             {/* Статус «в сети» на стекле: на градиенте цветная плашка не читается. */}
             <View style={s.glassPill}>
@@ -1430,18 +1563,44 @@ export default function ProfileScreen() {
               </View>
             )}
           </View>
+
+          {/* ── Полоса опыта ── */}
+          {isStudent && gamStats && (
+            <View style={s.xpBlock}>
+              <View style={s.xpHead}>
+                <Text style={s.xpTitle}>Опыт</Text>
+                <Text style={s.xpNum}>
+                  {xpProgress.next ? `${xp} / ${xpProgress.next.xpRequired} XP` : `${xp} XP · максимум`}
+                </Text>
+              </View>
+              <View style={s.xpTrack}>
+                <LinearGradient
+                  colors={gradients.progress as unknown as string[]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={{ height: "100%", width: `${xpProgress.progressPercent}%`, borderRadius: radii.pill }}
+                />
+              </View>
+              {/* Расстояние до уровня в заданиях, а не только в очках: «340 XP»
+                  ребёнку ни о чём не говорит, «примерно 3 задания» — говорит. */}
+              <Text style={s.xpNext}>
+                {xpProgress.next
+                  ? `До уровня ${xpProgress.next.level} «${xpProgress.next.title}» осталось ${xpProgress.next.xpRequired - xp} XP`
+                  : "Максимальный уровень достигнут"}
+              </Text>
+            </View>
+          )}
         </LinearGradient>
 
         {/* ── Входящие заявки от учителей (только ученик) ── */}
         {isStudent && teacherRequests.length > 0 && (
           <View style={{ marginHorizontal: 20, marginBottom: 14 }}>
             <SectionLabel>Заявки от учителей · {teacherRequests.length}</SectionLabel>
-            {teacherRequests.map((req, i) => (
+            {teacherRequests.map((req) => (
               <View key={req.requestId} style={{
                 flexDirection: "row", alignItems: "center", gap: 12,
                 backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
                 borderWidth: 1, borderColor: colors.border, marginBottom: 10,
-                transform: [{ rotate: i % 2 === 0 ? "-0.4deg" : "0.4deg" }],
                 shadowColor: colors.primary, shadowOffset: { width: 0, height: 5 },
                 shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
               }}>
@@ -1517,26 +1676,16 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        {/* ── Ученик: статистика + таймер + уровень ── */}
+        {/* ── Ученик: цель дня, успеваемость, счётчики, награды, друзья ── */}
         {isStudent && (
           <>
-            {/* Статистика */}
-            <View style={s.section}>
-              <SectionLabel>Мои достижения</SectionLabel>
-              <View style={s.statsRow}>
-                <StatCard s={s} icon="star" grad={["#f472b6", accents.magenta]} tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" tilt={-0.5} />
-                <StatCard s={s} icon="check" grad={["#818cf8", accents.indigoDeep]} tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" tilt={0.5} />
-                <StatCard s={s} icon="trophy" grad={[accents.gold, accents.amber]} tint={accents.amber} value={unlocked.length} label="Наград" tilt={-0.5} />
-                {/* Стрик: огонь глифом вместо 🔥 — красится темой и одинаков везде. */}
-                <StatCard s={s} icon="flame" grad={gradients.fire} tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" tilt={0.5} />
-              </View>
-            </View>
-
-
-            {/* Daily Goal */}
+            {/* Цель дня стоит первой из блоков: это единственная цифра, которая
+                меняется прямо сейчас и на которую ученик может повлиять
+                сегодня. Раньше она лежала ниже статистики, и до неё надо было
+                листать. */}
             {gamStats && (
               <View style={s.section}>
-                <SectionLabel>Ежедневная цель</SectionLabel>
+                <SectionLabel>Цель дня</SectionLabel>
                 <DailyGoalBar
                   todayMinutes={gamStats.todayMinutes}
                   goalMinutes={gamStats.dailyGoalMinutes}
@@ -1547,13 +1696,58 @@ export default function ProfileScreen() {
               </View>
             )}
 
+            {/* Успеваемость за период */}
+            <View style={s.section}>
+              <SectionLabel>Успеваемость</SectionLabel>
+
+              <View style={s.seg}>
+                {PERIODS.map((p) => (
+                  <TouchableOpacity
+                    key={p.key}
+                    style={[s.segBtn, period === p.key && s.segBtnActive]}
+                    onPress={() => setPeriod(p.key)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[s.segText, period === p.key && s.segTextActive]}>{p.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={s.scoreCard}>
+                <ScoreRing score={periodStats.average} color={scoreTint} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.scoreLabel}>Средний балл</Text>
+                  <Text style={[s.scoreValue, { color: scoreTint }]}>
+                    {periodStats.average === null ? "—" : `${periodStats.average}%`}
+                  </Text>
+                  <Text style={s.scoreHint}>
+                    {periodStats.count === 0
+                      ? "За этот период работ нет"
+                      : `${periodStats.count} ${periodStats.count === 1 ? "работа" : periodStats.count < 5 ? "работы" : "работ"} · +${periodStats.points} очков`}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Накопительные счётчики: считаются за всё время и от периода
+                не зависят — поэтому стоят отдельным блоком, а не в сетке выше. */}
+            <View style={s.section}>
+              <SectionLabel>Всего за время учёбы</SectionLabel>
+              <View style={s.statsRow}>
+                <StatCard s={s} icon="star" grad={["#f472b6", accents.magenta]} tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" />
+                <StatCard s={s} icon="check" grad={["#818cf8", accents.indigoDeep]} tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" />
+                <StatCard s={s} icon="trophy" grad={[accents.gold, accents.amber]} tint={accents.amber} value={unlocked.length} label="Наград" />
+                {/* Стрик: огонь глифом вместо 🔥 — красится темой и одинаков везде. */}
+                <StatCard s={s} icon="flame" grad={gradients.fire} tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" />
+              </View>
+            </View>
+
             {/* Статистика заданий + Таймер времени — два отдельных пузыря в одной строке */}
             <View style={s.section}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
                 <View style={{
                   flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
                   borderWidth: 1, borderColor: colors.border,
-                  transform: [{ rotate: "-0.4deg" }],
                   shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
                   shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
                 }}>
@@ -1570,7 +1764,6 @@ export default function ProfileScreen() {
                   style={{
                     flex: 1, borderRadius: radii.md, padding: 14,
                     justifyContent: "center",
-                    transform: [{ rotate: "0.4deg" }],
                     shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
                     shadowOpacity: 0.32, shadowRadius: 16, elevation: 6,
                   }}
@@ -1594,15 +1787,12 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-
-
             <AchievementsShowcase
               unlocked={unlocked}
               locked={locked}
               showLocked={true}
               title="Витрина наград"
             />
-
 
             {/* ── Друзья: главное действие профиля ученика ── */}
             <View style={s.section}>
@@ -1621,24 +1811,27 @@ export default function ProfileScreen() {
           </>
         )}
 
-        {/* ── Быстрые действия ── */}
-        <View style={s.section}>
-          <SectionLabel>Действия</SectionLabel>
+        {/* ── Действия учителя и родителя ──
+            У ученика этого блока нет: он состоял из одной метки «Действия»
+            без единой строки внутри. Здесь же метка появляется только когда
+            под ней действительно что-то есть. */}
+        {(isTeacher || user.role === "parent") && (
+          <View style={s.section}>
+            <SectionLabel>Действия</SectionLabel>
 
-          {/* У учителя создание задания — главное действие профиля, поэтому
-              физическая кнопка, а не серая строка в общем списке. */}
-          {isTeacherOrAdmin(user.role) && (
-            <ChunkyButton
-              label="Создать задание"
-              sublabel="Тест, аудирование, чтение, видео или колода слов"
-              icon="plus"
-              chevron
-              onPress={() => router.push("/(main)/create-assignment" as any)}
-              style={{ marginBottom: 10 }}
-            />
-          )}
+            {/* У учителя создание задания — главное действие профиля, поэтому
+                физическая кнопка, а не серая строка в общем списке. */}
+            {isTeacher && (
+              <ChunkyButton
+                label="Создать задание"
+                sublabel="Тест, аудирование, чтение, видео или колода слов"
+                icon="plus"
+                chevron
+                onPress={() => router.push("/(main)/create-assignment" as any)}
+                style={{ marginBottom: 10 }}
+              />
+            )}
 
-          {(isTeacherOrAdmin(user.role) || user.role === "parent") && (
             <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/students" as any)}>
               <View style={{
                 width: 42, height: 42, borderRadius: radii.sm,
@@ -1650,8 +1843,8 @@ export default function ProfileScreen() {
               <Text style={s.rowText}>{user.role === "parent" ? "Мои дети" : "Все ученики"}</Text>
               <Glyph name="chevron" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
-          )}
-        </View>
+          </View>
+        )}
 
         {/* Выход — опасное действие, поэтому отделён и подписан цветом. */}
         <Pressable
@@ -1689,14 +1882,15 @@ export default function ProfileScreen() {
 }
 
 /**
- * Счётчик в строке «Мои достижения».
+ * Счётчик в строке «Всего за время учёбы».
  *
- * Значок стоит в градиентной плашке с наклоном и свечением — тот же приём, что
- * у значка колоды в разделе «Слова» (components/ui/DeckGlyph.tsx). Раньше здесь
- * была бледная заливка `tint + "1f"`, из-за которой блок выглядел плоским.
+ * Значок стоит в градиентной плашке со свечением — тот же приём, что у значка
+ * колоды в разделе «Слова» (components/ui/DeckGlyph.tsx). Раньше здесь была
+ * бледная заливка `tint + "1f"`, из-за которой блок выглядел плоским. Наклон
+ * плашки убран вместе с остальными наклонами на экране.
  */
 function StatCard({
-  s, icon, grad, tint, value, label, tilt = 0,
+  s, icon, grad, tint, value, label,
 }: {
   s: any;
   icon: GlyphName;
@@ -1704,10 +1898,9 @@ function StatCard({
   tint: string;
   value: number;
   label: string;
-  tilt?: number;
 }) {
   return (
-    <View style={[s.statCard, { shadowColor: tint, transform: [{ rotate: `${tilt}deg` }] }]}>
+    <View style={[s.statCard, { shadowColor: tint }]}>
       <LinearGradient
         colors={grad as unknown as string[]}
         start={{ x: 0.1, y: 0 }}
@@ -1715,7 +1908,6 @@ function StatCard({
         style={{
           width: 34, height: 34, borderRadius: 11,
           alignItems: "center", justifyContent: "center",
-          transform: [{ rotate: "-6deg" }],
           shadowColor: tint, shadowOffset: { width: 0, height: 4 },
           shadowOpacity: 0.35, shadowRadius: 9, elevation: 4,
         }}
