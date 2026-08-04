@@ -1,15 +1,23 @@
+// Экран «Анализ» — учительский. По каждому ученику показывает средний балл
+// и разбор по видам заданий, чтобы было видно, где просадка.
+//
+// Оформление сдержаннее ученических экранов: те же плитки с цветной тенью,
+// но без наклонов и игровых эффектов. Эмодзи не используются — значки рисует
+// собственный набор глифов (components/ui/Glyph.tsx).
 import React, { useState, useEffect, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   TouchableOpacity, Platform, RefreshControl,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import authStorage from "@/utils/authStorage";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { Pill } from "@/components/ui/GameKit";
+import { accents, radii } from "@/constants/theme";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -27,13 +35,14 @@ async function apiFetch(path: string) {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  text_test: "#8b5cf6", audio: "#6366f1", reading: "#6366f1", video: "#ec4899", free_form: "#ec4899",
+  text_test: "#8b5cf6", audio: "#6366f1", reading: "#d946ef", video: "#ec4899", free_form: "#f59e0b",
 };
 const TYPE_LABELS: Record<string, string> = {
   text_test: "Тест", audio: "Аудирование", reading: "Чтение", video: "Видео", free_form: "Свободный ответ",
 };
-const TYPE_ICONS: Record<string, any> = {
-  text_test: "edit-3", audio: "headphones", reading: "book", video: "video", free_form: "file-text",
+/** Значки видов заданий — из собственного набора, как на экране успеваемости. */
+const TYPE_ICONS: Record<string, GlyphName> = {
+  text_test: "pen", audio: "sound", reading: "book", video: "video", free_form: "note",
 };
 
 type CategoryStat = { type: string; avgScore: number | null; count: number };
@@ -43,28 +52,66 @@ type Student = {
 };
 type StudentWithStats = Student & { stats: CategoryStat[]; loading: boolean };
 
+/**
+ * Средний балл ученика по всем видам заданий, взвешенный по количеству работ.
+ * Нужен, чтобы учителю не приходилось сравнивать пять полос глазами:
+ * одно число сверху сразу говорит, к кому идти в первую очередь.
+ */
+function overallScore(stats: CategoryStat[]): number | null {
+  const scored = stats.filter((s) => s.count > 0 && s.avgScore !== null);
+  if (scored.length === 0) return null;
+  const total = scored.reduce((sum, s) => sum + s.count, 0);
+  if (total === 0) return null;
+  return Math.round(scored.reduce((sum, s) => sum + (s.avgScore ?? 0) * s.count, 0) / total);
+}
+
+/** Цвет балла в фирменной гамме: зелёного в палитре нет намеренно. */
+function scoreColor(score: number, colors: any): string {
+  if (score >= 70) return colors.success;
+  if (score >= 50) return accents.amber;
+  return colors.destructive;
+}
+
 function MiniChart({ stats, colors }: { stats: CategoryStat[]; colors: any }) {
   if (stats.length === 0) return (
-    <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", paddingVertical: 16 }}>
-      Нет данных — ученик ещё не выполнял заданий
-    </Text>
+    <View style={{ alignItems: "center", paddingVertical: 16, gap: 9 }}>
+      <Glyph name="tray" size={26} color={colors.mutedForeground} />
+      <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+        Нет данных — ученик ещё не выполнял заданий
+      </Text>
+    </View>
   );
 
   return (
-    <View style={{ gap: 10 }}>
+    <View style={{ gap: 11 }}>
       {stats.map((stat) => {
         const color = TYPE_COLORS[stat.type] ?? colors.primary;
         const pct = stat.avgScore ?? 0;
         const hasData = stat.count > 0 && stat.avgScore !== null;
         return (
           <View key={stat.type}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Feather name={TYPE_ICONS[stat.type]} size={12} color={color} />
-                <Text style={{ fontSize: 12, fontWeight: "700", color: colors.foreground }}>{TYPE_LABELS[stat.type]}</Text>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                {/* Значок в плашке своего цвета: строки различимы по цвету
+                    раньше, чем прочитан текст. */}
+                <View style={{
+                  width: 22, height: 22, borderRadius: 7,
+                  backgroundColor: color + "1f",
+                  alignItems: "center", justifyContent: "center",
+                }}>
+                  <Glyph name={TYPE_ICONS[stat.type] ?? "pen"} size={12} color={color} />
+                </View>
+                <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.foreground }}>
+                  {TYPE_LABELS[stat.type] ?? stat.type}
+                </Text>
+                {hasData && (
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                    · {stat.count}
+                  </Text>
+                )}
               </View>
               {hasData ? (
-                <Text style={{ fontSize: 13, fontWeight: "900", color }}>{pct}%</Text>
+                <Text style={{ fontSize: 13.5, fontWeight: "900", color, fontVariant: ["tabular-nums"] }}>{pct}%</Text>
               ) : (
                 <Text style={{ fontSize: 12, color: colors.mutedForeground }}>нет данных</Text>
               )}
@@ -127,27 +174,22 @@ export default function AnalysisScreen() {
       paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
       paddingHorizontal: 20, paddingBottom: 16,
     },
-    title: { fontSize: 26, fontWeight: "800", color: colors.foreground },
+    title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
     subtitle: { fontSize: 14, color: colors.mutedForeground, marginTop: 2 },
     scroll: { paddingHorizontal: 20, paddingBottom: insets.bottom + 90 },
+    // Цветная тень вместо серой: на светло-фиолетовом фоне серая читается грязью.
     card: {
-      backgroundColor: colors.card, borderRadius: 20, padding: 18,
-      marginBottom: 16, borderWidth: 0,
-      shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 12, elevation: 4,
+      backgroundColor: colors.card, borderRadius: radii.lg - 4, padding: 18,
+      marginBottom: 16, borderWidth: 1, borderColor: colors.border,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.14, shadowRadius: 16, elevation: 4,
     },
     studentRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
-    avatar: {
-      width: 48, height: 48, borderRadius: 24,
-      justifyContent: "center", alignItems: "center",
-    },
     name: { fontSize: 16, fontWeight: "800", color: colors.foreground },
     sub: { fontSize: 12, color: colors.mutedForeground, marginTop: 1 },
-    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, paddingBottom: 80 },
+    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 14, paddingBottom: 80, paddingHorizontal: 32 },
     empty: { fontSize: 15, color: colors.mutedForeground, textAlign: "center" },
-    divider: {
-      height: 1, backgroundColor: colors.border, marginBottom: 16,
-    },
+    divider: { height: 1, backgroundColor: colors.border, marginBottom: 16 },
   });
 
   if (isLoading) return (
@@ -165,7 +207,7 @@ export default function AnalysisScreen() {
 
       {students.length === 0 ? (
         <View style={styles.center}>
-          <Text style={{ fontSize: 48 }}>📊</Text>
+          <Glyph name="chart" size={48} color={colors.mutedForeground} />
           <Text style={styles.empty}>
             Нет принятых учеников.{"\n"}Добавьте учеников на вкладке «Ученики».
           </Text>
@@ -176,41 +218,48 @@ export default function AnalysisScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadData(true)} />}
         >
-          {students.map((student) => (
-            <View key={student.id} style={styles.card}>
-              {/* Student header — tap to go to profile */}
-              <TouchableOpacity
-                style={styles.studentRow}
-                onPress={() => router.push(`/(main)/student/${student.id}` as any)}
-                activeOpacity={0.7}
-              >
-                <AnimatedAvatar
-                  size={48}
-                  avatarColor={student.avatarColor ?? "#6366f1"}
-                  avatarEmoji={student.avatarEmoji}
-                  avatarUrl={student.avatarUrl}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.name}>
-                    {student.username}{student.name || student.surname ? ` (${[student.name, student.surname].filter(Boolean).join(" ")})` : ""}
-                  </Text>
-                  {student.knowledgeLevel ? (
-                    <Text style={styles.sub}>{student.knowledgeLevel}</Text>
-                  ) : null}
-                </View>
-                <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
-              </TouchableOpacity>
+          {students.map((student) => {
+            const overall = overallScore(student.stats);
+            return (
+              <View key={student.id} style={styles.card}>
+                {/* Student header — tap to go to profile */}
+                <TouchableOpacity
+                  style={styles.studentRow}
+                  onPress={() => router.push(`/(main)/student/${student.id}` as any)}
+                  activeOpacity={0.7}
+                >
+                  <AnimatedAvatar
+                    size={48}
+                    avatarColor={student.avatarColor ?? "#6366f1"}
+                    avatarEmoji={student.avatarEmoji}
+                    avatarUrl={student.avatarUrl}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name}>
+                      {student.username}{student.name || student.surname ? ` (${[student.name, student.surname].filter(Boolean).join(" ")})` : ""}
+                    </Text>
+                    {student.knowledgeLevel ? (
+                      <Text style={styles.sub}>{student.knowledgeLevel}</Text>
+                    ) : null}
+                  </View>
+                  {/* Средний балл: главный ориентир, к кому идти первым. */}
+                  {overall !== null && (
+                    <Pill text={`${overall}%`} tone="soft" color={scoreColor(overall, colors)} />
+                  )}
+                  <Glyph name="chevron" size={18} color={colors.mutedForeground} />
+                </TouchableOpacity>
 
-              <View style={styles.divider} />
+                <View style={styles.divider} />
 
-              {/* Chart */}
-              {student.loading ? (
-                <ActivityIndicator color={colors.primary} size="small" style={{ paddingVertical: 16 }} />
-              ) : (
-                <MiniChart stats={student.stats} colors={colors} />
-              )}
-            </View>
-          ))}
+                {/* Chart */}
+                {student.loading ? (
+                  <ActivityIndicator color={colors.primary} size="small" style={{ paddingVertical: 16 }} />
+                ) : (
+                  <MiniChart stats={student.stats} colors={colors} />
+                )}
+              </View>
+            );
+          })}
         </ScrollView>
       )}
     </View>
