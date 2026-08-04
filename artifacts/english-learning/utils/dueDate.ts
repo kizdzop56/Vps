@@ -71,7 +71,7 @@ export function dueDateFromPreset(key: DuePresetKey, now: Date = new Date()): st
   return date.toISOString();
 }
 
-/** Разбор значения из API. Мусор и пустota трактуются как «срока нет». */
+/** Разбор значения из API. Мусор и пустая строка считаются «срока нет». */
 function parseDue(dueAt?: string | Date | null): Date | null {
   if (!dueAt) return null;
   const date = dueAt instanceof Date ? dueAt : new Date(dueAt);
