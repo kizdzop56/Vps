@@ -7,14 +7,26 @@
 // Поле deck.emoji из базы при этом не меняется.
 //
 // Оформление собрано из GameKit и повторяет раздел «Слова»: главное действие —
-// физическая кнопка, значки в градиентных плашках с наклоном, карточки с
-// цветной тенью и микро-наклоном. Логика экрана не менялась.
+// физическая кнопка, карточки с цветной тенью. Логика экрана не менялась.
+//
+// Значок типа задания рисует TypeArt (components/ui/TypeArt.tsx): не пиктограмма
+// в цветном квадрате, а маленькая сцена — лист с галочками и карандашом,
+// наушники с волной, книга с закладкой, экран с play, блокнот с пером. Пять
+// типов теперь различаются рисунком, а не только цветом плашки.
+//
+// Наклоны убраны везде: карточки, значки и плашки пустых состояний стоят ровно.
+// На плотном списке микро-поворот читался как брак вёрстки, а не как приём;
+// глубину держат цветная тень и отклик на нажатие.
+//
+// Сроки сдачи: учитель выбирает срок прямо в модалке отправки (пресеты «сегодня
+// / завтра / 3 дня / неделя» или без срока), ученик видит его на карточке, а
+// список сортируется по сроку — просроченное сверху. Вся арифметика и формат
+// живут в utils/dueDate.ts, здесь только отображение.
 import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, Platform,
   ActivityIndicator, RefreshControl, Modal, ScrollView, TextInput, Alert,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,8 +41,13 @@ import { useQuery } from "@tanstack/react-query";
 import { fc } from "@/hooks/useFlashcards";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
+import { TypeArt } from "@/components/ui/TypeArt";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import {
+  DUE_PRESETS, dueDateFromPreset, formatDue, sortByDue, countUrgent,
+  type DuePresetKey, type DueUrgency,
+} from "@/utils/dueDate";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -53,31 +70,26 @@ async function apiFetch(path: string, options?: RequestInit) {
   return data;
 }
 
-/** Значки видов заданий — те же, что на экранах успеваемости и анализа. */
-const TYPE_ICONS: Record<string, GlyphName> = {
-  text_test: "pen", audio: "sound", reading: "book", video: "video", free_form: "note",
-};
 const TYPE_LABELS: Record<string, string> = {
   text_test: "Тест", audio: "Аудирование", reading: "Чтение", video: "Видео", free_form: "Свободный ответ",
 };
+/**
+ * Цвет типа задания. Используется для тени карточки и текстового бейджа —
+ * сам значок рисует TypeArt, у него палитра своя и совпадает с этой по
+ * доминанте (см. TYPE_ART_SHADOW в TypeArt.tsx).
+ */
 const TYPE_COLORS: Record<string, string> = {
   text_test: "#8b5cf6", audio: "#6366f1", reading: "#d946ef", video: "#ec4899", free_form: "#f59e0b",
 };
-/**
- * Градиент плашки по типу задания. Плоская заливка цветом читалась как
- * «серый прямоугольник с иконкой»; градиент делает значок объектом — тем же
- * приёмом, что значок колоды в разделе «Слова».
- */
-const TYPE_GRADIENTS: Record<string, readonly [string, string]> = {
-  text_test: ["#a855f7", "#7c3aed"],
-  audio:     ["#818cf8", "#4f46e5"],
-  reading:   ["#e879f9", "#c026d3"],
-  video:     ["#f472b6", "#db2777"],
-  free_form: ["#fbbf24", "#d97706"],
+
+/** Значок срочности рядом со сроком: тревога, часы или спокойный календарь. */
+const DUE_ICONS: Record<DueUrgency, GlyphName> = {
+  overdue: "alert",
+  today: "clock",
+  soon: "clock",
+  later: "calendar",
+  none: "calendar",
 };
-function typeGradient(type: string): readonly [string, string] {
-  return TYPE_GRADIENTS[type] ?? (["#a855f7", "#6366f1"] as const);
-}
 
 const FILTERS = ["Все", "text_test", "audio", "reading", "video", "free_form"] as const;
 // «Колоды» — отдельная категория в созданных заданиях учителя. До этого у
@@ -102,27 +114,12 @@ function pluralRu(n: number, one: string, few: string, many: string) {
 }
 
 /**
- * Значок типа задания в градиентной плашке. Наклон -5° повторяет DeckGlyph:
- * значки во всём приложении лежат под одним углом.
+ * Значок типа задания. Раньше здесь была линейная иконка на градиентной плашке;
+ * теперь весь рисунок живёт в TypeArt, а обёртка осталась, чтобы места вызова
+ * не знали о деталях реализации и размер задавался в одном месте.
  */
-function TypePlate({ type, size = 44 }: { type: string; size?: number }) {
-  return (
-    <LinearGradient
-      colors={typeGradient(type) as unknown as string[]}
-      start={{ x: 0.1, y: 0 }}
-      end={{ x: 0.9, y: 1 }}
-      style={{
-        width: size, height: size, borderRadius: radii.sm + 2,
-        alignItems: "center", justifyContent: "center",
-        transform: [{ rotate: "-5deg" }],
-        shadowColor: TYPE_COLORS[type] ?? "#6366f1",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3, shadowRadius: 10, elevation: 4,
-      }}
-    >
-      <Glyph name={TYPE_ICONS[type] ?? "pen"} size={Math.round(size * 0.48)} color="#ffffff" />
-    </LinearGradient>
-  );
+function TypePlate({ type, size = 52 }: { type: string; size?: number }) {
+  return <TypeArt type={type} size={size} label={TYPE_LABELS[type] ?? "Задание"} />;
 }
 
 // ─── Assign Modal ────────────────────────────────────────────────────
@@ -141,10 +138,13 @@ function AssignModal({
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // Срок сдачи для этой отправки. По умолчанию «без срока»: принуждать учителя
+  // ставить дедлайн на каждое задание — лишнее давление и лишний тап.
+  const [duePreset, setDuePreset] = useState<DuePresetKey>("none");
 
   useEffect(() => {
     if (!visible) return;
-    setSelected(new Set()); setError(""); setStudents([]);
+    setSelected(new Set()); setError(""); setStudents([]); setDuePreset("none");
     setLoading(true);
     apiFetch("/api/connections/teacher/students")
       .then(setStudents)
@@ -171,7 +171,12 @@ function AssignModal({
     try {
       const result = await apiFetch(`/api/assignments/${assignment.id}/assign`, {
         method: "POST",
-        body: JSON.stringify({ studentIds: Array.from(selected) }),
+        // dueAt считается в момент отправки, а не в момент выбора пресета:
+        // модалка может провисеть открытой, и «сегодня» должно остаться сегодня.
+        body: JSON.stringify({
+          studentIds: Array.from(selected),
+          dueAt: dueDateFromPreset(duePreset),
+        }),
       });
       if (result.assigned > 0) {
         onDone();
@@ -226,11 +231,10 @@ function AssignModal({
           ) : students.length === 0 ? (
             <View style={{ alignItems: "center", paddingVertical: 30, gap: 12 }}>
               {/* Глиф в плашке вместо 🎓: цвет управляется темой, вид одинаков
-                  на iOS, Android и в вебе. */}
+                  на iOS, Android и в вебе. Плашка стоит ровно — наклон убран. */}
               <View style={{
                 width: 62, height: 62, borderRadius: radii.md, justifyContent: "center", alignItems: "center",
                 backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "2e",
-                transform: [{ rotate: "-4deg" }],
               }}>
                 <Glyph name="users" size={30} color={colors.primary} />
               </View>
@@ -276,6 +280,46 @@ function AssignModal({
                 );
               })}
             </ScrollView>
+          )}
+
+          {/* Срок сдачи. Стоит между списком учеников и кнопкой отправки: это
+              последнее решение перед отправкой, и его видно, не листая назад. */}
+          {students.length > 0 && (
+            <View style={{ marginTop: 14 }}>
+              <SectionLabel style={{ marginBottom: 8 }}>Срок сдачи</SectionLabel>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {DUE_PRESETS.map((preset) => {
+                  const active = duePreset === preset.key;
+                  return (
+                    <TouchableOpacity
+                      key={preset.key}
+                      onPress={() => setDuePreset(preset.key)}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      style={{
+                        paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill,
+                        borderWidth: 1.5,
+                        borderColor: active ? colors.primary : colors.border,
+                        backgroundColor: active ? colors.secondary : colors.card,
+                      }}
+                    >
+                      <Text style={{
+                        fontSize: 13, fontWeight: "800",
+                        color: active ? colors.primary : colors.mutedForeground,
+                      }}>
+                        {preset.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {duePreset !== "none" && (
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 8 }}>
+                  Ученик увидит: «{formatDue(dueDateFromPreset(duePreset)).text}»
+                </Text>
+              )}
+            </View>
           )}
 
           {students.length > 0 && (
@@ -431,9 +475,31 @@ export default function AssignmentsScreen() {
 
   const searchLower = search.trim().toLowerCase();
 
+  /**
+   * Сколько заданий стоит за фильтром. Считается по уже загруженным спискам —
+   * лишних запросов нет. Пустой тип теперь видно до нажатия: раньше фильтр
+   * выглядел рабочим и открывал пустой экран.
+   */
+  const filterCount = (f: Filter): number => {
+    if (f === DECKS_FILTER) return decksQ.data?.length ?? 0;
+    const source: any[] = isTeacher ? myAssignments : myTasks;
+    if (f === "Все") return source.length;
+    return source.filter((a) => a.type === f).length;
+  };
+
   /** Цвет балла в фирменной гамме: зелёного в палитре нет намеренно. */
   const scoreTint = (score: number) =>
     score >= 70 ? colors.success : score >= 40 ? accents.amber : colors.destructive;
+
+  /**
+   * Цвет срока. Красный только для просроченного: если красить им и «сегодня»,
+   * тревожный цвет перестаёт что-либо значить.
+   */
+  const dueTint = (urgency: DueUrgency) =>
+    urgency === "overdue" ? colors.destructive
+      : urgency === "today" ? accents.amber
+        : urgency === "soon" ? colors.primary
+          : colors.mutedForeground;
 
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
@@ -461,8 +527,10 @@ export default function AssignmentsScreen() {
       ...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {}),
     },
     filterRow: { flexDirection: "row", gap: 8, paddingVertical: 12 },
+    // Значок типа внутри чипа: тип узнаётся картинкой раньше, чем прочитан текст.
     filterBtn: {
-      paddingHorizontal: 14, paddingVertical: 8,
+      flexDirection: "row", alignItems: "center", gap: 6,
+      paddingLeft: 8, paddingRight: 14, paddingVertical: 7,
       borderRadius: radii.pill, borderWidth: 1.5, borderColor: colors.border,
       backgroundColor: colors.card,
     },
@@ -474,6 +542,7 @@ export default function AssignmentsScreen() {
     },
     filterText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
     filterTextActive: { color: colors.primary },
+    filterCount: { fontSize: 11, fontWeight: "800", color: colors.mutedForeground, opacity: 0.75, fontVariant: ["tabular-nums"] },
     list: { paddingHorizontal: 20, paddingBottom: insets.bottom + 90 },
     card: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
@@ -494,6 +563,9 @@ export default function AssignmentsScreen() {
     typeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     typeBadgeText: { fontSize: 12, fontWeight: "700" },
     ageText: { fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
+    // Срок: текст с иконкой, без плашки. Плашка спорила бы с бейджем типа.
+    dueRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 4 },
+    dueText: { fontSize: 12.5, fontWeight: "800" },
     actionBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center",
       gap: 6, paddingVertical: 10, borderRadius: radii.sm - 2, borderWidth: 1,
@@ -502,11 +574,11 @@ export default function AssignmentsScreen() {
     actionBtnText: { fontSize: 13, fontWeight: "800" },
     empty: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 60, gap: 12, paddingHorizontal: 24 },
     emptyText: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 21 },
-    // Плашка под глиф в пустом состоянии: лёгкий наклон вместо строгого квадрата.
+    // Плашка под глиф в пустом состоянии. Стоит ровно: наклон убран вместе с
+    // наклонами карточек, иначе одинокий поворот выглядит случайным.
     emptyIcon: {
       width: 68, height: 68, borderRadius: radii.md + 4, justifyContent: "center", alignItems: "center",
       backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
-      transform: [{ rotate: "-4deg" }],
     },
     teacherTag: {
       flexDirection: "row", alignItems: "center", gap: 5,
@@ -540,18 +612,21 @@ export default function AssignmentsScreen() {
     },
   });
 
-  /**
-   * Чередующийся микро-наклон: список выглядит положенным рукой, а не
-   * выровненным по линейке. Больше градуса — начинает мешать чтению.
-   */
-  const tiltFor = (index: number) => (index % 2 === 0 ? "-0.4deg" : "0.4deg");
-
-  const renderMyTaskCard = (item: any, index: number) => {
+  const renderMyTaskCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
+    const due = formatDue(item.dueAt);
+    const dueColor = dueTint(due.urgency);
+    // Просроченное подсвечивается рамкой и тенью: в длинном списке одного
+    // текста мало, карточка должна отличаться до чтения.
+    const overdue = due.urgency === "overdue";
     return (
       <TouchableOpacity
         key={item.assignedTaskId}
-        style={[styles.assignedCard, { shadowColor: color, transform: [{ rotate: tiltFor(index) }] }]}
+        style={[
+          styles.assignedCard,
+          { shadowColor: overdue ? colors.destructive : color },
+          overdue && { borderColor: colors.destructive + "55" },
+        ]}
         onPress={() => router.push(`/(main)/assignment/${item.assignmentId}` as any)}
         activeOpacity={0.75}
       >
@@ -563,7 +638,17 @@ export default function AssignmentsScreen() {
         </View>
         <View style={styles.cardHeader}>
           <TypePlate type={item.type} />
-          <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+            {/* Срок показываем только когда он есть: строка «без срока» на
+                каждой карточке — шум, который ничего не сообщает. */}
+            {due.urgency !== "none" && (
+              <View style={styles.dueRow}>
+                <Glyph name={DUE_ICONS[due.urgency]} size={12} color={dueColor} />
+                <Text style={[styles.dueText, { color: dueColor }]}>{due.text}</Text>
+              </View>
+            )}
+          </View>
           <Glyph name="chevron" size={18} color={colors.mutedForeground} />
         </View>
         <View style={styles.cardFooter}>
@@ -581,7 +666,7 @@ export default function AssignmentsScreen() {
     );
   };
 
-  const renderMyAssignmentCard = (item: any, index: number) => {
+  const renderMyAssignmentCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const isDraft = item.isDraft;
     return (
@@ -590,7 +675,7 @@ export default function AssignmentsScreen() {
         key={item.id}
         style={[
           styles.card,
-          { shadowColor: color, transform: [{ rotate: tiltFor(index) }] },
+          { shadowColor: color },
           isDraft && { borderColor: colors.border, borderStyle: "dashed" },
         ]}
       >
@@ -613,15 +698,17 @@ export default function AssignmentsScreen() {
           </View>
         </TouchableOpacity>
 
-        {/* Action buttons — independent from navigation area */}
+        {/* Action buttons — independent from navigation area.
+            «Назначить» заполнена цветом, «Итоги» и удаление тихие: раньше все
+            три кнопки весили одинаково и главное действие не читалось. */}
         <View style={styles.cardActions}>
           <TouchableOpacity
             activeOpacity={0.8}
-            style={[styles.actionBtn, { borderColor: colors.primary, backgroundColor: colors.primary + "10" }]}
+            style={[styles.actionBtn, { flex: 1, borderColor: "transparent", backgroundColor: colors.primary }]}
             onPress={() => setAssignTarget(item)}
           >
-            <Glyph name="send" size={14} color={colors.primary} />
-            <Text style={[styles.actionBtnText, { color: colors.primary }]}>Назначить</Text>
+            <Glyph name="send" size={14} color="#fff" />
+            <Text style={[styles.actionBtnText, { color: "#fff" }]}>Назначить</Text>
           </TouchableOpacity>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -647,16 +734,19 @@ export default function AssignmentsScreen() {
   };
 
   // ── Teacher: render one student submission card (tappable → details) ──
-  const renderTeacherSubCard = (item: any, index: number) => {
+  const renderTeacherSubCard = (item: any) => {
     const color = TYPE_COLORS[item.assignmentType] || colors.primary;
     const hasSub = !!item.submission;
     if (!hasSub) return null;
     const score = item.submission.score;
     const tint = scoreTint(score);
+    // Сдано после срока: учителю это важнее самой даты сдачи, поэтому метка,
+    // а не строка мелким текстом. Без срока метки нет.
+    const late = !!item.dueAt && new Date(item.submission.submittedAt).getTime() > new Date(item.dueAt).getTime();
     return (
       <TouchableOpacity
         key={`${item.assignedTaskId}`}
-        style={[styles.subCard, { shadowColor: tint, transform: [{ rotate: tiltFor(index) }] }]}
+        style={[styles.subCard, { shadowColor: tint }]}
         onPress={() => router.push(`/(main)/teacher-results/${item.assignmentId}` as any)}
         activeOpacity={0.75}
       >
@@ -679,12 +769,15 @@ export default function AssignmentsScreen() {
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {/* Значок типа и здесь: список ответов перестаёт быть одинаковым. */}
+          <TypePlate type={item.assignmentType} size={28} />
           <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
             <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.assignmentType] ?? item.assignmentType}</Text>
           </View>
           <Text style={styles.ageText}>
             {item.submission.correctCount}/{item.submission.totalQuestions} правильно
           </Text>
+          {late && <Pill text="с опозданием" icon="clock" tone="danger" />}
           <Text style={styles.ageText}>
             {new Date(item.submission.submittedAt).toLocaleDateString("ru-RU")}
           </Text>
@@ -694,19 +787,19 @@ export default function AssignmentsScreen() {
   };
 
   // ── Student: render one completed assignment card (tappable → review) ──
-  const renderCompletedCard = (item: any, index: number) => {
+  const renderCompletedCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const tint = scoreTint(item.score);
     return (
       <TouchableOpacity
         key={`${item.submissionId}`}
         // Тень в цвете балла: сильные и слабые работы различимы сразу.
-        style={[styles.subCard, { shadowColor: tint, transform: [{ rotate: tiltFor(index) }] }]}
+        style={[styles.subCard, { shadowColor: tint }]}
         onPress={() => router.push(`/(main)/submission-review/${item.submissionId}` as any)}
         activeOpacity={0.75}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
-          <TypePlate type={item.type} size={40} />
+          <TypePlate type={item.type} size={44} />
           <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
@@ -754,6 +847,20 @@ export default function AssignmentsScreen() {
           )}
         </View>
 
+        {/* Сводка по срокам у ученика: сколько заданий горит прямо сейчас.
+            Раньше это можно было понять, только пролистав весь список. */}
+        {isStudent && (() => {
+          const urgent = countUrgent(myTasks, (t: any) => t.dueAt);
+          if (urgent === 0) return null;
+          return (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
+              <Glyph name="alert" size={14} color={colors.destructive} />
+              <Text style={{ fontSize: 13, fontWeight: "800", color: colors.destructive }}>
+                {urgent} {pluralRu(urgent, "задание горит", "задания горят", "заданий горят")} — начни с первого
+              </Text>
+            </View>
+          );
+        })()}
 
         {/* Daily Goal Bar — students only */}
         {isStudent && gamStats && (
@@ -812,17 +919,28 @@ export default function AssignmentsScreen() {
               keyExtractor={(f) => f}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
-              renderItem={({ item: f }) => (
-                <TouchableOpacity
-                  style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
-                  onPress={() => setFilter(f)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-                    {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
-                  </Text>
-                </TouchableOpacity>
-              )}
+              renderItem={({ item: f }) => {
+                const isType = f !== "Все" && f !== DECKS_FILTER;
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.filterBtn,
+                      !isType && { paddingLeft: 14 },
+                      filter === f && styles.filterBtnActive,
+                    ]}
+                    onPress={() => setFilter(f)}
+                    activeOpacity={0.85}
+                  >
+                    {isType && <TypeArt type={f} size={22} />}
+                    <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+                      {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
+                    </Text>
+                    <Text style={[styles.filterCount, filter === f && { color: colors.primary }]}>
+                      {filterCount(f)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
             />
           </>
         )}
@@ -852,7 +970,7 @@ export default function AssignmentsScreen() {
                   <SectionLabel>Ответы учеников · {withSub.length}</SectionLabel>
                   {withSub
                     .sort((a, b) => new Date(b.submission.submittedAt).getTime() - new Date(a.submission.submittedAt).getTime())
-                    .map((item, i) => renderTeacherSubCard(item, i))
+                    .map((item) => renderTeacherSubCard(item))
                   }
                 </>
               );
@@ -870,7 +988,7 @@ export default function AssignmentsScreen() {
               return (
                 <>
                   <SectionLabel>Выполненные · {myCompleted.length}</SectionLabel>
-                  {myCompleted.map((item, i) => renderCompletedCard(item, i))}
+                  {myCompleted.map((item) => renderCompletedCard(item))}
                 </>
               );
             })()}
@@ -938,14 +1056,13 @@ export default function AssignmentsScreen() {
                     style={{ marginBottom: 16 }}
                   />
                   <SectionLabel>Мои задания и колоды · {combined.length}</SectionLabel>
-                  {combined.map((row, i) => row.kind === "assignment"
-                    ? renderMyAssignmentCard(row.data, i)
+                  {combined.map((row) => row.kind === "assignment"
+                    ? renderMyAssignmentCard(row.data)
                     : (
                       <DeckRow
                         key={`deck-${row.data.id}`}
                         colors={colors}
                         deck={row.data}
-                        tilt={tiltFor(i)}
                         onPress={() => router.push(`/(main)/flashcards/deck/${row.data.id}` as any)}
                       />
                     ))}
@@ -976,7 +1093,7 @@ export default function AssignmentsScreen() {
               return (
                 <>
                   <SectionLabel>Мои задания · {filtered.length}</SectionLabel>
-                  {filtered.map((item, i) => renderMyAssignmentCard(item, i))}
+                  {filtered.map((item) => renderMyAssignmentCard(item))}
                 </>
               );
             })()}
@@ -997,25 +1114,30 @@ export default function AssignmentsScreen() {
                   </Text>
                 </View>
               );
-              const next = filtered[0];
+              // Сортировка по сроку: просроченное сверху, затем ближайшее, в
+              // конце — задания без срока. Порядок с сервера произвольный.
+              const ordered = sortByDue(filtered, (t: any) => t.dueAt);
+              const next = ordered[0];
+              const nextDue = formatDue(next.dueAt);
               return (
                 <>
                   {/* Главное действие ученика — как «Учить слова» в разделе
                       «Слова». Раньше экран открывался списком, и ученик сам
-                      искал, за что взяться. Кнопка ведёт на то же задание,
-                      что и первая карточка списка. */}
+                      искал, за что взяться. Кнопка ведёт на самое срочное
+                      задание — то же, что стоит первым в списке. */}
                   <ChunkyButton
                     label="Начать задание"
-                    sublabel={next.title}
+                    sublabel={nextDue.urgency === "none" ? next.title : `${next.title} · ${nextDue.text}`}
                     icon="play"
                     chevron
+                    tone={nextDue.urgency === "overdue" ? "warm" : "primary"}
                     onPress={() => router.push(`/(main)/assignment/${next.assignmentId}` as any)}
                     style={{ marginBottom: 16 }}
                   />
                   <SectionLabel>
-                    Назначено учителем · {filtered.length} {pluralRu(filtered.length, "задание", "задания", "заданий")}
+                    Назначено учителем · {ordered.length} {pluralRu(ordered.length, "задание", "задания", "заданий")}
                   </SectionLabel>
-                  {filtered.map((item: any, i: number) => renderMyTaskCard(item, i))}
+                  {ordered.map((item: any) => renderMyTaskCard(item))}
                 </>
               );
             })()}
@@ -1039,8 +1161,9 @@ export default function AssignmentsScreen() {
 
 // ─── Строка колоды — общий внешний вид для вкладки «Колоды» и для колод,
 // подмешанных в общий список во вкладке «Все». Значок рисует DeckGlyph: тот же
-// компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде. ──
-function DeckRow({ colors, deck, onPress, tilt = "0deg" }: { colors: any; deck: any; onPress: () => void; tilt?: string }) {
+// компонент, что в разделе «Слова». Здесь он передаётся с tilt={0} — на этом
+// экране всё стоит ровно, а в «Словах» наклон остаётся как было. ──
+function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: () => void }) {
   return (
     <TouchableOpacity
       key={deck.id}
@@ -1050,12 +1173,11 @@ function DeckRow({ colors, deck, onPress, tilt = "0deg" }: { colors: any; deck: 
         flexDirection: "row", alignItems: "center", gap: 12,
         backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1,
         borderColor: colors.border, padding: 14, marginBottom: 12,
-        transform: [{ rotate: tilt }],
         shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
         shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
       }}
     >
-      <DeckGlyph title={deck.title} emoji={deck.emoji} size={44} />
+      <DeckGlyph title={deck.title} emoji={deck.emoji} size={44} tilt={0} />
       <View style={{ flex: 1 }}>
         <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
         <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
@@ -1127,12 +1249,11 @@ function TeacherDecks({ colors, styles, search, decksQ }: { colors: any; styles:
           </Text>
         </View>
       ) : (
-        decks.map((d: any, i: number) => (
+        decks.map((d: any) => (
           <DeckRow
             key={d.id}
             colors={colors}
             deck={d}
-            tilt={i % 2 === 0 ? "-0.4deg" : "0.4deg"}
             onPress={() => router.push(`/(main)/flashcards/deck/${d.id}` as any)}
           />
         ))

@@ -7,6 +7,26 @@ import { computeMaxPoints, isTimeLimited } from "../lib/points";
 
 const router = Router();
 
+/**
+ * Разбор срока сдачи из тела запроса.
+ *
+ * Клиент присылает ISO-строку (её даёт Date.toISOString(), уже в UTC) или null,
+ * если срока нет. Пустая строка и undefined тоже означают «без срока» — так
+ * старые клиенты, которые про срок ничего не знают, продолжают работать.
+ *
+ * Возвращает Date, null или строку с ошибкой: явный разбор нужен, чтобы в базу
+ * не попал Invalid Date и ученик не увидел «просрочено» из-за опечатки.
+ */
+function parseDueAt(raw: unknown): { value: Date | null } | { error: string } {
+  if (raw === undefined || raw === null || raw === "") return { value: null };
+  if (typeof raw !== "string" && !(raw instanceof Date)) {
+    return { error: "Неверный формат срока сдачи" };
+  }
+  const date = raw instanceof Date ? raw : new Date(raw);
+  if (Number.isNaN(date.getTime())) return { error: "Неверный формат срока сдачи" };
+  return { value: date };
+}
+
 // ── List assignments ──────────────────────────────────────────────────
 // Students: only published (isDraft=false), optionally filtered by age
 // Teachers/admins: their own (any status) + all published others
@@ -54,6 +74,9 @@ router.get("/assignments/my-tasks", requireAuth, async (req, res) => {
   const tasks = await db.select({
     assignedTaskId: assignedTasksTable.id,
     assignedAt: assignedTasksTable.assignedAt,
+    // Срок сдачи: null, если учитель его не ставил. Ученик видит его на
+    // карточке, и по нему же сортируется список — просроченное сверху.
+    dueAt: assignedTasksTable.dueAt,
     teacherId: assignedTasksTable.teacherId,
     teacherName: usersTable.name,
     assignmentId: assignmentsTable.id,
@@ -97,6 +120,8 @@ router.get("/assignments/teacher-results", requireAuth, async (req, res) => {
   const tasks = await db.select({
     assignedTaskId: assignedTasksTable.id,
     assignedAt: assignedTasksTable.assignedAt,
+    // Срок нужен и учителю: по нему видно, кто не сдал вовремя.
+    dueAt: assignedTasksTable.dueAt,
     studentId: assignedTasksTable.studentId,
     studentName: usersTable.name,
     studentAvatarEmoji: usersTable.avatarEmoji,
@@ -325,11 +350,17 @@ router.post("/assignments/:id/assign", requireAuth, async (req, res) => {
   if (!isTeacher(caller.role)) { res.status(403).json({ error: "Forbidden" }); return; }
 
   const assignmentId = Number(req.params["id"]);
-  const { studentIds } = req.body as { studentIds: number[] };
+  const { studentIds, dueAt } = req.body as { studentIds: number[]; dueAt?: string | null };
 
   if (!Array.isArray(studentIds) || studentIds.length === 0) {
     res.status(400).json({ error: "studentIds required" }); return;
   }
+
+  // Срок сдачи необязателен. Если он пришёл и разобрался — уйдёт в назначение
+  // всем ученикам этой отправки: они получают задание одновременно, значит и
+  // срок у них общий.
+  const due = parseDueAt(dueAt);
+  if ("error" in due) { res.status(400).json({ error: due.error }); return; }
 
   const [assignment] = await db.select().from(assignmentsTable)
     .where(eq(assignmentsTable.id, assignmentId));
@@ -408,6 +439,7 @@ router.post("/assignments/:id/assign", requireAuth, async (req, res) => {
       assignmentId,
       studentId: sid,
       teacherId: caller.userId,
+      dueAt: due.value,
     }))
   );
 
@@ -479,6 +511,32 @@ router.patch("/assignments/:id", requireAuth, async (req, res) => {
   res.json(updated);
 });
 
+// ── Update due date of an assigned task (teacher who assigned it) ─────
+// Срок иногда нужно сдвинуть уже после отправки: ученик заболел, урок
+// перенесли. Отдельный маленький роут вместо переназначения задания — иначе
+// пришлось бы удалять назначение и ученик потерял бы прогресс попытки.
+router.patch("/assigned-tasks/:assignedTaskId/due", requireAuth, async (req, res) => {
+  const caller = getUser(req);
+  if (!isTeacher(caller.role) && caller.role !== "admin") {
+    res.status(403).json({ error: "Forbidden" }); return;
+  }
+
+  const assignedTaskId = Number(req.params["assignedTaskId"]);
+  const due = parseDueAt((req.body ?? {}).dueAt);
+  if ("error" in due) { res.status(400).json({ error: due.error }); return; }
+
+  const [updated] = await db.update(assignedTasksTable)
+    .set({ dueAt: due.value })
+    .where(and(
+      eq(assignedTasksTable.id, assignedTaskId),
+      eq(assignedTasksTable.teacherId, caller.userId),
+    ))
+    .returning();
+
+  if (!updated) { res.status(404).json({ error: "Назначение не найдено" }); return; }
+  res.json(updated);
+});
+
 // ── Unassign (remove assigned task from student) ──────────────────────
 router.delete("/assigned-tasks/:assignedTaskId", requireAuth, async (req, res) => {
   const caller = getUser(req);
@@ -510,7 +568,7 @@ router.delete("/assignments/:id", requireAuth, async (req, res) => {
       eq(assignmentsTable.createdBy, caller.userId),
       isNull(assignmentsTable.deletedAt),
     ))
-    .returning({ id: assignmentsTable.id });
+    .returning();
 
   if (!updated) { res.status(404).json({ error: "Задание не найдено" }); return; }
   res.status(204).send();

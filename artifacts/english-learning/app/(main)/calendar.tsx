@@ -8,6 +8,19 @@
 //
 // Оформление собрано из GameKit: физические кнопки и вкладки, карточки с
 // цветной тенью в цвете статуса, пилюли. Логика экрана не менялась.
+//
+// Статус слота раньше показывался цветной полосой слева (borderLeftWidth: 4).
+// Приём убран по всему экрану: полоса на карточке читается как след от
+// вёрстки, а не как смысл, и на узком экране съедает место под текст. Теперь
+// статус несут сама карточка (лёгкая заливка и рамка в цвете статуса), точка
+// слева и пилюля справа — те же три сигнала, но без лишней геометрии.
+//
+// Наклоны тоже убраны — как на «Заданиях», «Учениках», «Анализе» и «Профиле».
+//
+// Новое: карточка ближайшего занятия над сеткой. Главный вопрос к календарю —
+// «когда у меня следующий урок», и раньше ответ на него приходилось искать,
+// листая дни. Теперь он первым же блоком, вместе с кнопкой перехода на нужный
+// день.
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
@@ -110,6 +123,20 @@ function formatDateWithDay(dateStr: string | null) {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getDate()} ${MONTH_SHORT[d.getMonth()]}, ${DAY_SHORT[d.getDay()]}`;
+}
+
+/**
+ * Человеческая подпись дня: «сегодня», «завтра» или дата с днём недели.
+ * Нужна карточке ближайшего занятия — «завтра в 17:00» читается быстрее,
+ * чем «5 авг, Ср, 17:00».
+ */
+function humanDay(dateStr: string): string {
+  const today = todayStr();
+  if (dateStr === today) return "сегодня";
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dateStr === localDateStr(tomorrow)) return "завтра";
+  return formatDateWithDay(dateStr);
 }
 
 /** Первая буква имени для аватара без картинки. Пропускаем знаки и пробелы. */
@@ -462,6 +489,27 @@ export default function CalendarScreen() {
     return map;
   }, [monthSlots, isTeacherRole]);
 
+  /**
+   * Ближайшее подтверждённое занятие.
+   *
+   * Главный вопрос к календарю — «когда у меня следующий урок». Раньше ответ
+   * приходилось искать перелистыванием дней: сетка показывает точки, но не
+   * говорит, какая из них ближайшая. Ищем среди уже загруженных слотов месяца,
+   * лишнего запроса не нужно.
+   */
+  const nextLesson = useMemo(() => {
+    const upcoming = monthSlots
+      .filter((slot) => {
+        if (isPastSlot(slot.date, slot.endTime)) return false;
+        if (isTeacherRole) {
+          return ((slot as TeacherSlot).bookings ?? []).some((b) => b.status === "confirmed");
+        }
+        return (slot as StudentSlot).status === "confirmed_me";
+      })
+      .sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
+    return upcoming[0] ?? null;
+  }, [monthSlots, isTeacherRole]);
+
   // Ближайшие дни, где что-то есть — подсказка вместо пустого экрана.
   const nextBusyDates = useMemo(() => {
     return Object.entries(dayMeta)
@@ -629,6 +677,27 @@ export default function CalendarScreen() {
     },
     badgeText: { fontSize: 10, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
 
+    // ── Ближайшее занятие ──
+    // Заливка градиентом бренда: это не «ещё одна карточка в списке», а ответ
+    // на главный вопрос экрана, и он должен читаться первым.
+    nextCard: {
+      borderRadius: radii.lg, padding: 16, marginBottom: 14,
+      flexDirection: "row", alignItems: "center", gap: 14,
+      shadowColor: colors.primary, shadowOffset: { width: 0, height: 7 },
+      shadowOpacity: 0.34, shadowRadius: 18, elevation: 7,
+    },
+    nextIcon: {
+      width: 50, height: 50, borderRadius: radii.md,
+      backgroundColor: "rgba(255,255,255,0.22)",
+      alignItems: "center", justifyContent: "center",
+    },
+    nextLabel: {
+      fontSize: 10.5, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase",
+      color: "rgba(255,255,255,0.75)",
+    },
+    nextWhen: { fontSize: 19, fontWeight: "900", letterSpacing: -0.4, color: "#fff", marginTop: 3 },
+    nextWho: { fontSize: 12.5, color: "rgba(255,255,255,0.85)", marginTop: 3 },
+
     // ── Месячная сетка ──
     monthCard: {
       backgroundColor: colors.card, borderRadius: radii.lg, padding: 14, marginBottom: 14,
@@ -702,11 +771,11 @@ export default function CalendarScreen() {
     filterChipText: { fontSize: 12, fontWeight: "700", color: colors.mutedForeground },
     filterChipTextActive: { color: colors.primary },
     emptyBox: { alignItems: "center", paddingVertical: 28, gap: 12 },
-    // Плашка под глиф вместо крупного эмодзи: цвет из темы, лёгкий наклон.
+    // Плашка под глиф вместо крупного эмодзи. Стоит ровно: наклон убран
+    // вместе с остальными наклонами в проекте.
     emptyIcon: {
       width: 66, height: 66, borderRadius: radii.md + 4, alignItems: "center", justifyContent: "center",
       backgroundColor: colors.primary + "12", borderWidth: 1, borderColor: colors.primary + "28",
-      transform: [{ rotate: "-4deg" }],
     },
     emptyText: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 22 },
 
@@ -717,8 +786,10 @@ export default function CalendarScreen() {
     },
     warnText: { fontSize: 13, fontWeight: "700", flexShrink: 1 },
 
+    // Карточка слота. Статус несут заливка, рамка и тень в цвете статуса —
+    // цветной полосы слева больше нет (см. комментарий к файлу).
     slotCard: {
-      borderRadius: radii.md, borderWidth: 1, borderColor: colors.border,
+      borderRadius: radii.md, borderWidth: 1.5,
       backgroundColor: colors.card, marginBottom: 12, overflow: "hidden",
       shadowOffset: { width: 0, height: 5 },
       shadowOpacity: 0.15, shadowRadius: 14, elevation: 5,
@@ -798,9 +869,9 @@ export default function CalendarScreen() {
       flexDirection: "row", alignItems: "center", gap: 9,
     },
 
-    // Request / booking cards
+    // Request / booking cards. Как и слоты — без полосы слева.
     reqCard: {
-      borderRadius: radii.md, borderWidth: 1, borderColor: colors.border,
+      borderRadius: radii.md, borderWidth: 1.5,
       backgroundColor: colors.card, marginBottom: 12, padding: 14, gap: 10,
       shadowOffset: { width: 0, height: 5 },
       shadowOpacity: 0.13, shadowRadius: 14, elevation: 4,
@@ -816,6 +887,17 @@ export default function CalendarScreen() {
     // Аватар без картинки: буква в круге вместо случайного эмодзи.
     letterAvatar: { justifyContent: "center", alignItems: "center" },
     letterAvatarText: { color: "#fff", fontWeight: "900" },
+  });
+
+  /**
+   * Оформление карточки по цвету статуса: рамка, лёгкая заливка и тень.
+   * Вынесено в одно место, чтобы статус везде выглядел одинаково и чтобы
+   * цветную полосу слева нельзя было случайно вернуть.
+   */
+  const statusSkin = (color: string, muted = false) => ({
+    borderColor: muted ? colors.border : color + "55",
+    backgroundColor: muted ? colors.card : color + "0a",
+    shadowColor: muted ? accents.violetDeep : color,
   });
 
   /** Пустое состояние: глиф в плашке плюс поясняющий текст. */
@@ -845,6 +927,45 @@ export default function CalendarScreen() {
       <Text style={[s.letterAvatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
     </View>
   );
+
+  // ── Ближайшее занятие ───────────────────────────────────────────────
+  const renderNextLesson = () => {
+    if (!nextLesson) return null;
+    const who = isTeacherRole
+      ? ((nextLesson as TeacherSlot).bookings ?? []).find((b) => b.status === "confirmed")?.studentName ?? "Ученик"
+      : (nextLesson as StudentSlot).teacherName ?? "Учитель";
+    return (
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onPress={() => {
+          const d = new Date(nextLesson.date + "T00:00:00");
+          setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
+          setSelectedDate(nextLesson.date);
+        }}
+      >
+        <LinearGradient
+          colors={gradients.action as unknown as string[]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={s.nextCard}
+        >
+          <View style={s.nextIcon}>
+            <Glyph name="calendar" size={24} color="#ffffff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.nextLabel}>Ближайшее занятие</Text>
+            <Text style={s.nextWhen}>
+              {humanDay(nextLesson.date)} в {nextLesson.startTime}
+            </Text>
+            <Text style={s.nextWho}>
+              {isTeacherRole ? `с ${who}` : who} · до {nextLesson.endTime}
+            </Text>
+          </View>
+          <Glyph name="chevron" size={20} color="#ffffff" />
+        </LinearGradient>
+      </TouchableOpacity>
+    );
+  };
 
   // ── Месячная сетка ──────────────────────────────────────────────────
   const renderMonthCalendar = () => {
@@ -1029,18 +1150,14 @@ export default function CalendarScreen() {
     const confirmed = slot.bookings.find((b) => b.status === "confirmed");
     const isBusy = !!confirmed;
     // Цвет статуса: занятие — фиолетовый success, ожидание — розовый,
-    // свободный слот — индиго. Тень карточки в том же цвете.
-    const accent = dimmed
-      ? colors.border
-      : isBusy ? colors.success : pending.length > 0 ? colors.warning : colors.primary;
+    // свободный слот — индиго. Карточка целиком окрашивается в этот цвет
+    // (рамка, лёгкая заливка, тень) — см. statusSkin.
+    const accent = isBusy ? colors.success : pending.length > 0 ? colors.warning : colors.primary;
     const dotColor = dimmed ? colors.mutedForeground : accent;
     return (
       <View
         key={slot.id}
-        style={[
-          s.slotCard,
-          { borderLeftWidth: 4, borderLeftColor: accent, shadowColor: accent, opacity: dimmed ? 0.55 : 1 },
-        ]}
+        style={[s.slotCard, statusSkin(accent, dimmed), dimmed && { opacity: 0.55 }]}
       >
         <View style={s.slotTop}>
           <View style={[s.slotDot, { backgroundColor: dotColor }]} />
@@ -1134,6 +1251,7 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
+        {renderNextLesson()}
         {renderMonthCalendar()}
         {renderDaySummary()}
 
@@ -1169,7 +1287,7 @@ export default function CalendarScreen() {
 
         {/* Regular slot bookings */}
         {bookings.map((b) => (
-          <View key={`sb-${b.id}`} style={[s.reqCard, { shadowColor: colors.primary }]}>
+          <View key={`sb-${b.id}`} style={[s.reqCard, statusSkin(colors.primary)]}>
             <View style={s.reqTop}>
               <View style={[s.reqAvatar, { backgroundColor: colors.primary + "20" }]}>
                 <Glyph name="user" size={18} color={colors.primary} />
@@ -1196,10 +1314,7 @@ export default function CalendarScreen() {
           <Text style={s.historyLabel}>Запросы своего времени</Text>
         )}
         {customRequests.map((cr) => (
-          <View
-            key={`cr-${cr.id}`}
-            style={[s.reqCard, { borderLeftWidth: 4, borderLeftColor: colors.success, shadowColor: colors.success }]}
-          >
+          <View key={`cr-${cr.id}`} style={[s.reqCard, statusSkin(colors.success)]}>
             <View style={s.reqTop}>
               <View style={[s.reqAvatar, { backgroundColor: colors.success + "20" }]}>
                 <Glyph name="clock" size={18} color={colors.success} />
@@ -1236,6 +1351,7 @@ export default function CalendarScreen() {
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
+        {renderNextLesson()}
         {renderMonthCalendar()}
         {renderDaySummary()}
 
@@ -1251,10 +1367,7 @@ export default function CalendarScreen() {
         {active.map((slot) => {
           const meta = STATUS_CFG[slot.status];
           return (
-            <View
-              key={slot.id}
-              style={[s.slotCard, { borderLeftWidth: 4, borderLeftColor: meta.color, shadowColor: meta.color }]}
-            >
+            <View key={slot.id} style={[s.slotCard, statusSkin(meta.color)]}>
               <View style={s.slotTop}>
                 <View style={[s.slotDot, { backgroundColor: meta.color }]} />
                 <View style={{ flex: 1 }}>
@@ -1331,7 +1444,7 @@ export default function CalendarScreen() {
           key={b.id}
           style={[
             s.reqCard,
-            { borderLeftWidth: 4, borderLeftColor: cardColor, shadowColor: cardColor },
+            statusSkin(cardColor, isPast && !isRejected),
             isPast && !isRejected && { opacity: 0.5 },
           ]}
         >
@@ -1412,7 +1525,7 @@ export default function CalendarScreen() {
                   key={`cr-${cr.id}`}
                   style={[
                     s.reqCard,
-                    { borderLeftWidth: 4, borderLeftColor: crColor, shadowColor: crColor },
+                    statusSkin(crColor, isPastCr && !isRejCr),
                     isPastCr && !isRejCr && { opacity: 0.5 },
                   ]}
                 >
@@ -1483,10 +1596,7 @@ export default function CalendarScreen() {
               const accent = isPast ? colors.success : colors.primary;
               const statusLabel = isPast ? "Проведён" : "Запланирован";
               return (
-                <View
-                  key={item.id}
-                  style={[s.slotCard, { borderLeftWidth: 4, borderLeftColor: accent, shadowColor: accent }]}
-                >
+                <View key={item.id} style={[s.slotCard, statusSkin(accent)]}>
                   <View style={s.slotTop}>
                     <View style={[s.slotDot, { backgroundColor: accent }]} />
                     <View style={{ flex: 1 }}>
