@@ -70,6 +70,19 @@ export function ProfileHero({
   name, username, avatarEmoji, avatarColor, avatarUrl, saving,
   onEditAvatar, roleLabel, ageLabel, level, xp, paddingTop,
 }: ProfileHeroProps) {
+  // Ссылка на фото может вести в никуда: объектное хранилище не настроено, и
+  // файлы лежат на диске контейнера, который на Render стирается при каждом
+  // деплое. В базе ссылка при этом остаётся — и вместо аватара получался
+  // пустой цветной квадрат без единого намёка на причину.
+  //
+  // При ошибке загрузки откатываемся на эмодзи: он хранится в той же записи
+  // пользователя и всегда доступен. Сбрасываем флаг при смене ссылки, иначе
+  // после загрузки нового фото остался бы старый эмодзи.
+  const [imageFailed, setImageFailed] = React.useState(false);
+  React.useEffect(() => { setImageFailed(false); }, [avatarUrl]);
+
+  const showPhoto = !!avatarUrl && !imageFailed;
+
   return (
     <LinearGradient
       colors={HERO_GRADIENT as unknown as string[]}
@@ -88,8 +101,13 @@ export function ProfileHero({
             style={s.avatarRing}
           >
             <View style={[s.avatarInner, { backgroundColor: avatarColor }]}>
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={s.avatarImage} resizeMode="cover" />
+              {showPhoto ? (
+                <Image
+                  source={{ uri: avatarUrl! }}
+                  style={s.avatarImage}
+                  resizeMode="cover"
+                  onError={() => setImageFailed(true)}
+                />
               ) : (
                 // Эмодзи-аватар выбирает сам ученик — это его лицо в приложении,
                 // а не наша иконка, поэтому здесь эмодзи остаётся.
