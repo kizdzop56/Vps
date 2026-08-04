@@ -2,9 +2,9 @@
 // Экран прохождения задания.
 //
 // Один экран обслуживает все пять типов (тест, аудирование, чтение, видео,
-// свободный ответ), три роли (ученик, учитель, результат) и таймер с
-// автосдачей. Логика загрузки, отправки, таймера и загрузки фото не менялась —
-// переписан только разбор.
+// свободный ответ), три режима (прохождение, предпросмотр учителем, результат)
+// и таймер с автосдачей. Логика загрузки, отправки, таймера и загрузки фото не
+// менялась — переписан только разбор.
 //
 // Что было не так:
 //  • Сверху висела одинокая цифра «1» — номер вопроса без подписи, а сам тип
@@ -15,6 +15,9 @@
 //    говорит: важно не сколько процентов, а сколько вопросов осталось.
 //  • Вопрос лежал на глухой сиреневой плашке, текст на ней тонул.
 //  • Варианты ответа были строками с радиокружком — не выглядели нажимаемыми.
+//  • У учителя был СВОЙ экран: простыня прокрутки со всеми вопросами разом.
+//    Проверить, как задание выглядит для ученика, было невозможно — а именно
+//    это учителю и нужно перед отправкой.
 //
 // Что стало:
 //  • Шапка в одну строку: выход, чип с иконкой типа и названием, таймер.
@@ -26,6 +29,10 @@
 //    в разделе «Слова».
 //  • У каждого типа своя сцена: тёмный плеер с волной, кадр видео, раскрытый
 //    текст для чтения, поле со счётчиком символов.
+//  • Учитель видит ТОТ ЖЕ экран, шаг за шагом. Отличий ровно три: метка
+//    «Предпросмотр» вместо таймера, верный вариант подсвечен сразу, и вместо
+//    отправки — переход к следующему вопросу. Так учитель видит задание
+//    глазами ученика, а не в виде списка.
 //
 // Значки — из собственного набора (components/ui/Glyph.tsx), эмодзи нет.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -202,11 +209,10 @@ function TypeChip({ type, title }: { type: string; title: string }) {
  * сколько он готов ещё просидеть.
  */
 function StepLadder({
-  total, index, answered, submitted, rightNote,
+  total, index, submitted, rightNote,
 }: {
   total: number;
   index: number;
-  answered: number;
   submitted?: boolean;
   /** Своя подпись справа вместо «осталось N». */
   rightNote?: string;
@@ -277,12 +283,14 @@ function QuestionHead({ n, text }: { n: number; text: string }) {
  * радиокружка: она заодно даёт вариантам имена, на которые можно ссылаться.
  */
 function OptionKey({
-  letter, text, state, disabled, onPress,
+  letter, text, state, disabled, badge, onPress,
 }: {
   letter: string;
   text: string;
   state: "idle" | "selected" | "correct" | "wrong";
   disabled?: boolean;
+  /** Подпись справа: в предпросмотре — «верный». */
+  badge?: string;
   onPress: () => void;
 }) {
   const press = useRef(new Animated.Value(0)).current;
@@ -294,10 +302,10 @@ function OptionKey({
     }).start();
 
   const skin = {
-    idle:     { border: BORDER,  fill: CARD_BG,   edge: EDGE,          key: "#f1eefb", keyText: TEXT_MID, text: TEXT_DARK,    weight: "600" as const },
-    selected: { border: "#8b5cf6", fill: "#f6f2ff", edge: PRIMARY_DARK, key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
-    correct:  { border: SUCCESS,   fill: "#f7f0ff", edge: PRIMARY_DARK, key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
-    wrong:    { border: DANGER,    fill: "#fff1f3", edge: "#9f1239",    key: "",        keyText: "#fff",   text: DANGER,       weight: "800" as const },
+    idle:     { border: BORDER,    fill: CARD_BG,   edge: EDGE,          key: "#f1eefb", keyText: TEXT_MID, text: TEXT_DARK,    weight: "600" as const },
+    selected: { border: "#8b5cf6", fill: "#f6f2ff", edge: PRIMARY_DARK,  key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
+    correct:  { border: SUCCESS,   fill: "#f7f0ff", edge: PRIMARY_DARK,  key: "",        keyText: "#fff",   text: PRIMARY_DARK, weight: "800" as const },
+    wrong:    { border: DANGER,    fill: "#fff1f3", edge: "#9f1239",     key: "",        keyText: "#fff",   text: DANGER,       weight: "800" as const },
   }[state];
 
   const filledKey = state !== "idle";
@@ -312,7 +320,7 @@ function OptionKey({
           onPressOut={() => set(0)}
           accessibilityRole="radio"
           accessibilityState={{ selected: state !== "idle", disabled: !!disabled }}
-          accessibilityLabel={`Вариант ${letter}. ${text}`}
+          accessibilityLabel={`Вариант ${letter}. ${text}${badge ? `. ${badge}` : ""}`}
           style={[s.opt, { borderColor: skin.border, backgroundColor: skin.fill }]}
         >
           {filledKey ? (
@@ -336,7 +344,13 @@ function OptionKey({
 
           <Text style={[s.optText, { color: skin.text, fontWeight: skin.weight }]}>{text}</Text>
 
-          {state === "selected" && <Glyph name="check" size={17} color={PRIMARY_DARK} />}
+          {badge ? (
+            <View style={s.optBadge}>
+              <Text style={s.optBadgeText}>{badge}</Text>
+            </View>
+          ) : state === "selected" ? (
+            <Glyph name="check" size={17} color={PRIMARY_DARK} />
+          ) : null}
         </Pressable>
       </Animated.View>
       <View style={{ height: 4 }} />
@@ -457,6 +471,8 @@ export default function AssignmentDetailScreen() {
 
   const isTeacherRole = user?.role === "teacher" || user?.role === "admin";
   const isStudent = user?.role === "student";
+  /** Учитель открывает то же задание в режиме просмотра, без отправки. */
+  const isPreview = isTeacherRole;
 
   // Загрузка задания
   useEffect(() => {
@@ -724,130 +740,12 @@ export default function AssignmentDetailScreen() {
   const hasTimer = isStudent && !!assignment.timeLimitMinutes && !submitted;
   const timerWarning = timeLeft !== null && timeLeft < 60;
   const timerDanger = timeLeft !== null && timeLeft < 30;
-  const inputsDisabled = submitted || timerExpired;
-
-  // ═════════════════ УЧИТЕЛЬ: обычная прокрутка с ответами ═════════════════
-  if (isTeacherRole) {
-    return (
-      <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
-        <ImageZoomModal uri={zoomImg} onClose={() => setZoomImg(null)} />
-        <MediaViewerModal url={mediaModal?.url ?? null} kind={mediaModal?.kind ?? "other"} title={mediaModal?.title} onClose={() => setMediaModal(null)} />
-
-        <View style={[s.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16) }]}>
-          <RoundBtn icon="chevron" flip onPress={() => router.back()} />
-          <TypeChip type={assignment.type} title={assignment.title} />
-        </View>
-
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 120, paddingTop: 14, gap: 12 }}>
-          <Plate style={{ padding: 14 }}>
-            <Text style={s.assignTitle}>{assignment.title}</Text>
-            {!!assignment.description?.trim() && (
-              <Text style={[s.bodyText, { marginBottom: 10 }]}>{assignment.description}</Text>
-            )}
-            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-              <View style={[s.badge, { backgroundColor: "#ede9fe" }]}>
-                <Text style={[s.badgeText, { color: PRIMARY }]}>{meta.label}</Text>
-              </View>
-              <View style={[s.badge, { backgroundColor: "#fce7f3" }]}>
-                <Glyph name="star" size={11} color="#9d174d" />
-                <Text style={[s.badgeText, { color: "#9d174d" }]}>
-                  {assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}
-                </Text>
-              </View>
-              {questions.length > 0 && (
-                <View style={[s.badge, { backgroundColor: "#e0e7ff" }]}>
-                  <Text style={[s.badgeText, { color: accents.indigoDeep }]}>
-                    {questions.length} {plural(questions.length, ["вопрос", "вопроса", "вопросов"])}
-                  </Text>
-                </View>
-              )}
-            </View>
-          </Plate>
-
-          {imageUrl && (
-            <TouchableOpacity onPress={() => setZoomImg(imageUrl)} activeOpacity={0.9} style={[s.plate, { padding: 0, overflow: "hidden" }]}>
-              <Image source={{ uri: imageUrl }} style={{ width: "100%", height: 200 }} resizeMode="cover" />
-            </TouchableOpacity>
-          )}
-
-          {textContent && (
-            <Plate style={{ padding: 14 }}>
-              <Text style={s.sectionTitle}>Текст для чтения</Text>
-              <Text style={s.bodyText}>{textContent}</Text>
-            </Plate>
-          )}
-          {showAudioBlock && mediaUrl && (
-            <Plate style={{ padding: 14 }}>
-              <InlineMediaPlayer url={mediaUrl} kind="audio" title={assignment.title} />
-            </Plate>
-          )}
-          {showVideoBlock && mediaUrl && (
-            <Plate style={{ padding: 14 }}>
-              <InlineMediaPlayer url={mediaUrl} kind="video" height={200} title={assignment.title} />
-            </Plate>
-          )}
-          {showOtherBlock && mediaUrl && (
-            <Plate style={{ padding: 14 }}>
-              <InlineMediaPlayer url={mediaUrl} kind="other" height={200} title={assignment.title} />
-            </Plate>
-          )}
-
-          {questions.length > 0 && (
-            <View>
-              <Text style={[s.lbl, { marginBottom: 10, marginTop: 4 }]}>Вопросы и верные ответы</Text>
-              {questions.map((q, i) => (
-                <Plate key={q.id} style={{ padding: 14, marginBottom: 10 }}>
-                  <View style={s.qRow}>
-                    <View style={[s.qNum, { backgroundColor: "#ede9fe" }]}>
-                      <Text style={[s.qNumText, { color: PRIMARY_DARK }]}>{i + 1}</Text>
-                    </View>
-                    <Text style={[s.qText, { fontSize: 15 }]}>{q.text}</Text>
-                  </View>
-                  {Array.isArray(q.options) && q.options.length > 0 ? (
-                    <View style={{ marginTop: 10, gap: 7 }}>
-                      {q.options.map((opt, oi) => {
-                        const right = opt === q.correctAnswer;
-                        return (
-                          <View
-                            key={oi}
-                            style={{
-                              flexDirection: "row", alignItems: "center", gap: 9,
-                              paddingVertical: 8, paddingHorizontal: 11, borderRadius: radii.sm,
-                              backgroundColor: right ? "#f6f2ff" : "#f7f6fb",
-                              borderWidth: 1.5, borderColor: right ? SUCCESS : "transparent",
-                            }}
-                          >
-                            <Text style={{ fontSize: 12, fontWeight: "900", color: right ? PRIMARY_DARK : TEXT_MUTED, width: 14 }}>
-                              {String.fromCharCode(65 + oi)}
-                            </Text>
-                            <Text style={{ flex: 1, fontSize: 13.5, color: right ? PRIMARY_DARK : TEXT_MID, fontWeight: right ? "800" : "500" }}>
-                              {opt}
-                            </Text>
-                            {right && <Glyph name="check" size={15} color={SUCCESS} />}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  ) : q.correctAnswer ? (
-                    <View style={{ marginTop: 10, backgroundColor: "#f6f2ff", borderRadius: radii.sm, padding: 11, borderWidth: 1.5, borderColor: SUCCESS }}>
-                      <Text style={{ fontSize: 10, fontWeight: "800", color: TEXT_MUTED, letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 }}>
-                        Верный ответ
-                      </Text>
-                      <Text style={{ color: PRIMARY_DARK, fontWeight: "800", fontSize: 14 }}>{q.correctAnswer}</Text>
-                    </View>
-                  ) : null}
-                </Plate>
-              ))}
-            </View>
-          )}
-        </ScrollView>
-      </View>
-    );
-  }
+  // В предпросмотре поля выключены: учитель смотрит, а не решает.
+  const inputsDisabled = submitted || timerExpired || isPreview;
 
   // ═════════════════ РЕЗУЛЬТАТ ═════════════════
   if (submitted && result) {
-    const isFreeForm = assignment.type === "free_form";
+    const isFreeFormResult = assignment.type === "free_form";
     const score = result.score ?? 0;
     const passed = score >= 70;
     const ringSize = 116;
@@ -883,23 +781,23 @@ export default function AssignmentDetailScreen() {
                 />
                 <Circle
                   cx={ringSize / 2} cy={ringSize / 2} r={r}
-                  stroke={isFreeForm ? accents.gold : passed ? "#e9d5ff" : "#fda4af"}
+                  stroke={isFreeFormResult ? accents.gold : passed ? "#e9d5ff" : "#fda4af"}
                   strokeWidth={stroke} fill="none" strokeLinecap="round"
                   strokeDasharray={`${circumference}`}
-                  strokeDashoffset={circumference * (1 - (isFreeForm ? 1 : score / 100))}
+                  strokeDashoffset={circumference * (1 - (isFreeFormResult ? 1 : score / 100))}
                   transform={`rotate(-90 ${ringSize / 2} ${ringSize / 2})`}
                 />
               </Svg>
-              {isFreeForm
+              {isFreeFormResult
                 ? <Glyph name="check" size={40} color="#fff" />
                 : <Text style={s.ringValue}>{score}%</Text>}
             </View>
 
             <Text style={s.resultTitle}>
-              {isFreeForm ? "Ответ отправлен" : passed ? "Отлично!" : "Можно лучше"}
+              {isFreeFormResult ? "Ответ отправлен" : passed ? "Отлично!" : "Можно лучше"}
             </Text>
             <Text style={s.resultSub}>
-              {isFreeForm
+              {isFreeFormResult
                 ? "Учитель проверит и поставит баллы"
                 : `${result.correctCount} из ${result.totalQuestions} ${plural(result.totalQuestions ?? 0, ["правильный", "правильных", "правильных"])} · «${assignment.title}»`}
             </Text>
@@ -926,7 +824,7 @@ export default function AssignmentDetailScreen() {
             )}
           </LinearGradient>
 
-          {!isFreeForm && questions.length > 0 && results.length > 0 && (
+          {!isFreeFormResult && questions.length > 0 && results.length > 0 && (
             <>
               <Text style={s.lbl}>Разбор ответов</Text>
               {questions.map((q, i) => {
@@ -960,15 +858,22 @@ export default function AssignmentDetailScreen() {
     );
   }
 
-  // ═════════════════ УЧЕНИК: пошаговое прохождение ═════════════════
+  // ═════════════════ ПРОХОЖДЕНИЕ И ПРЕДПРОСМОТР ═════════════════
+  // Один и тот же разбор для ученика и учителя. Учитель видит ровно то, что
+  // увидит ребёнок; отличия перечислены у флага isPreview.
   const isFreeForm = assignment.type === "free_form";
   const currentQ = isFreeForm ? null : questions[currentQuestionIndex];
   const isLastStep = isFreeForm ? true : currentQuestionIndex >= questions.length - 1;
   const currentAnswered = currentQ ? !!answers[currentQ.id]?.trim() : false;
-  const answeredCount = questions.filter(q => !!answers[q.id]?.trim()).length;
   const freeFormReady = !!freeFormText.trim() || !!freeFormAttachment;
 
   const goNext = () => {
+    if (isPreview) {
+      // Предпросмотр ничего не отправляет: на последнем шаге просто выходим.
+      if (!isLastStep) setCurrentQuestionIndex(i => i + 1);
+      else router.back();
+      return;
+    }
     if (!isLastStep) {
       setCurrentQuestionIndex(i => i + 1);
     } else {
@@ -976,21 +881,27 @@ export default function AssignmentDetailScreen() {
     }
   };
 
+  const goPrev = () => setCurrentQuestionIndex(i => Math.max(0, i - 1));
+
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
 
-  const ctaLabel = isFreeForm
-    ? (freeFormReady ? "Отправить учителю" : "Напишите ответ")
-    : !currentAnswered
-      ? "Выберите ответ"
-      : isLastStep
-        ? "Завершить и отправить"
-        : "Следующий вопрос";
+  const ctaLabel = isPreview
+    ? (isLastStep ? "Закрыть предпросмотр" : "Следующий вопрос")
+    : isFreeForm
+      ? (freeFormReady ? "Отправить учителю" : "Напишите ответ")
+      : !currentAnswered
+        ? "Выберите ответ"
+        : isLastStep
+          ? "Завершить и отправить"
+          : "Следующий вопрос";
 
-  const ctaIcon: GlyphName | undefined = isFreeForm
-    ? (freeFormReady ? "send" : undefined)
-    : !currentAnswered
-      ? undefined
-      : isLastStep ? "send" : "arrowRight";
+  const ctaIcon: GlyphName | undefined = isPreview
+    ? (isLastStep ? "close" : "arrowRight")
+    : isFreeForm
+      ? (freeFormReady ? "send" : undefined)
+      : !currentAnswered
+        ? undefined
+        : isLastStep ? "send" : "arrowRight";
 
   return (
     <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
@@ -1015,13 +926,22 @@ export default function AssignmentDetailScreen() {
         onCancel={() => setShowExitModal(false)}
       />
 
-      {/* ── Шапка: выход, тип задания, таймер ──
-          Раньше здесь была одинокая цифра, крестик висел отдельно поверх
-          экрана, а тип шёл капслоком строкой ниже. */}
+      {/* ── Шапка: выход, тип задания, таймер или метка предпросмотра ── */}
       <View style={[s.topBar, { paddingTop: topPad }]}>
-        <RoundBtn icon="close" onPress={() => setShowExitModal(true)} />
+        {/* У учителя стрелка «назад»: он ничего не сдаёт, и предупреждать
+            о потере ответов не о чем. */}
+        {isPreview
+          ? <RoundBtn icon="chevron" flip onPress={() => router.back()} />
+          : <RoundBtn icon="close" onPress={() => setShowExitModal(true)} />}
+
         <TypeChip type={assignment.type} title={assignment.title} />
-        {hasTimer && timeLeft !== null && (
+
+        {isPreview ? (
+          <View style={s.previewPill}>
+            <Glyph name="search" size={12} color={accents.indigoDeep} />
+            <Text style={s.previewPillText}>Просмотр</Text>
+          </View>
+        ) : hasTimer && timeLeft !== null ? (
           <View style={[
             s.timer,
             timerDanger
@@ -1035,15 +955,16 @@ export default function AssignmentDetailScreen() {
               {formatTime(timeLeft)}
             </Text>
           </View>
-        )}
+        ) : null}
       </View>
 
       {/* ── Лестница шагов ── */}
       <StepLadder
         total={isFreeForm ? 1 : Math.max(questions.length, 1)}
         index={isFreeForm ? 0 : currentQuestionIndex}
-        answered={answeredCount}
-        rightNote={isFreeForm ? (assignment.points > 0 ? `${assignment.points} очков` : "проверит учитель") : undefined}
+        rightNote={isFreeForm
+          ? (assignment.points > 0 ? `${assignment.points} очков` : "проверит учитель")
+          : undefined}
       />
 
       <ScrollView
@@ -1052,6 +973,45 @@ export default function AssignmentDetailScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {/* ── Полоса предпросмотра ──
+            Объясняет, что именно видит учитель, и заодно собирает настройки
+            задания (баллы, таймер), ради которых раньше существовал отдельный
+            экран-простыня. */}
+        {isPreview && (
+          <View style={s.previewBar}>
+            <Glyph name="cap" size={16} color={accents.indigoDeep} />
+            <Text style={s.previewBarText}>
+              Так задание видит ученик{assignment.isDraft ? " · черновик" : ""}
+            </Text>
+          </View>
+        )}
+
+        {isPreview && (
+          <View style={{ flexDirection: "row", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
+            <View style={[s.badge, { backgroundColor: "#fce7f3" }]}>
+              <Glyph name="star" size={11} color="#9d174d" />
+              <Text style={[s.badgeText, { color: "#9d174d" }]}>
+                {assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}
+              </Text>
+            </View>
+            {!!assignment.timeLimitMinutes && (
+              <View style={[s.badge, { backgroundColor: "#e0e7ff" }]}>
+                <Glyph name="clock" size={11} color={accents.indigoDeep} />
+                <Text style={[s.badgeText, { color: accents.indigoDeep }]}>
+                  {assignment.timeLimitMinutes} мин на решение
+                </Text>
+              </View>
+            )}
+            {questions.length > 0 && (
+              <View style={[s.badge, { backgroundColor: "#ede9fe" }]}>
+                <Text style={[s.badgeText, { color: PRIMARY }]}>
+                  {questions.length} {plural(questions.length, ["вопрос", "вопроса", "вопросов"])}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
         {timerExpired && !submitted && (
           <View style={s.expired}>
             <Glyph name="clock" size={18} color={DANGER} />
@@ -1245,17 +1205,39 @@ export default function AssignmentDetailScreen() {
           if (opts.length > 0) {
             return (
               <View style={{ marginTop: 14 }}>
-                {opts.map((opt, oi) => (
-                  <OptionKey
-                    key={oi}
-                    letter={String.fromCharCode(65 + oi)}
-                    text={opt}
-                    state={selected === opt ? "selected" : "idle"}
-                    disabled={inputsDisabled}
-                    onPress={() => setAnswers(prev => ({ ...prev, [currentQ.id]: opt }))}
-                  />
-                ))}
+                {opts.map((opt, oi) => {
+                  // В предпросмотре верный вариант подсвечен сразу — учитель
+                  // проверяет не себя, а то, что ключ проставлен правильно.
+                  const right = isPreview && !!currentQ.correctAnswer && opt === currentQ.correctAnswer;
+                  return (
+                    <OptionKey
+                      key={oi}
+                      letter={String.fromCharCode(65 + oi)}
+                      text={opt}
+                      state={right ? "correct" : selected === opt ? "selected" : "idle"}
+                      badge={right ? "верный" : undefined}
+                      disabled={inputsDisabled}
+                      onPress={() => setAnswers(prev => ({ ...prev, [currentQ.id]: opt }))}
+                    />
+                  );
+                })}
               </View>
+            );
+          }
+
+          // Вопрос со свободным вводом. В предпросмотре вместо пустого поля
+          // показываем эталонный ответ: именно с ним сравнивается ученик.
+          if (isPreview) {
+            return (
+              <Plate style={{ padding: 14, marginTop: 14, borderColor: SUCCESS, borderWidth: 1.5, backgroundColor: "#f7f0ff" }}>
+                <Text style={[s.lbl, { marginBottom: 6 }]}>Верный ответ</Text>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: PRIMARY_DARK, lineHeight: 21 }}>
+                  {currentQ.correctAnswer || "не задан"}
+                </Text>
+                <Text style={{ fontSize: 12, color: TEXT_MUTED, marginTop: 7, lineHeight: 17 }}>
+                  Ученик увидит здесь пустое поле для ввода
+                </Text>
+              </Plate>
             );
           }
 
@@ -1283,12 +1265,13 @@ export default function AssignmentDetailScreen() {
                   s.field,
                   { minHeight: 126, paddingBottom: 26 },
                   freeFormFocused && { borderColor: "#8b5cf6" },
+                  isPreview && { backgroundColor: "#faf9fd" },
                 ]}
                 value={freeFormText}
                 onChangeText={setFreeFormText}
                 onFocus={() => setFreeFormFocused(true)}
                 onBlur={() => setFreeFormFocused(false)}
-                placeholder="Напишите ответ…"
+                placeholder={isPreview ? "Здесь ученик напишет ответ" : "Напишите ответ…"}
                 placeholderTextColor={TEXT_MUTED}
                 multiline
                 textAlignVertical="top"
@@ -1298,7 +1281,7 @@ export default function AssignmentDetailScreen() {
               />
               {/* Счётчик символов: раньше поле молчало, и было непонятно,
                   ждут от тебя строчку или сочинение. */}
-              <Text style={s.fieldCount}>{freeFormText.length} / 2000</Text>
+              {!isPreview && <Text style={s.fieldCount}>{freeFormText.length} / 2000</Text>}
             </View>
 
             <View style={{ flexDirection: "row", gap: 9, marginTop: 11, alignItems: "center", flexWrap: "wrap" }}>
@@ -1312,41 +1295,69 @@ export default function AssignmentDetailScreen() {
                   </Pressable>
                 </View>
               )}
-              <Pressable
-                style={s.attach}
-                onPress={handleAttachPhoto}
-                disabled={freeFormUploading || inputsDisabled}
-              >
+              <View style={[s.attach, isPreview && { opacity: 0.6 }]}>
                 {freeFormUploading ? (
                   <ActivityIndicator color={PRIMARY_DARK} size="small" />
                 ) : (
                   <>
                     <Glyph name="camera" size={16} color={PRIMARY_DARK} />
                     <Text style={s.attachText}>
-                      {freeFormAttachment ? "Заменить фото" : "Прикрепить фото"}
+                      {isPreview
+                        ? "Ученик может приложить фото"
+                        : freeFormAttachment ? "Заменить фото" : "Прикрепить фото"}
                     </Text>
                   </>
                 )}
-              </Pressable>
+                {!isPreview && (
+                  <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={handleAttachPhoto}
+                    disabled={freeFormUploading || inputsDisabled}
+                    accessibilityRole="button"
+                    accessibilityLabel="Прикрепить фото"
+                  />
+                )}
+              </View>
             </View>
           </View>
         )}
       </ScrollView>
 
       {/* ── Нижняя кнопка ── */}
-      {!inputsDisabled && (
+      {(isPreview || !inputsDisabled) && (
         <View style={[s.foot, { paddingBottom: insets.bottom + 12 }]}>
-          <Cta
-            label={ctaLabel}
-            icon={ctaIcon}
-            busy={submitting}
-            disabled={isFreeForm ? !freeFormReady : !currentAnswered}
-            onPress={goNext}
-          />
-          {!isFreeForm && !currentAnswered && (
+          {/* В предпросмотре можно ходить назад: учитель листает задание в обе
+              стороны, а ученик — только вперёд, чтобы не переигрывать ответы. */}
+          {isPreview && currentQuestionIndex > 0 ? (
+            <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+              <Pressable
+                onPress={goPrev}
+                style={({ pressed }) => [s.prevBtn, pressed && { opacity: 0.85 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Предыдущий вопрос"
+              >
+                <View style={{ transform: [{ rotate: "180deg" }] }}>
+                  <Glyph name="chevron" size={18} color={PRIMARY_DARK} />
+                </View>
+              </Pressable>
+              <View style={{ flex: 1 }}>
+                <Cta label={ctaLabel} icon={ctaIcon} onPress={goNext} />
+              </View>
+            </View>
+          ) : (
+            <Cta
+              label={ctaLabel}
+              icon={ctaIcon}
+              busy={submitting}
+              disabled={isPreview ? false : isFreeForm ? !freeFormReady : !currentAnswered}
+              onPress={goNext}
+            />
+          )}
+
+          {!isPreview && !isFreeForm && !currentAnswered && (
             <Text style={s.footNote}>Кнопка оживёт, как только выберете вариант</Text>
           )}
-          {isFreeForm && freeFormReady && (
+          {!isPreview && isFreeForm && freeFormReady && (
             <Text style={s.footNote}>Изменить ответ после отправки нельзя</Text>
           )}
         </View>
@@ -1415,6 +1426,22 @@ const s = StyleSheet.create({
     borderWidth: 1.5, borderColor: "rgba(139,92,246,0.3)",
   },
   timerText: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  previewPill: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill,
+    backgroundColor: "rgba(99,102,241,0.14)",
+    borderWidth: 1.5, borderColor: "rgba(99,102,241,0.32)",
+  },
+  previewPillText: { fontSize: 12, fontWeight: "800", color: accents.indigoDeep },
+
+  // ── Полоса предпросмотра ──
+  previewBar: {
+    flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 12,
+    paddingHorizontal: 13, paddingVertical: 11, borderRadius: radii.md,
+    backgroundColor: "rgba(99,102,241,0.1)",
+    borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(99,102,241,0.34)",
+  },
+  previewBarText: { flex: 1, fontSize: 13, fontWeight: "800", color: accents.indigoDeep },
 
   // ── Лестница шагов ──
   ladder: { paddingHorizontal: 16, paddingTop: 14 },
@@ -1472,6 +1499,11 @@ const s = StyleSheet.create({
   optKey: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   optKeyText: { fontSize: 13, fontWeight: "900" },
   optText: { flex: 1, fontSize: 14.5, lineHeight: 20 },
+  optBadge: {
+    paddingHorizontal: 9, paddingVertical: 4, borderRadius: radii.pill,
+    backgroundColor: "rgba(168,85,247,0.18)",
+  },
+  optBadgeText: { fontSize: 10.5, fontWeight: "900", color: PRIMARY_DARK, letterSpacing: 0.3 },
 
   // ── Поля ввода ──
   field: {
@@ -1574,6 +1606,11 @@ const s = StyleSheet.create({
   },
   ctaText: { fontSize: 15.5, fontWeight: "900", color: "#fff", letterSpacing: -0.2 },
   footNote: { marginTop: 9, textAlign: "center", fontSize: 11.5, fontWeight: "600", color: TEXT_MUTED },
+  prevBtn: {
+    width: 54, height: 54, borderRadius: radii.md,
+    backgroundColor: CARD_BG, borderWidth: 2, borderColor: BORDER,
+    alignItems: "center", justifyContent: "center",
+  },
 
   // ── Результат ──
   resultHero: {
