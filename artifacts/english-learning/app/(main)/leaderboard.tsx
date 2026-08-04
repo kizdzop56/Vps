@@ -8,10 +8,16 @@
 // дефолтного эмодзи больше нет — вместо него первая буква ника.
 //
 // Оформление собрано из GameKit: плитки с цветной тенью, пилюли, метки секций.
+//
+// Главное отличие от прежней версии: рейтинг перестал быть просто списком.
+// Рядом с каждым участником видно отставание от того, кто выше — «отстаёшь на
+// 40 очков» превращает таблицу в дистанцию, которую можно сократить. Раньше
+// экран показывал абсолютные значения, и понять, далеко ли до следующего
+// места, можно было только вычитая числа в уме.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, FlatList, ActivityIndicator, Platform,
-  TouchableOpacity, Image, useWindowDimensions,
+  TouchableOpacity, Image, useWindowDimensions, RefreshControl,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path, Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from "react-native-svg";
@@ -52,11 +58,28 @@ const CATEGORIES: {
   icon: GlyphName;
   color: string;
   formatValue: (v: number) => string;
+  /** Формат отставания: «на 40 очков», «на 12 минут», «на 5%». */
+  formatGap: (v: number) => string;
   subtitle: string;
 }[] = [
-  { key: "points",      label: "Очки",    icon: "star",  color: "#a855f7", formatValue: (v) => `${v}`,                                                subtitle: "Рейтинг по очкам опыта" },
-  { key: "time",        label: "Время",   icon: "clock", color: "#6366f1", formatValue: (v) => v >= 60 ? `${Math.floor(v/60)} ч ${v%60} м` : `${v} м`, subtitle: "Кто больше занимался" },
-  { key: "assignments", label: "Задания", icon: "check", color: "#c026d3", formatValue: (v) => v > 0 ? `${v}%` : "—",                                 subtitle: "Средний процент по всем заданиям" },
+  {
+    key: "points", label: "Очки", icon: "star", color: "#a855f7",
+    formatValue: (v) => `${v}`,
+    formatGap: (v) => `${v} ${pluralRu(v, "очко", "очка", "очков")}`,
+    subtitle: "Рейтинг по очкам опыта",
+  },
+  {
+    key: "time", label: "Время", icon: "clock", color: "#6366f1",
+    formatValue: (v) => v >= 60 ? `${Math.floor(v / 60)} ч ${v % 60} м` : `${v} м`,
+    formatGap: (v) => v >= 60 ? `${Math.floor(v / 60)} ч ${v % 60} м` : `${v} ${pluralRu(v, "минуту", "минуты", "минут")}`,
+    subtitle: "Кто больше занимался",
+  },
+  {
+    key: "assignments", label: "Задания", icon: "check", color: "#c026d3",
+    formatValue: (v) => v > 0 ? `${v}%` : "—",
+    formatGap: (v) => `${v}%`,
+    subtitle: "Средний процент по всем заданиям",
+  },
 ];
 
 const SCOPE_OPTIONS: { key: Scope; label: string }[] = [
@@ -71,6 +94,14 @@ const PLACE_METALS = [
   { gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const, solid: "#c17a3e" }, // bronze
 ];
 const PLACE_COLORS = PLACE_METALS.map(m => m.solid);
+
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
 
 /** Первая буква ника: замена дефолтному эмодзи в аватаре. */
 function initial(nick: string): string {
@@ -291,23 +322,32 @@ export default function LeaderboardScreen() {
   const [activeKey, setActiveKey] = useState<CategoryKey>("points");
   const [data, setData] = useState<CategoriesData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async (s: Scope) => {
-    setLoading(true);
+  /**
+   * silent — фоновое обновление раз в минуту: без спиннера, иначе подиум
+   * мигал бы у пользователя под руками.
+   */
+  const load = useCallback(async (s: Scope, mode: "initial" | "refresh" | "silent" = "initial") => {
+    if (mode === "initial") setLoading(true);
+    if (mode === "refresh") setRefreshing(true);
     try {
       const token = await authStorage.getItem("auth_token");
       const res = await fetch(`${BASE_URL}/api/leaderboard/categories?scope=${s}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) setData(await res.json());
-    } catch { /* silent */ } finally { setLoading(false); }
+    } catch { /* silent */ } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
   useEffect(() => {
-    load(scope);
+    load(scope, "initial");
     if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(() => load(scope), 60_000);
+    intervalRef.current = setInterval(() => load(scope, "silent"), 60_000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [scope, load]);
 
@@ -322,8 +362,25 @@ export default function LeaderboardScreen() {
   ];
   const rest = entries.filter(e => e.rank > 3);
 
+  /**
+   * Отставание от участника выше по списку.
+   *
+   * Именно от ближайшего соседа, а не от лидера: до первого места новичку
+   * идти слишком далеко, чтобы это мотивировало, а «отстаёшь на 40 очков»
+   * от соседа — обозримая цель на пару заданий.
+   */
+  const gapToAbove = (entry: CategoryEntry): number | null => {
+    const above = entries.find((e) => e.rank === entry.rank - 1);
+    if (!above) return null;
+    const diff = above.value - entry.value;
+    return diff > 0 ? diff : null;
+  };
+
+  const myGap = myEntry ? gapToAbove(myEntry) : null;
+
   const renderItem = ({ item }: { item: CategoryEntry }) => {
     const isMe = item.userId === user?.id;
+    const gap = gapToAbove(item);
 
     return (
       <Tile
@@ -352,14 +409,22 @@ export default function LeaderboardScreen() {
 
         <Avatar entry={item} size={40} />
 
-        <Text
-          style={{ flex: 1, fontSize: 15, fontWeight: "700", color: colors.foreground }}
-          numberOfLines={1}
-        >
-          {(user?.role === "teacher" || user?.role === "admin") && (item.name || item.surname)
-            ? `${item.username} (${[item.name, item.surname].filter(Boolean).join(" ")})`
-            : item.username}{isMe ? " (Я)" : ""}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}
+            numberOfLines={1}
+          >
+            {(user?.role === "teacher" || user?.role === "admin") && (item.name || item.surname)
+              ? `${item.username} (${[item.name, item.surname].filter(Boolean).join(" ")})`
+              : item.username}{isMe ? " (Я)" : ""}
+          </Text>
+          {/* Отставание от соседа сверху: превращает таблицу в дистанцию. */}
+          {gap !== null && (
+            <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
+              отстаёт на {activeCat.formatGap(gap)}
+            </Text>
+          )}
+        </View>
         <Text style={{
           fontSize: 15, fontWeight: "900", fontVariant: ["tabular-nums"],
           color: isMe ? activeCat.color : colors.foreground,
@@ -386,11 +451,17 @@ export default function LeaderboardScreen() {
           <DarkVeil scanlineIntensity={0.03} speed={1} scanlineFrequency={1.7} warpAmount={1.1} />
         </View>
 
-        {/* Title — centered at the top */}
+        {/* Title — centered at the top.
+            Подзаголовок теперь отвечает не «что это за категория», а «где я в
+            ней стою»: своё место — первое, что ищут глазами на этом экране. */}
         <View style={{ paddingHorizontal: 20, marginBottom: 16, alignItems: "center" }}>
           <Text style={{ fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: "#fff", textAlign: "center" }}>Рейтинг</Text>
-          <Text style={{ fontSize: 12, fontWeight: "600", color: "rgba(255,255,255,0.6)", marginTop: 3 }}>
-            {activeCat.subtitle}
+          <Text style={{ fontSize: 12, fontWeight: "600", color: "rgba(255,255,255,0.62)", marginTop: 3, textAlign: "center" }}>
+            {myEntry
+              ? myGap !== null
+                ? `Ты ${myEntry.rank}-й · до следующего места ${activeCat.formatGap(myGap)}`
+                : `Ты ${myEntry.rank}-й · выше никого нет`
+              : activeCat.subtitle}
           </Text>
         </View>
 
@@ -480,7 +551,13 @@ export default function LeaderboardScreen() {
           </LinearGradient>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1 }}>Моё место</Text>
-            <Text style={{ fontSize: 15, fontWeight: "800", color: activeCat.color }}>{user?.name}</Text>
+            {/* Вместо имени — расстояние до следующего места: имя своё ученик
+                и так знает, а вот сколько осталось — нет. */}
+            <Text style={{ fontSize: 14, fontWeight: "800", color: activeCat.color, marginTop: 2 }}>
+              {myGap !== null
+                ? `До ${myEntry.rank - 1} места — ${activeCat.formatGap(myGap)}`
+                : "Ты вплотную к тройке"}
+            </Text>
           </View>
           <Text style={{ fontSize: 19, fontWeight: "900", color: activeCat.color, fontVariant: ["tabular-nums"] }}>
             {activeCat.formatValue(myEntry.value)}
@@ -520,6 +597,15 @@ export default function LeaderboardScreen() {
         ListHeaderComponent={ListHeader}
         contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
+        // Ручное обновление: раньше экран умел только ждать минуту до
+        // автообновления, и после сданного задания рейтинг выглядел застывшим.
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => load(scope, "refresh")}
+            tintColor={colors.primary}
+          />
+        }
       />
     </View>
   );
