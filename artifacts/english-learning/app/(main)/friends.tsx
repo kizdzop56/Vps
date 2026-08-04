@@ -1,15 +1,22 @@
+// Экран «Друзья»: принятые друзья с кнопкой чата и входящие заявки.
+//
+// Эмодзи в интерфейсе не используются: в пустых состояниях стоят глифы из
+// своего набора. Аватар пользователя — отдельная история, там avatarEmoji
+// приходит из профиля и рисуется AnimatedAvatar как есть.
 import React, { useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform,
+  View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView, Platform,
   ActivityIndicator,
 } from "react-native";
-import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
 import { useRouter, useFocusEffect } from "expo-router";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { Glyph } from "@/components/ui/Glyph";
+import { SectionLabel } from "@/components/ui/GameKit";
+import { accents, radii } from "@/constants/theme";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -71,9 +78,12 @@ function FriendRow({
   return (
     <View
       style={{
-        backgroundColor: colors.card, borderRadius: 16, padding: 14,
+        backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
         borderWidth: 1, borderColor: colors.border, marginBottom: 10,
         flexDirection: "row", alignItems: "center", gap: 12,
+        // Цветная тень вместо серой: на светло-фиолетовом фоне серая грязнит.
+        shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+        shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
       }}
     >
       <View style={{ position: "relative" }}>
@@ -84,35 +94,42 @@ function FriendRow({
           avatarUrl={u.avatarUrl}
         />
         {u.isOnline && (
+          // Точка «в сети» в фирменном фиолетовом: зелёного в палитре нет.
           <View style={{
             position: "absolute", bottom: 0, right: 0,
             width: 13, height: 13, borderRadius: 7,
-            backgroundColor: "#22c55e",
+            backgroundColor: colors.success,
             borderWidth: 2, borderColor: colors.card,
           }} />
         )}
       </View>
 
       <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>
+        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
           {u.name || u.username}
         </Text>
-        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 1 }}>
           {roleLabel ? `${roleLabel} · ` : ""}@{u.username}
         </Text>
+        {u.isOnline && (
+          <Text style={{ fontSize: 12, fontWeight: "700", color: colors.success, marginTop: 1 }}>В сети</Text>
+        )}
       </View>
 
       {/* Панель чата напротив собеседника */}
       <TouchableOpacity
         onPress={onOpenChat}
+        activeOpacity={0.85}
         style={{
-          backgroundColor: colors.primary, borderRadius: 12,
-          paddingHorizontal: 14, paddingVertical: 10,
-          flexDirection: "row", alignItems: "center", gap: 6,
+          backgroundColor: colors.primary, borderRadius: radii.sm,
+          paddingHorizontal: 14, paddingVertical: 11,
+          flexDirection: "row", alignItems: "center", gap: 7,
+          shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.3, shadowRadius: 9, elevation: 4,
         }}
       >
-        <Feather name="message-circle" size={16} color="#fff" />
-        <Text style={{ fontSize: 13, fontWeight: "700", color: "#fff" }}>Чат</Text>
+        <Glyph name="chat" size={16} color="#fff" />
+        <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>Чат</Text>
       </TouchableOpacity>
     </View>
   );
@@ -176,17 +193,18 @@ export default function FriendsScreen() {
       paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
       paddingHorizontal: 20, paddingBottom: 16,
     },
-    titleText: { fontSize: 26, fontWeight: "800", color: colors.foreground },
+    titleText: { fontSize: 28, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
     subtitleText: { fontSize: 14, color: colors.mutedForeground, marginTop: 2 },
     content: { paddingHorizontal: 20, paddingBottom: insets.bottom + 100 },
-    empty: { alignItems: "center", paddingTop: 60, gap: 12 },
-    emptyEmoji: { fontSize: 52 },
-    emptyTitle: { fontSize: 18, fontWeight: "700", color: colors.foreground },
-    emptyText: { fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 },
-    sectionLabel: {
-      fontSize: 12, fontWeight: "700", color: colors.mutedForeground,
-      textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10,
+    empty: { alignItems: "center", paddingTop: 60, gap: 12, paddingHorizontal: 24 },
+    // Плашка под глиф вместо крупного эмодзи: цвет из темы, лёгкий наклон.
+    emptyIcon: {
+      width: 72, height: 72, borderRadius: radii.lg, justifyContent: "center", alignItems: "center",
+      backgroundColor: colors.primary + "14", borderWidth: 1, borderColor: colors.primary + "2e",
+      transform: [{ rotate: "-4deg" }],
     },
+    emptyTitle: { fontSize: 18, fontWeight: "800", color: colors.foreground },
+    emptyText: { fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 },
   });
 
   return (
@@ -202,14 +220,17 @@ export default function FriendsScreen() {
         <View style={s.empty}><ActivityIndicator color={colors.primary} size="large" /></View>
       ) : error ? (
         <View style={s.empty}>
-          <Text style={s.emptyEmoji}>⚠️</Text>
+          <View style={[s.emptyIcon, { backgroundColor: colors.destructive + "14", borderColor: colors.destructive + "33" }]}>
+            <Glyph name="alert" size={34} color={colors.destructive} />
+          </View>
           <Text style={s.emptyTitle}>Ошибка загрузки</Text>
           <Text style={s.emptyText}>{error}</Text>
           <TouchableOpacity
             onPress={load}
-            style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 }}
+            activeOpacity={0.85}
+            style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: radii.sm, paddingHorizontal: 20, paddingVertical: 11 }}
           >
-            <Text style={{ color: "#fff", fontWeight: "700" }}>Повторить</Text>
+            <Text style={{ color: "#fff", fontWeight: "800" }}>Повторить</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -217,12 +238,14 @@ export default function FriendsScreen() {
           {/* Входящие заявки в друзья */}
           {incoming.length > 0 && (
             <View style={{ marginBottom: 20 }}>
-              <Text style={s.sectionLabel}>Заявки в друзья · {incoming.length}</Text>
+              <SectionLabel>Заявки в друзья · {incoming.length}</SectionLabel>
               {incoming.map((f) => (
                 <View key={f.friendshipId} style={{
                   flexDirection: "row", alignItems: "center", gap: 12,
-                  backgroundColor: colors.card, borderRadius: 14, padding: 14,
+                  backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 14,
                   borderWidth: 1.5, borderColor: colors.primary + "50", marginBottom: 8,
+                  shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.14, shadowRadius: 12, elevation: 3,
                 }}>
                   <AnimatedAvatar
                     size={44}
@@ -231,25 +254,30 @@ export default function FriendsScreen() {
                     avatarUrl={f.user.avatarUrl}
                   />
                   <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: "700", color: colors.foreground }}>
+                    <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>
                       {f.user.name || f.user.username}
                     </Text>
-                    <Text style={{ fontSize: 12, color: colors.mutedForeground }}>хочет дружить</Text>
+                    <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 1 }}>хочет дружить</Text>
                   </View>
                   <TouchableOpacity
                     onPress={() => accept(f)}
                     disabled={actioningId === f.friendshipId}
-                    style={{ backgroundColor: colors.primary, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 }}
+                    activeOpacity={0.85}
+                    style={{ backgroundColor: colors.primary, borderRadius: radii.sm - 2, paddingHorizontal: 13, paddingVertical: 9 }}
                   >
-                    <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Принять</Text>
+                    <Text style={{ color: "#fff", fontWeight: "800", fontSize: 13 }}>Принять</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
+                  <Pressable
                     onPress={() => decline(f)}
                     disabled={actioningId === f.friendshipId}
-                    style={{ backgroundColor: colors.muted, borderRadius: 10, padding: 8 }}
+                    style={({ pressed }) => ({
+                      backgroundColor: colors.muted, borderRadius: radii.sm - 2, padding: 9,
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                    accessibilityLabel="Отклонить заявку"
                   >
-                    <Feather name="x" size={16} color={colors.mutedForeground} />
-                  </TouchableOpacity>
+                    <Glyph name="close" size={16} color={colors.mutedForeground} />
+                  </Pressable>
                 </View>
               ))}
             </View>
@@ -258,7 +286,9 @@ export default function FriendsScreen() {
           {/* Принятые друзья с панелью чата */}
           {accepted.length === 0 && incoming.length === 0 ? (
             <View style={s.empty}>
-              <Text style={s.emptyEmoji}>👥</Text>
+              <View style={s.emptyIcon}>
+                <Glyph name="handshake" size={34} color={colors.primary} />
+              </View>
               <Text style={s.emptyTitle}>Пока нет друзей</Text>
               <Text style={s.emptyText}>
                 Здесь появятся ваши друзья — например, родитель ученика.{"\n"}
@@ -267,7 +297,7 @@ export default function FriendsScreen() {
             </View>
           ) : accepted.length > 0 ? (
             <>
-              {incoming.length > 0 && <Text style={s.sectionLabel}>Друзья · {accepted.length}</Text>}
+              {incoming.length > 0 && <SectionLabel>Друзья · {accepted.length}</SectionLabel>}
               {accepted.map((f) => (
                 <FriendRow
                   key={f.friendshipId}
