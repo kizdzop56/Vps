@@ -4,6 +4,7 @@ import { assignmentsTable, questionsTable, assignedTasksTable, submissionsTable,
 import { eq, and, gte, lte, inArray, or, desc, isNull, gt } from "drizzle-orm";
 import { requireAuth, getUser, requireRole, isTeacher } from "../lib/auth";
 import { computeMaxPoints, isTimeLimited } from "../lib/points";
+import { autoCloseOverdueAssignments } from "../lib/autoCloseOverdue";
 
 const router = Router();
 
@@ -25,6 +26,17 @@ function parseDueAt(raw: unknown): { value: Date | null } | { error: string } {
   const date = raw instanceof Date ? raw : new Date(raw);
   if (Number.isNaN(date.getTime())) return { error: "Неверный формат срока сдачи" };
   return { value: date };
+}
+
+/**
+ * Срок по умолчанию в днях. Ограничен годом: больше — почти наверняка опечатка
+ * (учитель промахнулся по клавише), а не осмысленный срок.
+ */
+function parseDefaultDueDays(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 365) return null;
+  return Math.round(n);
 }
 
 // ── List assignments ──────────────────────────────────────────────────
@@ -51,7 +63,13 @@ router.get("/assignments", requireAuth, async (req, res) => {
 });
 
 // ── Teacher: my assignments (drafts + published, not soft-deleted) ────
+//
+// К каждому заданию добавляются счётчики по назначениям: сколько выдано,
+// сколько сдано, сколько ждёт ручной проверки. Без них карточка задания в
+// списке показывала только название и не отвечала на главный вопрос учителя —
+// «дошло ли это до учеников и кто уже сдал».
 router.get("/assignments/my-assignments", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
   const caller = getUser(req);
   if (!isTeacher(caller.role) && caller.role !== "admin") {
     res.status(403).json({ error: "Forbidden" }); return;
@@ -61,12 +79,85 @@ router.get("/assignments/my-assignments", requireAuth, async (req, res) => {
       eq(assignmentsTable.createdBy, caller.userId),
       isNull(assignmentsTable.deletedAt),
     ));
-  res.json(rows);
+
+  if (rows.length === 0) { res.json([]); return; }
+
+  // Назначения этого учителя по всем его заданиям — одним запросом.
+  const ids = rows.map((a) => a.id);
+  const tasks = await db.select({
+    assignmentId: assignedTasksTable.assignmentId,
+    studentId: assignedTasksTable.studentId,
+    assignedAt: assignedTasksTable.assignedAt,
+    dueAt: assignedTasksTable.dueAt,
+  })
+    .from(assignedTasksTable)
+    .where(and(
+      eq(assignedTasksTable.teacherId, caller.userId),
+      inArray(assignedTasksTable.assignmentId, ids),
+    ));
+
+  // Сдачи по тем же заданиям. Сопоставляем по паре ученик+задание и по времени:
+  // сдача до повторной выдачи не считается выполнением текущего назначения —
+  // та же логика, что в GET /assignments/my-tasks.
+  const subs = tasks.length > 0
+    ? await db.select({
+        assignmentId: submissionsTable.assignmentId,
+        studentId: submissionsTable.studentId,
+        status: submissionsTable.status,
+        score: submissionsTable.score,
+        submittedAt: submissionsTable.submittedAt,
+      })
+      .from(submissionsTable)
+      .where(inArray(submissionsTable.assignmentId, ids))
+    : [];
+
+  type Counters = { assigned: number; submitted: number; pending: number; scoreSum: number; scored: number };
+  const stats = new Map<number, Counters>();
+  const bump = (id: number): Counters => {
+    const acc = stats.get(id) ?? { assigned: 0, submitted: 0, pending: 0, scoreSum: 0, scored: 0 };
+    stats.set(id, acc);
+    return acc;
+  };
+
+  for (const task of tasks) {
+    const acc = bump(task.assignmentId);
+    acc.assigned += 1;
+    const sub = subs.find((s) =>
+      s.assignmentId === task.assignmentId &&
+      s.studentId === task.studentId &&
+      s.submittedAt > task.assignedAt,
+    );
+    if (!sub) continue;
+    acc.submitted += 1;
+    if (sub.status === "pending") acc.pending += 1;
+    // В средний балл идут только проверенные работы: у ждущих проверки
+    // score ещё нулевой и занижал бы среднее.
+    if (sub.status !== "pending") {
+      acc.scoreSum += sub.score ?? 0;
+      acc.scored += 1;
+    }
+  }
+
+  res.json(rows.map((a) => {
+    const acc = stats.get(a.id);
+    return {
+      ...a,
+      assignedCount: acc?.assigned ?? 0,
+      submittedCount: acc?.submitted ?? 0,
+      pendingCount: acc?.pending ?? 0,
+      avgScore: acc && acc.scored > 0 ? Math.round(acc.scoreSum / acc.scored) : null,
+    };
+  }));
 });
 
 // ── Assignments assigned to me (student) ─────────────────────────────
 router.get("/assignments/my-tasks", requireAuth, async (req, res) => {
   const caller = getUser(req);
+
+  // Просроченные задания закрываем перед выдачей списка: иначе ученик до
+  // следующего тика фонового сторожа видел бы задание, срок которого вышел,
+  // и мог его сдать «задним числом».
+  await autoCloseOverdueAssignments();
 
   // LEFT JOIN submissions on same student+assignment AND submittedAt > assignedAt.
   // WHERE submissions.id IS NULL means "no submission exists for the current assignment instance"
@@ -116,6 +207,10 @@ router.get("/assignments/teacher-results", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   const caller = getUser(req);
   if (!isTeacher(caller.role)) { res.status(403).json({ error: "Forbidden" }); return; }
+
+  // Тот же сторож, что и у ученика: учитель должен видеть «не сдано в срок»
+  // сразу, а не после следующего тика фоновой задачи.
+  await autoCloseOverdueAssignments();
 
   const tasks = await db.select({
     assignedTaskId: assignedTasksTable.id,
@@ -187,6 +282,9 @@ router.get("/assignments/my-submissions", requireAuth, async (req, res) => {
     totalQuestions: submissionsTable.totalQuestions,
     pointsEarned: submissionsTable.pointsEarned,
     submittedAt: submissionsTable.submittedAt,
+    // Статус нужен клиенту: "expired" — работа закрыта автоматически по
+    // истечении срока, её нельзя показывать как обычную сдачу с нулём.
+    status: submissionsTable.status,
     assignmentId: assignmentsTable.id,
     title: assignmentsTable.title,
     description: assignmentsTable.description,
@@ -257,7 +355,10 @@ router.post("/assignments", requireAuth, async (req, res) => {
     res.status(403).json({ error: "Forbidden" }); return;
   }
 
-  const { title, description, type, ageMin, ageMax, mediaUrl, content, questions, isDraft, timeLimitMinutes, imageUrl } = req.body;
+  const {
+    title, description, type, ageMin, ageMax, mediaUrl, content, questions,
+    isDraft, timeLimitMinutes, imageUrl, defaultDueDays,
+  } = req.body;
 
   if (!title?.trim()) { res.status(400).json({ error: "Введите название задания" }); return; }
   if (!type) { res.status(400).json({ error: "Выберите тип задания" }); return; }
@@ -282,6 +383,7 @@ router.post("/assignments", requireAuth, async (req, res) => {
     content: content?.trim() || null,
     isDraft: isDraft !== false,
     timeLimitMinutes: timeLimit,
+    defaultDueDays: parseDefaultDueDays(defaultDueDays),
     imageUrl: imageUrl?.trim() || null,
   }).returning();
 
@@ -317,8 +419,23 @@ router.get("/assignments/:id", requireAuth, async (req, res) => {
 
   const canSeeAnswers = isTeacher(caller.role) || caller.role === "admin";
 
+  // Срок сдачи именно для того, кто открыл задание. Ученику он нужен на самом
+  // экране выполнения: до этого срок был виден только в списке.
+  let dueAt: Date | null = null;
+  if (!canSeeAnswers) {
+    const [task] = await db.select({ dueAt: assignedTasksTable.dueAt })
+      .from(assignedTasksTable)
+      .where(and(
+        eq(assignedTasksTable.assignmentId, id),
+        eq(assignedTasksTable.studentId, caller.userId),
+      ))
+      .orderBy(desc(assignedTasksTable.assignedAt));
+    dueAt = task?.dueAt ?? null;
+  }
+
   res.json({
     ...assignment,
+    dueAt,
     questions: questions.map(q => ({
       id: q.id,
       text: q.text,
@@ -365,6 +482,17 @@ router.post("/assignments/:id/assign", requireAuth, async (req, res) => {
   const [assignment] = await db.select().from(assignmentsTable)
     .where(eq(assignmentsTable.id, assignmentId));
   if (!assignment) { res.status(404).json({ error: "Assignment not found" }); return; }
+
+  // Клиент не прислал срок, но у задания есть предустановка — применяем её.
+  // Так «контрольная на неделю» остаётся недельной, даже если отправка идёт
+  // из старого клиента или из места, где выбора срока нет.
+  let dueValue = due.value;
+  if (dueValue === null && dueAt === undefined && assignment.defaultDueDays != null) {
+    const fallback = new Date();
+    fallback.setDate(fallback.getDate() + assignment.defaultDueDays);
+    fallback.setHours(23, 59, 0, 0);
+    dueValue = fallback;
+  }
 
   // Auto-publish when assigning
   if (assignment.isDraft) {
@@ -439,7 +567,7 @@ router.post("/assignments/:id/assign", requireAuth, async (req, res) => {
       assignmentId,
       studentId: sid,
       teacherId: caller.userId,
-      dueAt: due.value,
+      dueAt: dueValue,
     }))
   );
 
@@ -454,7 +582,10 @@ router.patch("/assignments/:id", requireAuth, async (req, res) => {
   }
 
   const id = Number(req.params["id"]);
-  const { title, description, ageMin, ageMax, mediaUrl, content, type, questions } = req.body;
+  const {
+    title, description, ageMin, ageMax, mediaUrl, content, type, questions,
+    timeLimitMinutes, imageUrl, defaultDueDays,
+  } = req.body;
 
   const [updated] = await db.update(assignmentsTable)
     .set({
@@ -465,6 +596,11 @@ router.patch("/assignments/:id", requireAuth, async (req, res) => {
       ...(mediaUrl !== undefined && { mediaUrl }),
       ...(content !== undefined && { content }),
       ...(type !== undefined && { type }),
+      ...(imageUrl !== undefined && { imageUrl }),
+      ...(timeLimitMinutes !== undefined && {
+        timeLimitMinutes: timeLimitMinutes ? Number(timeLimitMinutes) : null,
+      }),
+      ...(defaultDueDays !== undefined && { defaultDueDays: parseDefaultDueDays(defaultDueDays) }),
       updatedAt: new Date(),
     })
     .where(and(eq(assignmentsTable.id, id), eq(assignmentsTable.createdBy, caller.userId)))
@@ -568,7 +704,7 @@ router.delete("/assignments/:id", requireAuth, async (req, res) => {
       eq(assignmentsTable.createdBy, caller.userId),
       isNull(assignmentsTable.deletedAt),
     ))
-    .returning();
+    .returning({ id: assignmentsTable.id });
 
   if (!updated) { res.status(404).json({ error: "Задание не найдено" }); return; }
   res.status(204).send();
