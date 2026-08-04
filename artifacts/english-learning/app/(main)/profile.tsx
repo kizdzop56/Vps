@@ -1,19 +1,25 @@
-// Экран «Профиль»: шапка с аватаром, описание, статистика ученика, цель дня,
-// витрина наград, друзья и быстрые действия.
+// Экран «Профиль»: шапка-герой с аватаром, описание, статистика ученика,
+// цель дня, витрина наград, друзья и быстрые действия.
 //
 // Эмодзи интерфейса не используются — значки рисует собственный набор
 // (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
 // ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
 // AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
 //
-// Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью,
-// пилюли. Логика экрана при переходе на GameKit не менялась.
+// Оформление повторяет раздел «Слова» — те же три приёма:
+//   • значок в градиентной плашке с наклоном и свечением (см. StatCard),
+//     а не бледная заливка цветом с прозрачностью;
+//   • одно главное действие физической кнопкой ChunkyButton;
+//   • чередующийся микро-наклон карточек ±0.4°.
+// Градиент шапки взят тот же, что у «Рейтинга», чтобы экраны выглядели
+// одной семьёй. Логика экрана при этом не менялась.
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
   Platform, AppState, TextInput, Modal, FlatList, ActivityIndicator,
   Clipboard, Alert, KeyboardAvoidingView,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
@@ -33,7 +39,10 @@ import { AssignmentRingsChart, type CategoryStat } from "@/components/Assignment
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
-import { accents, radii } from "@/constants/theme";
+import { accents, gradients, radii } from "@/constants/theme";
+
+/** Градиент шапки — тот же, что в «Рейтинге»: экраны выглядят одной семьёй. */
+const HERO_GRADIENT = ["#2e1065", "#5b21b6", "#7c3aed"] as const;
 
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
@@ -1211,28 +1220,50 @@ export default function ProfileScreen() {
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { paddingBottom: insets.bottom + 100 },
 
-    // Header
-    header: {
-      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
-      paddingHorizontal: 20, paddingBottom: 24,
+    // ── Шапка-герой ──
+    // Градиентная полоса со скруглённым низом: аватар перестал висеть на
+    // пустом фоне и стал главным объектом экрана.
+    hero: {
+      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 20),
+      paddingHorizontal: 20, paddingBottom: 26,
       alignItems: "center",
+      borderBottomLeftRadius: radii.xl,
+      borderBottomRightRadius: radii.xl,
+      marginBottom: 18,
+      overflow: "hidden",
+    },
+    // Белое кольцо вокруг аватара + свечение: аватар читается как медальон.
+    avatarRing: {
+      padding: 4, borderRadius: 999,
+      backgroundColor: "rgba(255,255,255,0.25)",
+      borderWidth: 2, borderColor: "rgba(255,255,255,0.55)",
+      shadowColor: "#1b0942", shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.45, shadowRadius: 20, elevation: 9,
     },
     editAvatarBtn: {
-      position: "absolute", bottom: 0, right: 0,
-      width: 30, height: 30, borderRadius: 15,
+      position: "absolute", bottom: 2, right: 2,
+      width: 32, height: 32, borderRadius: 16,
       backgroundColor: colors.primary, justifyContent: "center", alignItems: "center",
       borderWidth: 2.5, borderColor: "#ffffff",
     },
-    name: { fontSize: 24, fontWeight: "900", letterSpacing: -0.5, color: colors.foreground, marginBottom: 3 },
-    username: { fontSize: 14, color: colors.mutedForeground },
-    badgeRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 12 },
+    name: { fontSize: 25, fontWeight: "900", letterSpacing: -0.5, color: "#ffffff", marginTop: 14 },
+    username: { fontSize: 14, color: "rgba(255,255,255,0.72)", marginTop: 2 },
+    // Метка на «стекле»: читается на градиенте и не спорит с ним цветом.
+    glassPill: {
+      flexDirection: "row", alignItems: "center", gap: 6,
+      backgroundColor: "rgba(255,255,255,0.16)",
+      borderWidth: 1, borderColor: "rgba(255,255,255,0.28)",
+      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
+    },
+    glassPillText: { fontSize: 12, fontWeight: "800", color: "#ffffff" },
+    badgeRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 12 },
 
     // Bio
     bioBox: {
-      backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 14,
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 15,
       borderWidth: 1, borderColor: colors.border, marginHorizontal: 20, marginBottom: 20,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
     },
     bioText: { fontSize: 14, color: colors.foreground, lineHeight: 20 },
     bioPlaceholder: { fontSize: 14, color: colors.mutedForeground, fontStyle: "italic" },
@@ -1249,33 +1280,34 @@ export default function ProfileScreen() {
     // Stats
     statsRow: { flexDirection: "row", gap: 10 },
     statCard: {
-      flex: 1, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12,
+      flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 12,
       alignItems: "center", borderWidth: 1, borderColor: colors.border,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.14, shadowRadius: 13, elevation: 4,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.16, shadowRadius: 14, elevation: 4,
     },
     statValue: {
-      fontSize: 22, fontWeight: "900", letterSpacing: -0.7,
-      color: colors.foreground, marginTop: 7, marginBottom: 2,
+      fontSize: 23, fontWeight: "900", letterSpacing: -0.7,
+      color: colors.foreground, marginTop: 9, marginBottom: 2,
       fontVariant: ["tabular-nums"],
     },
-    statLabel: { fontSize: 11, color: colors.mutedForeground, textAlign: "center" },
+    statLabel: { fontSize: 11, color: colors.mutedForeground, textAlign: "center", fontWeight: "600" },
 
     // Timer
-    timerIcon: { width: 50, height: 50, borderRadius: radii.sm + 2, backgroundColor: colors.primary + "20", justifyContent: "center", alignItems: "center" },
-    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: colors.primary, fontVariant: ["tabular-nums"] },
-    timerLabel: { fontSize: 13, color: colors.mutedForeground, marginTop: 2 },
+    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff", fontVariant: ["tabular-nums"] },
+    timerLabel: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 2 },
 
     // Quick actions
     row: {
       flexDirection: "row", alignItems: "center", gap: 14,
-      backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 16,
-      marginBottom: 8, borderWidth: 1, borderColor: colors.border,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.1, shadowRadius: 12, elevation: 3,
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
+      marginBottom: 10, borderWidth: 1, borderColor: colors.border,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
     },
-    rowText: { flex: 1, fontSize: 15, fontWeight: "700", color: colors.foreground },
+    rowText: { flex: 1, fontSize: 15, fontWeight: "800", color: colors.foreground },
   });
+
+  const age = calcAge(user.dateOfBirth);
 
   return (
     <View style={s.container}>
@@ -1342,71 +1374,76 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      <ScrollView contentContainerStyle={s.scroll}>
-        {/* ── Шапка профиля ── */}
-        <View style={s.header}>
-          <View style={{ position: "relative", marginBottom: 14 }}>
-            <AnimatedAvatar
-              size={90}
-              avatarColor={avatarColor}
-              avatarEmoji={avatarEmoji}
-              avatarUrl={avatarUrl}
-              animated={true}
-            />
+      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+        {/* ── Шапка-герой ── */}
+        <LinearGradient
+          colors={HERO_GRADIENT as unknown as string[]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={s.hero}
+        >
+          <View style={{ position: "relative" }}>
+            <View style={s.avatarRing}>
+              <AnimatedAvatar
+                size={96}
+                avatarColor={avatarColor}
+                avatarEmoji={avatarEmoji}
+                avatarUrl={avatarUrl}
+                animated={true}
+              />
+            </View>
             <TouchableOpacity
-              style={[s.editAvatarBtn, { position: "absolute", bottom: 22, right: 22 }]}
+              style={s.editAvatarBtn}
               onPress={() => setAvatarMenuOpen(true)}
               accessibilityRole="button"
               accessibilityLabel="Сменить аватар"
             >
               {saving
                 ? <ActivityIndicator size={12} color="#fff" />
-                : <Glyph name="pen" size={13} color="#fff" />
+                : <Glyph name="pen" size={14} color="#fff" />
               }
             </TouchableOpacity>
           </View>
 
           <Text style={s.name}>{user.name}</Text>
           {/* Псевдоним (@username) — только для чтения: редактирование убрано. */}
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
-            <Text style={s.username}>@{username}</Text>
-          </View>
-
-          {/* Online status badge. Зелёного в палитре нет — статус фиолетовый. */}
-          <View style={{
-            flexDirection: "row", alignItems: "center", gap: 6,
-            backgroundColor: colors.success + "1f",
-            paddingHorizontal: 11, paddingVertical: 4, borderRadius: radii.pill,
-            marginBottom: 8,
-          }}>
-            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.success }} />
-            <Text style={{ fontSize: 12, fontWeight: "800", color: colors.success }}>В сети</Text>
-          </View>
+          <Text style={s.username}>@{username}</Text>
 
           <View style={s.badgeRow}>
-            {/* Роль */}
-            <Pill text={ROLE_LABELS[user.role] ?? user.role} tone="soft" color={avatarColor} />
-            {/* Возраст (если есть дата рождения) */}
-            {(() => {
-              const age = calcAge(user.dateOfBirth);
-              return age !== null ? (
-                <Pill text={ageWord(age)} icon="calendar" tone="soft" color={colors.primary} />
-              ) : null;
-            })()}
+            {/* Уровень XP — награда, поэтому золотая пилюля. Показываем только
+                ученику и только когда серверные статы загружены. */}
+            {isStudent && gamStats && (
+              <Pill text={`Уровень ${gamStats.xpLevel}`} icon="rank" tone="gold" tilt={-2} />
+            )}
+            {/* Статус «в сети» на стекле: на градиенте цветная плашка не читается. */}
+            <View style={s.glassPill}>
+              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: "#c4b5fd" }} />
+              <Text style={s.glassPillText}>В сети</Text>
+            </View>
+            <View style={s.glassPill}>
+              <Text style={s.glassPillText}>{ROLE_LABELS[user.role] ?? user.role}</Text>
+            </View>
+            {age !== null && (
+              <View style={s.glassPill}>
+                <Glyph name="calendar" size={12} color="#ffffff" />
+                <Text style={s.glassPillText}>{ageWord(age)}</Text>
+              </View>
+            )}
           </View>
-        </View>
+        </LinearGradient>
 
         {/* ── Входящие заявки от учителей (только ученик) ── */}
         {isStudent && teacherRequests.length > 0 && (
           <View style={{ marginHorizontal: 20, marginBottom: 14 }}>
             <SectionLabel>Заявки от учителей · {teacherRequests.length}</SectionLabel>
-            {teacherRequests.map((req) => (
+            {teacherRequests.map((req, i) => (
               <View key={req.requestId} style={{
                 flexDirection: "row", alignItems: "center", gap: 12,
-                backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 14,
-                borderWidth: 1, borderColor: colors.border, marginBottom: 8,
-                shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
-                shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
+                backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
+                borderWidth: 1, borderColor: colors.border, marginBottom: 10,
+                transform: [{ rotate: i % 2 === 0 ? "-0.4deg" : "0.4deg" }],
+                shadowColor: colors.primary, shadowOffset: { width: 0, height: 5 },
+                shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
               }}>
                 <View style={{
                   width: 46, height: 46, borderRadius: 23,
@@ -1487,11 +1524,11 @@ export default function ProfileScreen() {
             <View style={s.section}>
               <SectionLabel>Мои достижения</SectionLabel>
               <View style={s.statsRow}>
-                <StatCard s={s} icon="star" tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" />
-                <StatCard s={s} icon="check" tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" />
-                <StatCard s={s} icon="trophy" tint={accents.gold} value={unlocked.length} label="Наград" />
+                <StatCard s={s} icon="star" grad={["#f472b6", accents.magenta]} tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" tilt={-0.5} />
+                <StatCard s={s} icon="check" grad={["#818cf8", accents.indigoDeep]} tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" tilt={0.5} />
+                <StatCard s={s} icon="trophy" grad={[accents.gold, accents.amber]} tint={accents.amber} value={unlocked.length} label="Наград" tilt={-0.5} />
                 {/* Стрик: огонь глифом вместо 🔥 — красится темой и одинаков везде. */}
-                <StatCard s={s} icon="flame" tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" />
+                <StatCard s={s} icon="flame" grad={gradients.fire} tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" tilt={0.5} />
               </View>
             </View>
 
@@ -1516,21 +1553,35 @@ export default function ProfileScreen() {
                 <View style={{
                   flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
                   borderWidth: 1, borderColor: colors.border,
+                  transform: [{ rotate: "-0.4deg" }],
                   shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-                  shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
+                  shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
                 }}>
                   <SectionLabel>Мои задания</SectionLabel>
                   <AssignmentRingsChart stats={categoryStats} colors={colors} />
                 </View>
 
-                <View style={{
-                  flex: 1, backgroundColor: colors.primary + "12", borderRadius: radii.md, padding: 14,
-                  borderWidth: 1.5, borderColor: colors.primary + "35",
-                  justifyContent: "center",
-                }}>
+                {/* Таймер залит градиентом бренда — как циферблат на вкладке
+                    таймера, чтобы время выглядело объектом, а не подписью. */}
+                <LinearGradient
+                  colors={gradients.action as unknown as string[]}
+                  start={{ x: 0.1, y: 0 }}
+                  end={{ x: 0.9, y: 1 }}
+                  style={{
+                    flex: 1, borderRadius: radii.md, padding: 14,
+                    justifyContent: "center",
+                    transform: [{ rotate: "0.4deg" }],
+                    shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
+                    shadowOpacity: 0.32, shadowRadius: 16, elevation: 6,
+                  }}
+                >
                   <View style={{ alignItems: "center", gap: 8 }}>
-                    <View style={s.timerIcon}>
-                      <Glyph name="clock" size={24} color={colors.primary} />
+                    <View style={{
+                      width: 48, height: 48, borderRadius: radii.sm + 2,
+                      backgroundColor: "rgba(255,255,255,0.22)",
+                      justifyContent: "center", alignItems: "center",
+                    }}>
+                      <Glyph name="clock" size={24} color="#ffffff" />
                     </View>
                     <Text style={[s.timerValue, { textAlign: "center" }]}>
                       {formatTime(gamStats?.totalTimeMinutes ?? totalMinutes)}
@@ -1539,7 +1590,7 @@ export default function ProfileScreen() {
                       Сегодня: {formatSessionTime(todaySeconds)}
                     </Text>
                   </View>
-                </View>
+                </LinearGradient>
               </View>
             </View>
 
@@ -1553,33 +1604,19 @@ export default function ProfileScreen() {
             />
 
 
-            {/* ── Друзья ── */}
+            {/* ── Друзья: главное действие профиля ученика ── */}
             <View style={s.section}>
               <SectionLabel>Друзья</SectionLabel>
-              <TouchableOpacity
-                activeOpacity={0.85}
-                style={s.row}
+              <ChunkyButton
+                label="Мои друзья"
+                sublabel={pendingCount > 0
+                  ? `${pendingCount} новых заявок · добавляй по коду`
+                  : "Добавляй друзей по коду и смотри их очки"}
+                icon="users"
+                chevron
+                tone={pendingCount > 0 ? "warm" : "primary"}
                 onPress={() => setFriendsOpen(true)}
-              >
-                <View style={{ width: 44, height: 44, borderRadius: radii.sm, backgroundColor: accents.magenta + "1a", justifyContent: "center", alignItems: "center" }}>
-                  <Glyph name="users" size={20} color={accents.magenta} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Мои друзья</Text>
-                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Добавляй друзей по коду</Text>
-                </View>
-                {/* Badge for incoming friend requests */}
-                {pendingCount > 0 && (
-                  <View style={{
-                    minWidth: 22, height: 22, borderRadius: 11,
-                    backgroundColor: colors.destructive, justifyContent: "center", alignItems: "center",
-                    paddingHorizontal: 5,
-                  }}>
-                    <Text style={{ fontSize: 12, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>{pendingCount}</Text>
-                  </View>
-                )}
-                <Glyph name="chevron" size={18} color={colors.mutedForeground} />
-              </TouchableOpacity>
+              />
             </View>
           </>
         )}
@@ -1588,17 +1625,28 @@ export default function ProfileScreen() {
         <View style={s.section}>
           <SectionLabel>Действия</SectionLabel>
 
+          {/* У учителя создание задания — главное действие профиля, поэтому
+              физическая кнопка, а не серая строка в общем списке. */}
           {isTeacherOrAdmin(user.role) && (
-            <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/create-assignment" as any)}>
-              <Glyph name="plus" size={20} color={colors.primary} />
-              <Text style={s.rowText}>Создать задание</Text>
-              <Glyph name="chevron" size={18} color={colors.mutedForeground} />
-            </TouchableOpacity>
+            <ChunkyButton
+              label="Создать задание"
+              sublabel="Тест, аудирование, чтение, видео или колода слов"
+              icon="plus"
+              chevron
+              onPress={() => router.push("/(main)/create-assignment" as any)}
+              style={{ marginBottom: 10 }}
+            />
           )}
 
           {(isTeacherOrAdmin(user.role) || user.role === "parent") && (
             <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/students" as any)}>
-              <Glyph name="users" size={20} color={colors.primary} />
+              <View style={{
+                width: 42, height: 42, borderRadius: radii.sm,
+                backgroundColor: colors.primary + "18",
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <Glyph name="users" size={20} color={colors.primary} />
+              </View>
               <Text style={s.rowText}>{user.role === "parent" ? "Мои дети" : "Все ученики"}</Text>
               <Glyph name="chevron" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
@@ -1609,7 +1657,7 @@ export default function ProfileScreen() {
         <Pressable
           style={({ pressed }) => ({
             marginHorizontal: 20, marginBottom: 8,
-            backgroundColor: colors.destructive + "10", borderRadius: radii.sm + 2,
+            backgroundColor: colors.destructive + "10", borderRadius: radii.md,
             padding: 16, alignItems: "center",
             flexDirection: "row", justifyContent: "center", gap: 9,
             borderWidth: 1, borderColor: colors.destructive + "44",
@@ -1640,25 +1688,40 @@ export default function ProfileScreen() {
   );
 }
 
-/** Счётчик в строке «Мои достижения»: значок в плашке + крупное число. */
+/**
+ * Счётчик в строке «Мои достижения».
+ *
+ * Значок стоит в градиентной плашке с наклоном и свечением — тот же приём, что
+ * у значка колоды в разделе «Слова» (components/ui/DeckGlyph.tsx). Раньше здесь
+ * была бледная заливка `tint + "1f"`, из-за которой блок выглядел плоским.
+ */
 function StatCard({
-  s, icon, tint, value, label,
+  s, icon, grad, tint, value, label, tilt = 0,
 }: {
   s: any;
   icon: GlyphName;
+  grad: readonly string[];
   tint: string;
   value: number;
   label: string;
+  tilt?: number;
 }) {
   return (
-    <View style={s.statCard}>
-      <View style={{
-        width: 30, height: 30, borderRadius: 9,
-        backgroundColor: tint + "1f",
-        alignItems: "center", justifyContent: "center",
-      }}>
-        <Glyph name={icon} size={17} color={tint} />
-      </View>
+    <View style={[s.statCard, { shadowColor: tint, transform: [{ rotate: `${tilt}deg` }] }]}>
+      <LinearGradient
+        colors={grad as unknown as string[]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={{
+          width: 34, height: 34, borderRadius: 11,
+          alignItems: "center", justifyContent: "center",
+          transform: [{ rotate: "-6deg" }],
+          shadowColor: tint, shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.35, shadowRadius: 9, elevation: 4,
+        }}
+      >
+        <Glyph name={icon} size={18} color="#ffffff" />
+      </LinearGradient>
       <Text style={s.statValue}>{value}</Text>
       <Text style={s.statLabel}>{label}</Text>
     </View>
