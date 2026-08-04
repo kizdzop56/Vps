@@ -45,7 +45,13 @@ export interface ProfileHeroProps {
   roleLabel: string;
   /** Возраст словом: «12 лет». Пусто — метки не будет. */
   ageLabel?: string | null;
-  /** Уровень и его название. Показывается только ученику. */
+  /**
+   * Уровень и его название. Показывается только ученику.
+   * На шильде выводится один номер: названия уровней («Ученик», «Старатель»)
+   * повторяли роль в соседней метке — на скриншоте под аватаром стояло
+   * «4 · Ученик», а справа ещё раз «Ученик». Название уровня целиком видно
+   * в строке под полосой опыта.
+   */
   level?: { number: number; title: string } | null;
   /** Полоса опыта. null — блок не рисуется (учитель, родитель). */
   xp?: {
@@ -104,7 +110,8 @@ export function ProfileHero({
               : <Glyph name="pen" size={13} color="#fff" />}
           </TouchableOpacity>
 
-          {/* Уровень шильдом внизу аватара: награда, поэтому золото. */}
+          {/* Уровень шильдом внизу аватара: награда, поэтому золото.
+              Только номер — название уровня стоит под полосой опыта. */}
           {level && (
             <LinearGradient
               colors={[accents.gold, accents.amber]}
@@ -112,9 +119,8 @@ export function ProfileHero({
               end={{ x: 1, y: 1 }}
               style={s.levelBadge}
             >
-              <Text style={s.levelText} numberOfLines={1}>
-                {level.number} · {level.title}
-              </Text>
+              <Text style={s.levelCap}>УР.</Text>
+              <Text style={s.levelNum}>{level.number}</Text>
             </LinearGradient>
           )}
         </View>
@@ -131,7 +137,13 @@ export function ProfileHero({
 
       {/* ── Полоса опыта ──
           Уровень раньше был просто числом в пилюле: сколько до следующего и
-          что для этого сделать, ученик не знал. */}
+          что для этого сделать, ученик не знал.
+
+          Дорожка тёмная, а не белая полупрозрачная: белый на 18% поверх
+          фиолетового давал светло-сиреневый, почти неотличимый от самого
+          фона — было не видно ни где полоса начинается, ни где кончается.
+          Тёмная утопленная канавка со светлым кантом читается как желобок,
+          в котором лежит цветная заливка. */}
       {xp && (
         <View style={s.xpBlock}>
           <View style={s.xpHead}>
@@ -145,7 +157,7 @@ export function ProfileHero({
               colors={gradients.progress as unknown as string[]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
-              style={{ height: "100%", width: `${xp.percent}%`, borderRadius: radii.pill }}
+              style={[s.xpFill, { width: `${Math.max(xp.percent, 2)}%` }]}
             />
           </View>
           <Text style={s.xpNext}>
@@ -194,13 +206,15 @@ const s = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
     borderWidth: 2.5, borderColor: "#ffffff",
   },
+  // Шильд узкий и по центру аватара: в нём теперь только «УР. N».
   levelBadge: {
-    position: "absolute", left: -6, right: -6, bottom: 0,
-    paddingVertical: 4, paddingHorizontal: 6, borderRadius: radii.pill,
+    position: "absolute", alignSelf: "center", bottom: 0,
+    flexDirection: "row", alignItems: "baseline", gap: 4,
+    paddingVertical: 4, paddingHorizontal: 12, borderRadius: radii.pill,
     borderWidth: 2, borderColor: "#ffffff",
-    alignItems: "center", justifyContent: "center",
   },
-  levelText: { fontSize: 10.5, fontWeight: "900", color: "#42200a" },
+  levelCap: { fontSize: 9, fontWeight: "900", color: "#7a4a06", letterSpacing: 0.6 },
+  levelNum: { fontSize: 14, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] },
 
   who: { flex: 1, paddingTop: 6 },
   name: { fontSize: 23, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff" },
@@ -218,8 +232,22 @@ const s = StyleSheet.create({
   xpHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 },
   xpTitle: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
   xpNum: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"] },
-  xpTrack: { height: 13, borderRadius: radii.pill, backgroundColor: "rgba(255,255,255,0.18)", overflow: "hidden" },
-  xpNext: { fontSize: 12, color: "rgba(255,255,255,0.72)", marginTop: 7, lineHeight: 17 },
+  xpTrack: {
+    height: 15, borderRadius: radii.pill,
+    // Почти чёрно-фиолетовый: темнее любой точки градиента шапки, поэтому
+    // канавка видна и вверху, и внизу блока.
+    backgroundColor: "rgba(23,8,56,0.55)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.22)",
+    overflow: "hidden", padding: 2,
+  },
+  xpFill: {
+    height: "100%", borderRadius: radii.pill,
+    // Свечение заливки в цвете бренда: полоса выглядит подсвеченной изнутри.
+    shadowColor: accents.magenta,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.75, shadowRadius: 8, elevation: 4,
+  },
+  xpNext: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 8, lineHeight: 17 },
 });
 
 export default ProfileHero;
