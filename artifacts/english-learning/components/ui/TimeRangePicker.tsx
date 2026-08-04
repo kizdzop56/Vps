@@ -10,11 +10,10 @@
 //     сумме на экране было четыре светлых прямоугольника. Читалось как четыре
 //     несвязанных поля, а не как «13:00» и «14:00».
 //  3. Начало и конец не были связаны. Сдвигаешь начало на 13:00, а конец
-//     остаётся 10:00 — и на экране появляется красная ошибка «Конец раньше
-//     начала». Пользователь ничего не нарушал, просто интерфейс не догадался
-//     подвинуть вторую цифру.
-//  4. Минуты давали 60 значений, хотя занятия не начинают в 13:07. Прокрутка
-//     до нужного числа занимала несколько движений.
+//     остаётся 10:00 — и появляется красная ошибка «Конец раньше начала».
+//     Пользователь ничего не нарушал, просто интерфейс не догадался подвинуть
+//     вторую цифру.
+//  4. Минуты давали 60 значений, хотя занятия не начинают в 13:07.
 //
 // Как сделано здесь:
 //
@@ -23,7 +22,7 @@
 //    нужно показывать.
 //  • Длительность выбирается кнопками (30 мин, 45 мин, 1 ч, 1,5 ч, 2 ч): это
 //    реальные варианты урока, попадание в один тап.
-//  • Осталось одно колесо часов и шаг минут по 5 — вместо четырёх колонок.
+//  • Часы — одно короткое колесо, минуты — кнопки с шагом 5.
 //  • Сверху крупная строка «13:00 → 14:00» с длительностью: результат виден
 //    целиком, не приходится складывать цифры из разных колонок глазами.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,18 +41,21 @@ const MINUTE_STEP = 5;
 export const DURATIONS = [30, 45, 60, 90, 120] as const;
 
 function durationLabel(min: number): string {
+  if (min <= 0) return "—";
   if (min < 60) return `${min} мин`;
   if (min % 60 === 0) return `${min / 60} ч`;
-  return `${Math.floor(min / 60)},${(min % 60) / 6} ч`;
+  const h = Math.floor(min / 60);
+  const rest = min % 60;
+  return rest === 30 ? `${h},5 ч` : `${h} ч ${rest} мин`;
 }
 
 /** "09:30" → 570 */
 export function toMinutes(time: string): number {
-  const [h, m] = time.split(":").map(Number);
+  const [h, m] = String(time ?? "").split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
 }
 
-/** 570 → "09:30". За полночь не уходим: сутки замыкаются. */
+/** 570 → "09:30". Сутки замыкаются по кругу. */
 export function toTime(minutes: number): string {
   const wrapped = ((minutes % 1440) + 1440) % 1440;
   const h = Math.floor(wrapped / 60);
@@ -61,28 +63,27 @@ export function toTime(minutes: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-const HOUR_H = 46;
+const HOUR_H = 44;
+const WHEEL_ROWS = 3;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const MINUTES = Array.from({ length: 60 / MINUTE_STEP }, (_, i) => i * MINUTE_STEP);
 
 /**
- * Колесо часов. Свой компонент, а не общий барабан: здесь нужна только одна
- * колонка и меньшая высота, а прежний WheelColumn жёстко рассчитан на пять
- * видимых строк.
+ * Колесо часов. Своё, а не общий WheelColumn: тот жёстко рассчитан на пять
+ * видимых строк и собственную подсветку у каждой колонки.
  */
 function HourWheel({
-  value, onChange, tint,
+  value, onChange, accent,
 }: {
   value: number;
   onChange: (h: number) => void;
-  tint: string;
+  accent: string;
 }) {
   const colors = useColors();
   const ref = useRef<ScrollView>(null);
   const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Ставим колесо на текущее значение при открытии и при внешнем изменении
-  // (например, когда время подставилось из пресета).
+  // Ставим колесо на текущее значение при открытии и при внешнем изменении.
   useEffect(() => {
     const t = setTimeout(() => {
       ref.current?.scrollTo({ y: value * HOUR_H, animated: false });
@@ -97,14 +98,13 @@ function HourWheel({
   };
 
   return (
-    <View style={{ height: HOUR_H * 3, width: 74, overflow: "hidden" }}>
-      {/* Одна подсветка на всю строку выбора, а не по подсветке на колонку. */}
+    <View style={{ height: HOUR_H * WHEEL_ROWS, width: 78, overflow: "hidden" }}>
       <View
         pointerEvents="none"
         style={{
           position: "absolute", left: 0, right: 0, top: HOUR_H, height: HOUR_H,
-          borderRadius: radii.sm, backgroundColor: tint + "1f",
-          borderWidth: 1.5, borderColor: tint + "3d",
+          borderRadius: radii.sm, backgroundColor: accent + "1f",
+          borderWidth: 1.5, borderColor: accent + "3d",
         }}
       />
       <ScrollView
@@ -133,10 +133,10 @@ function HourWheel({
               style={{ height: HOUR_H, alignItems: "center", justifyContent: "center" }}
             >
               <Text style={{
-                fontSize: sel ? 26 : 19,
+                fontSize: sel ? 25 : 18,
                 fontWeight: sel ? "900" : "600",
                 color: sel ? colors.foreground : colors.mutedForeground,
-                opacity: sel ? 1 : 0.5,
+                opacity: sel ? 1 : 0.45,
                 fontVariant: ["tabular-nums"],
               }}>
                 {String(h).padStart(2, "0")}
@@ -155,162 +155,140 @@ export interface TimeRangePickerProps {
   /** Конец в формате HH:MM. Считается из начала и длительности. */
   end: string;
   onChange: (start: string, end: string) => void;
-  /** Цвет акцента: индиго у учителя, фиолетовый у запроса ученика. */
+  /** Цвет акцента: индиго у слота учителя, зелёный у запроса ученика. */
   tint?: string;
-  /** Подпись под промежутком: например, предупреждение о прошедшем времени. */
+  /** Подсказка под блоком: предупреждение о прошедшем времени и т. п. */
   hint?: { text: string; tone: "warn" | "ok" } | null;
 }
 
-export function TimeRangePicker({
-  start, end, onChange, tint, colorsOverride, hint,
-}: TimeRangePickerProps & { colorsOverride?: any }) {
+export function TimeRangePicker({ start, end, onChange, tint, hint }: TimeRangePickerProps) {
   const colors = useColors();
   const accent = tint ?? colors.primary;
 
   const startMin = toMinutes(start);
   const endMin = toMinutes(end);
-  // Длительность через сутки: если конец «меньше» начала, значит перешли
-  // через полночь — считаем по кругу, а не отрицательным числом.
+  // Длительность по кругу: если конец «меньше» начала, значит перешли через
+  // полночь, а не ошиблись.
   const duration = ((endMin - startMin) % 1440 + 1440) % 1440;
 
   const hour = Math.floor(startMin / 60);
   const minute = startMin % 60;
+  // Минуты могли прийти не по нашей сетке (старые слоты с :07). Подсвечиваем
+  // ближайшую кнопку, но само значение не трогаем — оно уже сохранено.
+  const nearestMinute = Math.round(minute / MINUTE_STEP) * MINUTE_STEP % 60;
 
   /** Двигаем начало, длительность сохраняем — конец едет следом. */
-  const setStart = (nextStartMin: number) => {
+  const setStart = (nextStartMin: number) =>
     onChange(toTime(nextStartMin), toTime(nextStartMin + duration));
-  };
 
-  const setDuration = (min: number) => {
+  const setDuration = (min: number) =>
     onChange(toTime(startMin), toTime(startMin + min));
-  };
 
-  // Ближайшая к текущей длительности кнопка — подсвечиваем её как выбранную.
   const activeDuration = useMemo(
-    () => (DURATIONS as readonly number[]).includes(duration) ? duration : null,
+    () => ((DURATIONS as readonly number[]).includes(duration) ? duration : null),
     [duration],
   );
 
   const s = StyleSheet.create({
-    // ── Итог: крупная строка «13:00 → 14:00» ──
+    // ── Итог ──
     // Раньше результат приходилось собирать глазами из четырёх колонок.
     summary: {
-      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12,
-      paddingVertical: 14, paddingHorizontal: 16, borderRadius: radii.md,
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
+      paddingVertical: 14, paddingHorizontal: 14, borderRadius: radii.md,
       backgroundColor: accent + "10",
       borderWidth: 1.5, borderColor: accent + "2e",
-      marginBottom: 16,
+      marginBottom: 18,
     },
     sumTime: {
-      fontSize: 27, fontWeight: "900", letterSpacing: -0.8,
+      fontSize: 26, fontWeight: "900", letterSpacing: -0.8,
       color: colors.foreground, fontVariant: ["tabular-nums"],
     },
     sumDur: {
-      paddingHorizontal: 11, paddingVertical: 5, borderRadius: radii.pill,
-      backgroundColor: accent, marginLeft: 2,
+      paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
+      backgroundColor: accent,
     },
-    sumDurText: { fontSize: 12, fontWeight: "900", color: "#fff" },
+    sumDurText: { fontSize: 11.5, fontWeight: "900", color: "#fff" },
 
     lbl: {
       fontSize: 10.5, fontWeight: "800", letterSpacing: 1.1,
-      textTransform: "uppercase", color: colors.mutedForeground, marginBottom: 9,
+      textTransform: "uppercase", color: colors.mutedForeground, marginBottom: 10,
     },
 
-    // ── Начало ──
-    startRow: {
-      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4,
-      marginBottom: 4,
-    },
-    colon: {
-      fontSize: 24, fontWeight: "900", color: colors.mutedForeground,
-      marginHorizontal: 2,
-    },
-
-    // Минуты кнопками: занятия не начинают в 13:07, а прокрутка шестидесяти
-    // значений ради «:30» — лишняя работа пальцем.
-    minRow: { flexDirection: "row", gap: 6, justifyContent: "center", flexWrap: "wrap" },
+    // ── Начало: часы слева колесом, минуты справа кнопками ──
+    startRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 18 },
+    colon: { fontSize: 22, fontWeight: "900", color: colors.mutedForeground },
+    minGrid: { flex: 1, flexDirection: "row", flexWrap: "wrap", gap: 6 },
     minChip: {
-      minWidth: 46, paddingVertical: 9, paddingHorizontal: 10, borderRadius: radii.sm,
-      alignItems: "center",
+      width: 46, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center",
       backgroundColor: colors.muted, borderWidth: 1.5, borderColor: "transparent",
     },
     minChipOn: { backgroundColor: accent + "1f", borderColor: accent },
     minChipText: {
-      fontSize: 14, fontWeight: "800", color: colors.mutedForeground,
+      fontSize: 13.5, fontWeight: "800", color: colors.mutedForeground,
       fontVariant: ["tabular-nums"],
     },
     minChipTextOn: { color: accent },
 
     // ── Длительность ──
-    durRow: { flexDirection: "row", gap: 7, flexWrap: "wrap" },
+    durRow: { flexDirection: "row", gap: 6 },
     durChip: {
-      flex: 1, minWidth: 62, paddingVertical: 11, borderRadius: radii.sm,
-      alignItems: "center",
+      paddingVertical: 11, borderRadius: radii.sm, alignItems: "center",
       backgroundColor: colors.muted, borderWidth: 1.5, borderColor: "transparent",
     },
-    durChipText: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
+    durChipText: { fontSize: 12.5, fontWeight: "800", color: colors.mutedForeground },
 
     hint: {
       flexDirection: "row", alignItems: "center", gap: 7,
-      marginTop: 12, paddingVertical: 9, paddingHorizontal: 12,
-      borderRadius: radii.sm,
+      marginTop: 14, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radii.sm,
     },
     hintText: { flex: 1, fontSize: 12.5, fontWeight: "700", lineHeight: 17 },
   });
 
   return (
     <View>
-      {/* Итоговый промежуток */}
       <View style={s.summary}>
         <Text style={s.sumTime}>{start}</Text>
-        <Glyph name="arrowRight" size={18} color={colors.mutedForeground} />
+        <Glyph name="arrowRight" size={17} color={colors.mutedForeground} />
         <Text style={s.sumTime}>{end}</Text>
         <View style={s.sumDur}>
           <Text style={s.sumDurText}>{durationLabel(duration)}</Text>
         </View>
       </View>
 
-      {/* Начало: колесо часов плюс минуты кнопками */}
       <Text style={s.lbl}>Начало</Text>
       <View style={s.startRow}>
-        <HourWheel
-          value={hour}
-          onChange={(h) => setStart(h * 60 + minute)}
-          tint={accent}
-        />
+        <HourWheel value={hour} onChange={(h) => setStart(h * 60 + minute)} accent={accent} />
         <Text style={s.colon}>:</Text>
-        <View style={{ width: 74 }} />
-      </View>
-      <View style={[s.minRow, { marginTop: -HOUR_H * 2 + 6, marginLeft: 92, marginBottom: HOUR_H * 2 - 6 }]}>
-        {MINUTES.map((m) => {
-          const on = m === minute;
-          return (
-            <Pressable
-              key={m}
-              onPress={() => setStart(hour * 60 + m)}
-              style={[s.minChip, on && s.minChipOn]}
-            >
-              <Text style={[s.minChipText, on && s.minChipTextOn]}>
-                {String(m).padStart(2, "0")}
-              </Text>
-            </Pressable>
-          );
-        })}
+        <View style={s.minGrid}>
+          {MINUTES.map((m) => {
+            const on = m === nearestMinute;
+            return (
+              <Pressable
+                key={m}
+                onPress={() => setStart(hour * 60 + m)}
+                style={[s.minChip, on && s.minChipOn]}
+              >
+                <Text style={[s.minChipText, on && s.minChipTextOn]}>
+                  {String(m).padStart(2, "0")}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
 
-      {/* Длительность */}
       <Text style={s.lbl}>Длительность</Text>
       <View style={s.durRow}>
         {DURATIONS.map((d) => {
           const on = d === activeDuration;
           return (
-            <Pressable key={d} onPress={() => setDuration(d)} style={{ flex: 1, minWidth: 62 }}>
+            <Pressable key={d} onPress={() => setDuration(d)} style={{ flex: 1 }}>
               {on ? (
                 <LinearGradient
                   colors={gradients.action as unknown as string[]}
                   start={{ x: 0.1, y: 0 }}
                   end={{ x: 0.9, y: 1 }}
-                  style={[s.durChip, { borderColor: "transparent" }]}
+                  style={s.durChip}
                 >
                   <Text style={[s.durChipText, { color: "#fff" }]}>{durationLabel(d)}</Text>
                 </LinearGradient>
