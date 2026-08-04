@@ -1047,7 +1047,12 @@ export default function ProfileScreen() {
   // не загружены — считаем показатели нулевыми. Раньше здесь были
   // оптимистичные локальные значения, из-за которых медали могли отображаться
   // полученными до подтверждения сервером.
-  const achievementStats: AchievementStats = {
+  //
+  // Эти же показатели уходят в витрину пропом stats — по ним считается
+  // прогресс до следующей медали (utils/achievementProgress.ts).
+  // useMemo нужен, чтобы объект не пересоздавался на каждый тик таймера:
+  // иначе витрина пересчитывала бы прогресс по 50 наградам раз в секунду.
+  const achievementStats: AchievementStats = React.useMemo(() => ({
     completedAssignments: gamStats?.completedAssignments ?? 0,
     totalPoints: gamStats?.totalPoints ?? 0,
     knowledgeLevel: user?.knowledgeLevel ?? null,
@@ -1057,9 +1062,10 @@ export default function ProfileScreen() {
     perfectScoreCount: gamStats?.perfectScoreCount ?? 0,
     xpLevel: gamStats?.xpLevel ?? 1,
     earlyBirdSessions: gamStats?.earlyBirdSessions ?? 0,
-  };
-  const unlocked = getUnlockedAchievements(achievementStats);
-  const locked = getLockedAchievements(achievementStats);
+  }), [gamStats, user?.knowledgeLevel]);
+
+  const unlocked = React.useMemo(() => getUnlockedAchievements(achievementStats), [achievementStats]);
+  const locked = React.useMemo(() => getLockedAchievements(achievementStats), [achievementStats]);
 
   /**
    * Прогресс до следующего уровня. Считается по тем же таблицам, что и сам
@@ -1633,10 +1639,13 @@ export default function ProfileScreen() {
               </View>
             </View>
 
+            {/* stats нужен витрине, чтобы показать, сколько осталось до
+                ближайшей медали, — сами условия наград не меняются. */}
             <AchievementsShowcase
               unlocked={unlocked}
               locked={locked}
               showLocked={true}
+              stats={achievementStats}
               title="Витрина наград"
             />
 
