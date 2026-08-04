@@ -27,7 +27,8 @@ export type GlyphName =
   | "clock" | "handshake" | "chat" | "trendUp" | "trendDown"
   | "pen" | "video" | "note"
   | "camera" | "face" | "trash" | "key" | "copy"
-  | "userPlus" | "userX" | "logout" | "cap";
+  | "userPlus" | "userX" | "logout" | "cap"
+  | "send" | "search";
 
 export interface GlyphProps {
   name: GlyphName;
@@ -71,6 +72,23 @@ function render(name: GlyphName, s: any, color: string) {
 
     case "close":
       return <Path {...s} strokeWidth={2.6} d="M18 6 6 18M6 6l12 12" />;
+
+    case "send":
+      // Бумажный самолётик с залитым «крылом»: направление читается сразу.
+      return (
+        <G>
+          <Path {...s} d="M21.4 2.6 2.8 9.9l7.5 2.9 2.9 7.5 8.2-17.7Z" />
+          <Path {...s} d="M10.3 12.8 21.4 2.6" />
+        </G>
+      );
+
+    case "search":
+      return (
+        <G>
+          <Circle {...s} cx={10.6} cy={10.6} r={7} />
+          <Path {...s} strokeWidth={2.5} d="m15.8 15.8 5 5" />
+        </G>
+      );
 
     case "sound":
       return (
