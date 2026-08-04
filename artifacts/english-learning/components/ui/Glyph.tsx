@@ -17,7 +17,7 @@ import React from "react";
 import Svg, { Path, Circle, Rect, G } from "react-native-svg";
 
 export type GlyphName =
-  | "play" | "chevron" | "close" | "sound" | "rank"
+  | "play" | "pause" | "forward" | "chevron" | "close" | "sound" | "rank"
   | "repeat" | "route" | "bag" | "compass" | "cup"
   | "target" | "alert" | "tray" | "flame" | "spark"
   | "trophy" | "medal" | "star" | "sunrise" | "mic"
@@ -67,6 +67,25 @@ function render(name: GlyphName, s: any, color: string) {
   switch (name) {
     case "play":
       return <Path d="M8 5.2v13.6a1 1 0 0 0 1.53.85l10.4-6.8a1 1 0 0 0 0-1.7L9.53 4.35A1 1 0 0 0 8 5.2Z" fill={color} />;
+
+    case "pause":
+      // Залитые бруски, а не обводка: пауза должна весить столько же, сколько
+      // play, иначе кнопка «дёргается» при переключении состояния.
+      return (
+        <G>
+          <Rect x={6.4} y={4.4} width={4.4} height={15.2} rx={1.6} fill={color} />
+          <Rect x={13.2} y={4.4} width={4.4} height={15.2} rx={1.6} fill={color} />
+        </G>
+      );
+
+    case "forward":
+      // Перемотка вперёд: два треугольника с чертой. Используется для «+10 с».
+      return (
+        <G>
+          <Path d="M4 5.6v12.8a1 1 0 0 0 1.54.84l9.2-6.4a1 1 0 0 0 0-1.68l-9.2-6.4A1 1 0 0 0 4 5.6Z" fill={color} />
+          <Rect x={17.4} y={4.6} width={2.8} height={14.8} rx={1.4} fill={color} />
+        </G>
+      );
 
     case "chevron":
       return <Path {...s} strokeWidth={2.6} d="m9 5 7 7-7 7" />;
