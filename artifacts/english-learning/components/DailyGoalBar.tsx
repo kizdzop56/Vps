@@ -1,10 +1,20 @@
+// Цель дня: каждый день показывается своя цель (см. getDayGoalIndex), прогресс
+// по ней и награда за выполнение. Цели по времени можно перенастроить тапом.
+//
+// Эмодзи не используются: у каждой цели свой глиф из собственного набора
+// (components/ui/Glyph.tsx). Раньше здесь жили ⏱ 📝 🎤 🔥 🏆 ⚡ 🗣️ и
+// эмодзи в текстах вроде «выполнено! 🎉» — на разных платформах они выглядели
+// по-разному и не красились темой.
 import React, { useRef, useEffect, useState } from "react";
 import {
-  View, Text, TouchableOpacity, Animated, StyleSheet, Modal, Alert,
+  View, Text, TouchableOpacity, Pressable, Animated, Easing, StyleSheet, Modal, Alert,
 } from "react-native";
-import { Feather } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
 import authStorage from "@/utils/authStorage";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { XpBar, GoalPips } from "@/components/ui/GameKit";
+import { accents, gradients, radii, chunky } from "@/constants/theme";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -47,7 +57,8 @@ function formatDurationMinutes(value: number): string {
 
 interface GoalType {
   id: string;
-  emoji: string;
+  /** Глиф из своего набора вместо эмодзи: красится темой, одинаков везде. */
+  glyph: GlyphName;
   label: string;
   subLabel: string;
   color: string;
@@ -63,11 +74,11 @@ interface GoalType {
 const GOAL_TYPES: GoalType[] = [
   {
     id: "time",
-    emoji: "⏱",
+    glyph: "clock",
     label: "Время в приложении",
     subLabel: "Занимайся сегодня",
     color: "#6366f1",
-    bgColor: "#ede9fe",
+    bgColor: "#e0e7ff",
     reward: "+20 очков",
     getTarget: (goalMinutes) => goalMinutes,
     getProgress: ({ todayMinutes }) => todayMinutes,
@@ -77,35 +88,35 @@ const GOAL_TYPES: GoalType[] = [
   },
   {
     id: "tasks",
-    emoji: "📝",
+    glyph: "pen",
     label: "Выполни задания",
     subLabel: "Выполни 2 задания сегодня",
-    color: "#6366f1",
-    bgColor: "#e0e7ff",
+    color: "#8b5cf6",
+    bgColor: "#ede9fe",
     reward: "+30 очков",
     getTarget: () => 2,
     getProgress: ({ todayCompletions }) => todayCompletions,
     formatRemaining: (rem, target) => `Осталось ${rem} из ${target} заданий`,
-    formatDone: (_, target) => `${target} из ${target} заданий выполнено! 🎉`,
+    formatDone: (_, target) => `${target} из ${target} заданий выполнено`,
     isTimeType: false,
   },
   {
     id: "voice",
-    emoji: "🎤",
+    glyph: "mic",
     label: "AI-разговор",
     subLabel: "Поговори с AI-учителем",
-    color: "#8b5cf6",
+    color: "#a855f7",
     bgColor: "#f3e8ff",
     reward: "+25 очков",
     getTarget: () => 1,
     getProgress: ({ todayVoiceSessions }) => todayVoiceSessions,
     formatRemaining: (rem, target) => `Осталось ${rem} сессия из ${target}`,
-    formatDone: (_, target) => `${target} из ${target} AI-сессий! 🎤`,
+    formatDone: (_, target) => `${target} из ${target} AI-сессий`,
     isTimeType: false,
   },
   {
     id: "time2",
-    emoji: "🔥",
+    glyph: "flame",
     label: "Активное обучение",
     subLabel: "Занимайся усиленно",
     color: "#ec4899",
@@ -119,25 +130,25 @@ const GOAL_TYPES: GoalType[] = [
   },
   {
     id: "tasks2",
-    emoji: "🏆",
+    glyph: "trophy",
     label: "Марафон заданий",
     subLabel: "Выполни 3 задания сегодня",
-    color: "#e11d48",
-    bgColor: "#ffe4e6",
+    color: "#f59e0b",
+    bgColor: "#fef3c7",
     reward: "+40 очков",
     getTarget: () => 3,
     getProgress: ({ todayCompletions }) => todayCompletions,
     formatRemaining: (rem, target) => `Осталось ${rem} из ${target} заданий`,
-    formatDone: (_, target) => `${target} из ${target} заданий! Отлично 🏆`,
+    formatDone: (_, target) => `${target} из ${target} заданий. Отлично!`,
     isTimeType: false,
   },
   {
     id: "time3",
-    emoji: "⚡",
+    glyph: "spark",
     label: "Спринт знаний",
     subLabel: "Интенсивная сессия",
-    color: "#6366f1",
-    bgColor: "#e0e7ff",
+    color: "#d946ef",
+    bgColor: "#fae8ff",
     reward: "+20 очков",
     getTarget: (goalMinutes) => goalMinutes,
     getProgress: ({ todayMinutes }) => todayMinutes,
@@ -147,19 +158,34 @@ const GOAL_TYPES: GoalType[] = [
   },
   {
     id: "voice2",
-    emoji: "🗣️",
+    glyph: "chat",
     label: "Разговорная практика",
     subLabel: "Проведи 2 AI-разговора",
-    color: "#ec4899",
-    bgColor: "#fce7f3",
+    color: "#6366f1",
+    bgColor: "#e0e7ff",
     reward: "+35 очков",
     getTarget: () => 2,
     getProgress: ({ todayVoiceSessions }) => todayVoiceSessions,
     formatRemaining: (rem, target) => `Осталось ${rem} из ${target} сессий`,
-    formatDone: (_, target) => `${target} из ${target} разговоров! 🗣️`,
+    formatDone: (_, target) => `${target} из ${target} разговоров`,
     isTimeType: false,
   },
 ];
+
+/** Варианты дневной цели по времени: от лёгкого старта к максимуму. */
+const GOAL_PRESETS: { glyph: GlyphName; desc: string }[] = [
+  { glyph: "leaf",   desc: "Лёгкий старт" },
+  { glyph: "star",   desc: "Хорошая привычка" },
+  { glyph: "flame",  desc: "Активное обучение" },
+  { glyph: "route",  desc: "Максимальный результат" },
+];
+
+function presetFor(mins: number) {
+  if (mins <= 10) return GOAL_PRESETS[0]!;
+  if (mins <= 15) return GOAL_PRESETS[1]!;
+  if (mins <= 20) return GOAL_PRESETS[2]!;
+  return GOAL_PRESETS[3]!;
+}
 
 function getDayGoalIndex(): number {
   const now = new Date();
@@ -176,7 +202,6 @@ export function DailyGoalBar({
   onGoalChange,
 }: DailyGoalBarProps) {
   const colors = useColors();
-  const progressAnim = useRef(new Animated.Value(0)).current;
   const shimmerAnim = useRef(new Animated.Value(0)).current;
   const [showPicker, setShowPicker] = useState(false);
 
@@ -189,29 +214,18 @@ export function DailyGoalBar({
   const remaining = Math.max(0, target - progress);
 
   useEffect(() => {
-    Animated.timing(progressAnim, {
-      toValue: pct,
-      duration: 900,
-      useNativeDriver: false,
-    }).start();
-  }, [pct, progressAnim]);
-
-  useEffect(() => {
     if (done) {
-      Animated.loop(
+      const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(shimmerAnim, { toValue: 1, duration: 1500, useNativeDriver: false }),
-          Animated.timing(shimmerAnim, { toValue: 0, duration: 1500, useNativeDriver: false }),
+          Animated.timing(shimmerAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
+          Animated.timing(shimmerAnim, { toValue: 0, duration: 1500, useNativeDriver: true }),
         ])
-      ).start();
-    } else {
-      shimmerAnim.setValue(0);
+      );
+      loop.start();
+      return () => loop.stop();
     }
+    shimmerAnim.setValue(0);
   }, [done, shimmerAnim]);
-
-  const barColor = done ? "#6366f1" : goalType.color;
-  const bgColor = done ? "#e0e7ff" : goalType.bgColor;
-  const iconName = done ? "check-circle" : goalType.emoji === "⏱" ? "clock" : goalType.emoji === "📝" ? "book-open" : goalType.emoji === "🎤" ? "mic" : goalType.emoji === "🔥" ? "zap" : goalType.emoji === "🏆" ? "award" : goalType.emoji === "⚡" ? "zap" : "message-circle";
 
   const handleGoalChange = async (minutes: number) => {
     setShowPicker(false);
@@ -229,70 +243,89 @@ export function DailyGoalBar({
   return (
     <>
       {done ? (
-        <View style={[styles.doneContainer, { backgroundColor: "#6366f1" }]}> 
-          <Animated.View
-            style={[
-              styles.doneShimmer,
-              {
-                opacity: shimmerAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.18] }),
-              },
-            ]}
-          />
-          <Text style={styles.doneEmoji}>🎉</Text>
-          <Text style={styles.doneTitle}>Цель на сегодня выполнена!</Text>
-          <Text style={styles.doneSub}>{goalType.formatDone(progress, target)}</Text>
-          <View style={styles.doneRewardBadge}>
-            <Text style={styles.doneRewardText}>{goalType.reward} получено</Text>
-          </View>
+        // Выполненная цель — наградный момент: градиент, трофей и подпись
+        // о полученных очках. Раньше здесь стоял эмодзи 🎉.
+        <View style={styles.doneWrap}>
+          <LinearGradient
+            colors={gradients.reward as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={styles.doneContainer}
+          >
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.doneShimmer,
+                { opacity: shimmerAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.16] }) },
+              ]}
+            />
+            <View style={styles.doneTrophy}>
+              <Glyph name="trophy" size={30} color="#ffffff" />
+            </View>
+            <Text style={styles.doneTitle}>Цель на сегодня выполнена!</Text>
+            <Text style={styles.doneSub}>{goalType.formatDone(progress, target)}</Text>
+            <View style={styles.doneRewardBadge}>
+              <Glyph name="star" size={12} color="#ffffff" />
+              <Text style={styles.doneRewardText}>{goalType.reward} получено</Text>
+            </View>
+          </LinearGradient>
         </View>
       ) : (
         <TouchableOpacity
           onPress={goalType.isTimeType ? () => setShowPicker(true) : undefined}
           activeOpacity={goalType.isTimeType ? 0.85 : 1}
-          style={[styles.container, { backgroundColor: colors.card, borderColor: goalType.color + "30" }]}
+          style={[
+            styles.container,
+            {
+              backgroundColor: colors.card,
+              borderColor: goalType.color + "33",
+              // Тень в цвете сегодняшней цели: карточка живёт в своём цвете.
+              shadowColor: goalType.color,
+            },
+          ]}
         >
           {/* Day badge */}
-          <View style={[styles.dayBadge, { backgroundColor: bgColor }]}> 
-            <Text style={[styles.dayBadgeText, { color: goalType.color }]}> 
-              Цель дня
-            </Text>
+          <View style={[styles.dayBadge, { backgroundColor: goalType.bgColor }]}>
+            <Text style={[styles.dayBadgeText, { color: goalType.color }]}>Цель дня</Text>
           </View>
 
           <View style={styles.header}>
-            <View style={[styles.iconBox, { backgroundColor: bgColor }]}> 
-              <Text style={{ fontSize: 18 }}>{goalType.emoji}</Text>
+            <View style={[styles.iconBox, { backgroundColor: goalType.bgColor }]}>
+              <Glyph name={goalType.glyph} size={20} color={goalType.color} />
             </View>
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={[styles.title, { color: colors.foreground }]}>{goalType.label}</Text>
-              <Text style={[styles.sub, { color: colors.mutedForeground }]}> 
+              <Text style={[styles.sub, { color: colors.mutedForeground }]}>
                 {goalType.formatRemaining(remaining, target)}
               </Text>
             </View>
-            <View style={[styles.rewardBadge, { backgroundColor: bgColor }]}> 
-              <Text style={[styles.rewardText, { color: goalType.color }]}> 
-                {goalType.reward}
-              </Text>
+            <View style={[styles.rewardBadge, { backgroundColor: goalType.bgColor }]}>
+              <Text style={[styles.rewardText, { color: goalType.color }]}>{goalType.reward}</Text>
             </View>
           </View>
 
-          {/* Progress bar */}
-          <View style={[styles.trackBg, { backgroundColor: colors.muted }]}> 
-            <Animated.View
-              style={[
-                styles.trackFill,
-                {
-                  backgroundColor: barColor,
-                  width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
-                },
-              ]}
+          {/* Прогресс. Счётные цели (задания, разговоры) показываем сегментами:
+              «1 из 2» видно сразу, а процент на таких числах бесполезен.
+              Для минут остаётся полоса — там шкала непрерывная. */}
+          {goalType.isTimeType ? (
+            <XpBar
+              progress={pct}
+              height={10}
+              shine={false}
+              colors={[goalType.color, goalType.color] as const}
             />
-          </View>
+          ) : (
+            <GoalPips value={progress} target={target} segments={Math.max(2, Math.min(target, 10))} />
+          )}
 
           {/* Sub row */}
           {goalType.isTimeType && (
-            <Text style={[styles.hint, { color: colors.mutedForeground, marginTop: 8 }]}> 
-              💡 Нажми, чтобы изменить цель
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 9 }}>
+              <Glyph name="pen" size={12} color={colors.mutedForeground} />
+              <Text style={[styles.hint, { color: colors.mutedForeground }]}>
+                Нажми, чтобы изменить цель
+              </Text>
+            </View>
           )}
         </TouchableOpacity>
       )}
@@ -300,40 +333,24 @@ export function DailyGoalBar({
       {/* Goal Picker Modal — only for time goals */}
       <Modal visible={showPicker} transparent animationType="slide" onRequestClose={() => setShowPicker(false)}>
         <View style={styles.overlay}>
-          <View style={[styles.pickerSheet, { backgroundColor: colors.card }]}> 
+          <View style={[styles.pickerSheet, { backgroundColor: colors.card }]}>
             <Text style={[styles.pickerTitle, { color: colors.foreground }]}>Ежедневная цель</Text>
-            <Text style={[styles.pickerSub, { color: colors.mutedForeground }]}> 
+            <Text style={[styles.pickerSub, { color: colors.mutedForeground }]}>
               Сколько минут в день ты хочешь заниматься?
             </Text>
             {TIME_GOAL_OPTIONS.map((mins) => (
-              <TouchableOpacity
+              <GoalOption
                 key={mins}
+                minutes={mins}
+                selected={mins === goalMinutes}
+                colors={colors}
                 onPress={() => handleGoalChange(mins)}
-                style={[
-                  styles.goalOption,
-                  {
-                    backgroundColor: mins === goalMinutes ? "#ede9fe" : colors.muted,
-                    borderColor: mins === goalMinutes ? "#6366f1" : colors.border,
-                  },
-                ]}
-              >
-                <Text style={styles.goalEmoji}>
-                  {mins <= 10 ? "🌱" : mins <= 15 ? "⭐" : mins <= 20 ? "🔥" : "🚀"}
-                </Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.goalMin, { color: mins === goalMinutes ? "#6366f1" : colors.foreground }]}> 
-                    {mins} минут
-                  </Text>
-                  <Text style={[styles.goalDesc, { color: colors.mutedForeground }]}> 
-                    {mins <= 10 ? "Лёгкий старт" : mins <= 15 ? "Хорошая привычка" : mins <= 20 ? "Активное обучение" : "Максимальный результат"}
-                  </Text>
-                </View>
-                {mins === goalMinutes && <Feather name="check" size={18} color="#6366f1" />}
-              </TouchableOpacity>
+              />
             ))}
             <TouchableOpacity
               style={[styles.closeGoalBtn, { backgroundColor: colors.muted, borderColor: colors.border }]}
               onPress={() => setShowPicker(false)}
+              activeOpacity={0.85}
             >
               <Text style={[styles.closeGoalText, { color: colors.mutedForeground }]}>Закрыть</Text>
             </TouchableOpacity>
@@ -344,29 +361,93 @@ export function DailyGoalBar({
   );
 }
 
+/**
+ * Вариант цели как физическая клавиша: у неё есть нижняя грань, при нажатии
+ * корпус проседает. Тот же приём, что у кнопок и вариантов ответа в тренажёре.
+ */
+function GoalOption({
+  minutes, selected, colors, onPress,
+}: {
+  minutes: number;
+  selected: boolean;
+  colors: any;
+  onPress: () => void;
+}) {
+  const preset = presetFor(minutes);
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 4, bottom: 0,
+        borderRadius: radii.sm, backgroundColor: selected ? colors.primary : "rgba(160,140,220,0.3)",
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={onPress}
+          onPressIn={() => set(4)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={`${minutes} минут — ${preset.desc}`}
+          style={{
+            flexDirection: "row", alignItems: "center", gap: 12,
+            padding: 14, borderRadius: radii.sm, borderWidth: 1.5,
+            backgroundColor: selected ? colors.primary + "18" : colors.card,
+            borderColor: selected ? colors.primary : colors.border,
+          }}
+        >
+          <View style={{
+            width: 34, height: 34, borderRadius: 11,
+            backgroundColor: (selected ? colors.primary : accents.violetDeep) + "1f",
+            alignItems: "center", justifyContent: "center",
+          }}>
+            <Glyph name={preset.glyph} size={18} color={selected ? colors.primary : accents.violetDeep} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{
+              fontSize: 15, fontWeight: "800", fontVariant: ["tabular-nums"],
+              color: selected ? colors.primary : colors.foreground,
+            }}>
+              {minutes} минут
+            </Text>
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>{preset.desc}</Text>
+          </View>
+          {selected && <Glyph name="check" size={18} color={colors.primary} />}
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: 4 }} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
-    borderRadius: 16, borderWidth: 1.5, padding: 14, marginBottom: 12,
+    borderRadius: radii.md, borderWidth: 1.5, padding: 14, marginBottom: 12,
+    shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.16, shadowRadius: 15, elevation: 4,
   },
   dayBadge: {
-    alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: 20, marginBottom: 10,
+    alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 4,
+    borderRadius: radii.pill, marginBottom: 10,
   },
-  dayBadgeText: { fontSize: 11, fontWeight: "700" },
+  dayBadgeText: { fontSize: 10.5, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.8 },
   header: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
   iconBox: {
-    width: 40, height: 40, borderRadius: 12,
+    width: 40, height: 40, borderRadius: radii.sm,
     justifyContent: "center", alignItems: "center",
   },
-  title: { fontSize: 14, fontWeight: "700" },
-  sub: { fontSize: 12, marginTop: 2 },
-  rewardBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
-  rewardText: { fontSize: 11, fontWeight: "700" },
-  trackBg: { height: 10, borderRadius: 5, overflow: "hidden", position: "relative" },
-  trackFill: { height: "100%", borderRadius: 5 },
-  hint: { fontSize: 11 },
+  title: { fontSize: 14, fontWeight: "800" },
+  sub: { fontSize: 12, marginTop: 2, fontVariant: ["tabular-nums"] },
+  rewardBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: radii.sm - 4 },
+  rewardText: { fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  hint: { fontSize: 11, fontWeight: "600" },
+
+  doneWrap: { marginBottom: 12, borderRadius: radii.md, overflow: "hidden" },
   doneContainer: {
-    borderRadius: 16, padding: 22, marginBottom: 12,
+    borderRadius: radii.md, padding: 22,
     alignItems: "center", justifyContent: "center", overflow: "hidden",
     minHeight: 150,
   },
@@ -374,27 +455,27 @@ const styles = StyleSheet.create({
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "#fff",
   },
-  doneEmoji: { fontSize: 34, marginBottom: 6 },
-  doneTitle: { fontSize: 17, fontWeight: "800", color: "#fff", textAlign: "center" },
+  doneTrophy: {
+    width: 56, height: 56, borderRadius: radii.md,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    alignItems: "center", justifyContent: "center",
+    marginBottom: 10, transform: [{ rotate: "-4deg" }],
+  },
+  doneTitle: { fontSize: 17, fontWeight: "900", color: "#fff", textAlign: "center" },
   doneSub: { fontSize: 13, fontWeight: "600", color: "rgba(255,255,255,0.85)", marginTop: 4, textAlign: "center" },
   doneRewardBadge: {
-    marginTop: 12, paddingHorizontal: 12, paddingVertical: 5,
-    borderRadius: 20, backgroundColor: "rgba(255,255,255,0.2)",
+    marginTop: 12, paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: radii.pill, backgroundColor: "rgba(255,255,255,0.22)",
+    flexDirection: "row", alignItems: "center", gap: 6,
   },
   doneRewardText: { fontSize: 12, fontWeight: "800", color: "#fff" },
+
   overlay: { flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" },
-  pickerSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 32 },
-  pickerTitle: { fontSize: 18, fontWeight: "800", marginBottom: 4 },
+  pickerSheet: { borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24, paddingBottom: 32 },
+  pickerTitle: { fontSize: 19, fontWeight: "900", letterSpacing: -0.3, marginBottom: 4 },
   pickerSub: { fontSize: 13, marginBottom: 20 },
-  goalOption: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    padding: 14, borderRadius: 12, borderWidth: 1.5, marginBottom: 10,
-  },
-  goalEmoji: { fontSize: 22 },
-  goalMin: { fontSize: 15, fontWeight: "700" },
-  goalDesc: { fontSize: 12, marginTop: 2 },
   closeGoalBtn: {
-    borderRadius: 12, padding: 14, borderWidth: 1, alignItems: "center", marginTop: 4,
+    borderRadius: radii.sm, padding: 14, borderWidth: 1, alignItems: "center", marginTop: 4,
   },
-  closeGoalText: { fontWeight: "600", fontSize: 15 },
+  closeGoalText: { fontWeight: "700", fontSize: 15 },
 });
