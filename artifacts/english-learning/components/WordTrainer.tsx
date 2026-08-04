@@ -13,16 +13,22 @@
 //
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
+//
+// Оформление: варианты ответа и буквы — физические клавиши с нижней гранью,
+// «верно» окрашено фирменным фиолетовым (зелёного в палитре нет намеренно).
+// Эмодзи в интерфейсе не используются; card.emoji приходит из данных слова
+// и остаётся как иллюстрация к слову, это не иконка интерфейса.
 import React from "react";
-import { View, Text, TouchableOpacity, Animated, ActivityIndicator, ScrollView } from "react-native";
-import { Feather } from "@expo/vector-icons";
+import { View, Text, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { fc, speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
 import type { Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
+import { accents, gradients, radii, chunky } from "@/constants/theme";
 
-const TRAINER_BACKGROUND = "#F8F7FF";
-const OK_GREEN = "#16a34a";
 // Пауза после верного ответа: карточка не улетает мгновенно, за это время
 // доигрывает озвучка правильного слова. Кто не хочет ждать — жмёт «Дальше».
 const NEXT_DELAY_OK = 1200;
@@ -48,6 +54,12 @@ export function WordTrainer({
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
+  // Фон тренажёра берём из палитры: экран открывается поверх общего градиента,
+  // поэтому собственный оттенок должен совпадать с фирменным светлым.
+  const background = colors.background;
+  // «Верно» — фиолетовый success из палитры. Зелёного в продукте нет намеренно.
+  const okColor = colors.success;
+
   const [queue, setQueue] = React.useState<TrainerQueue | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [phase, setPhase] = React.useState<Phase>("loading");
@@ -72,7 +84,9 @@ export function WordTrainer({
   const shownAt = React.useRef<number>(Date.now());
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const finishedRef = React.useRef(false);
-  const barWidth = React.useRef(new Animated.Value(0)).current;
+  // Лёгкий «вдох» карточки при появлении: только opacity и scale, чтобы
+  // анимация ушла в нативный драйвер и не грузила JS-поток.
+  const cardIn = React.useRef(new Animated.Value(0)).current;
 
   const card = cards[pos];
   const exercise: Exercise = card?.exercise ?? { type: "intro", prompt: card?.english ?? "" };
@@ -102,14 +116,13 @@ export function WordTrainer({
     stopSpeaking();
   }, []);
 
-  // прогресс-бар сверху
+  // Появление новой карточки.
   React.useEffect(() => {
-    Animated.timing(barWidth, {
-      toValue: total > 0 ? Math.min(1, pos / total) : 0,
-      duration: 260,
-      useNativeDriver: false,
+    cardIn.setValue(0);
+    Animated.timing(cardIn, {
+      toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true,
     }).start();
-  }, [pos, total, barWidth]);
+  }, [pos, phase]);
 
   // Озвучка при показе карточки: слово ребёнок должен услышать, а в аудировании
   // это вообще единственная подсказка.
@@ -236,15 +249,16 @@ export function WordTrainer({
   // ── экраны состояний ──
   if (error) {
     return (
-      <Centered background={TRAINER_BACKGROUND}>
-        <Text style={{ color: colors.foreground, textAlign: "center" }}>{error}</Text>
-        <BigButton label="Закрыть" onPress={onExit} colors={colors} />
+      <Centered background={background}>
+        <Glyph name="alert" size={40} color={colors.destructive} />
+        <Text style={{ color: colors.foreground, textAlign: "center", marginTop: 12, fontSize: 15 }}>{error}</Text>
+        <ChunkyButton label="Закрыть" icon="close" onPress={onExit} style={{ alignSelf: "stretch", marginTop: 20 }} />
       </Centered>
     );
   }
 
   if (phase === "loading") {
-    return <Centered background={TRAINER_BACKGROUND}><ActivityIndicator size="large" color={colors.primary} /></Centered>;
+    return <Centered background={background}><ActivityIndicator size="large" color={colors.primary} /></Centered>;
   }
 
   if (phase === "done") {
@@ -252,6 +266,7 @@ export function WordTrainer({
       <SessionSummary
         colors={colors}
         insets={insets}
+        background={background}
         answered={answered}
         correctCount={correctCount}
         points={points}
@@ -269,50 +284,77 @@ export function WordTrainer({
   const promptLabel = PROMPT_LABEL[exercise.type];
 
   return (
-    <View style={{ flex: 1, backgroundColor: TRAINER_BACKGROUND, paddingTop: insets.top + 8 }}>
+    <View style={{ flex: 1, backgroundColor: background, paddingTop: insets.top + 8 }}>
       {/* шапка: выход, счётчик, прогресс */}
       <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }}>
-        <TouchableOpacity onPress={onExit} style={{ padding: 8 }} accessibilityLabel="Закрыть тренировку">
-          <Feather name="x" size={24} color={colors.foreground} />
-        </TouchableOpacity>
+        <Pressable onPress={onExit} hitSlop={10} style={{ padding: 8 }} accessibilityLabel="Закрыть тренировку">
+          <Glyph name="close" size={24} color={colors.foreground} />
+        </Pressable>
         <View style={{ flex: 1, alignItems: "center" }}>
-          <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>
+          <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13, fontVariant: ["tabular-nums"] }}>
             {title ?? queue?.deckTitle ?? "Слова"} · {Math.min(pos + 1, total)}/{total}
           </Text>
-          <View style={{ width: 140, height: 6, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.15)", marginTop: 6, overflow: "hidden" }}>
-            <Animated.View
-              style={{
-                height: "100%", borderRadius: 999, backgroundColor: colors.primary,
-                width: barWidth.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
-              }}
-            />
-          </View>
+          {/* Прогресс сессии — та же полоса, что у XP: один язык на весь продукт. */}
+          <XpBar
+            progress={total > 0 ? Math.min(1, pos / total) : 0}
+            height={7}
+            shine={false}
+            style={{ width: 150, marginTop: 6 }}
+          />
         </View>
-        <View style={{ width: 40, alignItems: "flex-end", paddingRight: 6 }}>
-          {points > 0 && <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 13 }}>+{points}</Text>}
+        <View style={{ width: 44, alignItems: "flex-end", paddingRight: 6 }}>
+          {points > 0 && (
+            <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 13, fontVariant: ["tabular-nums"] }}>
+              +{points}
+            </Text>
+          )}
         </View>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 24, flexGrow: 1 }}>
-        <Text style={{ fontSize: 12, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, textAlign: "center" }}>
+        <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1.2, textAlign: "center" }}>
           {promptLabel}
         </Text>
 
         {/* задание */}
-        <View style={{ backgroundColor: colors.card, borderRadius: 24, borderWidth: 1, borderColor: "rgba(99,102,241,0.16)", padding: 22, marginTop: 12, alignItems: "center" }}>
+        <Animated.View
+          style={{
+            backgroundColor: colors.card, borderRadius: radii.lg,
+            borderWidth: 1, borderColor: colors.border,
+            padding: 22, marginTop: 12, alignItems: "center",
+            // Цветная тень вместо серой: карточка «висит» над фоном.
+            shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.16, shadowRadius: 22, elevation: 6,
+            opacity: cardIn,
+            transform: [{ scale: cardIn.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
+          }}
+        >
           {isListen ? (
             <>
+              {/* Кнопка звука — главный объект в аудировании, поэтому градиент
+                  бренда и свечение, а не плоская плашка. */}
               <TouchableOpacity
                 onPress={() => card && speakWord(card.id, card.english)}
                 activeOpacity={0.85}
-                style={{ alignItems: "center", justifyContent: "center", width: 116, height: 116, borderRadius: 58, backgroundColor: colors.accent }}
                 accessibilityLabel="Прослушать слово"
               >
-                <Feather name="volume-2" size={44} color={colors.primary} />
+                <LinearGradient
+                  colors={gradients.action as unknown as string[]}
+                  start={{ x: 0.1, y: 0 }}
+                  end={{ x: 0.9, y: 1 }}
+                  style={{
+                    alignItems: "center", justifyContent: "center",
+                    width: 116, height: 116, borderRadius: 58,
+                    shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
+                    shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
+                  }}
+                >
+                  <Glyph name="sound" size={44} color="#ffffff" />
+                </LinearGradient>
               </TouchableOpacity>
               {/* слово показываем только после ответа — иначе аудирования нет */}
               {!!feedback && (
-                <Text style={{ fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 12 }}>
+                <Text style={{ fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 14 }}>
                   {card?.emoji ? `${card.emoji} ` : ""}{card?.english}
                 </Text>
               )}
@@ -321,14 +363,17 @@ export function WordTrainer({
             <>
               {/* Картинка — на знакомстве и после ответа. В упражнении «выбери
                   перевод» показывать её заранее нельзя: ребёнок угадает смысл по
-                  картинке, не вспоминая само слово. */}
+                  картинке, не вспоминая само слово.
+                  card.emoji — это иллюстрация к слову из данных, а не иконка
+                  интерфейса, поэтому здесь эмодзи остаётся намеренно. */}
               {!!card?.emoji && (isIntro || !!feedback) && (
                 <Text style={{ fontSize: isIntro ? 64 : 44 }}>{card.emoji}</Text>
               )}
               <Text
                 style={{
                   fontSize: exercise.prompt.length > 18 ? 26 : 34, lineHeight: exercise.prompt.length > 18 ? 34 : 42,
-                  fontWeight: "900", color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+                  fontWeight: "900", letterSpacing: -0.5,
+                  color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
                 }}
               >
                 {exercise.prompt}
@@ -340,9 +385,13 @@ export function WordTrainer({
                 <TouchableOpacity
                   onPress={() => card && speakWord(card.id, card.english)}
                   activeOpacity={0.8}
-                  style={{ flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.accent, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, marginTop: 12 }}
+                  style={{
+                    flexDirection: "row", alignItems: "center", gap: 7,
+                    backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+                    paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+                  }}
                 >
-                  <Feather name="volume-2" size={18} color={colors.primary} />
+                  <Glyph name="sound" size={18} color={colors.primary} />
                   <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
                 </TouchableOpacity>
               )}
@@ -361,7 +410,7 @@ export function WordTrainer({
                 </Text>
               )}
               {!!card.exampleEn && (
-                <View style={{ marginTop: 14, backgroundColor: colors.accent, borderRadius: 14, padding: 14 }}>
+                <View style={{ marginTop: 14, backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 14 }}>
                   <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
                     <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
                     {speechAvailable() && (
@@ -370,9 +419,9 @@ export function WordTrainer({
                       // здесь стоял speak() — он всегда идёт мимо сервера, сразу
                       // в Web Speech API/expo-speech, поэтому пример звучал
                       // старым синтезом даже когда сервер уже умеет живые голоса.
-                      <TouchableOpacity onPress={() => speakWord(undefined, card.exampleEn!)} accessibilityLabel="Прослушать пример">
-                        <Feather name="volume-2" size={18} color={colors.primary} />
-                      </TouchableOpacity>
+                      <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
+                        <Glyph name="sound" size={18} color={colors.primary} />
+                      </Pressable>
                     )}
                   </View>
                   {!!card.exampleRu && <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
@@ -386,14 +435,17 @@ export function WordTrainer({
             <View style={{ width: "100%", marginTop: 18, alignItems: "center" }}>
               <View
                 style={{
-                  minHeight: 52, width: "100%", borderRadius: 14, borderWidth: 2, borderStyle: "dashed",
+                  minHeight: 54, width: "100%", borderRadius: radii.sm + 2, borderWidth: 2, borderStyle: "dashed",
                   borderColor: feedback
-                    ? (feedback.correct ? OK_GREEN : feedback.retry ? colors.warning : colors.destructive)
+                    ? (feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive)
                     : "rgba(99,102,241,0.35)",
                   alignItems: "center", justifyContent: "center", paddingHorizontal: 10,
                 }}
               >
-                <Text style={{ fontSize: 26, fontWeight: "900", letterSpacing: 2, color: feedback && !feedback.correct && !feedback.retry ? colors.destructive : colors.foreground }}>
+                <Text style={{
+                  fontSize: 26, fontWeight: "900", letterSpacing: 2,
+                  color: feedback && !feedback.correct && !feedback.retry ? colors.destructive : colors.foreground,
+                }}>
                   {builtWord || "…"}
                 </Text>
               </View>
@@ -404,22 +456,28 @@ export function WordTrainer({
               )}
             </View>
           )}
-        </View>
+        </Animated.View>
 
         {/* реакция на ответ */}
         {feedback && !isBuild && (
-          <View style={{ marginTop: 14, alignItems: "center" }}>
-            <Text style={{ fontSize: 15, fontWeight: "900", color: feedback.correct ? OK_GREEN : colors.destructive }}>
+          <View style={{ marginTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            <Glyph name={feedback.correct ? "check" : "close"} size={17} color={feedback.correct ? okColor : colors.destructive} />
+            <Text style={{ fontSize: 15, fontWeight: "900", color: feedback.correct ? okColor : colors.destructive, flexShrink: 1 }}>
               {feedback.correct ? "Верно!" : `Верный ответ: ${exercise.options?.[exercise.answerIndex ?? 0] ?? exercise.answer ?? ""}`}
             </Text>
           </View>
         )}
         {feedback && isBuild && (
-          <View style={{ marginTop: 14, alignItems: "center" }}>
+          <View style={{ marginTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            <Glyph
+              name={feedback.correct ? "check" : feedback.retry ? "repeat" : "close"}
+              size={17}
+              color={feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive}
+            />
             <Text
               style={{
-                fontSize: 15, fontWeight: "900",
-                color: feedback.correct ? OK_GREEN : feedback.retry ? colors.warning : colors.destructive,
+                fontSize: 15, fontWeight: "900", flexShrink: 1,
+                color: feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive,
               }}
             >
               {feedback.correct
@@ -441,42 +499,34 @@ export function WordTrainer({
             activeOpacity={0.85}
             accessibilityLabel="Следующая карточка"
             style={{
-              marginTop: 12, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 6,
-              borderRadius: 999, paddingHorizontal: 18, paddingVertical: 9,
+              marginTop: 12, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 7,
+              borderRadius: radii.pill, paddingHorizontal: 18, paddingVertical: 10,
               backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
             }}
           >
             <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 14 }}>Дальше</Text>
-            <Feather name="arrow-right" size={16} color={colors.mutedForeground} />
+            <Glyph name="arrowRight" size={16} color={colors.mutedForeground} />
           </TouchableOpacity>
         )}
 
         {/* варианты ответа */}
         {!isIntro && !isBuild && (
-          <View style={{ marginTop: 18, gap: 10 }}>
+          <View style={{ marginTop: 18, gap: 12 }}>
             {(exercise.options ?? []).map((option, index) => {
               const isAnswer = index === exercise.answerIndex;
               const picked = feedback?.picked === index;
               const showCorrect = Boolean(feedback) && isAnswer;
               const showWrong = Boolean(feedback) && picked && !isAnswer;
               return (
-                <TouchableOpacity
+                <OptionKey
                   key={`${option}-${index}`}
-                  onPress={() => pickOption(index)}
-                  activeOpacity={0.85}
+                  label={option}
+                  colors={colors}
+                  okColor={okColor}
+                  state={showCorrect ? "correct" : showWrong ? "wrong" : "idle"}
                   disabled={Boolean(feedback)}
-                  style={{
-                    backgroundColor: showCorrect ? OK_GREEN + "1f" : showWrong ? colors.destructive + "1f" : colors.card,
-                    borderColor: showCorrect ? OK_GREEN : showWrong ? colors.destructive : colors.border,
-                    borderWidth: showCorrect || showWrong ? 2 : 1,
-                    borderRadius: 16, paddingVertical: 16, paddingHorizontal: 16,
-                    flexDirection: "row", alignItems: "center", gap: 10,
-                  }}
-                >
-                  <Text style={{ flex: 1, fontSize: 17, fontWeight: "700", color: colors.foreground }}>{option}</Text>
-                  {showCorrect && <Feather name="check" size={20} color={OK_GREEN} />}
-                  {showWrong && <Feather name="x" size={20} color={colors.destructive} />}
-                </TouchableOpacity>
+                  onPress={() => pickOption(index)}
+                />
               );
             })}
           </View>
@@ -486,44 +536,39 @@ export function WordTrainer({
         {isBuild && (
           <>
             <View style={{ marginTop: 18, flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
-              {(exercise.letters ?? []).map((letter, index) => {
-                const used = built.includes(index);
-                return (
-                  <TouchableOpacity
-                    key={`${letter}-${index}`}
-                    onPress={() => tapLetter(index)}
-                    activeOpacity={0.85}
-                    disabled={used || Boolean(feedback)}
-                    style={{
-                      width: 46, height: 52, borderRadius: 12, alignItems: "center", justifyContent: "center",
-                      backgroundColor: used ? "rgba(99,102,241,0.08)" : colors.card,
-                      borderWidth: 1, borderColor: used ? "transparent" : colors.border,
-                    }}
-                  >
-                    <Text style={{ fontSize: 22, fontWeight: "900", color: used ? "transparent" : colors.foreground }}>{letter}</Text>
-                  </TouchableOpacity>
-                );
-              })}
+              {(exercise.letters ?? []).map((letter, index) => (
+                <LetterKey
+                  key={`${letter}-${index}`}
+                  letter={letter}
+                  colors={colors}
+                  used={built.includes(index)}
+                  disabled={built.includes(index) || Boolean(feedback)}
+                  onPress={() => tapLetter(index)}
+                />
+              ))}
             </View>
             <View style={{ flexDirection: "row", gap: 10, marginTop: 16, justifyContent: "center" }}>
-              <SmallButton icon="delete" label="Стереть" onPress={undoLetter} colors={colors} disabled={built.length === 0 || Boolean(feedback)} />
-              {!hintUsed && <SmallButton icon="help-circle" label="Подсказка" onPress={showHint} colors={colors} disabled={Boolean(feedback)} />}
+              <SmallButton icon="backspace" label="Стереть" onPress={undoLetter} colors={colors} disabled={built.length === 0 || Boolean(feedback)} />
+              {!hintUsed && <SmallButton icon="help" label="Подсказка" onPress={showHint} colors={colors} disabled={Boolean(feedback)} />}
             </View>
           </>
         )}
 
         {/* знакомство: кнопки внизу */}
         {isIntro && (
-          <View style={{ marginTop: 20, gap: 10 }}>
+          <View style={{ marginTop: 20 }}>
             {!revealed ? (
-              <BigButton label="Показать перевод" onPress={() => setRevealed(true)} colors={colors} />
+              <ChunkyButton label="Показать перевод" icon="face" onPress={() => setRevealed(true)} />
             ) : (
               <>
-                <BigButton label="Понятно, запомнил" onPress={() => submit({ grade: "good" }, "intro", 250)} colors={colors} />
+                <ChunkyButton label="Понятно, запомнил" icon="check" onPress={() => submit({ grade: "good" }, "intro", 250)} />
                 <TouchableOpacity
                   onPress={() => submit({ grade: "again" }, "intro", 250)}
                   activeOpacity={0.85}
-                  style={{ borderRadius: 16, paddingVertical: 14, alignItems: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card }}
+                  style={{
+                    borderRadius: radii.md, paddingVertical: 14, alignItems: "center",
+                    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, marginTop: 4,
+                  }}
                 >
                   <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 15 }}>Показать ещё раз позже</Text>
                 </TouchableOpacity>
@@ -544,12 +589,126 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
   build: "Собери слово из букв",
 };
 
+// ── физические клавиши ──────────────────────────────────────────────────────
+
+/**
+ * Вариант ответа как клавиша: у неё есть нижняя грань, и при нажатии корпус
+ * проседает. Тот же приём, что у ChunkyButton, но плоский и светлый — вариантов
+ * на экране четыре, и все они не могут кричать цветом бренда.
+ */
+function OptionKey({
+  label, colors, okColor, state, disabled, onPress,
+}: {
+  label: string;
+  colors: any;
+  okColor: string;
+  state: "idle" | "correct" | "wrong";
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+
+  const accent = state === "correct" ? okColor : state === "wrong" ? colors.destructive : null;
+  const edge = accent ?? "rgba(160,140,220,0.35)";
+
+  return (
+    <View>
+      {/* Нижняя грань клавиши: отдельный слой под корпусом. */}
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 5, bottom: 0,
+        borderRadius: radii.md, backgroundColor: edge,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(4)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          style={{
+            backgroundColor: accent ? accent + "1f" : colors.card,
+            borderColor: accent ?? colors.border,
+            borderWidth: accent ? 2 : 1,
+            borderRadius: radii.md, paddingVertical: 16, paddingHorizontal: 16,
+            flexDirection: "row", alignItems: "center", gap: 10, minHeight: 56,
+          }}
+        >
+          <Text style={{ flex: 1, fontSize: 17, fontWeight: "800", color: colors.foreground }}>{label}</Text>
+          {state === "correct" && <Glyph name="check" size={20} color={okColor} />}
+          {state === "wrong" && <Glyph name="close" size={20} color={colors.destructive} />}
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: 5 }} />
+    </View>
+  );
+}
+
+/** Буква в сборке слова — та же клавиша, только квадратная. */
+function LetterKey({
+  letter, colors, used, disabled, onPress,
+}: {
+  letter: string;
+  colors: any;
+  used: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+
+  if (used) {
+    // Использованная буква оставляет «дырку» в ряду: видно, сколько осталось.
+    return (
+      <View style={{
+        width: 46, height: 54, borderRadius: radii.sm,
+        backgroundColor: "rgba(99,102,241,0.08)",
+      }} />
+    );
+  }
+
+  return (
+    <View>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 4, bottom: 0,
+        borderRadius: radii.sm, backgroundColor: "rgba(160,140,220,0.4)",
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(4)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={`Буква ${letter}`}
+          style={{
+            width: 46, height: 54, borderRadius: radii.sm,
+            alignItems: "center", justifyContent: "center",
+            backgroundColor: colors.card,
+            borderWidth: 1, borderColor: colors.border,
+            opacity: disabled ? 0.5 : 1,
+          }}
+        >
+          <Text style={{ fontSize: 22, fontWeight: "900", color: colors.foreground }}>{letter}</Text>
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: 4 }} />
+    </View>
+  );
+}
+
 // ── итоги сессии ────────────────────────────────────────────────────────────
 function SessionSummary({
-  colors, insets, answered, correctCount, points, learned, progress, emptyQueue, onExit,
+  colors, insets, background, answered, correctCount, points, learned, progress, emptyQueue, onExit,
 }: {
   colors: any;
   insets: { top: number; bottom: number };
+  background: string;
   answered: number;
   correctCount: number;
   points: number;
@@ -559,19 +718,39 @@ function SessionSummary({
   onExit: () => void;
 }) {
   const accuracy = answered > 0 ? Math.round((correctCount / answered) * 100) : 0;
-  const goalPct = progress && progress.dailyWordGoal > 0
-    ? Math.min(100, Math.round((progress.wordsToday / progress.dailyWordGoal) * 100))
-    : 0;
   const goalReached = Boolean(progress && progress.wordsToday >= progress.dailyWordGoal);
+
+  // Итог сессии — наградный момент, поэтому крупный трофей в градиентной
+  // плашке вместо эмодзи. Пустая очередь наградой не считается.
+  const heroGlyph: GlyphName = emptyQueue ? "clock" : goalReached ? "trophy" : "spark";
+  const heroGradient = emptyQueue
+    ? (["#a5b4fc", "#818cf8"] as const)
+    : goalReached
+      ? gradients.medalEasy
+      : gradients.action;
 
   return (
     <ScrollView
       contentContainerStyle={{ flexGrow: 1, justifyContent: "center", padding: 26, paddingTop: insets.top + 20, paddingBottom: Math.max(insets.bottom, 16) + 20 }}
-      style={{ backgroundColor: TRAINER_BACKGROUND }}
+      style={{ backgroundColor: background }}
     >
       <View style={{ alignItems: "center" }}>
-        <Text style={{ fontSize: 64 }}>{emptyQueue ? "😴" : goalReached ? "🏆" : "🎉"}</Text>
-        <Text style={{ fontSize: 24, fontWeight: "900", color: colors.foreground, marginTop: 10, textAlign: "center" }}>
+        <LinearGradient
+          colors={heroGradient as unknown as string[]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={{
+            width: 96, height: 96, borderRadius: radii.xl,
+            alignItems: "center", justifyContent: "center",
+            transform: [{ rotate: "-4deg" }],
+            shadowColor: goalReached ? accents.amber : colors.primary,
+            shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
+          }}
+        >
+          <Glyph name={heroGlyph} size={46} color="#ffffff" />
+        </LinearGradient>
+        <Text style={{ fontSize: 25, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground, marginTop: 16, textAlign: "center" }}>
           {emptyQueue ? "Пока нечего повторять" : goalReached ? "Цель дня выполнена!" : "Хорошая работа!"}
         </Text>
         {emptyQueue && (
@@ -584,38 +763,70 @@ function SessionSummary({
       {!emptyQueue && (
         <>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
-            <SummaryCard colors={colors} icon="layers" value={answered} label="слов пройдено" />
-            <SummaryCard colors={colors} icon="target" value={`${accuracy}%`} label="правильных" />
-            <SummaryCard colors={colors} icon="star" value={`+${points}`} label="очков" />
-            <SummaryCard colors={colors} icon="check-circle" value={learned} label="выучено" />
+            <SummaryCard colors={colors} icon="cards" tint={colors.primary} value={answered} label="слов пройдено" />
+            <SummaryCard colors={colors} icon="target" tint={accents.amber} value={`${accuracy}%`} label="правильных" />
+            <SummaryCard colors={colors} icon="star" tint={accents.magenta} value={`+${points}`} label="очков" />
+            <SummaryCard colors={colors} icon="check" tint={colors.success} value={learned} label="выучено" />
           </View>
 
           {progress && (
-            <View style={{ marginTop: 18, backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{
+              marginTop: 18, backgroundColor: colors.card, borderRadius: radii.md,
+              borderWidth: 1, borderColor: colors.border, padding: 16,
+              shadowColor: goalReached ? accents.gold : accents.violetDeep,
+              shadowOffset: { width: 0, height: 5 },
+              shadowOpacity: 0.15, shadowRadius: 14, elevation: 3,
+            }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 11 }}>
                 <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
-                <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary }}>
-                  {progress.wordsToday} / {progress.dailyWordGoal} слов
+                <Text style={{
+                  fontSize: 14, fontWeight: "900", fontVariant: ["tabular-nums"],
+                  color: goalReached ? accents.amber : colors.primary,
+                }}>
+                  {progress.wordsToday} / {progress.dailyWordGoal}
                 </Text>
               </View>
-              <View style={{ height: 10, borderRadius: 999, backgroundColor: "rgba(99,102,241,0.14)", marginTop: 10, overflow: "hidden" }}>
-                <View style={{ width: `${goalPct}%`, height: "100%", borderRadius: 999, backgroundColor: goalReached ? OK_GREEN : colors.primary }} />
-              </View>
+              {/* Та же сегментированная цель, что на «Словах» и в статистике. */}
+              <GoalPips value={progress.wordsToday} target={progress.dailyWordGoal} done={goalReached} />
             </View>
           )}
         </>
       )}
 
-      <BigButton label="Готово" onPress={onExit} colors={colors} />
+      <ChunkyButton label="Готово" icon="check" onPress={onExit} style={{ marginTop: 22 }} />
     </ScrollView>
   );
 }
 
-function SummaryCard({ colors, icon, value, label }: any) {
+function SummaryCard({
+  colors, icon, tint, value, label,
+}: {
+  colors: any;
+  icon: GlyphName;
+  tint: string;
+  value: React.ReactNode;
+  label: string;
+}) {
   return (
-    <View style={{ width: "47%", flexGrow: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14 }}>
-      <Feather name={icon} size={17} color={colors.primary} />
-      <Text style={{ fontSize: 24, fontWeight: "900", color: colors.foreground, marginTop: 5 }}>{value}</Text>
+    <View style={{
+      width: "47%", flexGrow: 1, backgroundColor: colors.card, borderRadius: radii.md,
+      borderWidth: 1, borderColor: colors.border, padding: 14,
+      shadowColor: tint, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.16, shadowRadius: 14, elevation: 3,
+    }}>
+      <View style={{
+        width: 30, height: 30, borderRadius: 9,
+        backgroundColor: tint + "1f",
+        alignItems: "center", justifyContent: "center",
+      }}>
+        <Glyph name={icon} size={17} color={tint} />
+      </View>
+      <Text style={{
+        fontSize: 25, fontWeight: "900", letterSpacing: -0.8,
+        color: colors.foreground, marginTop: 8, fontVariant: ["tabular-nums"],
+      }}>
+        {value}
+      </Text>
       <Text style={{ fontSize: 12, color: colors.mutedForeground }}>{label}</Text>
     </View>
   );
@@ -629,32 +840,22 @@ function Centered({ children, background }: { children: React.ReactNode; backgro
   );
 }
 
-function BigButton({ label, onPress, colors }: { label: string; onPress: () => void; colors: any }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.85}
-      style={{ marginTop: 22, backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 15, alignItems: "center" }}
-    >
-      <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
 function SmallButton({
   icon, label, onPress, colors, disabled,
-}: { icon: any; label: string; onPress: () => void; colors: any; disabled?: boolean }) {
+}: { icon: GlyphName; label: string; onPress: () => void; colors: any; disabled?: boolean }) {
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.85}
       disabled={disabled}
       style={{
-        flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 10,
-        backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, opacity: disabled ? 0.45 : 1,
+        flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radii.pill,
+        paddingHorizontal: 16, paddingVertical: 11,
+        backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+        opacity: disabled ? 0.45 : 1,
       }}
     >
-      <Feather name={icon} size={16} color={colors.mutedForeground} />
+      <Glyph name={icon} size={16} color={colors.mutedForeground} />
       <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>{label}</Text>
     </TouchableOpacity>
   );
