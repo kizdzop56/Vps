@@ -6,22 +6,18 @@
 // ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
 // AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
 //
-// Оформление повторяет раздел «Слова» — те же приёмы:
-//   • значок в градиентной плашке со свечением (см. StatCard), а не бледная
-//     заливка цветом с прозрачностью;
-//   • одно главное действие физической кнопкой ChunkyButton.
-// Градиент шапки взят тот же, что у «Рейтинга», чтобы экраны выглядели
-// одной семьёй.
-//
-// Наклоны убраны по всему экрану: карточки, плашки значков и заявки стоят
-// ровно. В плотной сетке микро-поворот читался как брак вёрстки, а не как
-// приём; глубину держат цветная тень и отклик на нажатие. То же сделано на
-// «Заданиях», «Учениках» и «Анализе».
+// Шапку рисует ProfileHero (components/ui/ProfileHero.tsx). Раньше она была
+// собрана прямо здесь и использовала AnimatedAvatar, который резервирует
+// контейнер в 1.7 раза больше самого аватара — при size={96} это 163 пикселя,
+// из-за чего аватар обрезался верхним краем экрана, занимал пол-страницы, а
+// имя и метки уезжали вниз. Теперь аватар слева, имя и метки справа.
 //
 // Порядок блоков собран по частоте обращения: сначала «сколько я сегодня
 // прошёл» (цель дня), потом «как я учусь» (успеваемость), и только затем
-// накопительные счётчики и награды. Блока «Действия» у ученика больше нет —
-// он состоял из одной метки без содержимого.
+// накопительные счётчики и награды. Блока «Действия» у ученика нет — он
+// состоял из одной метки без содержимого.
+//
+// Наклоны убраны по всему экрану, как на остальных вкладках.
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
@@ -49,11 +45,9 @@ import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
-
-/** Градиент шапки — тот же, что в «Рейтинге»: экраны выглядят одной семьёй. */
-const HERO_GRADIENT = ["#2e1065", "#5b21b6", "#7c3aed"] as const;
 
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
@@ -238,7 +232,7 @@ function AvatarPickerModal({
           {/* Preview */}
           <View style={{ alignItems: "center", marginBottom: 20 }}>
             <View style={{
-              width: 84, height: 84, borderRadius: 42, backgroundColor: color,
+              width: 84, height: 84, borderRadius: 28, backgroundColor: color,
               justifyContent: "center", alignItems: "center",
               // Свечение в цвете самого аватара — превью выглядит объектом.
               shadowColor: color, shadowOffset: { width: 0, height: 6 },
@@ -357,8 +351,8 @@ function FriendsModal({
         apiFetch("/api/connections/friends"),
         apiFetch("/api/connections/student/teachers"),
       ]);
-      setFriends(fr);
-      setTeachers(tc);
+      setFriends(Array.isArray(fr) ? fr : []);
+      setTeachers(Array.isArray(tc) ? tc : []);
     } catch { /* ignore */ }
     finally { setLoadingList(false); }
   }, []);
@@ -854,9 +848,6 @@ export default function ProfileScreen() {
   const [bioInput, setBioInput] = useState(user?.bio ?? "");
   const [bioLoaded, setBioLoaded] = useState(false);
   const [username, setUsername] = useState(user?.username ?? "");
-  const [editingUsername, setEditingUsername] = useState(false);
-  const [usernameInput, setUsernameInput] = useState(user?.username ?? "");
-  const [usernameSaving, setUsernameSaving] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
@@ -924,11 +915,14 @@ export default function ProfileScreen() {
 
         if (friendsRes.ok) {
           const data: Array<{ status: string; direction: string }> = await friendsRes.json();
-          const count = data.filter((f) => f.status === "pending" && f.direction === "received").length;
+          const count = Array.isArray(data)
+            ? data.filter((f) => f.status === "pending" && f.direction === "received").length
+            : 0;
           setPendingCount(count);
         }
         if (teacherRes.ok) {
-          setTeacherRequests(await teacherRes.json());
+          const data = await teacherRes.json();
+          setTeacherRequests(Array.isArray(data) ? data : []);
         }
       } catch { /* silent */ }
     };
@@ -947,7 +941,7 @@ export default function ProfileScreen() {
     { query: { enabled: isStudent && !!user?.id, refetchInterval: 10_000 } as any }
   );
 
-  const completedCount = submissions?.length ?? 0;
+  const completedCount = Array.isArray(submissions) ? submissions.length : 0;
   // timeStats.totalMinutes already includes open-session elapsed time from the server.
   // Do NOT add sessionSeconds here — that would double-count the current session.
   const totalMinutes = timeStats?.totalMinutes ?? 0;
@@ -969,7 +963,7 @@ export default function ProfileScreen() {
    * учусь», в отличие от накопительных очков.
    */
   const periodStats = React.useMemo(() => {
-    const rows: any[] = (submissions as any[]) ?? [];
+    const rows: any[] = Array.isArray(submissions) ? (submissions as any[]) : [];
     const days = PERIODS.find((p) => p.key === period)?.days ?? null;
     const cutoff = days === null ? 0 : Date.now() - days * 86400000;
     const inPeriod = days === null
@@ -996,7 +990,7 @@ export default function ProfileScreen() {
     if (!isStudent || !user?.id) return;
     try {
       const data = await apiFetch(`/api/students/${user.id}/category-stats`);
-      setCategoryStats(data ?? []);
+      setCategoryStats(Array.isArray(data) ? data : []);
     } catch {
       setCategoryStats([]);
     }
@@ -1051,9 +1045,8 @@ export default function ProfileScreen() {
 
   // Витрина наград строится СТРОГО по серверным статам (gamStats): пока они
   // не загружены — считаем показатели нулевыми. Раньше здесь были
-  // оптимистичные локальные значения (completedCount / user.totalPoints /
-  // totalMinutes), из-за которых медали могли отображаться полученными до
-  // подтверждения сервером и без реального выполнения условий.
+  // оптимистичные локальные значения, из-за которых медали могли отображаться
+  // полученными до подтверждения сервером.
   const achievementStats: AchievementStats = {
     completedAssignments: gamStats?.completedAssignments ?? 0,
     totalPoints: gamStats?.totalPoints ?? 0,
@@ -1119,36 +1112,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleUsernameSave = async () => {
-    if (!user) return;
-    const trimmed = usernameInput.trim();
-    if (!trimmed || trimmed === username) {
-      setEditingUsername(false);
-      return;
-    }
-    setUsernameSaving(true);
-    try {
-      const token = await authStorage.getItem("auth_token");
-      const res = await fetch(`${baseUrl}/api/users/${user.id}/profile`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ username: trimmed }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        Alert.alert("Не удалось сохранить", data.error ?? "Попробуйте другой никнейм.");
-        return;
-      }
-      setUsername(trimmed);
-      await updateUser({ username: trimmed });
-      setEditingUsername(false);
-    } catch {
-      Alert.alert("Не удалось сохранить", "Проверьте интернет-соединение и попробуйте снова.");
-    } finally {
-      setUsernameSaving(false);
-    }
-  };
-
   const handleAvatarSave = async (emoji: string, color: string) => {
     setAvatarMenuOpen(false);
     const prevEmoji = avatarEmoji;
@@ -1185,9 +1148,7 @@ export default function ProfileScreen() {
       // Crop to a centered square first (allowsEditing's crop UI isn't applied
       // on web/PWA, so non-square photos would otherwise get stretched by the
       // resize step below), then resize and re-compress so the resulting data
-      // URI stays tiny (a few KB) — the raw picker output can be several MB,
-      // which used to bloat every list response (students, leaderboard, etc.)
-      // and break loading avatars in production.
+      // URI stays tiny (a few KB) — the raw picker output can be several MB.
       const actions: ImageManipulator.Action[] = [];
       if (asset.width && asset.height && asset.width !== asset.height) {
         const size = Math.min(asset.width, asset.height);
@@ -1213,11 +1174,6 @@ export default function ProfileScreen() {
       // локальный диск контейнера, а на Render persistent disk нет — аватары
       // исчезали при каждом деплое. Presigned-поток кладёт файл в объектное
       // хранилище, а если оно не настроено — сам уходит в локальный фолбэк.
-      //
-      // Ранее presigned-поток для аватара откатывали, потому что сервер
-      // возвращал абсолютный uploadURL, собранный из заголовка Host, который
-      // внутренний reverse proxy переписывает на localhost:8080. Теперь ссылка
-      // относительная (см. routes/storage.ts), и загрузка работает.
       const blobRes = await fetch(manipulated.uri);
       const blob = await blobRes.blob();
       if (blob.size > 500_000) {
@@ -1251,8 +1207,6 @@ export default function ProfileScreen() {
 
       // Шаг 2: загрузить файл. Content-Type сохраняется на объекте — без него
       // браузер не отрисует картинку при отдаче.
-      // В локальном режиме uploadURL относительный — дополняем его BASE, чтобы
-      // работало и в нативном приложении, где нет origin страницы.
       const uploadTarget = uploadURL.startsWith("http")
         ? uploadURL
         : `${BASE}${uploadURL}`;
@@ -1312,54 +1266,6 @@ export default function ProfileScreen() {
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { paddingBottom: insets.bottom + 100 },
-
-    // ── Шапка-герой ──
-    // Градиентная полоса со скруглённым низом: аватар перестал висеть на
-    // пустом фоне и стал главным объектом экрана.
-    hero: {
-      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 20),
-      paddingHorizontal: 20, paddingBottom: 24,
-      alignItems: "center",
-      borderBottomLeftRadius: radii.xl,
-      borderBottomRightRadius: radii.xl,
-      marginBottom: 18,
-      overflow: "hidden",
-    },
-    // Белое кольцо вокруг аватара + свечение: аватар читается как медальон.
-    avatarRing: {
-      padding: 4, borderRadius: 999,
-      backgroundColor: "rgba(255,255,255,0.25)",
-      borderWidth: 2, borderColor: "rgba(255,255,255,0.55)",
-      shadowColor: "#1b0942", shadowOffset: { width: 0, height: 8 },
-      shadowOpacity: 0.45, shadowRadius: 20, elevation: 9,
-    },
-    editAvatarBtn: {
-      position: "absolute", bottom: 2, right: 2,
-      width: 32, height: 32, borderRadius: 16,
-      backgroundColor: colors.primary, justifyContent: "center", alignItems: "center",
-      borderWidth: 2.5, borderColor: "#ffffff",
-    },
-    name: { fontSize: 25, fontWeight: "900", letterSpacing: -0.5, color: "#ffffff", marginTop: 14 },
-    username: { fontSize: 14, color: "rgba(255,255,255,0.72)", marginTop: 2 },
-    // Метка на «стекле»: читается на градиенте и не спорит с ним цветом.
-    glassPill: {
-      flexDirection: "row", alignItems: "center", gap: 6,
-      backgroundColor: "rgba(255,255,255,0.16)",
-      borderWidth: 1, borderColor: "rgba(255,255,255,0.28)",
-      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
-    },
-    glassPillText: { fontSize: 12, fontWeight: "800", color: "#ffffff" },
-    badgeRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 12 },
-
-    // ── Полоса опыта в шапке ──
-    // Уровень раньше был просто числом в пилюле: сколько до следующего и что
-    // для этого сделать, ученик не знал.
-    xpBlock: { alignSelf: "stretch", marginTop: 20 },
-    xpHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 },
-    xpTitle: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
-    xpNum: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"] },
-    xpTrack: { height: 13, borderRadius: radii.pill, backgroundColor: "rgba(255,255,255,0.18)", overflow: "hidden" },
-    xpNext: { fontSize: 12, color: "rgba(255,255,255,0.72)", marginTop: 7, lineHeight: 17 },
 
     // Bio
     bioBox: {
@@ -1508,89 +1414,30 @@ export default function ProfileScreen() {
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
         {/* ── Шапка-герой ── */}
-        <LinearGradient
-          colors={HERO_GRADIENT as unknown as string[]}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
-          style={s.hero}
-        >
-          <View style={{ position: "relative" }}>
-            <View style={s.avatarRing}>
-              <AnimatedAvatar
-                size={96}
-                avatarColor={avatarColor}
-                avatarEmoji={avatarEmoji}
-                avatarUrl={avatarUrl}
-                animated={true}
-              />
-            </View>
-            <TouchableOpacity
-              style={s.editAvatarBtn}
-              onPress={() => setAvatarMenuOpen(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Сменить аватар"
-            >
-              {saving
-                ? <ActivityIndicator size={12} color="#fff" />
-                : <Glyph name="pen" size={14} color="#fff" />
+        <ProfileHero
+          name={user.name}
+          username={username}
+          avatarEmoji={avatarEmoji}
+          avatarColor={avatarColor}
+          avatarUrl={avatarUrl}
+          saving={saving}
+          onEditAvatar={() => setAvatarMenuOpen(true)}
+          roleLabel={ROLE_LABELS[user.role] ?? user.role}
+          ageLabel={age !== null ? ageWord(age) : null}
+          level={isStudent && gamStats
+            ? { number: xpProgress.current.level, title: xpProgress.current.title }
+            : null}
+          xp={isStudent && gamStats
+            ? {
+                current: xp,
+                nextAt: xpProgress.next?.xpRequired ?? null,
+                nextTitle: xpProgress.next?.title ?? null,
+                nextLevel: xpProgress.next?.level ?? null,
+                percent: xpProgress.progressPercent,
               }
-            </TouchableOpacity>
-          </View>
-
-          <Text style={s.name}>{user.name}</Text>
-          {/* Псевдоним (@username) — только для чтения: редактирование убрано. */}
-          <Text style={s.username}>@{username}</Text>
-
-          <View style={s.badgeRow}>
-            {/* Уровень XP — награда, поэтому золотая пилюля. Показываем только
-                ученику и только когда серверные статы загружены. Наклон убран:
-                на экране больше нет ни одного повёрнутого элемента. */}
-            {isStudent && gamStats && (
-              <Pill text={`${xpProgress.current.level} · ${xpProgress.current.title}`} icon="rank" tone="gold" />
-            )}
-            {/* Статус «в сети» на стекле: на градиенте цветная плашка не читается. */}
-            <View style={s.glassPill}>
-              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: "#c4b5fd" }} />
-              <Text style={s.glassPillText}>В сети</Text>
-            </View>
-            <View style={s.glassPill}>
-              <Text style={s.glassPillText}>{ROLE_LABELS[user.role] ?? user.role}</Text>
-            </View>
-            {age !== null && (
-              <View style={s.glassPill}>
-                <Glyph name="calendar" size={12} color="#ffffff" />
-                <Text style={s.glassPillText}>{ageWord(age)}</Text>
-              </View>
-            )}
-          </View>
-
-          {/* ── Полоса опыта ── */}
-          {isStudent && gamStats && (
-            <View style={s.xpBlock}>
-              <View style={s.xpHead}>
-                <Text style={s.xpTitle}>Опыт</Text>
-                <Text style={s.xpNum}>
-                  {xpProgress.next ? `${xp} / ${xpProgress.next.xpRequired} XP` : `${xp} XP · максимум`}
-                </Text>
-              </View>
-              <View style={s.xpTrack}>
-                <LinearGradient
-                  colors={gradients.progress as unknown as string[]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={{ height: "100%", width: `${xpProgress.progressPercent}%`, borderRadius: radii.pill }}
-                />
-              </View>
-              {/* Расстояние до уровня в заданиях, а не только в очках: «340 XP»
-                  ребёнку ни о чём не говорит, «примерно 3 задания» — говорит. */}
-              <Text style={s.xpNext}>
-                {xpProgress.next
-                  ? `До уровня ${xpProgress.next.level} «${xpProgress.next.title}» осталось ${xpProgress.next.xpRequired - xp} XP`
-                  : "Максимальный уровень достигнут"}
-              </Text>
-            </View>
-          )}
-        </LinearGradient>
+            : null}
+          paddingTop={insets.top + (Platform.OS === "web" ? 67 : 20)}
+        />
 
         {/* ── Входящие заявки от учителей (только ученик) ── */}
         {isStudent && teacherRequests.length > 0 && (
@@ -1605,7 +1452,7 @@ export default function ProfileScreen() {
                 shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
               }}>
                 <View style={{
-                  width: 46, height: 46, borderRadius: 23,
+                  width: 46, height: 46, borderRadius: 16,
                   backgroundColor: req.teacher.avatarColor ?? "#6366f1",
                   justifyContent: "center", alignItems: "center",
                 }}>
@@ -1681,8 +1528,7 @@ export default function ProfileScreen() {
           <>
             {/* Цель дня стоит первой из блоков: это единственная цифра, которая
                 меняется прямо сейчас и на которую ученик может повлиять
-                сегодня. Раньше она лежала ниже статистики, и до неё надо было
-                листать. */}
+                сегодня. */}
             {gamStats && (
               <View style={s.section}>
                 <SectionLabel>Цель дня</SectionLabel>
@@ -1730,7 +1576,7 @@ export default function ProfileScreen() {
             </View>
 
             {/* Накопительные счётчики: считаются за всё время и от периода
-                не зависят — поэтому стоят отдельным блоком, а не в сетке выше. */}
+                не зависят — поэтому стоят отдельным блоком. */}
             <View style={s.section}>
               <SectionLabel>Всего за время учёбы</SectionLabel>
               <View style={s.statsRow}>
@@ -1813,14 +1659,11 @@ export default function ProfileScreen() {
 
         {/* ── Действия учителя и родителя ──
             У ученика этого блока нет: он состоял из одной метки «Действия»
-            без единой строки внутри. Здесь же метка появляется только когда
-            под ней действительно что-то есть. */}
+            без единой строки внутри. */}
         {(isTeacher || user.role === "parent") && (
           <View style={s.section}>
             <SectionLabel>Действия</SectionLabel>
 
-            {/* У учителя создание задания — главное действие профиля, поэтому
-                физическая кнопка, а не серая строка в общем списке. */}
             {isTeacher && (
               <ChunkyButton
                 label="Создать задание"
@@ -1885,9 +1728,7 @@ export default function ProfileScreen() {
  * Счётчик в строке «Всего за время учёбы».
  *
  * Значок стоит в градиентной плашке со свечением — тот же приём, что у значка
- * колоды в разделе «Слова» (components/ui/DeckGlyph.tsx). Раньше здесь была
- * бледная заливка `tint + "1f"`, из-за которой блок выглядел плоским. Наклон
- * плашки убран вместе с остальными наклонами на экране.
+ * колоды в разделе «Слова». Наклон плашки убран вместе с остальными наклонами.
  */
 function StatCard({
   s, icon, grad, tint, value, label,
