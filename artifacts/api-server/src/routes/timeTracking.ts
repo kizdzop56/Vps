@@ -3,11 +3,10 @@ import { db } from "@workspace/db";
 import {
   timeSessionsTable,
   usersTable,
-  teacherStudentsTable,
-  parentChildrenTable,
 } from "@workspace/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
-import { requireAuth, getUser, isTeacher } from "../lib/auth";
+import { requireAuth, getUser } from "../lib/auth";
+import { canViewStudent } from "../lib/studentAccess";
 import {
   liveSessionMinutes,
   localDayKey,
@@ -122,6 +121,9 @@ router.get("/students/:id/time", requireAuth, async (req, res) => {
 // heartbeat). Продублировать их в приложении означало бы гарантированное
 // расхождение цифр при первой же правке.
 //
+// Доступ проверяет lib/studentAccess: раньше такая же проверка лежала копией
+// здесь, и следующий эндпоинт (работы ученика) написали вообще без неё.
+//
 // День сессии определяется по её НАЧАЛУ: занятие с 23:50 до 00:20 целиком
 // уходит во вчера. Резать сессии по полуночи ради двух таких случаев не стоит.
 
@@ -133,28 +135,6 @@ const AVERAGE_WINDOW_DAYS = 30;
 const ACTIVE_DAY_MINUTES = 1;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Может ли смотрящий видеть время этого ученика. */
-async function canViewStudent(viewer: { userId: number; role: string }, studentId: number): Promise<boolean> {
-  if (viewer.userId === studentId) return true;
-  if (viewer.role === "admin") return true;
-  if (isTeacher(viewer.role)) {
-    const [link] = await db.select({ id: teacherStudentsTable.id }).from(teacherStudentsTable).where(and(
-      eq(teacherStudentsTable.teacherId, viewer.userId),
-      eq(teacherStudentsTable.studentId, studentId),
-      eq(teacherStudentsTable.status, "accepted"),
-    ));
-    if (link) return true;
-  }
-  if (viewer.role === "parent") {
-    const [link] = await db.select({ id: parentChildrenTable.id }).from(parentChildrenTable).where(and(
-      eq(parentChildrenTable.parentId, viewer.userId),
-      eq(parentChildrenTable.studentId, studentId),
-    ));
-    if (link) return true;
-  }
-  return false;
-}
 
 router.get("/students/:id/time/summary", requireAuth, async (req, res) => {
   const viewer = getUser(req);
