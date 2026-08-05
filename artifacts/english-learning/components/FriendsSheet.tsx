@@ -17,6 +17,12 @@
 // смотрит прогресс. Теперь у него своя ветка, как у учителя
 // (GET /connections/student/parents).
 //
+// ── Один человек — одна строка ──────────────────────────────────────────────
+// Родитель или учитель может вдобавок числиться в друзьях: /connections/friends
+// отдаёт все дружбы независимо от роли. Из-за этого Ольга-родитель попадала в
+// список дважды — отдельной веткой и среди друзей. Роль важнее дружбы, поэтому
+// такие люди показываются только в своей ветке, а из «Друзей» вычитаются.
+//
 // ── Очки шкалой ─────────────────────────────────────────────────────────────
 // «2480 очков» само по себе ничего не значит: непонятно, это много или мало.
 // Шкала считается от лидера списка, поэтому своё место в ряду видно раньше,
@@ -26,10 +32,12 @@
 // Очки есть только у друзей. У учителя и родителя их не бывает — они не учат
 // язык, и строка про очки в их карточке была бы неправдой.
 //
-// ── Удаление на месте ───────────────────────────────────────────────────────
-// Подтверждение раскрывается прямо в строке. Отдельное окно поверх окна —
-// это лишний слой ради одного вопроса, а мгновенное удаление по иконке
-// слишком легко задеть пальцем при прокрутке.
+// ── Удаление ────────────────────────────────────────────────────────────────
+// Кнопка удаления — красный кружок в строке друга, а не серый значок рядом с
+// шевроном: серый терялся, и было непонятно, чем вообще убирают из друзей.
+// Подтверждение раскрывается прямо под строкой: отдельное окно поверх окна —
+// лишний слой ради одного вопроса, а удаление без вопроса слишком легко задеть
+// пальцем при прокрутке.
 //
 // ── Карточка кода ───────────────────────────────────────────────────────────
 // Код набран белым по фиолетовой заливке. Прошлый вариант был бледной
@@ -199,7 +207,7 @@ type PillTone = "friend" | "tutor" | "parent";
 
 function PersonRow({
   name, emoji, color, avatarUrl, online, note, points, ratio,
-  pill, pillTone = "friend", index, onPress, onRemove, leader,
+  pill, pillTone = "friend", index, onPress, onRemove, removeOpen, leader,
 }: {
   name: string;
   emoji: string | null;
@@ -216,6 +224,8 @@ function PersonRow({
   index: number;
   onPress?: () => void;
   onRemove?: () => void;
+  /** Подтверждение раскрыто: кнопка подсвечена, чтобы связь была видна. */
+  removeOpen?: boolean;
   /** Первое место: шкала золотая. */
   leader?: boolean;
 }) {
@@ -276,7 +286,7 @@ function PersonRow({
             style={{
               flexDirection: "row", alignItems: "center", gap: 11,
               backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
-              borderRadius: radii.md, paddingVertical: 11, paddingHorizontal: 12,
+              borderRadius: radii.md, paddingVertical: 11, paddingLeft: 12, paddingRight: 10,
             }}
           >
             <View style={{ position: "relative" }}>
@@ -334,18 +344,32 @@ function PersonRow({
               )}
             </View>
 
+            {onPress && <Glyph name="chevron" size={16} color={colors.mutedForeground} />}
+
+            {/* Удаление: красный кружок, а не серый значок в ряду с шевроном.
+                Серый терялся, и было непонятно, чем убирают из друзей. */}
             {onRemove && (
               <Pressable
                 onPress={onRemove}
-                hitSlop={10}
+                hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel={`Убрать из друзей: ${name}`}
-                style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.6 : 1 })}
+                style={({ pressed }) => ({
+                  width: 34, height: 34, borderRadius: 12,
+                  alignItems: "center", justifyContent: "center",
+                  backgroundColor: removeOpen
+                    ? colors.destructive
+                    : colors.destructive + "14",
+                  opacity: pressed ? 0.7 : 1,
+                })}
               >
-                <Glyph name="userX" size={18} color={colors.mutedForeground} />
+                <Glyph
+                  name="userX"
+                  size={17}
+                  color={removeOpen ? "#ffffff" : colors.destructive}
+                />
               </Pressable>
             )}
-            {onPress && <Glyph name="chevron" size={16} color={colors.mutedForeground} />}
           </Pressable>
         </Animated.View>
       </View>
@@ -695,7 +719,16 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
     setRemoveBusy(false);
   };
 
-  const accepted = friends.filter((f) => f.status === "accepted");
+  // Кто уже показан своей веткой. Роль важнее дружбы: родитель-друг должен
+  // остаться родителем, а не встретиться в списке дважды.
+  const claimedIds = new Set<number>([
+    ...teachers.map((t) => t.id),
+    ...parents.map((p) => p.id),
+  ]);
+
+  const accepted = friends.filter(
+    (f) => f.status === "accepted" && !claimedIds.has(f.user.id),
+  );
   const incoming = friends.filter((f) => f.status === "pending" && f.direction === "received");
   const outgoing = friends.filter((f) => f.status === "pending" && f.direction === "sent");
 
@@ -883,6 +916,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                                 leader={i === 0 && pts > 0}
                                 pill={i === 0 && pts > 0 ? "1 место" : undefined}
                                 onPress={() => { onClose(); onOpenFriend(f.user.id); }}
+                                removeOpen={removing === f.friendshipId}
                                 onRemove={() => setRemoving(
                                   removing === f.friendshipId ? null : f.friendshipId,
                                 )}
@@ -913,7 +947,19 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                               color={f.user.avatarColor ?? "#6366f1"}
                               avatarUrl={f.user.avatarUrl}
                               note="Запрос отправлен"
+                              removeOpen={removing === f.friendshipId}
+                              onRemove={() => setRemoving(
+                                removing === f.friendshipId ? null : f.friendshipId,
+                              )}
                             />
+                            {removing === f.friendshipId && (
+                              <RemoveConfirm
+                                name={f.user.name}
+                                busy={removeBusy}
+                                onKeep={() => setRemoving(null)}
+                                onDrop={() => dropFriendship(f.friendshipId)}
+                              />
+                            )}
                           </View>
                         ))}
                       </>
