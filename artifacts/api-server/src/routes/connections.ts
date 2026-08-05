@@ -237,6 +237,42 @@ router.get("/connections/student/teachers", requireAuth, async (req, res) => {
   })));
 });
 
+// ── Student: get my parents ──────────────────────────────────────────
+//
+// Зеркало /connections/parent/children: родитель прикрепляет ребёнка по коду,
+// но сам ребёнок своих родителей раньше не видел вообще. В списке связей это
+// выглядело так, будто родителя в приложении нет, хотя он смотрит прогресс.
+//
+// Подтверждения тут нет по устройству модели: связь создаёт родитель, ученик
+// её не принимает. Поэтому и статусов нет — только готовый список.
+router.get("/connections/student/parents", requireAuth, async (req, res) => {
+  const caller = getUser(req);
+
+  const links = await db.select({ parentId: parentChildrenTable.parentId })
+    .from(parentChildrenTable)
+    .where(eq(parentChildrenTable.studentId, caller.userId));
+
+  if (links.length === 0) { res.json([]); return; }
+
+  const ids = links.map((l) => l.parentId);
+  const parents = await db.select({
+    id: usersTable.id, name: usersTable.name, username: usersTable.username,
+    avatarEmoji: usersTable.avatarEmoji, avatarColor: usersTable.avatarColor, avatarUrl: usersTable.avatarUrl,
+    role: usersTable.role,
+    lastSeenAt: usersTable.lastSeenAt,
+  }).from(usersTable).where(inArray(usersTable.id, ids));
+
+  // Порог тот же, что у друзей (users.ts): «в сети» должно означать одно и то
+  // же во всех списках, иначе один и тот же человек где-то онлайн, где-то нет.
+  const ONLINE_MS = 90 * 1000;
+  res.json(parents.map((p) => ({
+    ...p,
+    isOnline: p.lastSeenAt
+      ? Date.now() - new Date(p.lastSeenAt).getTime() < ONLINE_MS
+      : false,
+  })));
+});
+
 // ── Student: get incoming teacher requests ───────────────────────────
 router.get("/connections/student/teacher-requests", requireAuth, async (req, res) => {
   const caller = getUser(req);
