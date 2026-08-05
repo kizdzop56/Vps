@@ -18,6 +18,21 @@
 // Сохраняем сразу при выборе: отдельная кнопка «Сохранить» для галочек —
 // лишний шаг, а список маленький и восстановить его недолго.
 //
+// ── Каждая тема своим цветом ────────────────────────────────────────────────
+// Раньше все метки были одного бледно-фиолетового тона, и четыре темы подряд
+// читались как одна длинная полоса текста: чтобы понять, где кончается «Игры»
+// и начинается «Рисование», приходилось всматриваться в промежутки. Цвет — это
+// граница, которую видно раньше, чем прочитано слово.
+//
+// Цвет привязан к НАЗВАНИЮ темы (hueFor), а не к позиции в списке: «Футбол»
+// всегда зелёный, и в своём профиле, и в чужом. Соседям при совпадении
+// подбирается следующий свободный тон — иначе два одинаковых пятна рядом
+// выглядят как ошибка, ради которой цвет и вводился.
+//
+// Оттенки заданы одной базой на тему: заливка — база с прозрачностью, рамка
+// плотнее, текст сплошной. Так метки остаются одной породы и не превращаются в
+// набор случайных наклеек.
+//
 // ── Объём ───────────────────────────────────────────────────────────────────
 // У карточки есть нижняя грань, как у остальных блоков профиля. Но она не
 // проседает при нажатии: нажимается только область тем внизу, и делать
@@ -54,6 +69,53 @@ export const INTEREST_PRESETS = [
 /** Больше пяти тем перестают что-либо говорить о человеке. */
 export const MAX_INTERESTS = 5;
 
+/**
+ * Палитра меток: восемь баз разного тона, но одной насыщенности — рядом они
+ * читаются как один набор, а не как случайные наклейки. Восьми хватает с
+ * запасом: тем не больше пяти, поэтому повторов в одном профиле не бывает.
+ */
+const INTEREST_BASES = [
+  "#7c3aed", // фиолетовый
+  "#2563eb", // синий
+  "#0e9f6e", // зелёный
+  "#e11d48", // алый
+  "#d97706", // оранжевый
+  "#0891b2", // бирюзовый
+  "#c026d3", // маджента
+  "#4f46e5", // индиго
+];
+
+/** Устойчивый номер тона по названию темы: одна тема — всегда один цвет. */
+function hueIndex(topic: string): number {
+  let h = 0;
+  const key = topic.trim().toLowerCase();
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 100003;
+  return h % INTEREST_BASES.length;
+}
+
+/**
+ * Цвета для всего списка сразу.
+ *
+ * Цвет берётся от названия, но если тон уже занят другой темой из этого же
+ * списка, берётся следующий свободный: два одинаковых пятна рядом сводят на
+ * нет всю затею с различением.
+ */
+function hueMap(topics: string[]): Record<string, string> {
+  const used = new Set<number>();
+  const out: Record<string, string> = {};
+  for (const topic of topics) {
+    let idx = hueIndex(topic);
+    let guard = 0;
+    while (used.has(idx) && guard < INTEREST_BASES.length) {
+      idx = (idx + 1) % INTEREST_BASES.length;
+      guard++;
+    }
+    used.add(idx);
+    out[topic] = INTEREST_BASES[idx] as string;
+  }
+  return out;
+}
+
 export interface AboutCardProps {
   bio: string;
   onSaveBio: (value: string) => void;
@@ -78,6 +140,9 @@ export function AboutCard({
     interests.some((i) => i.toLowerCase() === topic.toLowerCase());
 
   const full = interests.length >= MAX_INTERESTS;
+
+  // Цвета выбранных тем. Пересчитываются только при смене списка.
+  const hues = React.useMemo(() => hueMap(interests), [interests]);
 
   const toggle = (topic: string) => {
     setHint("");
@@ -139,15 +204,15 @@ export function AboutCard({
     tagsArea: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
     tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
     // flexGrow растягивает метки по строке, поэтому ряд всегда заканчивается
-    // ровно у края карточки, а не рваным хвостом.
+    // ровно у края карточки, а не рваным хвостом. Цвет задаётся на месте: он
+    // свой у каждой темы.
     tag: {
       flexGrow: 1, minWidth: 84,
       alignItems: "center", justifyContent: "center",
       paddingHorizontal: 11, paddingVertical: 8, borderRadius: radii.pill,
-      backgroundColor: colors.primary + "14",
-      borderWidth: 1, borderColor: colors.primary + "33",
+      borderWidth: 1,
     },
-    tagText: { fontSize: 12.5, fontWeight: "800", color: colors.primary },
+    tagText: { fontSize: 12.5, fontWeight: "800" },
     emptyRow: { flexDirection: "row", alignItems: "center", gap: 8 },
     emptyText: { flex: 1, fontSize: 13, color: colors.mutedForeground },
 
@@ -173,11 +238,9 @@ export function AboutCard({
       paddingHorizontal: 13, paddingVertical: 9, borderRadius: radii.pill,
       backgroundColor: colors.muted, borderWidth: 2, borderColor: "transparent",
     },
-    chipOn: { backgroundColor: colors.primary + "18", borderColor: colors.primary },
     // Когда набрано пять тем, невыбранные гаснут: видно, что добавить нельзя.
     chipOff: { opacity: 0.45 },
     chipText: { fontSize: 13, fontWeight: "800", color: colors.foreground },
-    chipTextOn: { color: colors.primary },
 
     customRow: { flexDirection: "row", gap: 8, marginBottom: 10 },
     customInput: {
@@ -254,11 +317,19 @@ export function AboutCard({
             >
               {interests.length > 0 ? (
                 <View style={s.tagsRow}>
-                  {interests.map((topic) => (
-                    <View key={topic} style={s.tag}>
-                      <Text style={s.tagText} numberOfLines={1}>{topic}</Text>
-                    </View>
-                  ))}
+                  {interests.map((topic) => {
+                    // Один базовый цвет на метку: заливка прозрачная, рамка
+                    // плотнее, текст сплошной.
+                    const base = hues[topic] ?? INTEREST_BASES[0] as string;
+                    return (
+                      <View
+                        key={topic}
+                        style={[s.tag, { backgroundColor: base + "1a", borderColor: base + "4d" }]}
+                      >
+                        <Text style={[s.tagText, { color: base }]} numberOfLines={1}>{topic}</Text>
+                      </View>
+                    );
+                  })}
                 </View>
               ) : (
                 <View style={s.emptyRow}>
@@ -287,14 +358,21 @@ export function AboutCard({
                 <View style={s.grid}>
                   {INTEREST_PRESETS.map((topic) => {
                     const on = has(topic);
+                    // Выбранная тема сразу показывает свой цвет — тот же, что
+                    // будет у метки в профиле.
+                    const base = on ? (hues[topic] ?? INTEREST_BASES[0] as string) : null;
                     return (
                       <Pressable
                         key={topic}
-                        style={[s.chip, on && s.chipOn, !on && full && s.chipOff]}
+                        style={[
+                          s.chip,
+                          base ? { backgroundColor: base + "1f", borderColor: base } : null,
+                          !on && full && s.chipOff,
+                        ]}
                         onPress={() => toggle(topic)}
                       >
-                        {on && <Glyph name="check" size={12} color={colors.primary} />}
-                        <Text style={[s.chipText, on && s.chipTextOn]}>{topic}</Text>
+                        {!!base && <Glyph name="check" size={12} color={base} />}
+                        <Text style={[s.chipText, base ? { color: base } : null]}>{topic}</Text>
                       </Pressable>
                     );
                   })}
