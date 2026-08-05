@@ -6,10 +6,11 @@
 // учитель, а кто одноклассник, можно было только по мелкой подписи.
 //
 // ── Группы вместо ровного списка ────────────────────────────────────────────
-// Учитель, родители и друзья — три разных отношения, а не «семь контактов».
-// Учитель появляется без запроса и его нельзя удалить, родитель видит твой
-// прогресс, друг — просто друг. Поэтому список разбит заголовками, а не
-// свален в одну кучу.
+// Учитель, входящие запросы и друзья — разные отношения, а не «семь
+// контактов». Учитель появляется без запроса и его нельзя удалить, запрос
+// требует ответа прямо сейчас, друг — просто друг. Поэтому список разбит
+// заголовками, а не свален в одну кучу. Входящие идут первыми: это
+// единственное, что ждёт действия.
 //
 // ── Очки шкалой ─────────────────────────────────────────────────────────────
 // «2480 очков» само по себе ничего не значит: непонятно, это много или мало.
@@ -33,8 +34,10 @@
 //    два соседних Text во View с flexDirection: "row".
 // 2. useNativeDriver только не в вебе: там нативного драйвера нет, и
 //    свёрнутая вкладка замораживает requestAnimationFrame.
-// 3. Шкала растёт через scaleX с transform-origin слева (масштаб + сдвиг),
-//    а не через ширину: ширину нативный драйвер не анимирует нигде.
+// 3. Шкала растёт ШИРИНОЙ в процентах с useNativeDriver: false — так же, как
+//    во всех остальных карточках проекта. Вариант со scaleX выглядит
+//    заманчивее (нативный драйвер), но требует transformOrigin, который в
+//    react-native-web ведёт себя непредсказуемо: полоса растёт от центра.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -140,47 +143,37 @@ function GroupLabel({ title, count }: { title: string; count?: number }) {
 // ── Шкала очков ─────────────────────────────────────────────────────────────
 
 /**
- * Полоса, растущая от нуля. Масштаб, а не ширина: ширину нативный драйвер не
- * анимирует ни на одной платформе, а трансформ анимирует везде.
+ * Полоса, растущая от нуля.
  *
- * Сдвиг translateX компенсирует то, что scaleX растягивает элемент от центра:
- * без него полоса росла бы в обе стороны.
+ * Ширина в процентах и useNativeDriver: false — тот же приём, что во всех
+ * остальных карточках. Нативный драйвер ширину не анимирует ни на одной
+ * платформе, а трюк со scaleX требует transformOrigin, который в вебе
+ * отрабатывает не везде и растягивает полосу от центра.
  */
 function GrowBar({ ratio, color, delay }: { ratio: number; color: string; delay: number }) {
   const colors = useColors();
   const grow = useRef(new Animated.Value(0)).current;
-  const k = Math.max(0.04, Math.min(1, ratio));
+  const percent = Math.max(4, Math.min(100, Math.round(ratio * 100)));
 
   useEffect(() => {
     grow.setValue(0);
     const anim = Animated.timing(grow, {
       toValue: 1, duration: GROW_MS, delay,
-      easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE_DRIVER,
+      easing: Easing.out(Easing.cubic), useNativeDriver: false,
     });
     anim.start();
     return () => anim.stop();
-  }, [k, delay, grow]);
+  }, [percent, delay, grow]);
 
   return (
     <View style={{
       height: 5, borderRadius: radii.pill, backgroundColor: colors.muted,
       marginTop: 7, overflow: "hidden",
     }}>
-      <Animated.View
-        style={{
-          height: "100%", borderRadius: radii.pill, backgroundColor: color,
-          transform: [
-            { scaleX: grow.interpolate({ inputRange: [0, 1], outputRange: [0, k] }) },
-            // Сдвигаем на половину «недостающей» ширины влево, иначе центр
-            // масштабирования уводит полосу в середину дорожки.
-            { translateX: 0 },
-          ],
-          alignSelf: "stretch",
-          width: "100%",
-          marginLeft: 0,
-          transformOrigin: "left center",
-        } as any}
-      />
+      <Animated.View style={{
+        height: "100%", borderRadius: radii.pill, backgroundColor: color,
+        width: grow.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${percent}%`] }),
+      }} />
     </View>
   );
 }
@@ -199,7 +192,7 @@ function PersonRow({
   avatarUrl?: string | null;
   online?: boolean;
   note: string;
-  /** Очки. undefined — строка без шкалы (учитель, родитель). */
+  /** Очки. undefined или 0 — строка без шкалы (учитель, новичок). */
   points?: number;
   /** Доля от лидера 0…1. */
   ratio?: number;
