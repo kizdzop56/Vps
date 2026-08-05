@@ -28,10 +28,16 @@
 // пятая медаль встаёт вровень с правым краем на любом экране, а не вылезает
 // за него на узких.
 //
-// Первое нажатие раскрывает веер, нажатие по раскрытой медали открывает её
-// карточку. Складывается веер стрелкой-счётчиком рядом. Анимация идёт по
-// одному значению fan (0…1), позиции считаются трансформами: layout при этом
-// не пересчитывается и на слабых телефонах ничего не дёргается.
+// Веер — переключатель: тап раскрывает, повторный тап складывает. Отдельного
+// крестика для складывания нет — кнопка ради обратного действия того же тапа
+// это лишний элемент, а веер не окно, чтобы его «закрывать».
+//
+// Название и описание медали живут в ПОЛНОМ СПИСКЕ: там для карточки есть
+// повод и место. В веере медали не нажимаются по отдельности — он про «вот
+// что я собрал», а не про справочник.
+//
+// Анимация идёт по одному значению fan (0…1), позиции считаются трансформами:
+// layout при этом не пересчитывается и на слабых телефонах ничего не дёргается.
 //
 // ── БЕЗ ПОДПИСЕЙ ────────────────────────────────────────────────────────────
 // Названий под медалями нет ни в веере, ни в полном списке. На ширину
@@ -40,7 +46,7 @@
 // приходилось держать мелкими, чтобы подписи не наезжали друг на друга.
 //
 // Теперь медали крупные (веер 64, список 76 вместо 52 и 60), а название и
-// описание показываются целиком в карточке по тапу — там для них есть место.
+// описание показываются целиком в карточке по тапу из списка.
 //
 // ── Закрытие карточки ───────────────────────────────────────────────────────
 // Одна кнопка «Закрыть», прижатая к низу ЭКРАНА, а не к низу карточки. Она
@@ -198,19 +204,22 @@ const STICKY_SPACE = 84;
 /**
  * Одна медаль веера. Позиция интерполируется из общего значения fan:
  * 0 — сложено (нахлёст, лёгкий наклон), 1 — раскрыто (ряд по всей ширине).
+ *
+ * Своего обработчика нажатия у медали нет: тап ловит контейнер веера и
+ * переключает его состояние. Медали внутри — картинка, а не кнопки.
  */
 function FanMedal({
-  achievement, index, fan, step, onPress,
+  achievement, index, fan, step,
 }: {
   achievement: Achievement;
   index: number;
   fan: Animated.Value;
   /** Шаг между медалями в раскрытом виде. Считается от ширины блока. */
   step: number;
-  onPress: () => void;
 }) {
   return (
     <Animated.View
+      pointerEvents="none"
       style={[
         styles.fanItem,
         {
@@ -234,10 +243,7 @@ function FanMedal({
         },
       ]}
     >
-      <Pressable
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`Награда «${achievement.title}»`}
+      <View
         style={[
           styles.fanMedal,
           {
@@ -248,7 +254,7 @@ function FanMedal({
         ]}
       >
         <MedalFace achievement={achievement} size={FAN_SIZE} glyphSize={30} />
-      </Pressable>
+      </View>
     </Animated.View>
   );
 }
@@ -479,7 +485,7 @@ export function AchievementsShowcase({
   const [selected, setSelected] = useState<{ achievement: Achievement; isLocked: boolean } | null>(null);
   // Полный список свёрнут: ради этого блок и переделывали.
   const [expanded, setExpanded] = useState(false);
-  // Веер сложен. Раскрывается по нажатию на сам веер, а не на стрелку.
+  // Веер сложен. Раскрывается и складывается тапом по себе же.
   const [fanOpen, setFanOpen] = useState(false);
   // Ширина блока: нужна, чтобы раскрытый веер занял её целиком.
   const [boxWidth, setBoxWidth] = useState(0);
@@ -519,24 +525,16 @@ export function AchievementsShowcase({
     ? Math.max(FAN_STACKED + 4, (boxWidth - FAN_SIZE) / (showcase.length - 1))
     : FAN_SIZE + 6;
 
-  const openFan = () => {
-    setFanOpen(true);
+  /** Веер — переключатель: тот же тап раскрывает и складывает. */
+  const toggleFan = () => {
+    const to = fanOpen ? 0 : 1;
+    setFanOpen(!fanOpen);
     Animated.timing(fan, {
-      toValue: 1,
+      toValue: to,
       duration: timing.panel,
       easing: Easing.out(Easing.cubic),
       // Позиции считаются трансформами, поэтому нативный драйвер уместен и на
       // вебе даёт плавность без пересчёта layout.
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const closeFan = () => {
-    setFanOpen(false);
-    Animated.timing(fan, {
-      toValue: 0,
-      duration: timing.panel,
-      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
   };
@@ -571,14 +569,13 @@ export function AchievementsShowcase({
           </View>
         ) : (
           <Pressable
-            onPress={fanOpen ? undefined : openFan}
-            disabled={fanOpen}
+            onPress={toggleFan}
             style={[
               styles.fanBox,
               fanOpen ? { flex: 1 } : { width: stackedWidth },
             ]}
-            accessibilityRole={fanOpen ? undefined : "button"}
-            accessibilityLabel={fanOpen ? undefined : "Раскрыть лучшие награды"}
+            accessibilityRole="button"
+            accessibilityLabel={fanOpen ? "Сложить лучшие награды" : "Раскрыть лучшие награды"}
           >
             {showcase.map((a, i) => (
               <FanMedal
@@ -587,52 +584,35 @@ export function AchievementsShowcase({
                 index={i}
                 fan={fan}
                 step={openStep}
-                // Сложенный веер: тап раскрывает. Раскрытый: тап по медали
-                // открывает её карточку — названия под медалями больше нет,
-                // и это единственный способ узнать, что за медаль.
-                onPress={fanOpen
-                  ? () => setSelected({ achievement: a, isLocked: false })
-                  : openFan}
               />
             ))}
           </Pressable>
         )}
 
-        {/* Счётчик прячем, когда веер раскрыт: строка занята медалями. */}
+        {/* Счётчик и стрелка прячутся, когда веер раскрыт: строка занята
+            медалями, а сложить его можно тем же тапом. */}
         {!fanOpen && (
-          <View style={styles.leadText}>
-            <View style={styles.countRow}>
-              <Text style={[styles.count, { color: colors.foreground }]}>{unlocked.length}</Text>
-              <Text style={[styles.countTotal, { color: colors.mutedForeground }]}>/ {total}</Text>
+          <>
+            <View style={styles.leadText}>
+              <View style={styles.countRow}>
+                <Text style={[styles.count, { color: colors.foreground }]}>{unlocked.length}</Text>
+                <Text style={[styles.countTotal, { color: colors.mutedForeground }]}>/ {total}</Text>
+              </View>
+              <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
             </View>
-            <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
-          </View>
-        )}
 
-        {/* Раскрытый веер складывается своей кнопкой: тап по медали теперь
-            занят открытием карточки. */}
-        {fanOpen ? (
-          <TouchableOpacity
-            style={[styles.openBtn, { backgroundColor: colors.muted }]}
-            onPress={closeFan}
-            activeOpacity={0.75}
-            accessibilityRole="button"
-            accessibilityLabel="Сложить награды"
-          >
-            <Glyph name="close" size={15} color={colors.mutedForeground} />
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.openBtn, { backgroundColor: colors.primary + "14" }]}
-            onPress={() => setExpanded((v) => !v)}
-            activeOpacity={0.75}
-            accessibilityRole="button"
-            accessibilityLabel={expanded ? "Свернуть список наград" : "Показать все награды"}
-          >
-            <View style={{ transform: [{ rotate: expanded ? "-90deg" : "90deg" }] }}>
-              <Glyph name="chevron" size={15} color={colors.primary} />
-            </View>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.openBtn, { backgroundColor: colors.primary + "14" }]}
+              onPress={() => setExpanded((v) => !v)}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel={expanded ? "Свернуть список наград" : "Показать все награды"}
+            >
+              <View style={{ transform: [{ rotate: expanded ? "-90deg" : "90deg" }] }}>
+                <Glyph name="chevron" size={15} color={colors.primary} />
+              </View>
+            </TouchableOpacity>
+          </>
         )}
       </View>
 
@@ -672,7 +652,9 @@ export function AchievementsShowcase({
         </Text>
       )}
 
-      {/* ── Полный список: раскрывается на месте ── */}
+      {/* ── Полный список: раскрывается на месте ──
+          Только здесь медали нажимаются: тап открывает карточку с названием и
+          описанием. */}
       {expanded && (
         <View style={[styles.listBox, { borderTopColor: colors.border }]}>
           {unlocked.length > 0 && (
