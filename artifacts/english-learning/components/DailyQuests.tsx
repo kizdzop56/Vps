@@ -9,6 +9,15 @@
 //   • ниже задачи с квадратными галочками, выполненные — зачёркнуты;
 //   • внизу кнопка «Изменить цель».
 //
+// ── Объём и анимация ────────────────────────────────────────────────────────
+// Под карточкой тёмная нижняя грань — та же порода поверхности, что у
+// остальных блоков профиля. Проседания при нажатии нет: сама карточка не
+// открывается, нажимаются только кнопки внутри неё.
+//
+// Кольцо вычерчивается от нуля при каждом входе на экран (prop replay) и при
+// изменении процента. Растущая дуга читается как величина, готовая — как
+// картинка.
+//
 // ── Награда одна на день ────────────────────────────────────────────────────
 // У каждой задачи была своя цена, и выполненная задача показывала «+35». Это
 // читалось как «мне начислили 35 очков за эту задачу», хотя награда задумана за
@@ -30,8 +39,8 @@
 // детерминированный и почему в нём нет пункта «зайти в приложение».
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useState } from "react";
-import { View, Text, Pressable, Modal, StyleSheet } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { View, Text, Pressable, Modal, StyleSheet, Animated, Easing } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle } from "react-native-svg";
 import { useColors } from "@/hooks/useColors";
@@ -40,14 +49,20 @@ import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import { plural, pointsForGoal, type DailyPlan } from "@/utils/dailyQuests";
 
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
 /** Варианты личной цели по времени. Совпадают с валидацией на сервере. */
 const GOAL_OPTIONS = [10, 15, 20, 30];
 
 /** Градиент карточки. Тот же фиолетовый, что у шапки профиля и «Рейтинга». */
 const CARD_GRADIENT = ["#8b5cf6", "#7c3aed", "#6d28d9"] as const;
 
+/** Высота нижней грани. Совпадает с остальными карточками профиля. */
+const EDGE = 6;
+
 const RING = 78;
 const STROKE = 9;
+const DRAW_MS = 900;
 
 export interface DailyQuestsProps {
   plan: DailyPlan;
@@ -55,6 +70,8 @@ export interface DailyQuestsProps {
   goalMinutes: number;
   /** Награда за сегодня уже получена. */
   claimed?: boolean;
+  /** Растёт при каждом входе на экран — кольцо вычерчивается заново. */
+  replay?: number;
   onGoalChange?: (minutes: number) => void;
   /**
    * Забрать награду за закрытый день. Вызывается сама, как только план
@@ -64,7 +81,9 @@ export interface DailyQuestsProps {
   onClaim?: () => void;
 }
 
-export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim }: DailyQuestsProps) {
+export function DailyQuests({
+  plan, goalMinutes, claimed, replay = 0, onGoalChange, onClaim,
+}: DailyQuestsProps) {
   const colors = useColors();
   const [editing, setEditing] = useState(false);
   const { time, quests, allDone } = plan;
@@ -77,10 +96,37 @@ export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim 
 
   const r = (RING - STROKE) / 2;
   const circumference = 2 * Math.PI * r;
+  const target = circumference * (Math.max(0, Math.min(100, time.percent)) / 100);
+
+  // Кольцо: вычерчивается при входе на экран и при смене процента.
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    progress.setValue(0);
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: DRAW_MS,
+      easing: Easing.out(Easing.cubic),
+      // SVG-атрибуты нативным драйвером не анимируются.
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [replay, target, progress]);
+
+  const offset = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [circumference, circumference - target],
+  });
+
   // Цель на завтра отличается от сегодняшней — значит выбор уже сделан и ждёт.
   const pendingGoal = time.nextTarget !== time.target ? time.nextTarget : null;
 
   const s = StyleSheet.create({
+    wrap: { paddingBottom: EDGE },
+    edge: {
+      position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
+      borderRadius: radii.lg, backgroundColor: "#4c1d95",
+    },
     card: {
       borderRadius: radii.lg, padding: 16, overflow: "hidden",
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 9 },
@@ -211,12 +257,14 @@ export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim 
     <>
       <SectionLabel>Цель дня</SectionLabel>
 
-      <LinearGradient
-        colors={CARD_GRADIENT as unknown as string[]}
-        start={{ x: 0.1, y: 0 }}
-        end={{ x: 0.9, y: 1 }}
-        style={s.card}
-      >
+      <View style={s.wrap}>
+        <View style={s.edge} />
+        <LinearGradient
+          colors={CARD_GRADIENT as unknown as string[]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={s.card}
+        >
         <View pointerEvents="none" style={s.blob} />
 
         <View style={s.head}>
@@ -226,13 +274,15 @@ export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim 
                 cx={RING / 2} cy={RING / 2} r={r}
                 stroke="rgba(255,255,255,0.26)" strokeWidth={STROKE} fill="none"
               />
-              <Circle
-                cx={RING / 2} cy={RING / 2} r={r}
-                stroke={accents.gold} strokeWidth={STROKE} fill="none" strokeLinecap="round"
-                strokeDasharray={`${circumference}`}
-                strokeDashoffset={circumference * (1 - time.percent / 100)}
-                transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
-              />
+              {time.percent > 0 && (
+                <AnimatedCircle
+                  cx={RING / 2} cy={RING / 2} r={r}
+                  stroke={accents.gold} strokeWidth={STROKE} fill="none" strokeLinecap="round"
+                  strokeDasharray={`${circumference}`}
+                  strokeDashoffset={offset as unknown as number}
+                  transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
+                />
+              )}
             </Svg>
             <Text style={s.ringText}>{time.percent}%</Text>
           </View>
@@ -311,7 +361,8 @@ export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim 
             <Text style={s.editText}>Изменить цель</Text>
           </Pressable>
         )}
-      </LinearGradient>
+        </LinearGradient>
+      </View>
 
       <Modal visible={editing} transparent animationType="slide" onRequestClose={() => setEditing(false)}>
         <Pressable style={s.overlay} onPress={() => setEditing(false)}>
