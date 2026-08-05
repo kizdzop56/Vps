@@ -6,10 +6,13 @@
 // ученик, это его лицо в приложении, а не наша иконка.
 //
 // Крупные блоки вынесены в компоненты:
-//   ProfileHero  — шапка (components/ui/ProfileHero.tsx), общая с чужим
-//                  профилем app/(main)/friend/[id].tsx;
-//   AboutCard    — «О себе» + интересы (components/AboutCard.tsx);
-//   DailyQuests  — цель дня (components/DailyQuests.tsx).
+//   ProfileHero    — шапка (components/ui/ProfileHero.tsx), общая с чужим
+//                    профилем app/(main)/friend/[id].tsx;
+//   AboutCard      — «О себе» + интересы (components/AboutCard.tsx);
+//   DailyQuests    — цель дня (components/DailyQuests.tsx);
+//   StudyTimeCard  — плитка времени с живыми часами и разбором по дням
+//                    (components/StudyTimeCard.tsx). Форматирование времени
+//                    живёт там же: этому экрану оно больше не нужно.
 //
 // Счётчики в шапке передаются списком: у своего профиля это «слов выучено» и
 // «дней подряд», у чужого — «очков» и «заданий» (чужую статистику по словам
@@ -21,7 +24,6 @@ import {
   Clipboard, Alert, KeyboardAvoidingView,
 } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
@@ -39,13 +41,14 @@ import { MascotModal, getMascotMessage } from "@/components/Mascot";
 import { AchievementToast } from "@/components/AchievementToast";
 import { DailyQuests } from "@/components/DailyQuests";
 import { AboutCard } from "@/components/AboutCard";
+import { StudyTimeCard } from "@/components/StudyTimeCard";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { buildDailyPlan } from "@/utils/dailyQuests";
-import { accents, gradients, radii } from "@/constants/theme";
+import { accents, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 
 function calcAge(dateOfBirth: string | null): number | null {
@@ -97,24 +100,6 @@ const PERIODS: { key: StatsPeriod; label: string; days: number | null }[] = [
   { key: "month", label: "Месяц", days: 30 },
   { key: "all", label: "Всё время", days: null },
 ];
-
-function formatTime(minutes: number) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0) return `${m} мин`;
-  if (m === 0) return `${h} ч`;
-  return `${h} ч ${m} мин`;
-}
-
-function formatSessionTime(seconds: number) {
-  const totalMinutes = Math.floor(seconds / 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  const s = seconds % 60;
-  if (h > 0) return m === 0 ? `${h} ч` : `${h} ч ${m} мин`;
-  if (totalMinutes > 0) return `${m} мин ${String(s).padStart(2, "0")} с`;
-  return `${s} с`;
-}
 
 const SESSION_START_KEY = "timer_session_start";
 
@@ -1272,9 +1257,6 @@ export default function ProfileScreen() {
     scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
     scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
 
-    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff", fontVariant: ["tabular-nums"] },
-    timerLabel: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 2 },
-
     row: {
       flexDirection: "row", alignItems: "center", gap: 14,
       backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
@@ -1500,33 +1482,13 @@ export default function ProfileScreen() {
                   <AssignmentRingsChart stats={categoryStats} colors={colors} />
                 </View>
 
-                <LinearGradient
-                  colors={gradients.action as unknown as string[]}
-                  start={{ x: 0.1, y: 0 }}
-                  end={{ x: 0.9, y: 1 }}
-                  style={{
-                    flex: 1, borderRadius: radii.md, padding: 14,
-                    justifyContent: "center",
-                    shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.32, shadowRadius: 16, elevation: 6,
-                  }}
-                >
-                  <View style={{ alignItems: "center", gap: 8 }}>
-                    <View style={{
-                      width: 48, height: 48, borderRadius: radii.sm + 2,
-                      backgroundColor: "rgba(255,255,255,0.22)",
-                      justifyContent: "center", alignItems: "center",
-                    }}>
-                      <Glyph name="clock" size={24} color="#ffffff" />
-                    </View>
-                    <Text style={[s.timerValue, { textAlign: "center" }]}>
-                      {formatTime(gamStats?.totalTimeMinutes ?? totalMinutes)}
-                    </Text>
-                    <Text style={[s.timerLabel, { textAlign: "center" }]}>
-                      Сегодня: {formatSessionTime(todaySeconds)}
-                    </Text>
-                  </View>
-                </LinearGradient>
+                {/* Время: объёмная плитка с работающими часами. По нажатию
+                    открывается разбор по дням (components/StudyTimeCard.tsx). */}
+                <StudyTimeCard
+                  studentId={user.id}
+                  totalMinutes={gamStats?.totalTimeMinutes ?? totalMinutes}
+                  todaySeconds={todaySeconds}
+                />
               </View>
             </View>
 
