@@ -15,9 +15,8 @@
 // канавкой, остальные лежат в ней. Это тот же приём, что у клавиш GameKit.
 //
 // ── Анимация ────────────────────────────────────────────────────────────────
-// Кольцо вычерчивается от нуля, процент дорастает вместе с ним. Перезапуск
-// привязан к значению и периоду: сменил «Неделя → Месяц» — кольцо перечертится
-// под новые данные. Пришли свежие результаты — тоже.
+// Кольцо вычерчивается от нуля, процент дорастает вместе с ним. Играет заново
+// в трёх случаях: вход на экран (replay), смена периода, новые данные.
 //
 // SVG-атрибуты и текст нативным драйвером не анимируются, поэтому здесь
 // всегда useNativeDriver: false. Кольцо одно, нагрузки нет.
@@ -53,11 +52,13 @@ export interface ScoreCardProps<K extends string = string> {
   periods: readonly ScorePeriod<K>[];
   period: K;
   onPeriodChange: (key: K) => void;
+  /** Растёт при каждом входе на экран — анимация играет заново. */
+  replay?: number;
   style?: any;
 }
 
 export function ScoreCard<K extends string = string>({
-  average, periods, period, onPeriodChange, style,
+  average, periods, period, onPeriodChange, replay = 0, style,
 }: ScoreCardProps<K>) {
   const colors = useColors();
   const [shown, setShown] = useState(0);
@@ -74,8 +75,7 @@ export function ScoreCard<K extends string = string>({
       : average >= 50 ? accents.amber
         : colors.destructive;
 
-  // Перезапуск при смене периода и при новых данных: график обязан
-  // соответствовать тому, что выбрано сейчас.
+  // Перезапуск: вход на экран, смена периода, новые данные.
   useEffect(() => {
     progress.setValue(0);
     setShown(0);
@@ -96,7 +96,7 @@ export function ScoreCard<K extends string = string>({
       anim.stop();
       progress.removeListener(listener);
     };
-  }, [value, period, progress]);
+  }, [value, period, replay, progress]);
 
   const offset = progress.interpolate({
     inputRange: [0, 1],
