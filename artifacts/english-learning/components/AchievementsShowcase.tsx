@@ -1,8 +1,9 @@
 // Витрина наград.
 //
 // Медали рисуются готовыми рендерами из assets/badges/medals (поле image в
-// constants/achievements.ts). Если картинка не найдена, показываем глиф из
-// своего набора, подобранный по сложности. Файл данных не меняется.
+// constants/achievements.ts). Если картинка не найдена ИЛИ не загрузилась,
+// показывается глиф из своего набора, подобранный по сложности (см. MedalFace).
+// Файл данных при этом не меняется.
 //
 // ── Компактный вид ──────────────────────────────────────────────────────────
 // Раньше блок занимал пол-экрана: карточка следующей награды, сетка полученных
@@ -25,6 +26,18 @@
 // Нажатие раскрывает веер, повторное — складывает обратно. Анимация идёт по
 // одному значению fan (0…1), позиции считаются трансформами: layout при этом
 // не пересчитывается и на слабых телефонах ничего не дёргается.
+//
+// ── Подписи веера ───────────────────────────────────────────────────────────
+// Подписи раньше лежали обычным рядом по flex: 1, то есть с шагом «ширина / 5»,
+// а медали раскладываются с шагом «(ширина − диаметр) / 4». Шаги разные, и
+// названия стояли не под своими медалями. Теперь каждая подпись позиционируется
+// абсолютно от ЦЕНТРА своей медали и прижимается к краям блока, чтобы крайние
+// не уезжали за границу.
+//
+// ── Переносы ────────────────────────────────────────────────────────────────
+// Все подписи — одна строка с многоточием. Двухстрочный вариант в
+// react-native-web рвал слово посередине («Бриллиантовы / й ученик»). Полное
+// название видно в карточке награды по тапу.
 //
 // ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
 // Счётчик сначала был сделан так:
@@ -50,6 +63,11 @@ import { accents, radii, chunky, timing } from "@/constants/theme";
 interface AchievementsShowcaseProps {
   unlocked: Achievement[];
   locked?: Achievement[];
+  /**
+   * Показывать ли неполученные медали: полный список закрытых и строку
+   * ближайшей цели. На чужом профиле выключено — там интересно, что человек
+   * УЖЕ собрал, а не чего ему не хватает.
+   */
   showLocked?: boolean;
   title?: string;
   /** Показатели ученика. Без них прогресс посчитать нечем. */
@@ -61,6 +79,43 @@ function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
   if (difficulty === "hard") return "trophy";
   if (difficulty === "medium") return "medal";
   return "spark";
+}
+
+/**
+ * Лицо медали: картинка, а если её нет или она не загрузилась — глиф.
+ *
+ * Раньше выбор был статическим (`image ? <Image/> : <Glyph/>`), и медаль с
+ * прописанным, но недоступным файлом превращалась в пустой кружок: Image
+ * рисовал ничто, а до глифа дело не доходило. onError переключает на запасной
+ * вариант, поэтому пустых медалей на экране больше не бывает.
+ */
+function MedalFace({
+  achievement, size, glyphSize,
+}: {
+  achievement: Achievement;
+  size: number;
+  glyphSize?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (!achievement.image || failed) {
+    return (
+      <Glyph
+        name={fallbackGlyph(achievement.difficulty)}
+        size={glyphSize ?? Math.round(size * 0.46)}
+        color={achievement.color}
+      />
+    );
+  }
+
+  return (
+    <Image
+      source={achievement.image}
+      style={{ width: size, height: size }}
+      resizeMode="cover"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 /** Вес сложности: по нему медали в веере сортируются от ценных к простым. */
@@ -147,11 +202,7 @@ function FanMedal({
           },
         ]}
       >
-        {achievement.image ? (
-          <Image source={achievement.image} style={styles.fanImg} resizeMode="cover" />
-        ) : (
-          <Glyph name={fallbackGlyph(achievement.difficulty)} size={24} color={achievement.color} />
-        )}
+        <MedalFace achievement={achievement} size={FAN_SIZE} glyphSize={24} />
       </Pressable>
     </Animated.View>
   );
@@ -216,10 +267,8 @@ function BadgeCard({
           >
             {isLocked ? (
               <Glyph name="lock" size={22} color="rgba(91,79,142,0.5)" />
-            ) : achievement.image ? (
-              <Image source={achievement.image} style={styles.badgeImg} resizeMode="cover" />
             ) : (
-              <Glyph name={fallbackGlyph(achievement.difficulty)} size={28} color={achievement.color} />
+              <MedalFace achievement={achievement} size={60} glyphSize={28} />
             )}
           </View>
         </Animated.View>
@@ -232,9 +281,11 @@ function BadgeCard({
         </View>
       )}
 
+      {/* Одна строка с многоточием: перенос рвал слова посередине. */}
       <Text
         style={[styles.badgeTitle, { color: isLocked ? "#9b8ec4" : achievement.color }]}
-        numberOfLines={2}
+        numberOfLines={1}
+        ellipsizeMode="tail"
       >
         {achievement.title}
       </Text>
@@ -288,10 +339,8 @@ function BadgeDetailModal({
           >
             {isLocked ? (
               <Glyph name="lock" size={40} color="rgba(91,79,142,0.6)" />
-            ) : achievement.image ? (
-              <Image source={achievement.image} style={styles.modalBadgeImg} resizeMode="cover" />
             ) : (
-              <Glyph name={fallbackGlyph(achievement.difficulty)} size={52} color={achievement.color} />
+              <MedalFace achievement={achievement} size={104} glyphSize={52} />
             )}
           </View>
 
@@ -391,10 +440,14 @@ export function AchievementsShowcase({
 
   const total = unlocked.length + locked.length;
 
-  // Ближайшая цель. Пересчитывается только при смене статов или списка.
+  /**
+   * Ближайшая цель. Показывается только там, где вообще уместны неполученные
+   * награды: на чужом профиле «ему осталось 3 задания» — чужая недоделка, а не
+   * витрина.
+   */
   const next = React.useMemo(
-    () => (stats ? nextAchievement(locked, stats) : null),
-    [locked, stats],
+    () => (showLocked && stats ? nextAchievement(locked, stats) : null),
+    [showLocked, locked, stats],
   );
 
   /**
@@ -418,6 +471,10 @@ export function AchievementsShowcase({
   const openStep = showcase.length > 1 && boxWidth > 0
     ? Math.max(FAN_STACKED + 4, (boxWidth - FAN_SIZE) / (showcase.length - 1))
     : FAN_SIZE + 6;
+
+  // Ширина подписи под медалью. Больше шага её делать нельзя — соседние
+  // подписи начнут наезжать друг на друга.
+  const labelWidth = Math.max(FAN_SIZE, Math.min(openStep, 88));
 
   const toggleFan = () => {
     const to = fanOpen ? 0 : 1;
@@ -525,18 +582,29 @@ export function AchievementsShowcase({
       </View>
 
       {/* Названия появляются только у раскрытого веера: в сложенном виде
-          подписывать нечего, медали перекрывают друг друга. */}
+          подписывать нечего, медали перекрывают друг друга.
+
+          Каждая подпись стоит по центру СВОЕЙ медали: центр медали —
+          i * openStep + FAN_SIZE / 2, от него и пляшем. Крайние прижимаются к
+          границам блока, иначе первая уезжает влево, а последняя за экран. */}
       {fanOpen && showcase.length > 0 && (
         <View style={styles.fanLabels}>
-          {showcase.map((a) => (
-            <Text
-              key={a.id}
-              style={[styles.fanLabel, { color: a.color }]}
-              numberOfLines={2}
-            >
-              {a.title}
-            </Text>
-          ))}
+          {showcase.map((a, i) => {
+            const center = i * openStep + FAN_SIZE / 2;
+            const left = boxWidth > 0
+              ? Math.max(0, Math.min(center - labelWidth / 2, boxWidth - labelWidth))
+              : i * (FAN_SIZE + 6);
+            return (
+              <Text
+                key={a.id}
+                style={[styles.fanLabel, { left, width: labelWidth, color: a.color }]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {a.title}
+              </Text>
+            );
+          })}
         </View>
       )}
 
@@ -570,11 +638,7 @@ export function AchievementsShowcase({
             borderColor: next.achievement.color + "66",
             backgroundColor: next.achievement.bgColor,
           }]}>
-            {next.achievement.image ? (
-              <Image source={next.achievement.image} style={styles.goalMedalImg} resizeMode="cover" />
-            ) : (
-              <Glyph name={fallbackGlyph(next.achievement.difficulty)} size={16} color={next.achievement.color} />
-            )}
+            <MedalFace achievement={next.achievement} size={34} glyphSize={16} />
           </View>
           <View style={styles.goalText}>
             <Text style={[styles.goalTitle, { color: colors.foreground }]} numberOfLines={1}>
@@ -593,7 +657,9 @@ export function AchievementsShowcase({
       {/* Пустое состояние объясняет, что делать, а не констатирует пустоту. */}
       {unlocked.length === 0 && !next && (
         <Text style={[styles.empty, { color: colors.mutedForeground }]}>
-          Выполни первое задание — первая медаль придёт сразу
+          {showLocked
+            ? "Выполни первое задание — первая медаль придёт сразу"
+            : "Наград пока нет"}
         </Text>
       )}
 
@@ -665,17 +731,18 @@ const styles = StyleSheet.create({
     overflow: "hidden", alignItems: "center", justifyContent: "center",
     shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.32, shadowRadius: 8, elevation: 4,
   },
-  fanImg: { width: FAN_SIZE, height: FAN_SIZE },
   fanEmpty: {
     width: FAN_SIZE, height: FAN_SIZE, borderRadius: FAN_SIZE / 2,
     alignItems: "center", justifyContent: "center",
     borderWidth: 2, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.35)",
     backgroundColor: "rgba(160,140,220,0.1)",
   },
-  fanLabels: { flexDirection: "row", marginTop: 8 },
+  // Высота фиксированная: подписи внутри позиционируются абсолютно, сам по
+  // себе контейнер их не померяет.
+  fanLabels: { height: 13, marginTop: 7 },
   fanLabel: {
-    flex: 1, fontSize: 8, fontWeight: "800",
-    textAlign: "center", lineHeight: 10.5, paddingHorizontal: 1,
+    position: "absolute", top: 0,
+    fontSize: 8.5, fontWeight: "800", lineHeight: 12, textAlign: "center",
   },
 
   leadText: { flex: 1, minWidth: 0 },
@@ -706,7 +773,6 @@ const styles = StyleSheet.create({
     width: 34, height: 34, borderRadius: 17, borderWidth: 2,
     overflow: "hidden", alignItems: "center", justifyContent: "center",
   },
-  goalMedalImg: { width: 34, height: 34 },
   goalText: { flex: 1, minWidth: 0 },
   goalTitle: { fontSize: 12.5, fontWeight: "800" },
   goalPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
@@ -720,13 +786,19 @@ const styles = StyleSheet.create({
     textTransform: "uppercase", marginBottom: 10,
   },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  badgeWrap: { width: "22%", alignItems: "center" },
+  // Три колонки вместо четырёх: ячейка выросла с ~70 до ~100 px, и название
+  // в одну строку почти всегда влезает целиком.
+  badgeWrap: { width: "31%", alignItems: "center" },
   badgeRing: {
     width: 60, height: 60, borderRadius: 30, borderWidth: 2,
     overflow: "hidden", justifyContent: "center", alignItems: "center",
   },
-  badgeImg: { width: 60, height: 60 },
-  badgeTitle: { fontSize: 9, fontWeight: "800", textAlign: "center", marginTop: 5, lineHeight: 12 },
+  // alignSelf: stretch обязателен. Без него подпись шире медали растёт вправо
+  // от неё и выглядит сдвинутой, а textAlign ничего не выравнивает.
+  badgeTitle: {
+    alignSelf: "stretch",
+    fontSize: 10, fontWeight: "800", textAlign: "center", marginTop: 5, lineHeight: 13,
+  },
 
   // ── Карточка награды ──
   modalOverlay: { flex: 1, backgroundColor: "rgba(15,12,40,0.55)", justifyContent: "center", alignItems: "center", padding: 28 },
@@ -740,7 +812,6 @@ const styles = StyleSheet.create({
     overflow: "hidden", justifyContent: "center", alignItems: "center",
     marginBottom: 14,
   },
-  modalBadgeImg: { width: 104, height: 104 },
   statusPill: {
     flexDirection: "row", alignItems: "center", gap: 5,
     paddingHorizontal: 12, paddingVertical: 5, borderRadius: radii.pill, borderWidth: 1, marginBottom: 10,
