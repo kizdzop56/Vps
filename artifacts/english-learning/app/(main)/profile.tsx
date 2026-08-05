@@ -1,21 +1,28 @@
-// Экран «Профиль»: шапка-герой с аватаром и полосой опыта, описание, цель дня,
-// успеваемость, статистика ученика, витрина наград и друзья.
+// Экран «Профиль»: шапка-герой со счётчиками и полосой опыта, описание,
+// задачи дня, успеваемость, витрина наград и друзья.
 //
 // Эмодзи интерфейса не используются — значки рисует собственный набор
 // (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
 // ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
 // AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
 //
-// Шапку рисует ProfileHero (components/ui/ProfileHero.tsx). Раньше она была
-// собрана прямо здесь и использовала AnimatedAvatar, который резервирует
-// контейнер в 1.7 раза больше самого аватара — при size={96} это 163 пикселя,
-// из-за чего аватар обрезался верхним краем экрана, занимал пол-страницы, а
-// имя и метки уезжали вниз. Теперь аватар слева, имя и метки справа.
+// Шапку рисует ProfileHero (components/ui/ProfileHero.tsx).
 //
-// Порядок блоков собран по частоте обращения: сначала «сколько я сегодня
-// прошёл» (цель дня), потом «как я учусь» (успеваемость), и только затем
-// накопительные счётчики и награды. Блока «Действия» у ученика нет — он
-// состоял из одной метки без содержимого.
+// Что переделано после обратной связи:
+//  • Справа от аватара была пустая область примерно в треть шапки: имя, ник и
+//    одна пилюля её не заполняли. Туда переехали три счётчика — очки, серия
+//    дней, выполненные задания. Раньше они жили внизу экрана в блоке «Всего за
+//    время учёбы», куда надо было прокручивать; сам блок убран, чтобы одни и
+//    те же цифры не стояли на экране дважды. Число наград не потерялось: оно
+//    и так есть в шапке витрины наград.
+//  • Цель дня была одна — «время в приложении». Её закрывает открытая вкладка,
+//    то есть цель ничего не требовала. Теперь это 2–4 задачи разного типа
+//    (см. utils/dailyQuests.ts и components/DailyQuests.tsx).
+//  • Заголовок «ЦЕЛЬ ДНЯ» стоял и над карточкой, и внутри неё. Остался один.
+//
+// Порядок блоков собран по частоте обращения: сначала «что сделать сегодня»
+// (задачи дня), потом «как я учусь» (успеваемость), затем награды и друзья.
+// Блока «Действия» у ученика нет — он состоял из одной метки без содержимого.
 //
 // Наклоны убраны по всему экрану, как на остальных вкладках.
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -41,13 +48,15 @@ import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
 import { MascotModal, getMascotMessage } from "@/components/Mascot";
 import { AchievementToast } from "@/components/AchievementToast";
-import { DailyGoalBar } from "@/components/DailyGoalBar";
+import { DailyQuests } from "@/components/DailyQuests";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
-import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
-import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
+import { buildDailyQuests } from "@/utils/dailyQuests";
 import { accents, gradients, radii } from "@/constants/theme";
+import { screenTop } from "@/constants/layout";
 
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
@@ -142,7 +151,6 @@ function useLiveTimer() {
   }, []);
 
   useEffect(() => {
-    // Initial sync + start
     syncFromStorage().then(startTicking);
 
     if (Platform.OS === "web" && typeof document !== "undefined") {
@@ -229,7 +237,6 @@ function AvatarPickerModal({
             Выбери аватар
           </Text>
 
-          {/* Preview */}
           <View style={{ alignItems: "center", marginBottom: 20 }}>
             <View style={{
               width: 84, height: 84, borderRadius: 28, backgroundColor: color,
@@ -242,7 +249,6 @@ function AvatarPickerModal({
             </View>
           </View>
 
-          {/* Emoji grid */}
           <SectionLabel>Аватар</SectionLabel>
           <FlatList
             data={AVATAR_EMOJIS}
@@ -265,7 +271,6 @@ function AvatarPickerModal({
             )}
           />
 
-          {/* Color row */}
           <SectionLabel>Цвет фона</SectionLabel>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
             <View style={{ flexDirection: "row", gap: 8 }}>
@@ -315,7 +320,6 @@ type FriendRow = {
   direction: "sent" | "received";
 };
 
-// ── Friends modal ─────────────────────────────────────────────────────
 type TeacherItem = {
   id: number; name: string; username: string;
   avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null;
@@ -373,7 +377,6 @@ function FriendsModal({
 
   const resetAddForm = () => { setCode(""); setUsernameInput(""); setFound(null); setAddError(""); };
 
-  // Auto-search when exactly 6 chars entered
   const handleCodeChange = async (raw: string) => {
     const t = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
     setCode(t);
@@ -443,7 +446,6 @@ function FriendsModal({
       await apiFetch(`/api/connections/friends/${id}`, { method: "DELETE" });
       setFriends((prev) => prev.filter((f) => f.friendshipId !== id));
     } catch (e: any) {
-      // If already removed or not found — still remove from local list
       setFriends((prev) => prev.filter((f) => f.friendshipId !== id));
     }
   };
@@ -456,7 +458,6 @@ function FriendsModal({
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <View style={{ flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" }}>
         <View style={{ backgroundColor: colors.card, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24, maxHeight: "85%" }}>
-          {/* Header */}
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <Text style={{ fontSize: 21, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground }}>Друзья</Text>
             <Pressable onPress={onClose} hitSlop={10}>
@@ -545,7 +546,6 @@ function FriendsModal({
                 <ActivityIndicator color={colors.primary} style={{ marginTop: 30 }} />
               ) : (
                 <>
-                  {/* Incoming requests */}
                   {pending.filter((f) => f.direction === "received").map((f) => (
                     <View key={f.friendshipId} style={{
                       flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10,
@@ -571,7 +571,6 @@ function FriendsModal({
                     </View>
                   ))}
 
-                  {/* Accepted friends — tappable to view profile */}
                   {accepted.map((f) => (
                     <TouchableOpacity
                       key={f.friendshipId}
@@ -620,7 +619,6 @@ function FriendsModal({
                     </TouchableOpacity>
                   ))}
 
-                  {/* Pending sent */}
                   {pending.filter((f) => f.direction === "sent").map((f) => (
                     <View key={f.friendshipId} style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border, opacity: 0.6 }}>
                       <AnimatedAvatar
@@ -636,7 +634,6 @@ function FriendsModal({
                     </View>
                   ))}
 
-                  {/* My teachers section */}
                   {teachers.length > 0 && (
                     <>
                       <SectionLabel style={{ marginTop: friends.length > 0 ? 16 : 0 }}>
@@ -699,7 +696,6 @@ function FriendsModal({
             </ScrollView>
           ) : (
             <View>
-              {/* Mode switcher */}
               <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
                 {(["code", "username"] as const).map((m) => (
                   <TouchableOpacity
@@ -781,7 +777,6 @@ function FriendsModal({
                 </>
               )}
 
-              {/* Error */}
               {!!addError && (
                 <View style={{
                   flexDirection: "row", alignItems: "center", gap: 9,
@@ -793,7 +788,6 @@ function FriendsModal({
                 </View>
               )}
 
-              {/* Found user card */}
               {found && (
                 <View style={{
                   flexDirection: "row", alignItems: "center", gap: 12,
@@ -814,7 +808,6 @@ function FriendsModal({
                 </View>
               )}
 
-              {/* Confirm button — only visible after user found */}
               {found && (
                 confirming ? (
                   <View style={{ paddingVertical: 18, alignItems: "center" }}>
@@ -847,7 +840,7 @@ export default function ProfileScreen() {
   const [editingBio, setEditingBio] = useState(false);
   const [bioInput, setBioInput] = useState(user?.bio ?? "");
   const [bioLoaded, setBioLoaded] = useState(false);
-  const [username, setUsername] = useState(user?.username ?? "");
+  const [username] = useState(user?.username ?? "");
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
@@ -863,7 +856,7 @@ export default function ProfileScreen() {
 
   // ── Gamification ──────────────────────────────────────────────────
   const {
-    stats: gamStats, dailyLoginResult, toastAchievement,
+    stats: gamStats, toastAchievement,
     loadStats, claimDailyLogin, unlockAchievements, hideToast, updateDailyGoal,
   } = useGamification();
 
@@ -877,11 +870,8 @@ export default function ProfileScreen() {
   // Fetch fresh bio from server on mount (so it never shows stale data after save)
   useEffect(() => {
     if (!user?.id) return;
-    const baseUrl = process.env["EXPO_PUBLIC_DOMAIN"]
-      ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-      : "";
     authStorage.getItem("auth_token").then((token) => {
-      fetch(`${baseUrl}/api/users/${user.id}`, {
+      fetch(`${BASE}/api/users/${user.id}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((r) => r.ok ? r.json() : null)
@@ -900,17 +890,14 @@ export default function ProfileScreen() {
   // Fetch pending friend requests + teacher requests count for badge
   useEffect(() => {
     if (!isStudent) return;
-    const baseUrl = process.env["EXPO_PUBLIC_DOMAIN"]
-      ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-      : "";
     const load = async () => {
       try {
         const token = await authStorage.getItem("auth_token");
         const headers = { Authorization: `Bearer ${token}` };
 
         const [friendsRes, teacherRes] = await Promise.all([
-          fetch(`${baseUrl}/api/connections/friends`, { headers }),
-          fetch(`${baseUrl}/api/connections/student/teacher-requests`, { headers }),
+          fetch(`${BASE}/api/connections/friends`, { headers }),
+          fetch(`${BASE}/api/connections/student/teacher-requests`, { headers }),
         ]);
 
         if (friendsRes.ok) {
@@ -937,30 +924,20 @@ export default function ProfileScreen() {
   );
   const { data: timeStats, dataUpdatedAt: timeStatsAt } = useGetStudentTimeStats(
     user?.id || 0,
-    // refetchInterval keeps the timer live (API already includes open-session elapsed)
     { query: { enabled: isStudent && !!user?.id, refetchInterval: 10_000 } as any }
   );
 
   const completedCount = Array.isArray(submissions) ? submissions.length : 0;
-  // timeStats.totalMinutes already includes open-session elapsed time from the server.
-  // Do NOT add sessionSeconds here — that would double-count the current session.
   const totalMinutes = timeStats?.totalMinutes ?? 0;
   // "Сегодня" = дневная сумма с сервера (уже включает текущую открытую сессию
-  // на момент загрузки) + секунды, прошедшие с этой загрузки. Накапливается за
-  // день и не сбрасывается при перезаходе — в отличие от таймера текущей
-  // сессии (sessionSeconds), который остаётся фолбэком, пока статистика не
-  // загрузилась. Ежесекундный ре-рендер обеспечивает тикающий useLiveTimer.
+  // на момент загрузки) + секунды, прошедшие с этой загрузки.
   const todaySeconds = timeStats && timeStatsAt
     ? Math.max(0, Math.floor((timeStats.todayMinutes ?? 0) * 60 + (Date.now() - timeStatsAt) / 1000))
     : sessionSeconds;
 
   /**
-   * Успеваемость за выбранный период.
-   *
-   * Считается на клиенте из уже загруженного списка сдач: у каждой есть дата и
-   * балл, отдельный запрос не нужен. Средний балл ученик до этого не видел
-   * нигде, хотя сервер его считает — и именно он отвечает на вопрос «как я
-   * учусь», в отличие от накопительных очков.
+   * Успеваемость за выбранный период. Считается на клиенте из уже загруженного
+   * списка сдач: у каждой есть дата и балл, отдельный запрос не нужен.
    */
   const periodStats = React.useMemo(() => {
     const rows: any[] = Array.isArray(submissions) ? (submissions as any[]) : [];
@@ -982,9 +959,7 @@ export default function ProfileScreen() {
 
   // График «Мои задания». Профиль — экран таба и не размонтируется при
   // переключении вкладок, поэтому загрузку нельзя оставлять в useEffect с
-  // зависимостью от user.id: запрос ушёл бы один раз за сессию, и после сдачи
-  // задания график остался бы прежним. Обновляем на фокусе экрана (см. ниже) и
-  // при изменении числа сдач.
+  // зависимостью от user.id: запрос ушёл бы один раз за сессию.
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
   const loadCategoryStats = useCallback(async () => {
     if (!isStudent || !user?.id) return;
@@ -998,13 +973,33 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadCategoryStats(); }, [loadCategoryStats, completedCount]);
 
+  /**
+   * Прогресс по словам за сегодня. Нужен задаче дня «повторить N слов»:
+   * счётчики в /gamification/stats про слова ничего не знают, они живут в
+   * журнале повторений (см. GET /flashcards/stats → wordsToday).
+   */
+  const [wordStats, setWordStats] = useState<{ wordsToday: number; dailyWordGoal: number }>({
+    wordsToday: 0, dailyWordGoal: 10,
+  });
+  const loadWordStats = useCallback(async () => {
+    if (!isStudent) return;
+    try {
+      const data = await apiFetch("/api/flashcards/stats");
+      setWordStats({
+        wordsToday: Number(data?.wordsToday) || 0,
+        dailyWordGoal: Number(data?.dailyWordGoal) || 10,
+      });
+    } catch { /* цель по словам просто не покажет прогресс */ }
+  }, [isStudent]);
+
   // ── Load gamification stats & claim daily login on focus ──────────
   useFocusEffect(
     useCallback(() => {
       if (!isStudent) return;
       loadStats();
       loadCategoryStats();
-    }, [isStudent, loadStats, loadCategoryStats])
+      loadWordStats();
+    }, [isStudent, loadStats, loadCategoryStats, loadWordStats])
   );
 
   useEffect(() => {
@@ -1048,8 +1043,6 @@ export default function ProfileScreen() {
   // оптимистичные локальные значения, из-за которых медали могли отображаться
   // полученными до подтверждения сервером.
   //
-  // Эти же показатели уходят в витрину пропом stats — по ним считается
-  // прогресс до следующей медали (utils/achievementProgress.ts).
   // useMemo нужен, чтобы объект не пересоздавался на каждый тик таймера:
   // иначе витрина пересчитывала бы прогресс по 50 наградам раз в секунду.
   const achievementStats: AchievementStats = React.useMemo(() => ({
@@ -1068,6 +1061,23 @@ export default function ProfileScreen() {
   const locked = React.useMemo(() => getLockedAchievements(achievementStats), [achievementStats]);
 
   /**
+   * Задачи дня. Собираются из уже загруженных счётчиков, поэтому новых
+   * запросов не добавляют. Пересчитываются только при смене самих счётчиков —
+   * иначе список перетасовывался бы на каждый тик таймера.
+   */
+  const quests = React.useMemo(() => {
+    if (!gamStats) return [];
+    return buildDailyQuests({
+      todayMinutes: gamStats.todayMinutes,
+      dailyGoalMinutes: gamStats.dailyGoalMinutes,
+      todayCompletions: gamStats.todayCompletions ?? 0,
+      todayVoiceSessions: gamStats.todayVoiceSessions ?? 0,
+      wordsToday: wordStats.wordsToday,
+      dailyWordGoal: wordStats.dailyWordGoal,
+    });
+  }, [gamStats, wordStats]);
+
+  /**
    * Прогресс до следующего уровня. Считается по тем же таблицам, что и сам
    * уровень (constants/xpLevels.ts) — своей математики здесь нет.
    * gamStats.totalPoints и есть XP: очки и опыт в этом проекте одно и то же.
@@ -1075,20 +1085,16 @@ export default function ProfileScreen() {
   const xp = gamStats?.totalPoints ?? 0;
   const xpProgress = getXpProgress(xp);
 
-  const baseUrl = process.env["EXPO_PUBLIC_DOMAIN"]
-    ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-    : "";
-
   const respondToTeacherRequest = async (requestId: number, accept: boolean) => {
     try {
       const token = await authStorage.getItem("auth_token");
       const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
       if (accept) {
-        await fetch(`${baseUrl}/api/connections/student/teacher-requests/${requestId}/accept`, {
+        await fetch(`${BASE}/api/connections/student/teacher-requests/${requestId}/accept`, {
           method: "PATCH", headers,
         });
       } else {
-        await fetch(`${baseUrl}/api/connections/student/teacher-requests/${requestId}`, {
+        await fetch(`${BASE}/api/connections/student/teacher-requests/${requestId}`, {
           method: "DELETE", headers,
         });
       }
@@ -1101,7 +1107,7 @@ export default function ProfileScreen() {
     setSaving(true);
     try {
       const token = await authStorage.getItem("auth_token");
-      const res = await fetch(`${baseUrl}/api/users/${user.id}/profile`, {
+      const res = await fetch(`${BASE}/api/users/${user.id}/profile`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(patch),
@@ -1153,8 +1159,7 @@ export default function ProfileScreen() {
     try {
       // Crop to a centered square first (allowsEditing's crop UI isn't applied
       // on web/PWA, so non-square photos would otherwise get stretched by the
-      // resize step below), then resize and re-compress so the resulting data
-      // URI stays tiny (a few KB) — the raw picker output can be several MB.
+      // resize step below), then resize and re-compress.
       const actions: ImageManipulator.Action[] = [];
       if (asset.width && asset.height && asset.width !== asset.height) {
         const size = Math.min(asset.width, asset.height);
@@ -1178,8 +1183,7 @@ export default function ProfileScreen() {
       //
       // Это ОБЯЗАТЕЛЬНО в проде: multer-роут /api/upload/image пишет файл на
       // локальный диск контейнера, а на Render persistent disk нет — аватары
-      // исчезали при каждом деплое. Presigned-поток кладёт файл в объектное
-      // хранилище, а если оно не настроено — сам уходит в локальный фолбэк.
+      // исчезали при каждом деплое.
       const blobRes = await fetch(manipulated.uri);
       const blob = await blobRes.blob();
       if (blob.size > 500_000) {
@@ -1189,7 +1193,6 @@ export default function ProfileScreen() {
       }
       const token = await authStorage.getItem("auth_token");
 
-      // Шаг 1: получить ссылку для загрузки.
       const presignedRes = await fetch(`${BASE}/api/storage/request-upload-url`, {
         method: "POST",
         headers: {
@@ -1211,8 +1214,6 @@ export default function ProfileScreen() {
         objectPath: string;
       };
 
-      // Шаг 2: загрузить файл. Content-Type сохраняется на объекте — без него
-      // браузер не отрисует картинку при отдаче.
       const uploadTarget = uploadURL.startsWith("http")
         ? uploadURL
         : `${BASE}${uploadURL}`;
@@ -1223,7 +1224,7 @@ export default function ProfileScreen() {
       });
       if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
 
-      // Шаг 3: в БД сохраняем ссылку через наш прокси, а не прямую в бакет —
+      // В БД сохраняем ссылку через наш прокси, а не прямую в бакет —
       // бакет приватный, и прямые ссылки истекают.
       const serveUrl = `${BASE}/api/storage${objectPath}?kind=image`;
       setAvatarUrl(serveUrl);
@@ -1280,16 +1281,15 @@ export default function ProfileScreen() {
       shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
       shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
     },
-    bioText: { fontSize: 14, color: colors.foreground, lineHeight: 20 },
+    bioText: { fontSize: 14.5, color: colors.foreground, lineHeight: 21 },
     bioPlaceholder: { fontSize: 14, color: colors.mutedForeground, fontStyle: "italic" },
-    bioInput: { fontSize: 14, color: colors.foreground, lineHeight: 20, minHeight: 60 },
+    bioInput: { fontSize: 14.5, color: colors.foreground, lineHeight: 21, minHeight: 60 },
     bioActions: { flexDirection: "row", gap: 8, marginTop: 8, justifyContent: "flex-end" },
     bioSaveBtn: { backgroundColor: colors.primary, borderRadius: 9, paddingHorizontal: 15, paddingVertical: 7 },
     bioSaveText: { fontSize: 13, fontWeight: "800", color: "#fff" },
     bioCancelBtn: { paddingHorizontal: 14, paddingVertical: 7 },
     bioCancelText: { fontSize: 13, color: colors.mutedForeground },
 
-    // Section
     section: { paddingHorizontal: 20, marginBottom: 20 },
 
     // Переключатель периода: тот же сегментный вид, что на «Заданиях».
@@ -1320,21 +1320,6 @@ export default function ProfileScreen() {
     },
     scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
     scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
-
-    // Stats
-    statsRow: { flexDirection: "row", gap: 10 },
-    statCard: {
-      flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 12,
-      alignItems: "center", borderWidth: 1, borderColor: colors.border,
-      shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.16, shadowRadius: 14, elevation: 4,
-    },
-    statValue: {
-      fontSize: 23, fontWeight: "900", letterSpacing: -0.7,
-      color: colors.foreground, marginTop: 9, marginBottom: 2,
-      fontVariant: ["tabular-nums"],
-    },
-    statLabel: { fontSize: 11, color: colors.mutedForeground, textAlign: "center", fontWeight: "600" },
 
     // Timer
     timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff", fontVariant: ["tabular-nums"] },
@@ -1371,10 +1356,8 @@ export default function ProfileScreen() {
         />
       )}
 
-      {/* ── Achievement Toast ── */}
       <AchievementToast achievement={toastAchievement} onHide={hideToast} />
 
-      {/* ── Mascot modals ── */}
       <MascotModal
         visible={mascotVisible}
         mood={mascotMsg.mood}
@@ -1433,6 +1416,15 @@ export default function ProfileScreen() {
           level={isStudent && gamStats
             ? { number: xpProgress.current.level, title: xpProgress.current.title }
             : null}
+          // Счётчики закрывают пустоту справа от аватара и заменяют собой
+          // прежний блок «Всего за время учёбы» внизу экрана.
+          stats={isStudent && gamStats
+            ? {
+                points: gamStats.totalPoints,
+                streak: gamStats.loginStreak,
+                assignments: gamStats.completedAssignments,
+              }
+            : null}
           xp={isStudent && gamStats
             ? {
                 current: xp,
@@ -1442,7 +1434,7 @@ export default function ProfileScreen() {
                 percent: xpProgress.progressPercent,
               }
             : null}
-          paddingTop={insets.top + (Platform.OS === "web" ? 67 : 20)}
+          paddingTop={screenTop(insets)}
         />
 
         {/* ── Входящие заявки от учителей (только ученик) ── */}
@@ -1491,6 +1483,20 @@ export default function ProfileScreen() {
           </View>
         )}
 
+        {/* ── Задачи дня ──
+            Стоят первыми: это единственный блок, на который ученик может
+            повлиять прямо сейчас. Заголовка секции нет — он есть внутри
+            карточки, и раньше «ЦЕЛЬ ДНЯ» стояло на экране дважды. */}
+        {isStudent && gamStats && (
+          <View style={s.section}>
+            <DailyQuests
+              quests={quests}
+              goalMinutes={gamStats.dailyGoalMinutes}
+              onGoalChange={updateDailyGoal}
+            />
+          </View>
+        )}
+
         {/* ── Описание (bio) ── */}
         <View style={s.bioBox}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -1529,26 +1535,9 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        {/* ── Ученик: цель дня, успеваемость, счётчики, награды, друзья ── */}
+        {/* ── Ученик: успеваемость, задания, награды, друзья ── */}
         {isStudent && (
           <>
-            {/* Цель дня стоит первой из блоков: это единственная цифра, которая
-                меняется прямо сейчас и на которую ученик может повлиять
-                сегодня. */}
-            {gamStats && (
-              <View style={s.section}>
-                <SectionLabel>Цель дня</SectionLabel>
-                <DailyGoalBar
-                  todayMinutes={gamStats.todayMinutes}
-                  goalMinutes={gamStats.dailyGoalMinutes}
-                  todayCompletions={gamStats.todayCompletions ?? 0}
-                  todayVoiceSessions={gamStats.todayVoiceSessions ?? 0}
-                  onGoalChange={updateDailyGoal}
-                />
-              </View>
-            )}
-
-            {/* Успеваемость за период */}
             <View style={s.section}>
               <SectionLabel>Успеваемость</SectionLabel>
 
@@ -1581,20 +1570,7 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            {/* Накопительные счётчики: считаются за всё время и от периода
-                не зависят — поэтому стоят отдельным блоком. */}
-            <View style={s.section}>
-              <SectionLabel>Всего за время учёбы</SectionLabel>
-              <View style={s.statsRow}>
-                <StatCard s={s} icon="star" grad={["#f472b6", accents.magenta]} tint={accents.magenta} value={achievementStats.totalPoints} label="Очки" />
-                <StatCard s={s} icon="check" grad={["#818cf8", accents.indigoDeep]} tint={colors.primary} value={achievementStats.completedAssignments} label="Заданий" />
-                <StatCard s={s} icon="trophy" grad={[accents.gold, accents.amber]} tint={accents.amber} value={unlocked.length} label="Наград" />
-                {/* Стрик: огонь глифом вместо 🔥 — красится темой и одинаков везде. */}
-                <StatCard s={s} icon="flame" grad={gradients.fire} tint={accents.amber} value={achievementStats.loginStreak} label="Стрик" />
-              </View>
-            </View>
-
-            {/* Статистика заданий + Таймер времени — два отдельных пузыря в одной строке */}
+            {/* Статистика заданий + таймер времени — два пузыря в одной строке */}
             <View style={s.section}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
                 <View style={{
@@ -1728,44 +1704,6 @@ export default function ProfileScreen() {
           <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Выйти из аккаунта</Text>
         </Pressable>
       </ScrollView>
-
-    </View>
-  );
-}
-
-/**
- * Счётчик в строке «Всего за время учёбы».
- *
- * Значок стоит в градиентной плашке со свечением — тот же приём, что у значка
- * колоды в разделе «Слова». Наклон плашки убран вместе с остальными наклонами.
- */
-function StatCard({
-  s, icon, grad, tint, value, label,
-}: {
-  s: any;
-  icon: GlyphName;
-  grad: readonly string[];
-  tint: string;
-  value: number;
-  label: string;
-}) {
-  return (
-    <View style={[s.statCard, { shadowColor: tint }]}>
-      <LinearGradient
-        colors={grad as unknown as string[]}
-        start={{ x: 0.1, y: 0 }}
-        end={{ x: 0.9, y: 1 }}
-        style={{
-          width: 34, height: 34, borderRadius: 11,
-          alignItems: "center", justifyContent: "center",
-          shadowColor: tint, shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.35, shadowRadius: 9, elevation: 4,
-        }}
-      >
-        <Glyph name={icon} size={18} color="#ffffff" />
-      </LinearGradient>
-      <Text style={s.statValue}>{value}</Text>
-      <Text style={s.statLabel}>{label}</Text>
     </View>
   );
 }
