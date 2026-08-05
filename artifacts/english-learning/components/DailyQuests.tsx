@@ -29,6 +29,11 @@
 // уже полученной. Начисляет сервер, один раз в сутки:
 // POST /gamification/daily-goal/claim.
 //
+// Строка итога появляется ТОЛЬКО когда день закрыт. Раньше на её месте висело
+// «Очки придут, когда закроешь всё: осталось N пунктов» — пересказ чек-листа,
+// который и так висит выше со счётчиками и галочками. Незакрытый день и без
+// напоминаний виден по незачёркнутым строкам.
+//
 // Смена цели применяется со СЛЕДУЮЩЕГО дня (см. PATCH /gamification/daily-goal):
 // набор задач зависит от тяжести цели, и мгновенная смена позволяла бы
 // подбирать себе удобные задачи. В интерфейсе про это сказано одной строкой —
@@ -185,14 +190,14 @@ export function DailyQuests({
       fontVariant: ["tabular-nums"],
     },
 
-    // Итог дня: одна строка вместо цены у каждой задачи.
+    // Итог дня. Показывается только когда день закрыт: до этого он пересказывал
+    // чек-лист, который висит прямо над ним.
     total: {
       flexDirection: "row", alignItems: "center", gap: 8,
       marginTop: 10, paddingVertical: 9, paddingHorizontal: 11,
-      borderRadius: radii.sm, backgroundColor: "rgba(255,255,255,0.12)",
-      borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+      borderRadius: radii.sm,
+      backgroundColor: accents.gold + "33", borderWidth: 1, borderColor: accents.gold + "88",
     },
-    totalDone: { backgroundColor: accents.gold + "33", borderColor: accents.gold + "88" },
     totalText: { flex: 1, fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.88)", lineHeight: 16 },
 
     // Ждущая своего часа цель: не кнопка, а тихая подпись.
@@ -251,7 +256,6 @@ export function DailyQuests({
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
   const remainingWord = plural(time.remaining, ["минута", "минуты", "минут"]);
-  const left = quests.length - plan.doneCount + (time.done ? 0 : 1);
 
   return (
     <>
@@ -330,20 +334,17 @@ export function DailyQuests({
           ))}
         </View>
 
-        <View style={[s.total, (allDone || claimed) && s.totalDone]}>
-          <Glyph
-            name={allDone ? "star" : "target"}
-            size={14}
-            color={allDone ? accents.gold : "rgba(255,255,255,0.8)"}
-          />
-          <Text style={s.totalText}>
-            {claimed
-              ? `День закрыт полностью. Начислено ${plan.reward} ${plural(plan.reward, ["очко", "очка", "очков"])}`
-              : allDone
-                ? "День закрыт полностью — начисляем очки"
-                : `Очки придут, когда закроешь всё: осталось ${left} ${plural(left, ["пункт", "пункта", "пунктов"])}`}
-          </Text>
-        </View>
+        {/* Итог — только когда день закрыт: это событие, а не напоминание. */}
+        {(allDone || claimed) && (
+          <View style={s.total}>
+            <Glyph name="star" size={14} color={accents.gold} />
+            <Text style={s.totalText}>
+              {claimed
+                ? `День закрыт полностью. Начислено ${plan.reward} ${plural(plan.reward, ["очко", "очка", "очков"])}`
+                : "День закрыт полностью — начисляем очки"}
+            </Text>
+          </View>
+        )}
 
         {!!pendingGoal && (
           <View style={s.pending}>
