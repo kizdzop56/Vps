@@ -10,8 +10,13 @@
 // и раскрытый по умолчанию список из ~36 закрытых медалей. Три десятка
 // одинаковых замков висели постоянно и не сообщали ничего сверх счётчика.
 //
-// Сейчас сверху: веер из САМЫХ ЦЕННЫХ медалей, счётчик «14 / 50», разбивка по
-// сложности и строка ближайшей цели. Полный список свёрнут.
+// Сейчас сверху: веер из САМЫХ ЦЕННЫХ медалей, счётчик «14 / 50» и строка
+// ближайшей цели. Полный список свёрнут.
+//
+// Плашек «Лёгкие / Средние / Сложные» здесь больше нет. Они делили один и тот
+// же счётчик на три и занимали целую строку, а деление на сложности — понятие
+// внутреннее: ученик не выбирает, какие медали получать. Кому интересно —
+// раскрывает полный список.
 //
 // ── Про веер ────────────────────────────────────────────────────────────────
 // В веере лежат не последние по времени медали, а самые труднодостижимые:
@@ -40,10 +45,13 @@
 // название видно в карточке награды по тапу.
 //
 // ── Закрытие карточки ───────────────────────────────────────────────────────
-// Кнопка «Закрыть» — последний элемент САМОЙ карточки, на её же фоне. Белой
-// полосы по краям нет: это не отдельный закреплённый слой поверх содержимого,
-// а обычная строка в потоке. Крестик в углу оставлен как быстрый выход, тап по
-// затемнению тоже закрывает.
+// Одна кнопка «Закрыть», прижатая к низу ЭКРАНА, а не к низу карточки. Она
+// лежит на затемнении поверх всего окна: сколько бы ни было текста в карточке,
+// кнопка всегда на одном месте и до неё не нужно тянуться.
+//
+// Крестика в углу больше нет: два способа закрыть одно окно — это лишний
+// элемент в углу карточки, который отбирал внимание у самой медали. Тап по
+// затемнению по-прежнему закрывает.
 //
 // ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
 // Счётчик сначала был сделан так:
@@ -59,6 +67,7 @@ import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import type { Achievement, AchievementDifficulty, AchievementStats } from "@/constants/achievements";
 import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
@@ -181,6 +190,9 @@ function ProgressTrack({
 const FAN_COUNT = 5;      // сколько медалей показываем
 const FAN_SIZE = 52;      // диаметр медали
 const FAN_STACKED = 15;   // сдвиг соседней медали в сложенном виде
+
+/** Сколько места занимает липкая кнопка внизу окна вместе с отступами. */
+const STICKY_SPACE = 84;
 
 /**
  * Одна медаль веера. Позиция интерполируется из общего значения fan:
@@ -337,33 +349,23 @@ function BadgeDetailModal({
   onClose: () => void;
 }) {
   const colors = useColors();
+  const insets = useSafeAreaInsets();
   if (!achievement) return null;
 
   const progress = isLocked && stats ? achievementProgress(achievement, stats) : null;
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
+      <TouchableOpacity
+        style={[styles.modalOverlay, { paddingBottom: 28 + STICKY_SPACE + insets.bottom }]}
+        activeOpacity={1}
+        onPress={onClose}
+      >
         <TouchableOpacity
           activeOpacity={1}
           style={[styles.modalCard, { backgroundColor: colors.card }]}
           onPress={() => {}}
         >
-          {/* Быстрый выход. Основная кнопка «Закрыть» — внизу карточки. */}
-          <Pressable
-            onPress={onClose}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Закрыть"
-            style={({ pressed }) => [
-              styles.modalClose,
-              { backgroundColor: colors.muted },
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <Glyph name="close" size={17} color={colors.mutedForeground} />
-          </Pressable>
-
           <View
             style={[
               styles.modalBadgeOuter,
@@ -455,18 +457,17 @@ function BadgeDetailModal({
               {isLocked ? achievement.requirement : achievement.description}
             </Text>
           </View>
-
-          {/* Кнопка стоит в потоке карточки, на её же фоне: отдельной белой
-              полосы по краям нет. */}
-          <ChunkyButton
-            label="Закрыть"
-            tone="dark"
-            center
-            onPress={onClose}
-            style={{ alignSelf: "stretch", marginTop: 16 }}
-          />
         </TouchableOpacity>
       </TouchableOpacity>
+
+      {/* Липкая кнопка: она вне карточки и прижата к низу ЭКРАНА. Место под
+          неё выделено отступом overlay, поэтому карточку она не перекрывает. */}
+      <View
+        pointerEvents="box-none"
+        style={[styles.sticky, { bottom: 20 + insets.bottom }]}
+      >
+        <ChunkyButton label="Закрыть" tone="dark" center onPress={onClose} />
+      </View>
     </Modal>
   );
 }
@@ -538,18 +539,6 @@ export function AchievementsShowcase({
       useNativeDriver: true,
     }).start();
   };
-
-  // Разбивка по сложности отвечает на вопрос «куда расти»: по общему счётчику
-  // не видно, что лёгкие почти собраны, а сложных нет вовсе.
-  const tiers = React.useMemo(() => {
-    const count = (list: Achievement[], d: AchievementDifficulty) =>
-      list.filter((a) => a.difficulty === d).length;
-    return [
-      { key: "easy", label: "Лёгкие", got: count(unlocked, "easy"), total: count(unlocked, "easy") + count(locked, "easy") },
-      { key: "medium", label: "Средние", got: count(unlocked, "medium"), total: count(unlocked, "medium") + count(locked, "medium") },
-      { key: "hard", label: "Сложные", got: count(unlocked, "hard"), total: count(unlocked, "hard") + count(locked, "hard") },
-    ];
-  }, [unlocked, locked]);
 
   // Ширина сложенного веера. В раскрытом виде он растягивается на всю строку,
   // поэтому там ширину задаёт flex, а не это число.
@@ -657,25 +646,6 @@ export function AchievementsShowcase({
           })}
         </View>
       )}
-
-      {/* ── Разбивка по сложности ── */}
-      <View style={styles.tiers}>
-        {tiers.map((t) => {
-          const complete = t.total > 0 && t.got === t.total;
-          const tint = t.got === 0
-            ? colors.mutedForeground
-            : complete ? accents.amber : colors.primary;
-          return (
-            <View
-              key={t.key}
-              style={[styles.tier, { backgroundColor: colors.muted, borderColor: colors.border }]}
-            >
-              <Text style={[styles.tierLabel, { color: colors.mutedForeground }]}>{t.label}</Text>
-              <Text style={[styles.tierValue, { color: tint }]}>{t.got}/{t.total}</Text>
-            </View>
-          );
-        })}
-      </View>
 
       {/* ── Ближайшая награда ── */}
       {next && (
@@ -805,15 +775,6 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
   },
 
-  // ── Уровни ──
-  tiers: { flexDirection: "row", gap: 6, marginTop: 14 },
-  tier: {
-    flex: 1, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 6,
-    alignItems: "center", borderWidth: 1,
-  },
-  tierLabel: { fontSize: 9, fontWeight: "900", letterSpacing: 0.7, textTransform: "uppercase" },
-  tierValue: { fontSize: 15, fontWeight: "900", marginTop: 3, fontVariant: ["tabular-nums"] },
-
   // ── Ближайшая награда ──
   goal: {
     flexDirection: "row", alignItems: "center", gap: 11,
@@ -857,11 +818,8 @@ const styles = StyleSheet.create({
     alignItems: "center", shadowColor: "#6366f1", shadowOpacity: 0.2,
     shadowRadius: 26, shadowOffset: { width: 0, height: 10 }, elevation: 12,
   },
-  modalClose: {
-    position: "absolute", top: 12, right: 12, zIndex: 2,
-    width: 34, height: 34, borderRadius: 12,
-    alignItems: "center", justifyContent: "center",
-  },
+  // Липкая кнопка поверх затемнения, всегда на одном месте.
+  sticky: { position: "absolute", left: 28, right: 28 },
   modalBadgeOuter: {
     width: 104, height: 104, borderRadius: 52, borderWidth: 2.5,
     overflow: "hidden", justifyContent: "center", alignItems: "center",
