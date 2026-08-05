@@ -6,25 +6,14 @@
 // ученик, это его лицо в приложении, а не наша иконка.
 //
 // Крупные блоки вынесены в компоненты:
-//   ProfileHero  — шапка (components/ui/ProfileHero.tsx);
+//   ProfileHero  — шапка (components/ui/ProfileHero.tsx), общая с чужим
+//                  профилем app/(main)/friend/[id].tsx;
 //   AboutCard    — «О себе» + интересы (components/AboutCard.tsx);
 //   DailyQuests  — цель дня (components/DailyQuests.tsx).
 //
-// Что переделано после обратной связи:
-//  • Счётчиков в шапке было три, и они не влезали рядом с аватаром — сетка
-//    съезжала вниз, оставляя тёмную пустоту. Осталось два: «слов выучено» и
-//    «дней подряд». «Очков» убрано как дубль полосы опыта, «заданий» — как
-//    дубль блока «Мои задания» ниже.
-//  • Цель дня стоит ПОД «О себе»: сверху кто этот ученик, ниже что ему делать.
-//  • Смена цели применяется со следующего дня, поэтому в карточку уходит
-//    активная цель (для расчёта дня) и выбранная (для окна настройки).
-//  • Кольцо времени раньше показывало снимок на момент открытия экрана: пока
-//    ученик занимался, цифра «5 из 20 минут» стояла на месте и оживала только
-//    после ручного обновления страницы. Теперь минуты берутся из живого
-//    счётчика времени (см. liveTodayMinutes), а прогресс задач сам
-//    перезапрашивается раз в минуту.
-//  • В блоке «О себе» появились интересы: их не было вообще, хотя в макете
-//    они есть. Хранятся отдельно от bio (PUT /users/:id/interests).
+// Счётчики в шапке передаются списком: у своего профиля это «слов выучено» и
+// «дней подряд», у чужого — «очков» и «заданий» (чужую статистику по словам
+// сервер не отдаёт).
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
@@ -75,6 +64,16 @@ function ageWord(n: number): string {
   if (mod === 1) return `${n} год`;
   if (mod >= 2 && mod <= 4) return `${n} года`;
   return `${n} лет`;
+}
+
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -872,14 +871,14 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadInterests(); }, [loadInterests]);
 
-  const saveInterests = useCallback(async (next: string[]) => {
+  const saveInterests = useCallback(async (nextList: string[]) => {
     if (!user?.id) return;
     const prev = interests;
-    setInterests(next); // оптимистично: метки должны реагировать мгновенно
+    setInterests(nextList); // оптимистично: метки должны реагировать мгновенно
     try {
       const data = await apiFetch(`/api/users/${user.id}/interests`, {
         method: "PUT",
-        body: JSON.stringify({ interests: next }),
+        body: JSON.stringify({ interests: nextList }),
       });
       if (Array.isArray(data?.interests)) setInterests(data.interests);
     } catch {
@@ -934,17 +933,10 @@ export default function ProfileScreen() {
     : sessionSeconds;
 
   /**
-   * Минуты за сегодня для цели дня.
-   *
-   * Раньше сюда уходило gamStats.todayMinutes — снимок на момент загрузки
-   * экрана. Ученик занимался, а кольцо стояло на месте и оживало только после
-   * ручного обновления страницы. Живой счётчик времени (todaySeconds) тикает
-   * сам и раз в 10 секунд сверяется с сервером, поэтому берём максимум из
-   * двух: сервер может знать о времени в других вкладках, а таймер — о
-   * минутах, которые сервер ещё не успел учесть.
-   *
-   * Значение целое, поэтому пересчёт плана происходит раз в минуту, а не на
-   * каждый тик.
+   * Минуты за сегодня для цели дня: максимум из серверного значения и живого
+   * счётчика. Сервер знает о времени в других вкладках, таймер — о минутах,
+   * которые сервер ещё не успел учесть. Значение целое, поэтому план
+   * пересчитывается раз в минуту, а не на каждый тик.
    */
   const liveTodayMinutes = React.useMemo(
     () => Math.max(gamStats?.todayMinutes ?? 0, Math.floor(todaySeconds / 60)),
@@ -1294,6 +1286,7 @@ export default function ProfileScreen() {
   });
 
   const age = calcAge(user.dateOfBirth);
+  const streak = gamStats?.loginStreak ?? 0;
 
   return (
     <View style={s.container}>
@@ -1372,7 +1365,18 @@ export default function ProfileScreen() {
             ? { number: xpProgress.current.level, title: xpProgress.current.title }
             : null}
           stats={isStudent && gamStats
-            ? { wordsLearned: wordStats.totalLearned, streak: gamStats.loginStreak }
+            ? [
+                {
+                  icon: "cards",
+                  value: wordStats.totalLearned,
+                  label: `${plural(wordStats.totalLearned, ["слово", "слова", "слов"])} выучено`,
+                },
+                {
+                  icon: "flame",
+                  value: streak,
+                  label: `${plural(streak, ["день", "дня", "дней"])} подряд`,
+                },
+              ]
             : null}
           xp={isStudent && gamStats
             ? {
@@ -1478,7 +1482,7 @@ export default function ProfileScreen() {
                   <Text style={s.scoreHint}>
                     {periodStats.count === 0
                       ? "За этот период работ нет"
-                      : `${periodStats.count} ${periodStats.count === 1 ? "работа" : periodStats.count < 5 ? "работы" : "работ"} · +${periodStats.points} очков`}
+                      : `${periodStats.count} ${plural(periodStats.count, ["работа", "работы", "работ"])} · +${periodStats.points} очков`}
                   </Text>
                 </View>
               </View>
