@@ -55,6 +55,17 @@ const statements = [
   `ALTER TABLE IF EXISTS flashcard_settings ADD COLUMN IF NOT EXISTS daily_word_goal integer NOT NULL DEFAULT 10`,
   `ALTER TABLE IF EXISTS words ADD COLUMN IF NOT EXISTS audio_url text`,
   `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS onboarding_seen jsonb`,
+  // Темы, которые интересны ученику. Показываются метками в блоке «О себе».
+  `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS interests jsonb`,
+  // Отложенная смена цели дня: выбор ученика вступает в силу со следующего дня,
+  // иначе можно крутить цель, пока не выпадет удобный набор задач.
+  `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS next_daily_goal_minutes integer NOT NULL DEFAULT 15`,
+  `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS daily_goal_applied_date date`,
+  // Существующим пользователям завтрашняя цель равна текущей — иначе у всех,
+  // кто уже менял цель, она молча съедет к значению по умолчанию.
+  `UPDATE users SET next_daily_goal_minutes = daily_goal_minutes
+     WHERE next_daily_goal_minutes IS DISTINCT FROM daily_goal_minutes
+       AND daily_goal_applied_date IS NULL`,
   // Скрытые системные колоды (misc_{level}): слова участвуют в сессии/марафоне,
   // но колода не показывается в списке колод на экране «Слова».
   `ALTER TABLE IF EXISTS decks ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false`,
