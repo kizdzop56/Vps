@@ -3,20 +3,29 @@
 // Профиль ученика оформлен РОВНО так же, как свой (app/(main)/profile.tsx):
 // та же шапка-герой (ProfileHero) с теми же двумя счётчиками, тот же блок
 // «О себе» с интересами (AboutCard в режиме просмотра), та же «Успеваемость»
-// с переключателем периода, те же кольца заданий, та же плитка времени и та
-// же витрина наград. Расхождения в оформлении здесь считаются багом: переход
-// из друзей или рейтинга не должен выглядеть как переход в другое приложение.
+// (ScoreCard) с переключателем периода, та же плитка заданий
+// (AssignmentsCard), та же плитка времени (StudyTimeCard) и та же витрина
+// наград. Расхождения в оформлении здесь считаются багом: переход из друзей
+// или рейтинга не должен выглядеть как переход в другое приложение.
+//
+// Именно поэтому здесь НЕТ своих копий этих блоков. Раньше были: локальное
+// кольцо балла, плоская карточка «N работ · +N очков», голый график колец и
+// градиентная плитка времени без часов. Всё это отставало от профиля на
+// несколько переделок сразу. Теперь оба экрана берут одни и те же
+// компоненты — правка в компоненте приезжает в оба места.
 //
 // Откуда берутся цифры. GET /users/:id знает только про очки, время и средний
 // балл. Всё остальное — выученные слова, серия входов, срезы успеваемости по
 // периодам, условия наград — приходит из GET /students/:id/profile-stats
-// (artifacts/api-server/src/routes/studentProfile.ts). Раньше этих данных не
-// было, поэтому в шапке стояли «очки/задания», а витрина наград считалась по
-// нулям и показывала чужого ученика новичком.
+// (artifacts/api-server/src/routes/studentProfile.ts).
 //
 // Что отличается от своего профиля, и почему:
 //   • нет цели дня — это личный план, чужой ученик им не управляет;
 //   • «О себе» и интересы только на просмотр;
+//   • в разборе заданий нет блоков «Как решаешь» и «Последние работы»: чужой
+//     список сдач сервер не отдаёт, доступна только сводка по типам;
+//   • разбор времени открывается не всем — сводка по дням чужого ученика
+//     доступна учителю, родителю и самому ученику;
 //   • в витрине наград только ПОЛУЧЕННЫЕ медали — чужие недоделки не витрина;
 //   • нет кнопки «Мои друзья» — это раздел владельца;
 //   • сверху кнопки «назад» и «Написать».
@@ -31,10 +40,8 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator, Platform, Modal,
+  ActivityIndicator, Modal,
 } from "react-native";
-import Svg, { Circle } from "react-native-svg";
-import { LinearGradient } from "expo-linear-gradient";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -47,10 +54,13 @@ import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
 import { AboutCard } from "@/components/AboutCard";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
+import { AssignmentsCard } from "@/components/AssignmentsCard";
+import { StudyTimeCard } from "@/components/StudyTimeCard";
+import { ScoreCard } from "@/components/ScoreCard";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { Glyph } from "@/components/ui/Glyph";
 import { SectionLabel } from "@/components/ui/GameKit";
-import { accents, gradients, radii } from "@/constants/theme";
+import { accents, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 import { fc, type DeckWithAssign, type FlashcardStatsWithLevel } from "@/hooks/useFlashcards";
 
@@ -224,32 +234,6 @@ function formatSlot(slot: { date: string; startTime: string; endTime: string }) 
   return `${d} ${month}, ${wd} · ${slot.startTime}–${slot.endTime}`;
 }
 
-/** Кольцо среднего балла — то же, что на своём профиле. */
-function ScoreRing({ score, color, size = 64 }: { score: number | null; color: string; size?: number }) {
-  const stroke = 8;
-  const r = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(100, score ?? 0));
-  return (
-    <Svg width={size} height={size}>
-      <Circle
-        cx={size / 2} cy={size / 2} r={r}
-        stroke="rgba(99,102,241,0.16)" strokeWidth={stroke} fill="none"
-      />
-      {score !== null && (
-        <Circle
-          cx={size / 2} cy={size / 2} r={r}
-          stroke={color} strokeWidth={stroke} fill="none"
-          strokeLinecap="round"
-          strokeDasharray={`${circumference}`}
-          strokeDashoffset={circumference * (1 - pct / 100)}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-      )}
-    </Svg>
-  );
-}
-
 export default function FriendProfileScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const friendId = parseInt(id || "0", 10);
@@ -268,6 +252,9 @@ export default function FriendProfileScreen() {
   const [interests, setInterests] = useState<string[]>([]);
   const [gameStats, setGameStats] = useState<StudentProfileStats | null>(null);
   const [period, setPeriod] = useState<StatsPeriod>("all");
+  // Растёт, когда пришли данные: кольца и шкалы вычерчиваются от нуля, а не
+  // появляются готовыми.
+  const [replay, setReplay] = useState(0);
   const onlinePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isStudent = user?.role === "student";
@@ -323,6 +310,7 @@ export default function FriendProfileScreen() {
     try {
       const data = await apiFetch(`/api/students/${friendId}/category-stats`);
       setCategoryStats(data ?? []);
+      setReplay((n) => n + 1);
     } catch {
       setCategoryStats([]);
     }
@@ -336,6 +324,7 @@ export default function FriendProfileScreen() {
     try {
       const data = await apiFetch(`/api/students/${friendId}/profile-stats`);
       setGameStats(data ?? null);
+      setReplay((n) => n + 1);
     } catch {
       setGameStats(null);
     }
@@ -430,37 +419,6 @@ export default function FriendProfileScreen() {
     section: { paddingHorizontal: 20, marginBottom: 16 },
     center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 28 },
 
-    // Переключатель периода — копия своего профиля, вплоть до теней.
-    seg: {
-      flexDirection: "row", backgroundColor: colors.muted,
-      borderRadius: radii.sm + 2, padding: 3, marginBottom: 12,
-    },
-    segBtn: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
-    segBtnActive: {
-      backgroundColor: colors.card,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
-    },
-    segText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
-    segTextActive: { color: colors.foreground, fontWeight: "800" },
-
-    scoreCard: {
-      flexDirection: "row", alignItems: "center", gap: 14,
-      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
-      borderWidth: 1, borderColor: colors.border, marginBottom: 10,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
-    },
-    scoreLabel: {
-      fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase",
-      color: colors.mutedForeground,
-    },
-    scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
-    scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
-
-    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff", fontVariant: ["tabular-nums"] },
-    timerLabel: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 2 },
-
     // Шапка для профиля учителя: она осталась прежней, поэтому ей нужен свой
     // ряд с кнопкой «назад».
     plainHeader: {
@@ -505,6 +463,12 @@ export default function FriendProfileScreen() {
   const canWrite = !isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends");
   const areFriends = friendStatus === "friends";
 
+  // Разбор времени по дням — не публичная цифра: сервер отдаёт сводку только
+  // учителю, родителю и самому ученику. Остальным плитка показывает итог, но
+  // не нажимается: кнопка, которая всегда отвечает «нет доступа», хуже, чем
+  // отсутствие кнопки.
+  const canSeeTime = isSelf || isTeacherViewer || user?.role === "parent";
+
   // Уровень и опыт считаются из очков теми же таблицами, что на своём профиле:
   // очки и XP в проекте одно и то же (см. constants/xpLevels.ts).
   const xpProgress = getXpProgress(profile.totalPoints);
@@ -532,14 +496,6 @@ export default function FriendProfileScreen() {
   // общий средний балл из профиля, как было раньше.
   const activePeriod = gameStats?.periodStats?.[period] ?? null;
   const shownAverage = activePeriod ? activePeriod.average : (profile.averageScore ?? null);
-  const shownCount = activePeriod ? activePeriod.count : profile.completedAssignments;
-  const shownPoints = activePeriod ? activePeriod.points : profile.totalPoints;
-
-  const scoreTint = shownAverage === null || shownAverage === undefined
-    ? colors.mutedForeground
-    : shownAverage >= 70 ? colors.success
-      : shownAverage >= 50 ? accents.amber
-        : colors.destructive;
 
   // ── Профиль учителя: прежняя вёрстка ──
   if (isTeacherProfile) {
@@ -710,80 +666,33 @@ export default function FriendProfileScreen() {
           readOnly
         />
 
-        {/* ── Успеваемость: те же карточки и тот же переключатель периода ── */}
+        {/* ── Успеваемость: та же карточка, что на своём профиле ──
+            Заголовок «Успеваемость», переключатель периода и кольцо живут
+            внутри ScoreCard. */}
         <View style={s.section}>
-          <SectionLabel>Успеваемость</SectionLabel>
-
-          {!!gameStats && (
-            <View style={s.seg}>
-              {PERIODS.map((p) => (
-                <TouchableOpacity
-                  key={p.key}
-                  style={[s.segBtn, period === p.key && s.segBtnActive]}
-                  onPress={() => setPeriod(p.key)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[s.segText, period === p.key && s.segTextActive]}>{p.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-
-          <View style={s.scoreCard}>
-            <ScoreRing score={shownAverage} color={scoreTint} />
-            <View style={{ flex: 1 }}>
-              <Text style={s.scoreLabel}>Средний балл</Text>
-              <Text style={[s.scoreValue, { color: scoreTint }]}>
-                {shownAverage === null || shownAverage === undefined ? "—" : `${shownAverage}%`}
-              </Text>
-              <Text style={s.scoreHint}>
-                {shownCount === 0
-                  ? (gameStats ? "За этот период работ нет" : "Пока нет проверенных работ")
-                  : `${shownCount} ${plural(shownCount, ["работа", "работы", "работ"])} · +${shownPoints} очков`}
-              </Text>
-            </View>
-          </View>
+          <ScoreCard
+            average={shownAverage ?? null}
+            periods={PERIODS}
+            period={period}
+            onPeriodChange={setPeriod}
+            replay={replay}
+          />
         </View>
 
+        {/* ── Задания и время: те же две плитки, что на своём профиле ── */}
         <View style={s.section}>
           <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
-            <View style={{
-              flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
-              borderWidth: 1, borderColor: colors.border,
-              shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-              shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
-            }}>
-              <SectionLabel>Задания</SectionLabel>
-              <AssignmentRingsChart stats={categoryStats} colors={colors} />
-            </View>
-
-            <LinearGradient
-              colors={gradients.action as unknown as string[]}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={{
-                flex: 1, borderRadius: radii.md, padding: 14,
-                justifyContent: "center",
-                shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
-                shadowOpacity: 0.32, shadowRadius: 16, elevation: 6,
-              }}
-            >
-              <View style={{ alignItems: "center", gap: 8 }}>
-                <View style={{
-                  width: 48, height: 48, borderRadius: radii.sm + 2,
-                  backgroundColor: "rgba(255,255,255,0.22)",
-                  justifyContent: "center", alignItems: "center",
-                }}>
-                  <Glyph name="clock" size={24} color="#ffffff" />
-                </View>
-                <Text style={[s.timerValue, { textAlign: "center" }]}>
-                  {formatTime(gameStats?.totalTimeMinutes ?? profile.totalTimeMinutes ?? 0)}
-                </Text>
-                <Text style={[s.timerLabel, { textAlign: "center" }]}>
-                  {gameStats ? `Сегодня: ${formatTime(gameStats.todayMinutes)}` : "За всё время"}
-                </Text>
-              </View>
-            </LinearGradient>
+            <AssignmentsCard
+              stats={categoryStats}
+              replay={replay}
+              title="Задания"
+            />
+            <StudyTimeCard
+              studentId={friendId}
+              totalMinutes={gameStats?.totalTimeMinutes ?? profile.totalTimeMinutes ?? 0}
+              todaySeconds={(gameStats?.todayMinutes ?? 0) * 60}
+              canOpen={canSeeTime}
+            />
           </View>
         </View>
 
