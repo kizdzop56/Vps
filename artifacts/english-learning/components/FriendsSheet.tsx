@@ -6,11 +6,16 @@
 // учитель, а кто одноклассник, можно было только по мелкой подписи.
 //
 // ── Группы вместо ровного списка ────────────────────────────────────────────
-// Учитель, входящие запросы и друзья — разные отношения, а не «семь
-// контактов». Учитель появляется без запроса и его нельзя удалить, запрос
-// требует ответа прямо сейчас, друг — просто друг. Поэтому список разбит
-// заголовками, а не свален в одну кучу. Входящие идут первыми: это
-// единственное, что ждёт действия.
+// Учитель, родители, входящие запросы и друзья — разные отношения, а не «семь
+// контактов». Учитель и родитель появляются без запроса и их нельзя удалить
+// отсюда, запрос требует ответа прямо сейчас, друг — просто друг. Поэтому
+// список разбит заголовками. Входящие идут первыми: это единственное, что
+// ждёт действия.
+//
+// Родителей ученик раньше не видел вообще: связь создаёт родитель по коду, и в
+// списке связей его просто не было — как будто он не в приложении, хотя он
+// смотрит прогресс. Теперь у него своя ветка, как у учителя
+// (GET /connections/student/parents).
 //
 // ── Очки шкалой ─────────────────────────────────────────────────────────────
 // «2480 очков» само по себе ничего не значит: непонятно, это много или мало.
@@ -18,10 +23,19 @@
 // чем прочитаны цифры. У тех, кто ещё не начинал, шкалы нет вовсе: пустая
 // полоска выглядит как поражение, а человек просто новенький.
 //
+// Очки есть только у друзей. У учителя и родителя их не бывает — они не учат
+// язык, и строка про очки в их карточке была бы неправдой.
+//
 // ── Удаление на месте ───────────────────────────────────────────────────────
 // Подтверждение раскрывается прямо в строке. Отдельное окно поверх окна —
 // это лишний слой ради одного вопроса, а мгновенное удаление по иконке
 // слишком легко задеть пальцем при прокрутке.
+//
+// ── Карточка кода ───────────────────────────────────────────────────────────
+// Код набран белым по фиолетовой заливке. Прошлый вариант был бледной
+// подложкой с тёмными буквами: код сливался с фоном листа и не читался как
+// главное на экране. Здесь он единственное, ради чего вкладку открывают, —
+// значит, должен быть самым контрастным пятном.
 //
 // ── Закрытие ────────────────────────────────────────────────────────────────
 // Одна липкая кнопка «Закрыть» поверх листа, прижата к низу. Крестика нет.
@@ -100,10 +114,11 @@ export type FriendRow = {
   direction: "sent" | "received";
 };
 
-export type TeacherItem = {
+/** Учитель или родитель: связь без подтверждения и без очков. */
+export type ConnectionItem = {
   id: number; name: string; username: string;
   avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null;
-  role: string; totalPoints: number; isOnline?: boolean;
+  role: string; isOnline?: boolean;
 };
 
 function plural(n: number, forms: [string, string, string]): string {
@@ -192,7 +207,7 @@ function PersonRow({
   avatarUrl?: string | null;
   online?: boolean;
   note: string;
-  /** Очки. undefined или 0 — строка без шкалы (учитель, новичок). */
+  /** Очки. undefined или 0 — строка без шкалы (учитель, родитель, новичок). */
   points?: number;
   /** Доля от лидера 0…1. */
   ratio?: number;
@@ -231,6 +246,10 @@ function PersonRow({
     pillTone === "tutor" ? colors.primary
       : pillTone === "parent" ? accents.magenta
         : "#8a5a00";
+  const edgeColor =
+    pillTone === "tutor" ? "#c9bdf0"
+      : pillTone === "parent" ? accents.magenta + "4d"
+        : colors.border;
 
   return (
     <Animated.View
@@ -243,8 +262,7 @@ function PersonRow({
       <View style={{ paddingBottom: EDGE }}>
         <View style={{
           position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
-          borderRadius: radii.md,
-          backgroundColor: pillTone === "tutor" ? "#c9bdf0" : colors.border,
+          borderRadius: radii.md, backgroundColor: edgeColor,
         }} />
 
         <Animated.View style={{ transform: [{ translateY: press }] }}>
@@ -453,6 +471,87 @@ function Segmented<T extends string>({
   );
 }
 
+// ── Карточка своего кода ────────────────────────────────────────────────────
+
+/**
+ * Код набран белым по фиолетовой заливке.
+ *
+ * Прошлый вариант был бледной подложкой с тёмными буквами: на светлом листе
+ * код терялся, хотя ради него вкладку и открывают. Заливка делает его самым
+ * контрастным пятном экрана, а кнопка копирования на ней — белая, чтобы не
+ * спорить с самим кодом за внимание.
+ */
+function CodeCard({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <View style={{ paddingBottom: 6, marginTop: 4 }}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 6, bottom: 0,
+        borderRadius: radii.md, backgroundColor: accents.indigoDeep,
+      }} />
+      <LinearGradient
+        colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={{
+          borderRadius: radii.md, padding: 16, overflow: "hidden",
+          shadowColor: "#6d28d9", shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.32, shadowRadius: 18, elevation: 7,
+        }}
+      >
+        {/* Блик сверху: без него заливка выглядит наклейкой. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.22)", "rgba(255,255,255,0)"]}
+          style={{ position: "absolute", left: 0, right: 0, top: 0, height: "55%" }}
+        />
+
+        <Text style={{
+          fontSize: 10, fontWeight: "900", letterSpacing: 1.2,
+          textTransform: "uppercase", color: "rgba(255,255,255,0.72)",
+        }}>
+          Мой код
+        </Text>
+        <Text style={{
+          fontSize: 32, fontWeight: "900", letterSpacing: 7, marginTop: 6,
+          color: "#ffffff", fontVariant: ["tabular-nums"],
+        }}>
+          {code}
+        </Text>
+        <Text style={{
+          fontSize: 12.5, fontWeight: "700", color: "rgba(255,255,255,0.82)",
+          marginTop: 6, maxWidth: 230, lineHeight: 17,
+        }}>
+          Назови его другу, учителю или родителю, чтобы они нашли тебя.
+        </Text>
+
+        <Pressable
+          onPress={() => {
+            Clipboard.setString(code);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1800);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Скопировать код"
+          style={({ pressed }) => ({
+            position: "absolute", top: 14, right: 14,
+            flexDirection: "row", alignItems: "center", gap: 6,
+            backgroundColor: copied ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.22)",
+            borderRadius: 13, paddingHorizontal: 13, paddingVertical: 9,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Glyph name={copied ? "check" : "copy"} size={15} color={copied ? "#5b21b6" : "#ffffff"} />
+          <Text style={{ fontSize: 13, fontWeight: "900", color: copied ? "#5b21b6" : "#ffffff" }}>
+            {copied ? "Готово" : "Копировать"}
+          </Text>
+        </Pressable>
+      </LinearGradient>
+    </View>
+  );
+}
+
 // ── Лист ────────────────────────────────────────────────────────────────────
 
 export interface FriendsSheetProps {
@@ -468,7 +567,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
 
   const [tab, setTab] = useState<"list" | "add">("list");
   const [friends, setFriends] = useState<FriendRow[]>([]);
-  const [teachers, setTeachers] = useState<TeacherItem[]>([]);
+  const [teachers, setTeachers] = useState<ConnectionItem[]>([]);
+  const [parents, setParents] = useState<ConnectionItem[]>([]);
   const [loadingList, setLoadingList] = useState(false);
 
   const [addMode, setAddMode] = useState<"code" | "username">("code");
@@ -478,7 +578,6 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
   const [searching, setSearching] = useState(false);
   const [sending, setSending] = useState(false);
   const [addError, setAddError] = useState("");
-  const [codeCopied, setCodeCopied] = useState(false);
 
   // Подтверждение удаления раскрывается в самой строке.
   const [removing, setRemoving] = useState<number | null>(null);
@@ -490,14 +589,19 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
   const loadFriends = useCallback(async () => {
     setLoadingList(true);
     try {
-      const [fr, tc] = await Promise.all([
+      // Три списка одним заходом. allSettled, а не all: если родителей вдруг
+      // не отдали (старый сервер без эндпоинта), друзья всё равно покажутся.
+      const [fr, tc, pr] = await Promise.allSettled([
         apiFetch("/api/connections/friends"),
         apiFetch("/api/connections/student/teachers"),
+        apiFetch("/api/connections/student/parents"),
       ]);
-      setFriends(Array.isArray(fr) ? fr : []);
-      setTeachers(Array.isArray(tc) ? tc : []);
-    } catch { /* список просто останется прежним */ }
-    finally { setLoadingList(false); }
+      if (fr.status === "fulfilled") setFriends(Array.isArray(fr.value) ? fr.value : []);
+      if (tc.status === "fulfilled") setTeachers(Array.isArray(tc.value) ? tc.value : []);
+      if (pr.status === "fulfilled") setParents(Array.isArray(pr.value) ? pr.value : []);
+    } finally {
+      setLoadingList(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -602,7 +706,11 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
     (a, b) => (b.user.totalPoints ?? 0) - (a.user.totalPoints ?? 0),
   );
 
-  const total = accepted.length + teachers.length;
+  const total = accepted.length + teachers.length + parents.length;
+  const nothingYet =
+    accepted.length === 0 && teachers.length === 0 &&
+    parents.length === 0 && incoming.length === 0;
+
   const stickyBottom = 16 + insets.bottom;
   const scrollPad = stickyBottom + STICKY_H + STICKY_FADE;
 
@@ -654,7 +762,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
               />
 
               {tab === "list" ? (
-                loadingList && friends.length === 0 && teachers.length === 0 ? (
+                loadingList && nothingYet ? (
                   <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
                 ) : (
                   <>
@@ -729,6 +837,29 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                       </>
                     )}
 
+                    {/* Родители: своя ветка, как у учителя. Очков у них нет —
+                        они не учат язык, а следят за ребёнком. */}
+                    {parents.length > 0 && (
+                      <>
+                        <GroupLabel title={parents.length > 1 ? "Родители" : "Родитель"} />
+                        {parents.map((p) => (
+                          <PersonRow
+                            key={p.id}
+                            index={nextIndex()}
+                            name={p.name}
+                            emoji={p.avatarEmoji}
+                            color={p.avatarColor ?? "#ec4899"}
+                            avatarUrl={p.avatarUrl}
+                            online={p.isOnline}
+                            note={p.isOnline ? "В сети · видит твой прогресс" : "Видит твой прогресс"}
+                            pill="Родитель"
+                            pillTone="parent"
+                            onPress={() => { onClose(); onOpenFriend(p.id); }}
+                          />
+                        ))}
+                      </>
+                    )}
+
                     {sortedFriends.length > 0 && (
                       <>
                         <GroupLabel title="Друзья" count={sortedFriends.length} />
@@ -790,7 +921,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
 
                     {/* Пусто: экран объясняет обмен кодами, а не сообщает,
                         что друзей нет. */}
-                    {accepted.length === 0 && teachers.length === 0 && incoming.length === 0 && (
+                    {nothingYet && (
                       <View style={{ alignItems: "center", paddingTop: 30, paddingBottom: 8 }}>
                         <View style={{
                           width: 74, height: 74, borderRadius: 26, marginBottom: 16,
@@ -846,60 +977,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
               ) : (
                 <>
                   {/* Свой код и поиск чужого — одна задача: поменяться кодами. */}
-                  {!!inviteCode && (
-                    <View style={{ paddingBottom: 5, marginTop: 4 }}>
-                      <View style={{
-                        position: "absolute", left: 0, right: 0, top: 5, bottom: 0,
-                        borderRadius: radii.md, backgroundColor: "#c9bdf0",
-                      }} />
-                      <View style={{
-                        backgroundColor: colors.primary + "0e",
-                        borderWidth: 1, borderColor: colors.primary + "2b",
-                        borderRadius: radii.md, padding: 16,
-                      }}>
-                        <Text style={{
-                          fontSize: 10, fontWeight: "900", letterSpacing: 1.2,
-                          textTransform: "uppercase", color: colors.primary,
-                        }}>
-                          Мой код
-                        </Text>
-                        <Text style={{
-                          fontSize: 30, fontWeight: "900", letterSpacing: 6, marginTop: 6,
-                          color: colors.foreground, fontVariant: ["tabular-nums"],
-                        }}>
-                          {inviteCode}
-                        </Text>
-                        <Text style={{
-                          fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground,
-                          marginTop: 4, maxWidth: 220, lineHeight: 17,
-                        }}>
-                          Назови его другу, учителю или родителю, чтобы они нашли тебя.
-                        </Text>
-
-                        <Pressable
-                          onPress={() => {
-                            Clipboard.setString(inviteCode ?? "");
-                            setCodeCopied(true);
-                            setTimeout(() => setCodeCopied(false), 1800);
-                          }}
-                          accessibilityRole="button"
-                          accessibilityLabel="Скопировать код"
-                          style={({ pressed }) => ({
-                            position: "absolute", top: 14, right: 14,
-                            flexDirection: "row", alignItems: "center", gap: 6,
-                            backgroundColor: codeCopied ? colors.success : colors.primary,
-                            borderRadius: 13, paddingHorizontal: 13, paddingVertical: 9,
-                            opacity: pressed ? 0.85 : 1,
-                          })}
-                        >
-                          <Glyph name={codeCopied ? "check" : "copy"} size={15} color="#fff" />
-                          <Text style={{ fontSize: 13, fontWeight: "900", color: "#fff" }}>
-                            {codeCopied ? "Готово" : "Копировать"}
-                          </Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  )}
+                  {!!inviteCode && <CodeCard code={inviteCode} />}
 
                   <GroupLabel title="Найти человека" />
 
