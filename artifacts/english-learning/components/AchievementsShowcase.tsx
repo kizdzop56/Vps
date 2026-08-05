@@ -1,27 +1,20 @@
 // Витрина наград.
 //
 // Медали рисуются готовыми рендерами из assets/badges/medals (поле image в
-// constants/achievements.ts). Поле emoji там тоже есть, но на экран оно больше
-// не выводится: если картинка вдруг не найдена, показываем глиф из своего
-// набора, подобранный по сложности награды. Файл данных не меняется.
+// constants/achievements.ts). Если картинка не найдена, показываем глиф из
+// своего набора, подобранный по сложности. Файл данных не меняется.
 //
-// Полученная медаль стоит на подставке с тёмной нижней гранью и светится в
-// своём цвете — тот же физический приём, что у кнопок. Заблокированная не
-// прячется: пунктирная рамка с замком тянет вперёд сильнее, чем пустое место.
+// ── Компактный вид ──────────────────────────────────────────────────────────
+// Раньше блок занимал пол-экрана: карточка следующей награды, сетка полученных
+// и раскрытый по умолчанию список из ~36 закрытых медалей. Три десятка
+// одинаковых замков висели постоянно и не сообщали ничего сверх счётчика.
 //
-// Прогресс до награды считает utils/achievementProgress.ts: сверху блок
-// «Следующая награда» с полосой и остатком, у каждой закрытой медали в списке
-// своя тонкая полоса.
+// Теперь сверху: стопка последних медалей веером, счётчик «14 / 50», разбивка
+// по сложности и строка ближайшей цели. Полный список свёрнут и раскрывается
+// стрелкой на месте — новых экранов и модальных окон блок не создаёт.
 //
-// ── ВНИМАНИЕ, три неудачные попытки ─────────────────────────────────────────
-// Этот блок трижды пытались заменить компактной версией (стопка медалей,
-// разбивка по сложности, свёрнутый список). Каждый раз профиль на вебе
-// открывался белым экраном — включая вариант вообще без новых модальных окон.
-// То есть дело НЕ в структуре разметки блока.
-//
-// Следующая попытка имеет смысл только с текстом ошибки из консоли браузера
-// (или после проверки, что прод-сборка вообще собирается: prod-start падает
-// на typecheck и оставляет старый бандл). Без этого правки здесь бесполезны.
+// Единственный Modal здесь — карточка награды (BadgeDetailModal). Она работала
+// всегда и осталась нетронутой.
 import React, { useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
@@ -39,18 +32,11 @@ interface AchievementsShowcaseProps {
   locked?: Achievement[];
   showLocked?: boolean;
   title?: string;
-  /**
-   * Показатели ученика. Без них прогресс посчитать нечем — блок «Следующая
-   * награда» и полосы под медалями просто не рисуются, остальное работает
-   * как раньше.
-   */
+  /** Показатели ученика. Без них прогресс посчитать нечем. */
   stats?: AchievementStats;
 }
 
-/**
- * Фолбэк-глиф вместо эмодзи, когда у награды нет картинки. Подбирается по
- * сложности: лёгкая — вспышка, средняя — медаль, сложная — трофей.
- */
+/** Фолбэк-глиф: лёгкая — вспышка, средняя — медаль, сложная — трофей. */
 function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
   if (difficulty === "hard") return "trophy";
   if (difficulty === "medium") return "medal";
@@ -75,70 +61,6 @@ function ProgressTrack({
         style={{ height: "100%", width: `${Math.max(percent, 3)}%`, borderRadius: radii.pill }}
       />
     </View>
-  );
-}
-
-/**
- * Блок «Следующая награда»: крупная карточка над сеткой медалей.
- * Отвечает на единственный вопрос, который ученик задаёт разделу: «что мне
- * сделать прямо сейчас». Список из 50 медалей на него не отвечает.
- */
-function NextRewardCard({
-  achievement, percent, remainingText, counterText, onPress,
-}: {
-  achievement: Achievement;
-  percent: number;
-  remainingText: string;
-  counterText: string;
-  onPress: () => void;
-}) {
-  const colors = useColors();
-
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.nextCard,
-        {
-          backgroundColor: achievement.bgColor,
-          borderColor: achievement.color + "44",
-          shadowColor: achievement.color,
-          opacity: pressed ? 0.9 : 1,
-        },
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={`Следующая награда «${achievement.title}». ${remainingText}`}
-    >
-      <View style={styles.nextTop}>
-        {/* Медаль без замка: цель должна выглядеть привлекательной. */}
-        <View style={[styles.nextBadge, { borderColor: achievement.color + "55" }]}>
-          {achievement.image ? (
-            <Image source={achievement.image} style={styles.nextBadgeImg} resizeMode="cover" />
-          ) : (
-            <Glyph name={fallbackGlyph(achievement.difficulty)} size={30} color={achievement.color} />
-          )}
-        </View>
-
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.nextLabel, { color: achievement.color }]}>Следующая награда</Text>
-          <Text style={[styles.nextTitle, { color: colors.foreground }]} numberOfLines={1}>
-            {achievement.title}
-          </Text>
-          <Text style={[styles.nextRemaining, { color: achievement.color }]} numberOfLines={2}>
-            {remainingText}
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.nextBarRow}>
-        <View style={{ flex: 1 }}>
-          <ProgressTrack percent={percent} color={achievement.color} height={10} />
-        </View>
-        <Text style={[styles.nextPercent, { color: achievement.color }]}>{percent}%</Text>
-      </View>
-
-      <Text style={[styles.nextCounter, { color: colors.mutedForeground }]}>{counterText}</Text>
-    </Pressable>
   );
 }
 
@@ -366,14 +288,31 @@ export function AchievementsShowcase({
 }: AchievementsShowcaseProps) {
   const colors = useColors();
   const [selected, setSelected] = useState<{ achievement: Achievement; isLocked: boolean } | null>(null);
-  const [lockedVisible, setLockedVisible] = useState(showLocked);
+  // Список свёрнут: ради этого блок и переделывали.
+  const [expanded, setExpanded] = useState(false);
 
   const total = unlocked.length + locked.length;
 
+  // Ближайшая цель. Пересчитывается только при смене статов или списка.
   const next = React.useMemo(
     () => (stats ? nextAchievement(locked, stats) : null),
     [locked, stats],
   );
+
+  // Три последние медали для стопки: свежая сверху.
+  const stack = unlocked.slice(-3).reverse();
+
+  // Разбивка по сложности отвечает на вопрос «куда расти»: по общему счётчику
+  // не видно, что лёгкие почти собраны, а сложных нет вовсе.
+  const tiers = React.useMemo(() => {
+    const count = (list: Achievement[], d: AchievementDifficulty) =>
+      list.filter((a) => a.difficulty === d).length;
+    return [
+      { key: "easy", label: "Лёгкие", got: count(unlocked, "easy"), total: count(unlocked, "easy") + count(locked, "easy") },
+      { key: "medium", label: "Средние", got: count(unlocked, "medium"), total: count(unlocked, "medium") + count(locked, "medium") },
+      { key: "hard", label: "Сложные", got: count(unlocked, "hard"), total: count(unlocked, "hard") + count(locked, "hard") },
+    ];
+  }, [unlocked, locked]);
 
   return (
     <View style={[
@@ -384,93 +323,156 @@ export function AchievementsShowcase({
         shadowColor: accents.violetDeep,
       },
     ]}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={[styles.headerIcon, { backgroundColor: accents.gold + "22" }]}>
-            <Glyph name="trophy" size={15} color={accents.amber} />
-          </View>
-          <Text style={[styles.headerTitle, { color: colors.foreground }]}>{title}</Text>
+      {/* ── Стопка медалей и счётчик ── */}
+      <View style={styles.lead}>
+        <View style={[styles.stack, { width: stack.length > 0 ? 52 + (stack.length - 1) * 15 : 52 }]}>
+          {stack.length === 0 ? (
+            <View style={styles.stackEmpty}>
+              <Glyph name="trophy" size={22} color="rgba(139,92,246,0.45)" />
+            </View>
+          ) : (
+            stack.map((a, i) => (
+              <View
+                key={a.id}
+                style={[
+                  styles.stackItem,
+                  {
+                    left: i * 15,
+                    zIndex: stack.length - i,
+                    opacity: 1 - i * 0.12,
+                    borderColor: a.color + "66",
+                    backgroundColor: a.bgColor,
+                  },
+                ]}
+              >
+                {a.image ? (
+                  <Image source={a.image} style={styles.stackImg} resizeMode="cover" />
+                ) : (
+                  <Glyph name={fallbackGlyph(a.difficulty)} size={24} color={a.color} />
+                )}
+              </View>
+            ))
+          )}
         </View>
-        <View style={[styles.countPill, { backgroundColor: colors.primary + "12", borderColor: colors.primary + "30" }]}>
-          <Text style={[styles.countText, { color: colors.primary }]}>
-            {unlocked.length}{showLocked ? `/${total}` : ""} наград
+
+        <View style={styles.leadText}>
+          <Text style={[styles.count, { color: colors.foreground }]}>
+            {unlocked.length}
+            <Text style={[styles.countTotal, { color: colors.mutedForeground }]}> / {total}</Text>
           </Text>
+          <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
         </View>
+
+        <TouchableOpacity
+          style={[styles.openBtn, { backgroundColor: colors.primary + "14" }]}
+          onPress={() => setExpanded((v) => !v)}
+          activeOpacity={0.75}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? "Свернуть список наград" : "Показать все награды"}
+        >
+          <View style={{ transform: [{ rotate: expanded ? "-90deg" : "90deg" }] }}>
+            <Glyph name="chevron" size={15} color={colors.primary} />
+          </View>
+        </TouchableOpacity>
       </View>
 
+      {/* ── Разбивка по сложности ── */}
+      <View style={styles.tiers}>
+        {tiers.map((t) => {
+          const complete = t.total > 0 && t.got === t.total;
+          const tint = t.got === 0
+            ? colors.mutedForeground
+            : complete ? accents.amber : colors.primary;
+          return (
+            <View
+              key={t.key}
+              style={[styles.tier, { backgroundColor: colors.muted, borderColor: colors.border }]}
+            >
+              <Text style={[styles.tierLabel, { color: colors.mutedForeground }]}>{t.label}</Text>
+              <Text style={[styles.tierValue, { color: tint }]}>{t.got}/{t.total}</Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* ── Ближайшая награда ── */}
       {next && (
-        <NextRewardCard
-          achievement={next.achievement}
-          percent={next.progress.percent}
-          remainingText={next.progress.remainingText}
-          counterText={next.progress.counterText}
+        <TouchableOpacity
+          style={[styles.goal, { borderTopColor: colors.border }]}
+          activeOpacity={0.75}
           onPress={() => setSelected({ achievement: next.achievement, isLocked: true })}
-        />
+        >
+          <View style={[styles.goalMedal, {
+            borderColor: next.achievement.color + "66",
+            backgroundColor: next.achievement.bgColor,
+          }]}>
+            {next.achievement.image ? (
+              <Image source={next.achievement.image} style={styles.goalMedalImg} resizeMode="cover" />
+            ) : (
+              <Glyph name={fallbackGlyph(next.achievement.difficulty)} size={16} color={next.achievement.color} />
+            )}
+          </View>
+          <View style={styles.goalText}>
+            <Text style={[styles.goalTitle, { color: colors.foreground }]} numberOfLines={1}>
+              {next.progress.remainingText}
+            </Text>
+            <View style={{ marginTop: 5 }}>
+              <ProgressTrack percent={next.progress.percent} color={next.achievement.color} height={5} />
+            </View>
+          </View>
+          <Text style={[styles.goalPercent, { color: next.achievement.color }]}>
+            {next.progress.percent}%
+          </Text>
+        </TouchableOpacity>
       )}
 
-      {unlocked.length === 0 && !showLocked ? (
-        <View style={styles.emptyState}>
-          <View style={[styles.emptyIcon, { backgroundColor: colors.primary + "12", borderColor: colors.primary + "28" }]}>
-            <Glyph name="trophy" size={26} color={colors.primary} />
-          </View>
-          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Пока нет полученных наград
-          </Text>
-          <Text style={[styles.emptyHint, { color: colors.mutedForeground }]}>
-            Выполни первое задание — первая медаль придёт сразу
-          </Text>
-        </View>
-      ) : (
-        <>
+      {/* Пустое состояние объясняет, что делать, а не констатирует пустоту. */}
+      {unlocked.length === 0 && !next && (
+        <Text style={[styles.empty, { color: colors.mutedForeground }]}>
+          Выполни первое задание — первая медаль придёт сразу
+        </Text>
+      )}
+
+      {/* ── Полный список: раскрывается на месте ── */}
+      {expanded && (
+        <View style={[styles.listBox, { borderTopColor: colors.border }]}>
           {unlocked.length > 0 && (
-            <View style={styles.grid}>
-              {unlocked.map((a) => (
-                <BadgeCard
-                  key={a.id}
-                  achievement={a}
-                  isLocked={false}
-                  onPress={() => setSelected({ achievement: a, isLocked: false })}
-                />
-              ))}
-            </View>
+            <>
+              <Text style={[styles.listLabel, { color: colors.mutedForeground }]}>
+                Получено · {unlocked.length}
+              </Text>
+              <View style={styles.grid}>
+                {unlocked.map((a) => (
+                  <BadgeCard
+                    key={a.id}
+                    achievement={a}
+                    isLocked={false}
+                    onPress={() => setSelected({ achievement: a, isLocked: false })}
+                  />
+                ))}
+              </View>
+            </>
           )}
 
           {showLocked && locked.length > 0 && (
             <>
-              <TouchableOpacity
-                style={[styles.lockedToggle, { borderColor: colors.border }]}
-                onPress={() => setLockedVisible((v) => !v)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.lockedToggleLeft}>
-                  <Glyph name="lock" size={13} color={colors.mutedForeground} />
-                  <Text style={[styles.lockedToggleText, { color: colors.mutedForeground }]}>
-                    Ещё не получены · {locked.length}
-                  </Text>
-                </View>
-                <View style={{ transform: [{ rotate: lockedVisible ? "-90deg" : "90deg" }] }}>
-                  <Glyph name="chevron" size={14} color={colors.mutedForeground} />
-                </View>
-              </TouchableOpacity>
-
-              {lockedVisible && (
-                <View style={[styles.lockedSection, { backgroundColor: "rgba(220,210,255,0.18)", borderColor: colors.border }]}>
-                  <View style={styles.grid}>
-                    {locked.map((a) => (
-                      <BadgeCard
-                        key={a.id}
-                        achievement={a}
-                        isLocked={true}
-                        percent={stats ? achievementProgress(a, stats)?.percent : undefined}
-                        onPress={() => setSelected({ achievement: a, isLocked: true })}
-                      />
-                    ))}
-                  </View>
-                </View>
-              )}
+              <Text style={[styles.listLabel, { color: colors.mutedForeground, marginTop: 18 }]}>
+                Ещё не получены · {locked.length}
+              </Text>
+              <View style={styles.grid}>
+                {locked.map((a) => (
+                  <BadgeCard
+                    key={a.id}
+                    achievement={a}
+                    isLocked={true}
+                    percent={stats ? achievementProgress(a, stats)?.percent : undefined}
+                    onPress={() => setSelected({ achievement: a, isLocked: true })}
+                  />
+                ))}
+              </View>
             </>
           )}
-        </>
+        </View>
       )}
 
       <BadgeDetailModal
@@ -485,38 +487,67 @@ export function AchievementsShowcase({
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: radii.md, padding: 16, marginBottom: 16, borderWidth: 1,
+    borderRadius: radii.md, padding: 15, marginBottom: 16, borderWidth: 1,
     marginHorizontal: 20,
     shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.13, shadowRadius: 15, elevation: 3,
   },
 
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-  headerIcon: { width: 28, height: 28, borderRadius: 9, justifyContent: "center", alignItems: "center" },
-  headerTitle: { fontSize: 14, fontWeight: "800", letterSpacing: 0.2 },
-  countPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.pill, borderWidth: 1 },
-  countText: { fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
-
-  nextCard: {
-    borderRadius: radii.md, borderWidth: 1.5, padding: 14, marginBottom: 16,
-    shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.22, shadowRadius: 16, elevation: 5,
-  },
-  nextTop: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 12 },
-  nextBadge: {
-    width: 58, height: 58, borderRadius: 29, borderWidth: 2,
+  // ── Стопка ──
+  lead: { flexDirection: "row", alignItems: "center", gap: 14 },
+  stack: { height: 56, justifyContent: "center" },
+  stackItem: {
+    position: "absolute",
+    width: 52, height: 52, borderRadius: 26, borderWidth: 2,
     overflow: "hidden", alignItems: "center", justifyContent: "center",
-    backgroundColor: "#ffffff",
   },
-  nextBadgeImg: { width: 58, height: 58 },
-  nextLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1, textTransform: "uppercase" },
-  nextTitle: { fontSize: 16, fontWeight: "900", letterSpacing: -0.3, marginTop: 2 },
-  nextRemaining: { fontSize: 12.5, fontWeight: "800", marginTop: 3, lineHeight: 17 },
-  nextBarRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  nextPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"], minWidth: 38, textAlign: "right" },
-  nextCounter: { fontSize: 11.5, marginTop: 6, fontVariant: ["tabular-nums"] },
+  stackImg: { width: 52, height: 52 },
+  stackEmpty: {
+    width: 52, height: 52, borderRadius: 26,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.35)",
+    backgroundColor: "rgba(160,140,220,0.1)",
+  },
+  leadText: { flex: 1, minWidth: 0 },
+  count: { fontSize: 27, fontWeight: "900", letterSpacing: -0.9, fontVariant: ["tabular-nums"] },
+  countTotal: { fontSize: 15, fontWeight: "800" },
+  countCap: { fontSize: 12, fontWeight: "700", marginTop: 2 },
+  openBtn: {
+    width: 34, height: 34, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+  },
 
+  // ── Уровни ──
+  tiers: { flexDirection: "row", gap: 6, marginTop: 14 },
+  tier: {
+    flex: 1, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 6,
+    alignItems: "center", borderWidth: 1,
+  },
+  tierLabel: { fontSize: 9, fontWeight: "900", letterSpacing: 0.7, textTransform: "uppercase" },
+  tierValue: { fontSize: 15, fontWeight: "900", marginTop: 3, fontVariant: ["tabular-nums"] },
+
+  // ── Ближайшая награда ──
+  goal: {
+    flexDirection: "row", alignItems: "center", gap: 11,
+    marginTop: 13, paddingTop: 13, borderTopWidth: 1,
+  },
+  goalMedal: {
+    width: 34, height: 34, borderRadius: 17, borderWidth: 2,
+    overflow: "hidden", alignItems: "center", justifyContent: "center",
+  },
+  goalMedalImg: { width: 34, height: 34 },
+  goalText: { flex: 1, minWidth: 0 },
+  goalTitle: { fontSize: 12.5, fontWeight: "800" },
+  goalPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
+
+  empty: { fontSize: 12.5, marginTop: 13, lineHeight: 18 },
+
+  // ── Полный список ──
+  listBox: { marginTop: 14, paddingTop: 14, borderTopWidth: 1 },
+  listLabel: {
+    fontSize: 10, fontWeight: "900", letterSpacing: 1,
+    textTransform: "uppercase", marginBottom: 10,
+  },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-
   badgeWrap: { width: "22%", alignItems: "center" },
   badgeRing: {
     width: 60, height: 60, borderRadius: 30, borderWidth: 2,
@@ -525,22 +556,7 @@ const styles = StyleSheet.create({
   badgeImg: { width: 60, height: 60 },
   badgeTitle: { fontSize: 9, fontWeight: "800", textAlign: "center", marginTop: 5, lineHeight: 12 },
 
-  lockedToggle: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    marginTop: 14, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radii.sm - 2, borderWidth: 1,
-  },
-  lockedToggleLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
-  lockedToggleText: { fontSize: 12, fontWeight: "700" },
-  lockedSection: { marginTop: 10, borderRadius: radii.sm, padding: 12, borderWidth: 1 },
-
-  emptyState: { alignItems: "center", paddingVertical: 24, gap: 8 },
-  emptyIcon: {
-    width: 56, height: 56, borderRadius: radii.md, borderWidth: 1,
-    justifyContent: "center", alignItems: "center",
-  },
-  emptyText: { fontSize: 13, fontWeight: "800" },
-  emptyHint: { fontSize: 12, textAlign: "center", maxWidth: 240, lineHeight: 17 },
-
+  // ── Карточка награды ──
   modalOverlay: { flex: 1, backgroundColor: "rgba(15,12,40,0.55)", justifyContent: "center", alignItems: "center", padding: 28 },
   modalCard: {
     borderRadius: radii.lg, padding: 28, width: "100%",
