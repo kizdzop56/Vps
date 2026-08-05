@@ -15,7 +15,9 @@
 //   AssignmentsCard  — плитка заданий с разбором результатов
 //                      (components/AssignmentsCard.tsx);
 //   StudyTimeCard    — плитка времени с живыми часами и разбором по дням
-//                      (components/StudyTimeCard.tsx).
+//                      (components/StudyTimeCard.tsx);
+//   FriendsSheet     — лист связей: учитель, друзья, добавление по коду
+//                      (components/FriendsSheet.tsx).
 //
 // Все карточки статистики устроены одинаково: нижняя грань и графики, которые
 // вырастают от нуля при появлении. Плоских карточек рядом с объёмными на этом
@@ -29,6 +31,12 @@
 // карточки, которые по его изменению запускают свои шкалы с нуля.
 // Важно: внутри интервала обновления данных он не растёт — иначе графики
 // дёргались бы сами по себе раз в минуту.
+//
+// ── Нижний отступ ───────────────────────────────────────────────────────────
+// Панель вкладок плавающая и лежит ПОВЕРХ содержимого. Отступ снизу берётся
+// из screenBottom(insets), где её высота посчитана один раз
+// (constants/layout.ts): иначе последний блок экрана уезжает под панель, и
+// докрутить его нечем.
 //
 // Все кнопки экрана — ChunkyButton из GameKit, включая выход из аккаунта
 // (тон danger).
@@ -44,12 +52,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
-  Platform, AppState, TextInput, Modal, FlatList, ActivityIndicator,
-  Clipboard, Alert, KeyboardAvoidingView,
+  Platform, AppState, Modal, FlatList, Alert,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
-import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
@@ -67,6 +73,7 @@ import { AboutCard } from "@/components/AboutCard";
 import { ScoreCard } from "@/components/ScoreCard";
 import { StudyTimeCard } from "@/components/StudyTimeCard";
 import { AssignmentsCard } from "@/components/AssignmentsCard";
+import { FriendsSheet } from "@/components/FriendsSheet";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph } from "@/components/ui/Glyph";
@@ -74,7 +81,7 @@ import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { buildDailyPlan } from "@/utils/dailyQuests";
 import { accents, radii } from "@/constants/theme";
-import { screenTop } from "@/constants/layout";
+import { screenBottom, screenTop } from "@/constants/layout";
 
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
@@ -281,513 +288,6 @@ async function apiFetch(path: string, opts?: RequestInit) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Ошибка сервера");
   return data;
-}
-
-type FriendRow = {
-  friendshipId: number;
-  user: { id: number; name: string; username: string; avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null; totalPoints: number; isOnline?: boolean };
-  status: "pending" | "accepted";
-  direction: "sent" | "received";
-};
-
-type TeacherItem = {
-  id: number; name: string; username: string;
-  avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null;
-  role: string; totalPoints: number; isOnline?: boolean;
-};
-
-function FriendsModal({
-  visible, onClose, onOpenFriend, inviteCode,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onOpenFriend: (id: number) => void;
-  inviteCode?: string | null;
-}) {
-  const colors = useColors();
-  const [tab, setTab] = useState<"list" | "add">("list");
-  const [friends, setFriends] = useState<FriendRow[]>([]);
-  const [teachers, setTeachers] = useState<TeacherItem[]>([]);
-  const [loadingList, setLoadingList] = useState(false);
-  const [addMode, setAddMode] = useState<"code" | "username">("code");
-  const [code, setCode] = useState("");
-  const [usernameInput, setUsernameInput] = useState("");
-  const [found, setFound] = useState<any>(null);
-  const [searching, setSearching] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [addError, setAddError] = useState("");
-  const [codeCopied, setCodeCopied] = useState(false);
-
-  const loadFriends = useCallback(async () => {
-    setLoadingList(true);
-    try {
-      const [fr, tc] = await Promise.all([
-        apiFetch("/api/connections/friends"),
-        apiFetch("/api/connections/student/teachers"),
-      ]);
-      setFriends(Array.isArray(fr) ? fr : []);
-      setTeachers(Array.isArray(tc) ? tc : []);
-    } catch { /* ignore */ }
-    finally { setLoadingList(false); }
-  }, []);
-
-  const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const searchIdRef = useRef(0);
-
-  useEffect(() => {
-    if (visible) {
-      loadFriends();
-      pollerRef.current = setInterval(loadFriends, 30_000);
-    } else {
-      if (pollerRef.current) { clearInterval(pollerRef.current); pollerRef.current = null; }
-    }
-    return () => { if (pollerRef.current) { clearInterval(pollerRef.current); pollerRef.current = null; } };
-  }, [visible, loadFriends]);
-
-  const resetAddForm = () => { setCode(""); setUsernameInput(""); setFound(null); setAddError(""); };
-
-  const handleCodeChange = async (raw: string) => {
-    const t = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    setCode(t);
-    setFound(null);
-    setAddError("");
-
-    if (t.length === 6) {
-      setSearching(true);
-      try {
-        const data = await apiFetch(`/api/connections/by-code/${t}`);
-        if (data.role !== "student") {
-          setAddError("Этот пользователь не является учеником");
-        } else {
-          setFound(data);
-        }
-      } catch {
-        setAddError("Пользователь с таким кодом не найден");
-      } finally {
-        setSearching(false);
-      }
-    }
-  };
-
-  const handleUsernameSearch = async (raw: string) => {
-    const val = raw.replace(/\s/g, "");
-    setUsernameInput(val);
-    setFound(null);
-    setAddError("");
-    if (val.length < 2) return;
-    const reqId = ++searchIdRef.current;
-    setSearching(true);
-    try {
-      const data = await apiFetch(`/api/connections/by-username/${encodeURIComponent(val)}`);
-      if (searchIdRef.current !== reqId) return;
-      if (data.role !== "student") {
-        setAddError("Этот пользователь не является учеником");
-      } else {
-        setFound(data);
-      }
-    } catch (e: any) {
-      if (searchIdRef.current !== reqId) return;
-      setAddError(e?.message || "Пользователь с таким псевдонимом не найден");
-    } finally {
-      if (searchIdRef.current === reqId) setSearching(false);
-    }
-  };
-
-  const sendRequest = async () => {
-    if (!found) return;
-    setConfirming(true); setAddError("");
-    try {
-      const sendCode = found.inviteCode ?? code;
-      await apiFetch("/api/connections/friends/request", { method: "POST", body: JSON.stringify({ code: sendCode }) });
-      await loadFriends();
-      setTab("list"); resetAddForm();
-    } catch (e: any) { setAddError(e.message ?? "Ошибка отправки запроса"); }
-    finally { setConfirming(false); }
-  };
-
-  const acceptRequest = async (id: number) => {
-    await apiFetch(`/api/connections/friends/${id}/accept`, { method: "PATCH" });
-    await loadFriends();
-  };
-
-  const removeOrDecline = async (id: number) => {
-    try {
-      await apiFetch(`/api/connections/friends/${id}`, { method: "DELETE" });
-      setFriends((prev) => prev.filter((f) => f.friendshipId !== id));
-    } catch {
-      setFriends((prev) => prev.filter((f) => f.friendshipId !== id));
-    }
-  };
-
-  const accepted = friends.filter((f) => f.status === "accepted");
-  const pending = friends.filter((f) => f.status === "pending");
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-        <View style={{ flex: 1, backgroundColor: "#00000066", justifyContent: "flex-end" }}>
-        <View style={{ backgroundColor: colors.card, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg, padding: 24, maxHeight: "85%" }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <Text style={{ fontSize: 21, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground }}>Друзья</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
-              <Glyph name="close" size={22} color={colors.mutedForeground} />
-            </Pressable>
-          </View>
-
-          {!!inviteCode && tab === "add" && (
-            <View style={{
-              marginBottom: 16,
-              backgroundColor: colors.primary + "10", borderRadius: radii.md, padding: 16,
-              borderWidth: 1.5, borderColor: colors.primary + "30",
-              flexDirection: "row", alignItems: "center", gap: 14,
-            }}>
-              <View style={{
-                width: 44, height: 44, borderRadius: radii.sm,
-                backgroundColor: colors.primary + "20",
-                justifyContent: "center", alignItems: "center",
-              }}>
-                <Glyph name="key" size={20} color={colors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary, textTransform: "uppercase", letterSpacing: 1 }}>
-                  Мой код
-                </Text>
-                <Text style={{ fontSize: 23, fontWeight: "900", color: colors.primary, letterSpacing: 5, fontVariant: ["tabular-nums"] }}>
-                  {inviteCode}
-                </Text>
-                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 1 }}>
-                  Поделись с учителем, родителем или другом
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => {
-                  Clipboard.setString(inviteCode ?? "");
-                  setCodeCopied(true);
-                  setTimeout(() => setCodeCopied(false), 2000);
-                }}
-                style={({ pressed }) => ({
-                  backgroundColor: codeCopied ? colors.success : colors.primary,
-                  borderRadius: radii.sm - 2, padding: 11,
-                  opacity: pressed ? 0.85 : 1,
-                })}
-              >
-                <Glyph name={codeCopied ? "check" : "copy"} size={18} color="#fff" />
-              </Pressable>
-            </View>
-          )}
-
-          <View style={{ flexDirection: "row", gap: 8, marginBottom: 20 }}>
-            {(["list", "add"] as const).map((t) => {
-              const active = tab === t;
-              return (
-                <TouchableOpacity
-                  key={t}
-                  onPress={() => setTab(t)}
-                  activeOpacity={0.85}
-                  style={{
-                    flex: 1, paddingVertical: 11, borderRadius: radii.sm, alignItems: "center",
-                    backgroundColor: active ? colors.primary : colors.card,
-                    borderWidth: 1, borderColor: active ? colors.primary : colors.border,
-                    ...(active ? {
-                      shadowColor: colors.primary,
-                      shadowOffset: { width: 0, height: 3 },
-                      shadowOpacity: 0.32,
-                      shadowRadius: 9,
-                      elevation: 4,
-                    } : {}),
-                  }}
-                >
-                  <Text style={{ fontSize: 14, fontWeight: "800", color: active ? "#fff" : colors.foreground }}>
-                    {t === "list" ? `Мои друзья (${accepted.length})` : "Добавить"}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {tab === "list" ? (
-            <ScrollView style={{ maxHeight: 400 }}>
-              {loadingList ? (
-                <ActivityIndicator color={colors.primary} style={{ marginTop: 30 }} />
-              ) : (
-                <>
-                  {pending.filter((f) => f.direction === "received").map((f) => (
-                    <View key={f.friendshipId} style={{
-                      flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10,
-                      backgroundColor: accents.magenta + "14", borderRadius: radii.sm + 2, padding: 12,
-                      borderWidth: 1, borderColor: accents.magenta + "33",
-                    }}>
-                      <AnimatedAvatar
-                        size={42}
-                        avatarColor={f.user.avatarColor ?? "#6366f1"}
-                        avatarEmoji={f.user.avatarEmoji}
-                        avatarUrl={(f.user as any).avatarUrl}
-                      />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
-                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Хочет дружить</Text>
-                      </View>
-                      <Pressable onPress={() => acceptRequest(f.friendshipId)} style={{ backgroundColor: colors.primary, borderRadius: 9, padding: 7 }}>
-                        <Glyph name="check" size={16} color="#fff" />
-                      </Pressable>
-                      <Pressable onPress={() => removeOrDecline(f.friendshipId)} style={{ backgroundColor: colors.destructive, borderRadius: 9, padding: 7 }}>
-                        <Glyph name="close" size={16} color="#fff" />
-                      </Pressable>
-                    </View>
-                  ))}
-
-                  {accepted.map((f) => (
-                    <TouchableOpacity
-                      key={f.friendshipId}
-                      activeOpacity={0.7}
-                      onPress={() => { onClose(); onOpenFriend(f.user.id); }}
-                      style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border }}
-                    >
-                      <View style={{ position: "relative" }}>
-                        <AnimatedAvatar
-                          size={42}
-                          avatarColor={f.user.avatarColor ?? "#6366f1"}
-                          avatarEmoji={f.user.avatarEmoji}
-                          avatarUrl={(f.user as any).avatarUrl}
-                        />
-                        {f.user.isOnline && (
-                          <View style={{
-                            position: "absolute", bottom: 0, right: 0,
-                            width: 13, height: 13, borderRadius: 7,
-                            backgroundColor: colors.success,
-                            borderWidth: 2, borderColor: colors.card,
-                          }} />
-                        )}
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 1 }}>
-                          {f.user.isOnline ? (
-                            <Text style={{ fontSize: 12, fontWeight: "700", color: colors.success }}>В сети</Text>
-                          ) : (
-                            <>
-                              <Glyph name="star" size={11} color={colors.mutedForeground} />
-                              <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-                                {f.user.totalPoints} очков
-                              </Text>
-                            </>
-                          )}
-                        </View>
-                      </View>
-                      <Glyph name="chevron" size={16} color={colors.mutedForeground} />
-                      <Pressable
-                        onPress={(e) => { e.stopPropagation(); removeOrDecline(f.friendshipId); }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Glyph name="userX" size={18} color={colors.mutedForeground} />
-                      </Pressable>
-                    </TouchableOpacity>
-                  ))}
-
-                  {pending.filter((f) => f.direction === "sent").map((f) => (
-                    <View key={f.friendshipId} style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border, opacity: 0.6 }}>
-                      <AnimatedAvatar
-                        size={42}
-                        avatarColor={f.user.avatarColor ?? "#6366f1"}
-                        avatarEmoji={f.user.avatarEmoji}
-                        avatarUrl={(f.user as any).avatarUrl}
-                      />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{f.user.name}</Text>
-                        <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Запрос отправлен…</Text>
-                      </View>
-                    </View>
-                  ))}
-
-                  {teachers.length > 0 && (
-                    <>
-                      <SectionLabel style={{ marginTop: friends.length > 0 ? 16 : 0 }}>
-                        Мои учителя · {teachers.length}
-                      </SectionLabel>
-                      {teachers.map((t) => (
-                        <TouchableOpacity
-                          key={t.id}
-                          activeOpacity={0.75}
-                          onPress={() => { onClose(); onOpenFriend(t.id); }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10, backgroundColor: colors.card, borderRadius: radii.sm + 2, padding: 12, borderWidth: 1, borderColor: colors.border }}
-                        >
-                          <View style={{ position: "relative" }}>
-                            <AnimatedAvatar
-                              size={42}
-                              avatarColor={t.avatarColor ?? "#6366f1"}
-                              avatarEmoji={t.avatarEmoji}
-                              avatarUrl={(t as any).avatarUrl}
-                            />
-                            {t.isOnline && (
-                              <View style={{
-                                position: "absolute", bottom: 0, right: 0,
-                                width: 13, height: 13, borderRadius: 7,
-                                backgroundColor: colors.success,
-                                borderWidth: 2, borderColor: colors.card,
-                              }} />
-                            )}
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{t.name}</Text>
-                            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 1 }}>
-                              {t.isOnline ? (
-                                <Text style={{ fontSize: 12, fontWeight: "700", color: colors.success }}>В сети</Text>
-                              ) : (
-                                <>
-                                  <Glyph name="cap" size={12} color={colors.mutedForeground} />
-                                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Учитель</Text>
-                                </>
-                              )}
-                            </View>
-                          </View>
-                          <Glyph name="chevron" size={16} color={colors.mutedForeground} />
-                        </TouchableOpacity>
-                      ))}
-                    </>
-                  )}
-
-                  {friends.length === 0 && teachers.length === 0 && (
-                    <View style={{ alignItems: "center", paddingVertical: 40, gap: 12 }}>
-                      <Glyph name="handshake" size={44} color={colors.mutedForeground} />
-                      <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>Пока никого нет</Text>
-                      <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
-                        Поделись своим кодом или введи код друга
-                      </Text>
-                    </View>
-                  )}
-                </>
-              )}
-            </ScrollView>
-          ) : (
-            <View>
-              <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
-                {(["code", "username"] as const).map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    onPress={() => { setAddMode(m); resetAddForm(); }}
-                    style={{
-                      flex: 1, paddingVertical: 9, borderRadius: radii.sm - 2, alignItems: "center",
-                      backgroundColor: addMode === m ? colors.primary + "18" : "transparent",
-                      borderWidth: 1.5, borderColor: addMode === m ? colors.primary : colors.border,
-                    }}
-                  >
-                    <Text style={{ fontSize: 13, fontWeight: "800", color: addMode === m ? colors.primary : colors.mutedForeground }}>
-                      {m === "code" ? "По коду" : "По псевдониму"}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {addMode === "code" ? (
-                <>
-                  <Text style={{ fontSize: 14, color: colors.mutedForeground, marginBottom: 12 }}>
-                    Попроси друга открыть Профиль и назвать свой код
-                  </Text>
-                  <View style={{ position: "relative", marginBottom: 6 }}>
-                    <TextInput
-                      style={{
-                        backgroundColor: colors.card, borderRadius: radii.sm + 2,
-                        borderWidth: 2,
-                        borderColor: addError ? colors.destructive : found ? colors.primary : colors.border,
-                        paddingHorizontal: 16, paddingVertical: 16,
-                        fontSize: 28, fontWeight: "900", letterSpacing: 8,
-                        color: colors.foreground, textAlign: "center", textTransform: "uppercase",
-                      }}
-                      placeholder="_ _ _ _ _ _"
-                      placeholderTextColor={colors.mutedForeground + "80"}
-                      value={code}
-                      onChangeText={handleCodeChange}
-                      maxLength={6}
-                      autoCapitalize="characters"
-                      autoCorrect={false}
-                    />
-                    {searching && (
-                      <View style={{ position: "absolute", right: 16, top: 0, bottom: 0, justifyContent: "center" }}>
-                        <ActivityIndicator color={colors.primary} size="small" />
-                      </View>
-                    )}
-                  </View>
-                  <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", marginBottom: 14 }}>
-                    Введите 6-значный код — поиск произойдёт автоматически
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Text style={{ fontSize: 14, color: colors.mutedForeground, marginBottom: 12 }}>
-                    Введи псевдоним (@username) друга
-                  </Text>
-                  <View style={{ position: "relative", marginBottom: 14 }}>
-                    <TextInput
-                      style={{
-                        backgroundColor: colors.card, borderRadius: radii.sm + 2,
-                        borderWidth: 2,
-                        borderColor: addError ? colors.destructive : found ? colors.primary : colors.border,
-                        paddingHorizontal: 16, paddingVertical: 14,
-                        fontSize: 16, color: colors.foreground,
-                      }}
-                      placeholder="@псевдоним"
-                      placeholderTextColor={colors.mutedForeground + "80"}
-                      value={usernameInput}
-                      onChangeText={handleUsernameSearch}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    {searching && (
-                      <View style={{ position: "absolute", right: 16, top: 0, bottom: 0, justifyContent: "center" }}>
-                        <ActivityIndicator color={colors.primary} size="small" />
-                      </View>
-                    )}
-                  </View>
-                </>
-              )}
-
-              {!!addError && (
-                <View style={{
-                  flexDirection: "row", alignItems: "center", gap: 9,
-                  backgroundColor: colors.destructive + "12", borderRadius: radii.sm, padding: 12, marginBottom: 12,
-                  borderWidth: 1, borderColor: colors.destructive + "44",
-                }}>
-                  <Glyph name="alert" size={16} color={colors.destructive} />
-                  <Text style={{ color: colors.destructive, fontSize: 13, flex: 1 }}>{addError}</Text>
-                </View>
-              )}
-
-              {found && (
-                <View style={{
-                  flexDirection: "row", alignItems: "center", gap: 12,
-                  backgroundColor: colors.primary + "12", borderRadius: radii.sm + 2, padding: 14,
-                  marginBottom: 14, borderWidth: 1.5, borderColor: colors.primary + "40",
-                }}>
-                  <AnimatedAvatar
-                    size={48}
-                    avatarColor={found.avatarColor ?? "#6366f1"}
-                    avatarEmoji={found.avatarEmoji}
-                    avatarUrl={found.avatarUrl}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 16, fontWeight: "900", color: accents.indigoDeep }}>{found.name}</Text>
-                    <Text style={{ fontSize: 13, color: accents.indigoDeep + "bb" }}>@{found.username}</Text>
-                  </View>
-                  <Glyph name="check" size={24} color={colors.primary} />
-                </View>
-              )}
-
-              {found && (
-                confirming ? (
-                  <View style={{ paddingVertical: 18, alignItems: "center" }}>
-                    <ActivityIndicator color={colors.primary} />
-                  </View>
-                ) : (
-                  <ChunkyButton label="Подтвердить" icon="userPlus" onPress={sendRequest} />
-                )
-              )}
-            </View>
-          )}
-        </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
 }
 
 export default function ProfileScreen() {
@@ -1253,7 +753,9 @@ export default function ProfileScreen() {
 
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    scroll: { paddingBottom: insets.bottom + 100 },
+    // Панель вкладок плавает поверх содержимого: без этого отступа последний
+    // блок экрана оказывается под ней.
+    scroll: { paddingBottom: screenBottom(insets) },
 
     section: { paddingHorizontal: 20, marginBottom: 16 },
 
@@ -1280,7 +782,7 @@ export default function ProfileScreen() {
         onSave={handleAvatarSave}
       />
       {isStudent && (
-        <FriendsModal
+        <FriendsSheet
           visible={friendsOpen}
           onClose={() => setFriendsOpen(false)}
           onOpenFriend={(id) => router.push(`/(main)/friend/${id}` as any)}
