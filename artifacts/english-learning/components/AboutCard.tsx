@@ -18,6 +18,11 @@
 // Сохраняем сразу при выборе: отдельная кнопка «Сохранить» для галочек —
 // лишний шаг, а список маленький и восстановить его недолго.
 //
+// ── Объём ───────────────────────────────────────────────────────────────────
+// У карточки есть нижняя грань, как у остальных блоков профиля. Но она не
+// проседает при нажатии: нажимается только область тем внизу, и делать
+// «клавишей» всю карточку было бы обещанием, которого она не выполняет.
+//
 // Про заглушку на чужом профиле: пола в базе нет, поэтому текст нейтральный —
 // «не рассказал(а)». Прежнее «не рассказал о себе» на профиле девочки читалось
 // как ошибка приложения.
@@ -32,6 +37,9 @@ import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+
+/** Высота нижней грани. Совпадает с остальными карточками профиля. */
+const EDGE = 6;
 
 /**
  * Готовые темы. Список намеренно про жизнь ребёнка, а не про грамматику:
@@ -105,12 +113,16 @@ export function AboutCard({
   };
 
   const s = StyleSheet.create({
+    wrap: { marginHorizontal: 20, marginBottom: 14, paddingBottom: EDGE },
+    edge: {
+      position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
+      borderRadius: radii.md, backgroundColor: "#c9bdf0",
+    },
     card: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 15,
       borderWidth: 1, borderColor: colors.border,
-      marginHorizontal: 20, marginBottom: 14,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.16, shadowRadius: 15, elevation: 4,
     },
     head: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
     text: { fontSize: 14.5, color: colors.foreground, lineHeight: 21 },
@@ -191,70 +203,73 @@ export function AboutCard({
 
   return (
     <>
-      <View style={s.card}>
-        <View style={s.head}>
-          <SectionLabel style={{ marginBottom: 0 }}>О себе</SectionLabel>
-          {!editing && !readOnly && (
-            <Pressable onPress={() => { setDraft(bio); setEditing(true); }} hitSlop={10}>
-              <Glyph name="pen" size={14} color={colors.primary} />
+      <View style={s.wrap}>
+        <View style={s.edge} />
+        <View style={s.card}>
+          <View style={s.head}>
+            <SectionLabel style={{ marginBottom: 0 }}>О себе</SectionLabel>
+            {!editing && !readOnly && (
+              <Pressable onPress={() => { setDraft(bio); setEditing(true); }} hitSlop={10}>
+                <Glyph name="pen" size={14} color={colors.primary} />
+              </Pressable>
+            )}
+          </View>
+
+          {editing ? (
+            <>
+              <TextInput
+                style={s.input}
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Расскажи о себе..."
+                placeholderTextColor={colors.mutedForeground}
+                multiline
+                autoFocus
+              />
+              <View style={s.actions}>
+                <TouchableOpacity style={s.cancelBtn} onPress={() => setEditing(false)}>
+                  <Text style={s.cancelText}>Отмена</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.saveBtn}
+                  onPress={() => { onSaveBio(draft); setEditing(false); }}
+                >
+                  <Text style={s.saveText}>Сохранить</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <Text style={bio ? s.text : s.placeholder}>
+              {bio || (readOnly
+                ? "Пока ничего о себе не рассказал(а)"
+                : "Нажми на карандаш, чтобы добавить описание")}
+            </Text>
+          )}
+
+          {(interests.length > 0 || !readOnly) && (
+            <Pressable
+              style={s.tagsArea}
+              onPress={readOnly ? undefined : () => { setHint(""); setPicker(true); }}
+              disabled={readOnly}
+            >
+              {interests.length > 0 ? (
+                <View style={s.tagsRow}>
+                  {interests.map((topic) => (
+                    <View key={topic} style={s.tag}>
+                      <Text style={s.tagText} numberOfLines={1}>{topic}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={s.emptyRow}>
+                  <Glyph name="spark" size={15} color={colors.primary} />
+                  <Text style={s.emptyText}>Выбери темы, которые тебе интересны</Text>
+                  <Glyph name="chevron" size={15} color={colors.mutedForeground} />
+                </View>
+              )}
             </Pressable>
           )}
         </View>
-
-        {editing ? (
-          <>
-            <TextInput
-              style={s.input}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Расскажи о себе..."
-              placeholderTextColor={colors.mutedForeground}
-              multiline
-              autoFocus
-            />
-            <View style={s.actions}>
-              <TouchableOpacity style={s.cancelBtn} onPress={() => setEditing(false)}>
-                <Text style={s.cancelText}>Отмена</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={s.saveBtn}
-                onPress={() => { onSaveBio(draft); setEditing(false); }}
-              >
-                <Text style={s.saveText}>Сохранить</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        ) : (
-          <Text style={bio ? s.text : s.placeholder}>
-            {bio || (readOnly
-              ? "Пока ничего о себе не рассказал(а)"
-              : "Нажми на карандаш, чтобы добавить описание")}
-          </Text>
-        )}
-
-        {(interests.length > 0 || !readOnly) && (
-          <Pressable
-            style={s.tagsArea}
-            onPress={readOnly ? undefined : () => { setHint(""); setPicker(true); }}
-            disabled={readOnly}
-          >
-            {interests.length > 0 ? (
-              <View style={s.tagsRow}>
-                {interests.map((topic) => (
-                  <View key={topic} style={s.tag}>
-                    <Text style={s.tagText} numberOfLines={1}>{topic}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <View style={s.emptyRow}>
-                <Glyph name="spark" size={15} color={colors.primary} />
-                <Text style={s.emptyText}>Выбери темы, которые тебе интересны</Text>
-                <Glyph name="chevron" size={15} color={colors.mutedForeground} />
-              </View>
-            )}
-          </Pressable>
-        )}
       </View>
 
       <Modal visible={picker} transparent animationType="slide" onRequestClose={() => setPicker(false)}>
