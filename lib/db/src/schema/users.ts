@@ -26,13 +26,25 @@ export const usersTable = pgTable("users", {
   totalPoints: integer("total_points").notNull().default(0),
   inviteCode: text("invite_code").unique(),
   bio: text("bio"),
+  // Темы, которые интересны ученику («Игры», «Футбол», «Кино»). Показываются
+  // метками в блоке «О себе» и подсказывают учителю, на чём строить занятие.
+  // null у старых строк эквивалентен пустому списку.
+  interests: jsonb("interests").$type<string[]>(),
   avatarEmoji: text("avatar_emoji").default("🦁"),
   avatarColor: text("avatar_color").default("#6366f1"),
   avatarUrl: text("avatar_url"),
   totalTimeMinutes: integer("total_time_minutes").notNull().default(0),
   // Gamification
   xpLevel: integer("xp_level").notNull().default(1),
+  // Цель по времени, которая ДЕЙСТВУЕТ СЕГОДНЯ.
   dailyGoalMinutes: integer("daily_goal_minutes").notNull().default(15),
+  // Цель, выбранная учеником «на потом»: вступит в силу со следующего дня.
+  // Смена цели задним числом позволяла бы подбирать удобный набор задач дня,
+  // поэтому выбор всегда откладывается (см. PATCH /gamification/daily-goal).
+  nextDailyGoalMinutes: integer("next_daily_goal_minutes").notNull().default(15),
+  // День, в который цель последний раз переносилась из next в активную.
+  // По нему сервер понимает, что наступили новые сутки и пора применить выбор.
+  dailyGoalAppliedDate: date("daily_goal_applied_date"),
   loginStreak: integer("login_streak").notNull().default(0),
   lastLoginDate: date("last_login_date"),
   email: text("email").unique(),
