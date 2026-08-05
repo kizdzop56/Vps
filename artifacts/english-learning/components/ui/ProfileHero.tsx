@@ -15,11 +15,12 @@
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
 // профиля из соцсети», а не как награда.
 //
-// Справа от аватара под именем стоят три счётчика: очки, серия дней и
-// выполненные задания. Раньше там была пустая область в треть шапки — имя с
-// одной пилюлей не заполняли её ничем. Эти же цифры есть внизу экрана в блоке
-// «Всего за время учёбы», но внизу их надо искать прокруткой, а в шапке они
-// отвечают на вопрос «как у меня дела» сразу при открытии профиля.
+// Справа от аватара под именем стоят три счётчика. Первым был «очков», но это
+// то же число, что уже стоит на полосе опыта строкой ниже («650 / 700 XP»):
+// очки и опыт в проекте одно и то же, и одна цифра занимала на экране два
+// места. Вместо него — выученные слова: единственный показатель собственно
+// знания языка, остальные счётчики говорят о прилежании (серия дней) и объёме
+// работы (задания).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
@@ -43,7 +44,7 @@ function MiniStat({ value, label }: { value: number | string; label: string }) {
   return (
     <View style={s.mini}>
       <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
-      <Text style={s.miniLabel} numberOfLines={1}>{label}</Text>
+      <Text style={s.miniLabel} numberOfLines={2}>{label}</Text>
     </View>
   );
 }
@@ -72,7 +73,7 @@ export interface ProfileHeroProps {
    * Три счётчика под именем. null — блок не рисуется (учитель, родитель,
    * или статистика ещё не загружена).
    */
-  stats?: { points: number; streak: number; assignments: number } | null;
+  stats?: { wordsLearned: number; streak: number; assignments: number } | null;
   /** Полоса опыта. null — блок не рисуется. */
   xp?: {
     current: number;
@@ -184,7 +185,10 @@ export function ProfileHero({
           {/* Счётчики закрывают пустоту справа от аватара — см. шапку файла. */}
           {stats && (
             <View style={s.miniRow}>
-              <MiniStat value={stats.points} label="очков" />
+              <MiniStat
+                value={stats.wordsLearned}
+                label={`${plural(stats.wordsLearned, ["слово", "слова", "слов"])} выучено`}
+              />
               <MiniStat
                 value={stats.streak}
                 label={`${plural(stats.streak, ["день", "дня", "дней"])} подряд`}
@@ -299,7 +303,7 @@ const s = StyleSheet.create({
   },
   miniLabel: {
     fontSize: 9.5, fontWeight: "700", color: "rgba(255,255,255,0.72)",
-    marginTop: 5, letterSpacing: 0.1,
+    marginTop: 5, letterSpacing: 0.1, textAlign: "center", lineHeight: 12,
   },
 
   xpBlock: { marginTop: 18 },
