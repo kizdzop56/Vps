@@ -24,19 +24,29 @@
 //   • разбивка по качеству — сколько работ на отлично, сколько надо повторить;
 //   • последние пять сдач — «что я сдал вчера» без ухода в другой раздел.
 //
+// Полосы растут от нуля при открытии: заполнение показывает величину лучше,
+// чем готовая полоска, которую глаз считывает как статичную картинку.
+//
+// ── Закрытие ────────────────────────────────────────────────────────────────
+// Только крестик в шапке и тап по фону. Кнопки «Закрыть» во всю ширину внизу
+// нет: полоса в 60 пикселей закрывала собой последний блок разбора и делала то
+// же самое, что крестик.
+//
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран
 //    («Cannot set indexed properties on this object»).
 // 2. useNativeDriver только не в вебе: там нативного драйвера нет.
+// 3. Ширину и высоту нативный драйвер не анимирует вовсе — для полос всегда
+//    useNativeDriver: false, независимо от платформы.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, Pressable, Modal, StyleSheet, Animated, Easing, Platform, ScrollView,
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
-import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
+import { SectionLabel } from "@/components/ui/GameKit";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { accents, radii, timing } from "@/constants/theme";
 
@@ -44,6 +54,10 @@ const NATIVE_DRIVER = Platform.OS !== "web";
 
 /** Высота нижней грани и глубина нажатия. */
 const EDGE = 6;
+
+/** Заполнение шкалы: достаточно, чтобы увидеть рост, и не успевает надоесть. */
+const FILL_MS = 700;
+const FILL_STEP_MS = 70;
 
 const TYPE_LABELS: Record<string, string> = {
   text_test: "Тесты",
@@ -78,6 +92,77 @@ function shortDate(value: string): string {
   return `${d.getDate()} ${MONTHS[d.getMonth()] ?? ""}`;
 }
 
+/** Крестик закрытия: единственный способ закрыть окно, поэтому он крупный. */
+export function SheetClose({ onPress, colors }: { onPress: () => void; colors: any }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel="Закрыть"
+      style={({ pressed }) => [
+        {
+          width: 36, height: 36, borderRadius: 13,
+          alignItems: "center", justifyContent: "center",
+          backgroundColor: colors.muted,
+        },
+        pressed && { opacity: 0.7 },
+      ]}
+    >
+      <Glyph name="close" size={18} color={colors.mutedForeground} />
+    </Pressable>
+  );
+}
+
+/**
+ * Полоса, которая заполняется от нуля.
+ *
+ * Ключ анимации — `run`: он меняется при каждом открытии окна, поэтому шкала
+ * растёт заново, а не остаётся заполненной с прошлого раза.
+ */
+function GrowBar({
+  percent, color, track, delay = 0, run,
+}: {
+  percent: number;
+  color: string;
+  track: string;
+  delay?: number;
+  run: number;
+}) {
+  const width = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    width.setValue(0);
+    const anim = Animated.timing(width, {
+      toValue: 1,
+      duration: FILL_MS,
+      delay,
+      easing: Easing.out(Easing.cubic),
+      // Ширина нативным драйвером не анимируется ни на одной платформе.
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [run, percent, delay, width]);
+
+  return (
+    <View style={[s.barTrack, { backgroundColor: track }]}>
+      <Animated.View
+        style={[
+          s.barFill,
+          {
+            backgroundColor: color,
+            width: width.interpolate({
+              inputRange: [0, 1],
+              outputRange: ["0%", `${Math.max(percent, 2)}%`],
+            }),
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
 /** Одна сдача. Поля читаем мягко: разные эндпоинты называют их по-разному. */
 export interface SubmissionLike {
   score?: number | null;
@@ -105,6 +190,8 @@ export function AssignmentsCard({
 }: AssignmentsCardProps) {
   const colors = useColors();
   const [open, setOpen] = useState(false);
+  // Растёт при каждом открытии: по нему шкалы внутри стартуют заново.
+  const [run, setRun] = useState(0);
   const press = useRef(new Animated.Value(0)).current;
 
   const setPress = (to: number) =>
@@ -113,13 +200,18 @@ export function AssignmentsCard({
       useNativeDriver: NATIVE_DRIVER,
     }).start();
 
+  const openSheet = () => {
+    setRun((n) => n + 1);
+    setOpen(true);
+  };
+
   return (
     <View style={[{ flex: 1, paddingBottom: EDGE }, style]}>
       <View style={[s.edge, { backgroundColor: "#c9bdf0" }]} />
 
       <Animated.View style={{ flex: 1, transform: [{ translateY: press }] }}>
         <Pressable
-          onPress={canOpen ? () => setOpen(true) : undefined}
+          onPress={canOpen ? openSheet : undefined}
           onPressIn={canOpen ? () => setPress(EDGE) : undefined}
           onPressOut={canOpen ? () => setPress(0) : undefined}
           disabled={!canOpen}
@@ -147,21 +239,19 @@ export function AssignmentsCard({
 
             <View style={s.sheetHead}>
               <Text style={[s.sheetTitle, { color: colors.foreground }]}>Мои задания</Text>
-              <Pressable onPress={() => setOpen(false)} hitSlop={10}>
-                <Glyph name="close" size={20} color={colors.mutedForeground} />
-              </Pressable>
+              <SheetClose onPress={() => setOpen(false)} colors={colors} />
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              <AssignmentsBreakdown stats={stats} submissions={submissions} colors={colors} />
+              <AssignmentsBreakdown
+                stats={stats}
+                submissions={submissions}
+                colors={colors}
+                run={run}
+              />
+              {/* Отступ снизу: раньше место занимала кнопка «Закрыть». */}
+              <View style={{ height: 12 }} />
             </ScrollView>
-
-            <ChunkyButton
-              label="Закрыть"
-              icon="check"
-              onPress={() => setOpen(false)}
-              style={{ marginTop: 14 }}
-            />
           </Pressable>
         </Pressable>
       </Modal>
@@ -172,11 +262,12 @@ export function AssignmentsCard({
 // ── Содержимое разбора ──────────────────────────────────────────────────────
 
 function AssignmentsBreakdown({
-  stats, submissions, colors,
+  stats, submissions, colors, run,
 }: {
   stats: CategoryStat[];
   submissions: SubmissionLike[];
   colors: any;
+  run: number;
 }) {
   const data = useMemo(() => {
     const scored = submissions.filter((r) => typeof r.score === "number");
@@ -224,6 +315,8 @@ function AssignmentsBreakdown({
     );
   }
 
+  const sortedRated = [...data.rated].sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0));
+
   return (
     <View style={{ gap: 16 }}>
       {/* Общая картина */}
@@ -252,32 +345,34 @@ function AssignmentsBreakdown({
       )}
 
       {/* Полосы по типам: просадка видна сразу, в кольцах её приходилось искать */}
-      {data.rated.length > 0 && (
+      {sortedRated.length > 0 && (
         <View>
           <Text style={[s.blockLabel, { color: colors.mutedForeground }]}>По типам заданий</Text>
           <View style={{ gap: 11 }}>
-            {[...data.rated]
-              .sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0))
-              .map((stat) => {
-                const color = TYPE_COLORS[stat.type] ?? colors.primary;
-                const pct = Math.max(0, Math.min(100, stat.avgScore ?? 0));
-                return (
-                  <View key={stat.type}>
-                    <View style={s.barHead}>
-                      <Text style={[s.barName, { color: colors.foreground }]} numberOfLines={1}>
-                        {TYPE_LABELS[stat.type] ?? stat.type}
-                      </Text>
-                      <Text style={[s.barCount, { color: colors.mutedForeground }]}>
-                        {stat.count} {plural(stat.count, ["работа", "работы", "работ"])}
-                      </Text>
-                      <Text style={[s.barPct, { color }]}>{pct}%</Text>
-                    </View>
-                    <View style={[s.barTrack, { backgroundColor: colors.muted }]}>
-                      <View style={[s.barFill, { width: `${Math.max(pct, 2)}%`, backgroundColor: color }]} />
-                    </View>
+            {sortedRated.map((stat, i) => {
+              const color = TYPE_COLORS[stat.type] ?? colors.primary;
+              const pct = Math.max(0, Math.min(100, stat.avgScore ?? 0));
+              return (
+                <View key={stat.type}>
+                  <View style={s.barHead}>
+                    <Text style={[s.barName, { color: colors.foreground }]} numberOfLines={1}>
+                      {TYPE_LABELS[stat.type] ?? stat.type}
+                    </Text>
+                    <Text style={[s.barCount, { color: colors.mutedForeground }]}>
+                      {stat.count} {plural(stat.count, ["работа", "работы", "работ"])}
+                    </Text>
+                    <Text style={[s.barPct, { color }]}>{pct}%</Text>
                   </View>
-                );
-              })}
+                  <GrowBar
+                    percent={pct}
+                    color={color}
+                    track={colors.muted}
+                    delay={i * FILL_STEP_MS}
+                    run={run}
+                  />
+                </View>
+              );
+            })}
           </View>
 
           {!!data.weakest && (data.weakest.avgScore ?? 0) < 70 && (
@@ -369,7 +464,7 @@ const s = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
   sheet: {
     borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
-    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 28, maxHeight: "88%",
+    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 24, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
   sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
