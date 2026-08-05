@@ -6,6 +6,7 @@ import {
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
+import { canViewStudent } from "../lib/studentAccess";
 import { pointsPerCorrect, hasChoiceOptions, isTimeLimited } from "../lib/points";
 
 const router = Router();
@@ -231,8 +232,22 @@ router.get("/assignments/:id/submissions", requireAuth, async (req, res) => {
   res.json(withAnswers);
 });
 
+// ── Работы ученика ────────────────────────────────────────────────────
+//
+// Доступ: сам ученик, администратор, ЕГО учитель или ЕГО родитель
+// (см. lib/studentAccess.ts). Раньше проверки не было вовсе, и любой
+// авторизованный пользователь читал работы любого ученика, просто подставив
+// номер в адрес — включая чужих родителей.
+//
+// Дружба доступа не даёт: друзья видят очки и медали, но не работы.
 router.get("/students/:id/submissions", requireAuth, async (req, res) => {
+  const viewer = getUser(req);
   const studentId = Number(req.params["id"]);
+
+  if (!(await canViewStudent(viewer, studentId))) {
+    res.status(403).json({ error: "Нет доступа к работам этого ученика" });
+    return;
+  }
 
   const submissions = await db.select({
     id: submissionsTable.id,
@@ -272,8 +287,16 @@ router.get("/students/:id/submissions", requireAuth, async (req, res) => {
   res.json(withAnswers);
 });
 
+// Ошибки ученика — те же данные, только в разрезе неверных ответов, поэтому и
+// доступ тот же.
 router.get("/students/:id/errors", requireAuth, async (req, res) => {
+  const viewer = getUser(req);
   const studentId = Number(req.params["id"]);
+
+  if (!(await canViewStudent(viewer, studentId))) {
+    res.status(403).json({ error: "Нет доступа к работам этого ученика" });
+    return;
+  }
 
   const errors = await db.select({
     assignmentId: assignmentsTable.id,
@@ -291,6 +314,18 @@ router.get("/students/:id/errors", requireAuth, async (req, res) => {
     ));
 
   res.json(errors);
+});
+
+// ── Есть ли у меня доступ к данным этого ученика ───────────────────────
+//
+// Нужен интерфейсу: в чужом профиле плитки «Задания» и «Время» должны
+// открываться у связанного учителя или родителя и НЕ открываться у остальных.
+// Спрашивать это, ловя 403 от самих данных, значило бы показывать кнопку,
+// которая иногда отвечает «нет доступа».
+router.get("/students/:id/access", requireAuth, async (req, res) => {
+  const viewer = getUser(req);
+  const studentId = Number(req.params["id"]);
+  res.json({ canView: await canViewStudent(viewer, studentId) });
 });
 
 export default router;
