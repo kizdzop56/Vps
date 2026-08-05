@@ -13,8 +13,18 @@
 // по сложности и строка ближайшей цели. Полный список свёрнут и раскрывается
 // стрелкой на месте — новых экранов и модальных окон блок не создаёт.
 //
-// Единственный Modal здесь — карточка награды (BadgeDetailModal). Она работала
-// всегда и осталась нетронутой.
+// ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
+// Счётчик сначала был сделан так:
+//
+//   <Text style={count}>14<Text style={countTotal}> / 50</Text></Text>
+//
+// В Safari это роняло ВЕСЬ экран профиля с ошибкой «Cannot set indexed
+// properties on this object» (react-native-web пытается дописать свойства в
+// унаследованный стиль вложенного span, и WebKit это запрещает). Три подряд
+// белых экрана были из-за одной этой строки.
+//
+// Правило: НЕ вкладывать Text в Text. Разные кегли — это два отдельных Text
+// в строке с flexDirection: "row" и alignItems: "baseline".
 import React, { useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
@@ -355,11 +365,12 @@ export function AchievementsShowcase({
           )}
         </View>
 
+        {/* Два отдельных Text в строке, а не Text внутри Text — см. шапку файла. */}
         <View style={styles.leadText}>
-          <Text style={[styles.count, { color: colors.foreground }]}>
-            {unlocked.length}
-            <Text style={[styles.countTotal, { color: colors.mutedForeground }]}> / {total}</Text>
-          </Text>
+          <View style={styles.countRow}>
+            <Text style={[styles.count, { color: colors.foreground }]}>{unlocked.length}</Text>
+            <Text style={[styles.countTotal, { color: colors.mutedForeground }]}>/ {total}</Text>
+          </View>
           <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
         </View>
 
@@ -508,8 +519,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(160,140,220,0.1)",
   },
   leadText: { flex: 1, minWidth: 0 },
+  countRow: { flexDirection: "row", alignItems: "baseline", gap: 5 },
   count: { fontSize: 27, fontWeight: "900", letterSpacing: -0.9, fontVariant: ["tabular-nums"] },
-  countTotal: { fontSize: 15, fontWeight: "800" },
+  countTotal: { fontSize: 15, fontWeight: "800", fontVariant: ["tabular-nums"] },
   countCap: { fontSize: 12, fontWeight: "700", marginTop: 2 },
   openBtn: {
     width: 34, height: 34, borderRadius: 12,
