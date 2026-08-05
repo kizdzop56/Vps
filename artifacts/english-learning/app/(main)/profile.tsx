@@ -6,17 +6,23 @@
 // ученик, это его лицо в приложении, а не наша иконка.
 //
 // Крупные блоки вынесены в компоненты:
-//   ProfileHero    — шапка (components/ui/ProfileHero.tsx), общая с чужим
-//                    профилем app/(main)/friend/[id].tsx;
-//   AboutCard      — «О себе» + интересы (components/AboutCard.tsx);
-//   DailyQuests    — цель дня (components/DailyQuests.tsx);
-//   StudyTimeCard  — плитка времени с живыми часами и разбором по дням
-//                    (components/StudyTimeCard.tsx). Форматирование времени
-//                    живёт там же: этому экрану оно больше не нужно.
+//   ProfileHero      — шапка (components/ui/ProfileHero.tsx), общая с чужим
+//                      профилем app/(main)/friend/[id].tsx;
+//   AboutCard        — «О себе» + интересы (components/AboutCard.tsx);
+//   DailyQuests      — цель дня (components/DailyQuests.tsx);
+//   AssignmentsCard  — плитка заданий с разбором результатов
+//                      (components/AssignmentsCard.tsx);
+//   StudyTimeCard    — плитка времени с живыми часами и разбором по дням
+//                      (components/StudyTimeCard.tsx). Форматирование времени
+//                      живёт там же: этому экрану оно больше не нужно.
+//
+// Плитки «Мои задания» и «Время» стоят парой и устроены одинаково: нижняя
+// грань, проседание при нажатии, разбор по тапу. Разной физики у соседних
+// блоков быть не должно — одна плоская рядом с объёмной читается как
+// недоделанная.
 //
 // Все кнопки экрана — ChunkyButton из GameKit, включая выход из аккаунта
-// (тон danger). Своих «плоских» кнопок здесь быть не должно: одна такая уже
-// выбивалась из ряда и выглядела недоделанной.
+// (тон danger).
 //
 // Очки за цель дня: карточка сама просит их выдать (onClaim), как только день
 // сходится, а признак «уже получено» приходит с сервера в
@@ -51,7 +57,8 @@ import { AchievementToast } from "@/components/AchievementToast";
 import { DailyQuests } from "@/components/DailyQuests";
 import { AboutCard } from "@/components/AboutCard";
 import { StudyTimeCard } from "@/components/StudyTimeCard";
-import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
+import { AssignmentsCard } from "@/components/AssignmentsCard";
+import { type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
@@ -920,7 +927,8 @@ export default function ProfileScreen() {
     { query: { enabled: isStudent && !!user?.id, refetchInterval: 10_000 } as any }
   );
 
-  const completedCount = Array.isArray(submissions) ? submissions.length : 0;
+  const submissionRows: any[] = Array.isArray(submissions) ? (submissions as any[]) : [];
+  const completedCount = submissionRows.length;
   const totalMinutes = timeStats?.totalMinutes ?? 0;
   const todaySeconds = timeStats && timeStatsAt
     ? Math.max(0, Math.floor((timeStats.todayMinutes ?? 0) * 60 + (Date.now() - timeStatsAt) / 1000))
@@ -938,7 +946,7 @@ export default function ProfileScreen() {
   );
 
   const periodStats = React.useMemo(() => {
-    const rows: any[] = Array.isArray(submissions) ? (submissions as any[]) : [];
+    const rows: any[] = submissionRows;
     const days = PERIODS.find((p) => p.key === period)?.days ?? null;
     const cutoff = days === null ? 0 : Date.now() - days * 86400000;
     const inPeriod = days === null
@@ -1501,20 +1509,12 @@ export default function ProfileScreen() {
               </View>
             </View>
 
+            {/* Пара плиток: задания и время. Обе объёмные и обе открывают
+                разбор — разной физики у соседей быть не должно. */}
             <View style={s.section}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
-                <View style={{
-                  flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
-                  borderWidth: 1, borderColor: colors.border,
-                  shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-                  shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
-                }}>
-                  <SectionLabel>Мои задания</SectionLabel>
-                  <AssignmentRingsChart stats={categoryStats} colors={colors} />
-                </View>
+                <AssignmentsCard stats={categoryStats} submissions={submissionRows} />
 
-                {/* Время: объёмная плитка с работающими часами. По нажатию
-                    открывается разбор по дням (components/StudyTimeCard.tsx). */}
                 <StudyTimeCard
                   studentId={user.id}
                   totalMinutes={gamStats?.totalTimeMinutes ?? totalMinutes}
@@ -1576,9 +1576,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/* Выход — такая же физическая кнопка, как остальные, только красная.
-            Раньше это была плоская плашка с рамкой: единственная кнопка на
-            экране без объёма. */}
+        {/* Выход — такая же физическая кнопка, как остальные, только красная. */}
         <View style={{ paddingHorizontal: 20 }}>
           <ChunkyButton
             label="Выйти из аккаунта"
