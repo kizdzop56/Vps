@@ -20,6 +20,7 @@ import {
   Manrope_800ExtraBold,
 } from "@expo-google-fonts/manrope";
 import { applyGlobalFonts } from "@/components/ui/applyFonts";
+import { ErrorScreen } from "@/components/ErrorScreen";
 
 // Типографику включаем до первой отрисовки: Unbounded уходит на заголовки и
 // крупные числа, Manrope на текст. Правило разбора и причины см. в самом файле.
@@ -132,32 +133,38 @@ export default function RootLayout() {
   if (Platform.OS !== "web" && !fontsLoaded && !fontError) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <LinearGradient
-        colors={["#F8F5FF", "#E8DFFF", "#D0C2FF"]}
-        start={{ x: 0.1, y: 0 }}
-        end={{ x: 0.9, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
-          <AuthProvider>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: "transparent" },
-                animation: "fade",
-              }}
-            >
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(main)" />
-              <Stack.Screen name="+not-found" />
-            </Stack>
-          </AuthProvider>
-        </QueryClientProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    // ErrorScreen стоит САМЫМ ВЕРХНИМ: если экран падает при отрисовке, дерево
+    // размонтируется целиком и остаётся белый лист. Здесь вместо белизны
+    // показывается текст ошибки, который можно скопировать с телефона —
+    // консоли браузера на iOS нет, и без этого причину не увидеть.
+    <ErrorScreen>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <LinearGradient
+          colors={["#F8F5FF", "#E8DFFF", "#D0C2FF"]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <SafeAreaProvider>
+          <QueryClientProvider client={queryClient}>
+            <AuthProvider>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: "transparent" },
+                  animation: "fade",
+                }}
+              >
+                <Stack.Screen name="index" />
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="(main)" />
+                <Stack.Screen name="+not-found" />
+              </Stack>
+            </AuthProvider>
+          </QueryClientProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </ErrorScreen>
   );
 }
 
