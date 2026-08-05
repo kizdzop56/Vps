@@ -45,6 +45,11 @@ export const usersTable = pgTable("users", {
   // День, в который цель последний раз переносилась из next в активную.
   // По нему сервер понимает, что наступили новые сутки и пора применить выбор.
   dailyGoalAppliedDate: date("daily_goal_applied_date"),
+  // День, за который последний раз выдана награда за ПОЛНОСТЬЮ закрытую цель
+  // дня (время + все задачи). Очки выдаются один раз в день, поэтому нужна
+  // отметка — та же схема, что у lastLoginDate.
+  // См. POST /gamification/daily-goal/claim.
+  dailyGoalClaimedDate: date("daily_goal_claimed_date"),
   loginStreak: integer("login_streak").notNull().default(0),
   lastLoginDate: date("last_login_date"),
   email: text("email").unique(),
