@@ -26,7 +26,10 @@ async function apiFetch(path: string, options?: RequestInit) {
 export interface GamificationStats {
   totalPoints: number;
   xpLevel: number;
+  /** Цель, которая действует сегодня. */
   dailyGoalMinutes: number;
+  /** Выбранная цель, которая вступит в силу завтра. */
+  nextDailyGoalMinutes: number;
   loginStreak: number;
   lastLoginDate: string | null;
   todayMinutes: number;
@@ -66,6 +69,7 @@ export function useGamification() {
       // migrate old default name
       const data: GamificationStats = {
         ...raw,
+        nextDailyGoalMinutes: raw.nextDailyGoalMinutes ?? raw.dailyGoalMinutes,
         mascotName: (raw.mascotName === "Оливер" || raw.mascotName === "Oliver" || !raw.mascotName)
           ? "Снежа"
           : raw.mascotName,
@@ -94,8 +98,12 @@ export function useGamification() {
 
   const updateDailyGoal = useCallback(async (minutes: number) => {
     try {
-      await apiFetch("/api/gamification/daily-goal", { method: "PATCH", body: JSON.stringify({ minutes }) });
-      setStats((prev) => prev ? { ...prev, dailyGoalMinutes: minutes } : prev);
+      const data = await apiFetch("/api/gamification/daily-goal", { method: "PATCH", body: JSON.stringify({ minutes }) });
+      setStats((prev) => prev ? {
+        ...prev,
+        // Сегодняшняя цель не меняется: новая применяется только завтра.
+        nextDailyGoalMinutes: data?.nextDailyGoalMinutes ?? minutes,
+      } : prev);
     } catch { /* silent */ }
   }, []);
 
