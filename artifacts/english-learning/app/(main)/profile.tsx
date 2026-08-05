@@ -16,9 +16,11 @@
 //    те же цифры не стояли на экране дважды. Число наград не потерялось: оно
 //    и так есть в шапке витрины наград.
 //  • Цель дня была одна — «время в приложении». Её закрывает открытая вкладка,
-//    то есть цель ничего не требовала. Теперь это 2–4 задачи разного типа
-//    (см. utils/dailyQuests.ts и components/DailyQuests.tsx).
-//  • Заголовок «ЦЕЛЬ ДНЯ» стоял и над карточкой, и внутри неё. Остался один.
+//    то есть цель ничего не требовала. Теперь это цель по времени в шапке
+//    карточки плюс чек-лист из 2–4 задач разного плана (см. utils/dailyQuests.ts
+//    и components/DailyQuests.tsx).
+//  • Заголовок «ЦЕЛЬ ДНЯ» стоял и над карточкой, и внутри неё. Остался один —
+//    его рисует сама карточка, поэтому здесь своего заголовка нет.
 //
 // Порядок блоков собран по частоте обращения: сначала «что сделать сегодня»
 // (задачи дня), потом «как я учусь» (успеваемость), затем награды и друзья.
@@ -54,7 +56,7 @@ import { useGamification } from "@/hooks/useGamification";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
-import { buildDailyQuests } from "@/utils/dailyQuests";
+import { buildDailyPlan } from "@/utils/dailyQuests";
 import { accents, gradients, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 
@@ -974,7 +976,7 @@ export default function ProfileScreen() {
   useEffect(() => { loadCategoryStats(); }, [loadCategoryStats, completedCount]);
 
   /**
-   * Прогресс по словам за сегодня. Нужен задаче дня «повторить N слов»:
+   * Прогресс по словам за сегодня. Нужен задаче дня «повторить слова»:
    * счётчики в /gamification/stats про слова ничего не знают, они живут в
    * журнале повторений (см. GET /flashcards/stats → wordsToday).
    */
@@ -1061,13 +1063,14 @@ export default function ProfileScreen() {
   const locked = React.useMemo(() => getLockedAchievements(achievementStats), [achievementStats]);
 
   /**
-   * Задачи дня. Собираются из уже загруженных счётчиков, поэтому новых
-   * запросов не добавляют. Пересчитываются только при смене самих счётчиков —
-   * иначе список перетасовывался бы на каждый тик таймера.
+   * План на день: цель по времени и 2–4 задачи. Собирается из уже загруженных
+   * счётчиков, поэтому новых запросов не добавляет. Пересчитывается только при
+   * смене самих счётчиков — иначе список перетасовывался бы на каждый тик
+   * таймера.
    */
-  const quests = React.useMemo(() => {
-    if (!gamStats) return [];
-    return buildDailyQuests({
+  const dailyPlan = React.useMemo(() => {
+    if (!gamStats) return null;
+    return buildDailyPlan({
       todayMinutes: gamStats.todayMinutes,
       dailyGoalMinutes: gamStats.dailyGoalMinutes,
       todayCompletions: gamStats.todayCompletions ?? 0,
@@ -1483,15 +1486,14 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/* ── Задачи дня ──
-            Стоят первыми: это единственный блок, на который ученик может
-            повлиять прямо сейчас. Заголовка секции нет — он есть внутри
-            карточки, и раньше «ЦЕЛЬ ДНЯ» стояло на экране дважды. */}
-        {isStudent && gamStats && (
+        {/* ── Цель дня ──
+            Стоит первой: это единственный блок, на который ученик может
+            повлиять прямо сейчас. Заголовок секции рисует сама карточка. */}
+        {isStudent && dailyPlan && (
           <View style={s.section}>
             <DailyQuests
-              quests={quests}
-              goalMinutes={gamStats.dailyGoalMinutes}
+              plan={dailyPlan}
+              goalMinutes={gamStats?.dailyGoalMinutes ?? 15}
               onGoalChange={updateDailyGoal}
             />
           </View>
