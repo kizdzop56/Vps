@@ -5,6 +5,21 @@
 // «7 работ · +12 очков». Приписка повторяла то, что подробнее показано в
 // разборе заданий, и отбирала внимание у единственного важного числа.
 //
+// ── Чем занята правая половина ──────────────────────────────────────────────
+// После удаления приписки справа от кольца осталась пустота: одно число на
+// широкой карточке выглядело недогруженным. Заполнять её обратно счётчиками
+// нельзя — они и так есть в разборе заданий. Поэтому там теперь то, чего нет
+// больше нигде: ДИНАМИКА.
+//
+//   • «+8% к прошлой неделе» — сравнение с тем же по длине отрезком до него.
+//     Сам процент не отвечает на главный вопрос ученика «я стал лучше?»;
+//   • столбики последних работ — видно, ровно человек идёт или скачет. Пять
+//     оценок 60-60-60 и оценки 30-90-60 дают один средний балл, но это два
+//     совершенно разных ученика.
+//
+// Обоих блоков может не быть: на чужом профиле список работ не выдаётся. Тогда
+// карточка сжимается до кольца и процента, как раньше.
+//
 // ── Объём ───────────────────────────────────────────────────────────────────
 // Нижняя грань, как у плиток заданий и времени: в профиле не должно быть
 // поверхностей двух разных пород. Но карточка НЕ нажимается и не проседает —
@@ -15,17 +30,19 @@
 // канавкой, остальные лежат в ней. Это тот же приём, что у клавиш GameKit.
 //
 // ── Анимация ────────────────────────────────────────────────────────────────
-// Кольцо вычерчивается от нуля, процент дорастает вместе с ним. Играет заново
-// в трёх случаях: вход на экран (replay), смена периода, новые данные.
+// Кольцо вычерчивается от нуля, процент дорастает вместе с ним, столбики
+// вырастают лесенкой. Играет заново в трёх случаях: вход на экран (replay),
+// смена периода, новые данные.
 //
-// SVG-атрибуты и текст нативным драйвером не анимируются, поэтому здесь
-// всегда useNativeDriver: false. Кольцо одно, нагрузки нет.
+// SVG-атрибуты, ширина и высота нативным драйвером не анимируются, поэтому
+// здесь всегда useNativeDriver: false.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, Animated, Easing } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { useColors } from "@/hooks/useColors";
+import { Glyph } from "@/components/ui/Glyph";
 import { SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 
@@ -41,6 +58,11 @@ const STROKE = 9;
 
 const DRAW_MS = 900;
 
+/** График последних работ: высота и ступенька появления столбиков. */
+const SPARK_H = 30;
+const SPARK_STEP_MS = 45;
+const SPARK_MS = 620;
+
 export interface ScorePeriod<K extends string = string> {
   key: K;
   label: string;
@@ -52,13 +74,69 @@ export interface ScoreCardProps<K extends string = string> {
   periods: readonly ScorePeriod<K>[];
   period: K;
   onPeriodChange: (key: K) => void;
+  /**
+   * Средний балл за предыдущий такой же отрезок. Из него считается динамика.
+   * null или undefined — сравнивать не с чем, строка не рисуется.
+   */
+  previousAverage?: number | null;
+  /**
+   * Баллы последних работ периода, от старой к новой. Меньше двух — график не
+   * рисуется: по одной точке о ровности хода судить нельзя.
+   */
+  recentScores?: number[];
   /** Растёт при каждом входе на экран — анимация играет заново. */
   replay?: number;
   style?: any;
 }
 
+/** Цвет по баллу. Пороги те же, что во всём приложении: 50 и 70. */
+function tintFor(score: number, colors: any): string {
+  if (score >= 70) return colors.success;
+  if (score >= 50) return accents.amber;
+  return colors.destructive;
+}
+
+/**
+ * Столбик последней работы. Растёт от нуля высотой: нативный драйвер высоту не
+ * анимирует ни на одной платформе.
+ */
+function SparkBar({
+  score, index, run, colors,
+}: {
+  score: number;
+  index: number;
+  run: number;
+  colors: any;
+}) {
+  const grow = useRef(new Animated.Value(0)).current;
+  const height = Math.max(3, Math.round((Math.max(0, Math.min(100, score)) / 100) * SPARK_H));
+
+  useEffect(() => {
+    grow.setValue(0);
+    const anim = Animated.timing(grow, {
+      toValue: height,
+      duration: SPARK_MS,
+      delay: index * SPARK_STEP_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [run, height, index, grow]);
+
+  return (
+    <View style={s.sparkCol}>
+      <Animated.View style={{
+        width: "100%", height: grow, borderRadius: 3,
+        backgroundColor: tintFor(score, colors),
+      }} />
+    </View>
+  );
+}
+
 export function ScoreCard<K extends string = string>({
-  average, periods, period, onPeriodChange, replay = 0, style,
+  average, periods, period, onPeriodChange,
+  previousAverage, recentScores, replay = 0, style,
 }: ScoreCardProps<K>) {
   const colors = useColors();
   const [shown, setShown] = useState(0);
@@ -69,11 +147,7 @@ export function ScoreCard<K extends string = string>({
   const circumference = 2 * Math.PI * r;
   const target = (value / 100) * circumference;
 
-  const tint = average === null
-    ? colors.mutedForeground
-    : average >= 70 ? colors.success
-      : average >= 50 ? accents.amber
-        : colors.destructive;
+  const tint = average === null ? colors.mutedForeground : tintFor(average, colors);
 
   // Перезапуск: вход на экран, смена периода, новые данные.
   useEffect(() => {
@@ -102,6 +176,19 @@ export function ScoreCard<K extends string = string>({
     inputRange: [0, 1],
     outputRange: [circumference, circumference - target],
   });
+
+  // Динамика. Считается только когда есть оба значения: «+29%» из ничего —
+  // не рост, а первый результат.
+  const delta = average !== null && previousAverage !== null && previousAverage !== undefined
+    ? average - previousAverage
+    : null;
+
+  const deltaLabel = period === "week" ? "к прошлой неделе"
+    : period === "month" ? "к прошлому месяцу"
+      : "к первым работам";
+
+  const spark = (recentScores ?? []).slice(-8);
+  const showSpark = spark.length >= 2;
 
   return (
     <View style={style}>
@@ -169,11 +256,67 @@ export function ScoreCard<K extends string = string>({
             </Svg>
           </View>
 
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={[s.label, { color: colors.mutedForeground }]}>Средний балл</Text>
             <Text style={[s.value, { color: tint }]}>
               {average === null ? "—" : `${shown}%`}
             </Text>
+
+            {/* Динамика: главный ответ на «я стал лучше?». */}
+            {delta !== null && (
+              <View style={[
+                s.delta,
+                {
+                  backgroundColor: Math.abs(delta) < 1
+                    ? colors.muted
+                    : delta > 0 ? colors.success + "1f" : colors.destructive + "1a",
+                },
+              ]}>
+                <Glyph
+                  name={Math.abs(delta) < 1 ? "target" : delta > 0 ? "trendUp" : "trendDown"}
+                  size={12}
+                  color={Math.abs(delta) < 1
+                    ? colors.mutedForeground
+                    : delta > 0 ? colors.success : colors.destructive}
+                />
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    s.deltaText,
+                    {
+                      color: Math.abs(delta) < 1
+                        ? colors.mutedForeground
+                        : delta > 0 ? colors.success : colors.destructive,
+                    },
+                  ]}
+                >
+                  {Math.abs(delta) < 1
+                    ? `так же, как ${deltaLabel.replace("к ", "")}`
+                    : `${delta > 0 ? "+" : "−"}${Math.abs(delta)}% ${deltaLabel}`}
+                </Text>
+              </View>
+            )}
+
+            {/* Ровность хода: одинаковый средний балл бывает у совсем разных
+                учеников. */}
+            {showSpark && (
+              <View style={s.sparkWrap}>
+                <View style={s.spark}>
+                  {spark.map((score, i) => (
+                    <SparkBar
+                      key={`${i}-${score}`}
+                      score={score}
+                      index={i}
+                      run={replay + (period as unknown as string).length}
+                      colors={colors}
+                    />
+                  ))}
+                </View>
+                <Text style={[s.sparkCap, { color: colors.mutedForeground }]}>
+                  Последние {spark.length} работ
+                </Text>
+              </View>
+            )}
           </View>
         </View>
       </View>
@@ -213,6 +356,17 @@ const s = StyleSheet.create({
     fontSize: 34, fontWeight: "900", letterSpacing: -1.4, marginTop: 3,
     fontVariant: ["tabular-nums"],
   },
+
+  delta: {
+    flexDirection: "row", alignItems: "center", gap: 5, alignSelf: "flex-start",
+    marginTop: 7, paddingHorizontal: 9, paddingVertical: 4, borderRadius: radii.pill,
+  },
+  deltaText: { fontSize: 11.5, fontWeight: "800", flexShrink: 1 },
+
+  sparkWrap: { marginTop: 10 },
+  spark: { flexDirection: "row", alignItems: "flex-end", gap: 4, height: SPARK_H },
+  sparkCol: { flex: 1, height: SPARK_H, justifyContent: "flex-end" },
+  sparkCap: { fontSize: 10, fontWeight: "700", marginTop: 5 },
 });
 
 export default ScoreCard;
