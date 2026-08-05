@@ -22,6 +22,14 @@
 // экране быть не должно — одна такая сразу читается как недоделанная.
 // Проседает при нажатии только то, что реально открывается: задания и время.
 //
+// ── Повтор анимаций ─────────────────────────────────────────────────────────
+// Профиль — вкладка, а не отдельный экран: при уходе он не размонтируется, и
+// анимации внутри карточек играли ровно один раз за сессию. Поэтому здесь
+// живёт счётчик replay: он растёт на КАЖДОМ фокусе экрана и передаётся в
+// карточки, которые по его изменению запускают свои шкалы с нуля.
+// Важно: внутри интервала обновления данных он не растёт — иначе графики
+// дёргались бы сами по себе раз в минуту.
+//
 // Все кнопки экрана — ChunkyButton из GameKit, включая выход из аккаунта
 // (тон danger).
 //
@@ -802,6 +810,12 @@ export default function ProfileScreen() {
   const [saving, setSaving] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [period, setPeriod] = useState<StatsPeriod>("all");
+  /**
+   * Счётчик показов экрана. Растёт при каждом фокусе профиля и передаётся в
+   * карточки: по его изменению шкалы, кольца и столбики стартуют с нуля.
+   * Без него анимации играли один раз за сессию — вкладка живёт в памяти.
+   */
+  const [replay, setReplay] = useState(0);
   const [teacherRequests, setTeacherRequests] = useState<Array<{
     requestId: number;
     teacher: { id: number; name: string; username: string; avatarEmoji: string | null; avatarColor: string | null; role: string };
@@ -972,9 +986,14 @@ export default function ProfileScreen() {
   // Пока экран открыт, прогресс задач подтягивается сам: профиль — вкладка,
   // он не размонтируется, и без опроса галочки появлялись бы только после
   // перехода на другую вкладку и обратно.
+  //
+  // Здесь же поднимается replay: КАЖДЫЙ вход на экран заново проигрывает
+  // графики. Внутри интервала его трогать нельзя — иначе шкалы сбрасывались бы
+  // сами по себе раз в минуту прямо под носом у читающего.
   useFocusEffect(
     useCallback(() => {
       if (!isStudent) return;
+      setReplay((n) => n + 1);
       const refresh = () => {
         loadStats();
         loadCategoryStats();
@@ -1415,6 +1434,7 @@ export default function ProfileScreen() {
               claimed={gamStats?.dailyGoalClaimedToday ?? false}
               onClaim={claimDailyGoal}
               onGoalChange={updateDailyGoal}
+              replay={replay}
             />
           </View>
         )}
@@ -1426,6 +1446,7 @@ export default function ProfileScreen() {
               periods={PERIODS}
               period={period}
               onPeriodChange={setPeriod}
+              replay={replay}
               style={s.section}
             />
 
@@ -1433,7 +1454,7 @@ export default function ProfileScreen() {
                 разбор — разной физики у соседей быть не должно. */}
             <View style={s.section}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
-                <AssignmentsCard stats={categoryStats} submissions={submissionRows} />
+                <AssignmentsCard stats={categoryStats} submissions={submissionRows} replay={replay} />
 
                 <StudyTimeCard
                   studentId={user.id}
