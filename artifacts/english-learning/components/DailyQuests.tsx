@@ -3,19 +3,21 @@
 //
 // Карточка собрана по утверждённому референсу (profile-blocks-preview):
 //   • слева кольцо с процентом, дуга золотая на светлой канавке;
-//   • справа «СЕГОДНЯ», крупное «3 из 15 минут» и строка «Ещё 12 минут — и
+//   • справа «СЕГОДНЯ», крупное «6 из 20 минут» и строка «Ещё 14 минут — и
 //     цель закрыта»: главное число дня читается раньше всего остального;
-//   • золотая пилюля с очками за день в правом верхнем углу;
+//   • золотая пилюля с очками ЗА САМУ ЦЕЛЬ в правом верхнем углу;
 //   • ниже задачи с квадратными галочками, выполненные — зачёркнуты;
 //   • внизу кнопка «Изменить цель».
 //
-// Заголовок «ЦЕЛЬ ДНЯ» рисует сама карточка (SectionLabel над градиентом) —
-// поэтому экран профиля своего заголовка над блоком не ставит, иначе надпись
-// стояла бы дважды.
+// В пилюле раньше стояла сумма за весь день (цель + все задачи): в окне выбора
+// у цели «20 минут» написано +40, а на карточке светилось +160 — цифры
+// выглядели враньём. Теперь пилюля показывает ровно ту награду, которая
+// подписана у выбранной цели, а очки за задачи видны у самих задач.
 //
-// Окно выбора цели показывает не только минуты, но и очки за каждый вариант:
-// раньше все цели давали одинаково, и 10 минут были выгоднее всего — та же
-// награда за втрое меньшую работу. Теперь видно, что 30 минут стоят дороже.
+// Смена цели применяется со СЛЕДУЮЩЕГО дня (см. PATCH /gamification/daily-goal):
+// набор задач зависит от тяжести цели, и мгновенная смена позволяла бы
+// подбирать себе удобные задачи. Поэтому после выбора карточка показывает
+// строку «С завтра: N минут», а сегодняшняя цель остаётся прежней.
 //
 // Сами задачи собирает utils/dailyQuests.ts — там же объяснено, почему набор
 // детерминированный и почему в нём нет пункта «зайти в приложение».
@@ -42,7 +44,7 @@ const STROKE = 9;
 
 export interface DailyQuestsProps {
   plan: DailyPlan;
-  /** Текущая цель по минутам — подсвечивается в окне настройки. */
+  /** Цель, выбранная на завтра — она подсвечивается в окне настройки. */
   goalMinutes: number;
   onGoalChange?: (minutes: number) => void;
 }
@@ -54,6 +56,8 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
 
   const r = (RING - STROKE) / 2;
   const circumference = 2 * Math.PI * r;
+  // Цель на завтра отличается от сегодняшней — значит выбор уже сделан и ждёт.
+  const pendingGoal = time.nextTarget !== time.target ? time.nextTarget : null;
 
   const s = StyleSheet.create({
     card: {
@@ -61,7 +65,6 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 9 },
       shadowOpacity: 0.34, shadowRadius: 22, elevation: 8,
     },
-    // Световое пятно: даёт объём без второй тени, которой в RN всё равно нет.
     blob: {
       position: "absolute", width: 210, height: 210, borderRadius: 105,
       top: -110, right: -70, backgroundColor: "rgba(255,255,255,0.10)",
@@ -85,8 +88,6 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     },
     sub: { fontSize: 12.5, fontWeight: "600", color: "rgba(255,255,255,0.82)", marginTop: 6, lineHeight: 17 },
 
-    // Пилюля стоит в самом углу карточки, поверх шапки: так она не сдвигает
-    // текст и не ломает перенос заголовка.
     pts: {
       position: "absolute", top: 14, right: 14,
       paddingHorizontal: 11, paddingVertical: 5, borderRadius: radii.pill,
@@ -113,15 +114,23 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
       fontVariant: ["tabular-nums"],
     },
 
+    // Ждущая своего часа цель: не кнопка, а тихая подпись.
+    pending: {
+      flexDirection: "row", alignItems: "center", gap: 7,
+      marginTop: 10, paddingVertical: 8, paddingHorizontal: 11,
+      borderRadius: radii.sm, backgroundColor: "rgba(255,255,255,0.1)",
+      borderWidth: 1, borderColor: "rgba(255,255,255,0.16)",
+    },
+    pendingText: { flex: 1, fontSize: 11.5, fontWeight: "700", color: "rgba(255,255,255,0.86)" },
+
     edit: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-      marginTop: 12, paddingVertical: 11, borderRadius: radii.sm,
+      marginTop: 10, paddingVertical: 11, borderRadius: radii.sm,
       backgroundColor: "rgba(255,255,255,0.16)",
       borderWidth: 1, borderColor: "rgba(255,255,255,0.22)",
     },
     editText: { fontSize: 13.5, fontWeight: "800", color: "#fff" },
 
-    // ── Окно настройки цели ──
     overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
     sheet: {
       backgroundColor: colors.card,
@@ -135,9 +144,9 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     sheetTitle: { fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4 },
     sheetSub: {
       fontSize: 12.5, fontWeight: "600", color: colors.mutedForeground,
-      marginTop: 5, marginBottom: 18, lineHeight: 18,
+      marginTop: 5, marginBottom: 16, lineHeight: 18,
     },
-    opts: { flexDirection: "row", gap: 8, marginBottom: 18 },
+    opts: { flexDirection: "row", gap: 8, marginBottom: 14 },
     opt: {
       flex: 1, paddingVertical: 12, borderRadius: radii.sm, alignItems: "center",
       backgroundColor: colors.muted, borderWidth: 2, borderColor: "transparent",
@@ -146,12 +155,17 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     optNum: { fontSize: 19, fontWeight: "900", color: colors.foreground, fontVariant: ["tabular-nums"] },
     optNumOn: { color: colors.primary },
     optCap: { fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 2 },
-    // Награда за вариант: золотая, как все очки в приложении.
     optPts: {
       marginTop: 7, paddingHorizontal: 7, paddingVertical: 3,
       borderRadius: radii.pill, backgroundColor: accents.gold + "2e",
     },
     optPtsText: { fontSize: 10.5, fontWeight: "900", color: "#8a5a00", fontVariant: ["tabular-nums"] },
+    note: {
+      flexDirection: "row", gap: 8, alignItems: "flex-start",
+      backgroundColor: colors.muted, borderRadius: radii.sm,
+      padding: 11, marginBottom: 16,
+    },
+    noteText: { flex: 1, fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, lineHeight: 16 },
   });
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
@@ -176,8 +190,6 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
                 cx={RING / 2} cy={RING / 2} r={r}
                 stroke="rgba(255,255,255,0.26)" strokeWidth={STROKE} fill="none"
               />
-              {/* Дуга золотая, как награды и уровень: заполненная часть должна
-                  выглядеть заработанной, а не просто «залитой белым». */}
               <Circle
                 cx={RING / 2} cy={RING / 2} r={r}
                 stroke={accents.gold} strokeWidth={STROKE} fill="none" strokeLinecap="round"
@@ -204,13 +216,14 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
           </View>
         </View>
 
+        {/* Ровно та награда, что подписана у выбранной цели в окне настройки. */}
         <LinearGradient
           colors={[accents.gold, accents.amber]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={s.pts}
         >
-          <Text style={s.ptsText}>+{plan.totalPoints}</Text>
+          <Text style={s.ptsText}>+{time.points}</Text>
         </LinearGradient>
 
         <View style={s.list}>
@@ -222,10 +235,20 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
               <Text style={[s.rowText, q.done && s.rowTextDone]} numberOfLines={1}>
                 {q.title}
               </Text>
-              {!!q.counter && <Text style={s.rowCount}>{q.counter}</Text>}
+              <Text style={s.rowCount}>{q.done ? `+${q.points}` : q.counter}</Text>
             </View>
           ))}
         </View>
+
+        {!!pendingGoal && (
+          <View style={s.pending}>
+            <Glyph name="clock" size={13} color="rgba(255,255,255,0.86)" />
+            <Text style={s.pendingText}>
+              Новая цель {pendingGoal} {plural(pendingGoal, ["минута", "минуты", "минут"])} начнёт
+              действовать завтра
+            </Text>
+          </View>
+        )}
 
         {!!onGoalChange && (
           <Pressable style={s.edit} onPress={() => setEditing(true)}>
@@ -241,8 +264,7 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
             <View style={s.handle} />
             <Text style={s.sheetTitle}>Сколько заниматься в день</Text>
             <Text style={s.sheetSub}>
-              Чем длиннее занятие, тем больше очков за закрытую цель. Учебные задачи дня
-              приложение подбирает само.
+              Чем длиннее занятие, тем больше очков за закрытую цель и тем сложнее задачи дня.
             </Text>
 
             <View style={s.opts}>
@@ -262,6 +284,14 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
                   </Pressable>
                 );
               })}
+            </View>
+
+            <View style={s.note}>
+              <Glyph name="alert" size={14} color={colors.mutedForeground} />
+              <Text style={s.noteText}>
+                Новая цель начнёт действовать завтра. Сегодняшний день уже собран, и менять его
+                на ходу нельзя — иначе задачи можно было бы подбирать под себя.
+              </Text>
             </View>
 
             <ChunkyButton label="Готово" icon="check" onPress={() => setEditing(false)} />
