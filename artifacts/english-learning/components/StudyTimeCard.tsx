@@ -13,10 +13,8 @@
 //
 // ── Часы ────────────────────────────────────────────────────────────────────
 // Вместо статичной иконки — работающий циферблат с текущим временем.
-// Секундная стрелка крутится непрерывно через Animated.loop: это трансформ,
-// поэтому ни одного ре-рендера в секунду он не стоит. Минутная и часовая
-// обновляются состоянием раз в 15 секунд — на глаз это неотличимо от
-// непрерывного хода, а часовая анимация длиной в 12 часов была бы неточной.
+// Секундная стрелка крутится через Animated.loop (трансформ, без ре-рендеров),
+// минутная и часовая обновляются состоянием раз в 15 секунд.
 //
 // Циферблат намеренно без цифр: 12 засечек, три стрелки, круг. На 62 пикселях
 // цифры превратились бы в грязь.
@@ -27,14 +25,17 @@
 // подтверждённому heartbeat), и на клиенте они бы разошлись с профилем.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
-// НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
-// («Cannot set indexed properties on this object»). Разные кегли в одной
-// строке — два соседних Text во View с flexDirection: "row".
+// 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
+//    («Cannot set indexed properties on this object»). Разные кегли в одной
+//    строке — два соседних Text во View с flexDirection: "row".
+// 2. НЕ ставить useNativeDriver: true без проверки платформы. В вебе нативного
+//    драйвера нет, анимация идёт на requestAnimationFrame, а свёрнутая вкладка
+//    его останавливает — и цикл сам уже не оживает (см. AnalogClock).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  View, Text, Pressable, Modal, StyleSheet, Animated, Easing,
+  View, Text, Pressable, Modal, StyleSheet, Animated, Easing, Platform, AppState,
   ActivityIndicator, ScrollView,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -44,6 +45,9 @@ import authStorage from "@/utils/authStorage";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton } from "@/components/ui/GameKit";
 import { accents, radii, timing } from "@/constants/theme";
+
+/** В вебе нативного драйвера нет: там анимации всегда идут на JS. */
+const NATIVE_DRIVER = Platform.OS !== "web";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -151,28 +155,65 @@ function shortDate(key: string): string {
  * Минутная и часовая пересчитываются из состояния раз в 15 секунд: анимация
  * длиной в час или двенадцать заметно уплывала бы, а точность здесь важнее
  * непрерывности — на глаз движение этих стрелок всё равно не видно.
+ *
+ * ПОЧЕМУ ЕСТЬ ПЕРЕЗАПУСК. В вебе анимация идёт на requestAnimationFrame, и
+ * свёрнутая вкладка его замораживает. Сама она после этого не оживает: часы
+ * так и стояли, пока страницу не перезагрузишь. Поэтому при возврате во
+ * вкладку (или в приложение) цикл поднимается заново, а стартовый угол берётся
+ * от текущей секунды — стрелка встаёт на своё место мгновенно, без доезда.
  */
 function AnalogClock({ size = 62 }: { size?: number }) {
   const [now, setNow] = useState(() => new Date());
+  // Стартовая секунда цикла. Меняется при каждом перезапуске, поэтому это
+  // состояние, а не ref, вычисленный один раз при монтировании.
+  const [startSecond, setStartSecond] = useState(
+    () => new Date().getSeconds() + new Date().getMilliseconds() / 1000,
+  );
+  // Счётчик пробуждений: его изменение перезапускает анимацию.
+  const [wake, setWake] = useState(0);
   const spin = useRef(new Animated.Value(0)).current;
-  const startSecond = useRef(new Date().getSeconds() + new Date().getMilliseconds() / 1000).current;
 
   useEffect(() => {
+    const d = new Date();
+    setNow(d);
+    setStartSecond(d.getSeconds() + d.getMilliseconds() / 1000);
+
+    spin.setValue(0);
     const loop = Animated.loop(
       Animated.timing(spin, {
         toValue: 1,
         duration: 60_000,
         easing: Easing.linear,
-        useNativeDriver: true,
+        useNativeDriver: NATIVE_DRIVER,
       }),
     );
     loop.start();
     return () => loop.stop();
-  }, [spin]);
+  }, [wake, spin]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 15_000);
     return () => clearInterval(id);
+  }, []);
+
+  // Возврат во вкладку или в приложение — поднимаем цикл заново.
+  useEffect(() => {
+    const revive = () => setWake((n) => n + 1);
+
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      const onVisibility = () => { if (!document.hidden) revive(); };
+      document.addEventListener("visibilitychange", onVisibility);
+      window.addEventListener("focus", revive);
+      return () => {
+        document.removeEventListener("visibilitychange", onVisibility);
+        window.removeEventListener("focus", revive);
+      };
+    }
+
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") revive();
+    });
+    return () => sub.remove();
   }, []);
 
   const minuteAngle = (now.getMinutes() + now.getSeconds() / 60) * 6;
@@ -268,7 +309,8 @@ export function StudyTimeCard({
 
   const setPress = (to: number) =>
     Animated.timing(press, {
-      toValue: to, duration: timing.press, easing: Easing.out(Easing.quad), useNativeDriver: true,
+      toValue: to, duration: timing.press, easing: Easing.out(Easing.quad),
+      useNativeDriver: NATIVE_DRIVER,
     }).start();
 
   const load = useCallback(async () => {
@@ -348,12 +390,7 @@ export function StudyTimeCard({
             <View style={[s.handle, { backgroundColor: colors.border }]} />
 
             <View style={s.sheetHead}>
-              <View style={{ flex: 1 }}>
-                <Text style={[s.sheetTitle, { color: colors.foreground }]}>Время в приложении</Text>
-                <Text style={[s.sheetSub, { color: colors.mutedForeground }]}>
-                  Считается только время занятий, а не открытая вкладка
-                </Text>
-              </View>
+              <Text style={[s.sheetTitle, { color: colors.foreground }]}>Время в приложении</Text>
               <Pressable onPress={() => setOpen(false)} hitSlop={10} style={{ paddingTop: 2 }}>
                 <Glyph name="close" size={20} color={colors.mutedForeground} />
               </Pressable>
@@ -568,9 +605,8 @@ const s = StyleSheet.create({
     paddingTop: 12, paddingHorizontal: 20, paddingBottom: 28, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
-  sheetHead: { flexDirection: "row", alignItems: "flex-start", gap: 12, marginBottom: 16 },
-  sheetTitle: { fontSize: 19, fontWeight: "900", letterSpacing: -0.4 },
-  sheetSub: { fontSize: 12.5, fontWeight: "600", marginTop: 4, lineHeight: 17 },
+  sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
+  sheetTitle: { flex: 1, fontSize: 19, fontWeight: "900", letterSpacing: -0.4 },
 
   hero: { borderRadius: radii.md, borderWidth: 1, padding: 16, alignItems: "flex-start" },
   heroLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.2, textTransform: "uppercase" },
