@@ -1,6 +1,6 @@
-// Чужой профиль: ученика или учителя.
+// Чужой профиль: ученика, учителя или родителя.
 //
-// Профиль ученика оформлен РОВНО так же, как свой (app/(main)/profile.tsx):
+// Профиль УЧЕНИКА оформлен РОВНО так же, как свой (app/(main)/profile.tsx):
 // та же шапка-герой (ProfileHero) с теми же двумя счётчиками, тот же блок
 // «О себе» с интересами (AboutCard в режиме просмотра), та же «Успеваемость»
 // (ScoreCard) с переключателем периода, та же плитка заданий
@@ -14,12 +14,19 @@
 // несколько переделок сразу. Теперь оба экрана берут одни и те же
 // компоненты — правка в компоненте приезжает в оба места.
 //
+// ── ТРИ РАЗНЫХ ПРОФИЛЯ ──────────────────────────────────────────────────────
+// Ученик — учебные блоки целиком.
+// Учитель — слоты, часы с вами, созданные задания: своя вёрстка.
+// Родитель — только кто он и как с ним связаться. Никаких медалей, заданий,
+//   среднего балла, уровня и опыта: родитель не учит язык, он следит за
+//   ребёнком. Показывать ему «0 %» и «наград 0 / 50» — врать про человека,
+//   который в этой гонке вообще не участвует.
+//
 // ── СМОТРИМ, НО НЕ ТРОГАЕМ ──────────────────────────────────────────────────
-// Плитки «Задания» и «Время» здесь объёмные, но НЕ нажимаются: canOpen={false}.
-// Разбор по типам работ и статистика времени по дням — личные данные, лезть в
-// них через чужой профиль незачем. Грань при этом остаётся: объём здесь про
-// материал, а не про действие, ровно как у ScoreCard на своём профиле.
-// Проседания при нажатии нет — оно обещало бы, что что-то откроется.
+// Плитки «Задания» и «Время» в профиле ученика объёмные, но НЕ нажимаются:
+// canOpen={false}. Разбор по типам работ и статистика времени по дням —
+// личные данные. Грань при этом остаётся: объём здесь про материал, а не про
+// действие. Проседания при нажатии нет — оно обещало бы, что что-то откроется.
 //
 // ── НИЖНИЙ ОТСТУП ───────────────────────────────────────────────────────────
 // Панель вкладок плавающая: она лежит ПОВЕРХ содержимого, а не занимает место
@@ -33,21 +40,10 @@
 // периодам, условия наград — приходит из GET /students/:id/profile-stats
 // (artifacts/api-server/src/routes/studentProfile.ts).
 //
-// Что отличается от своего профиля, и почему:
-//   • нет цели дня — это личный план, чужой ученик им не управляет;
-//   • «О себе» и интересы только на просмотр;
-//   • плитки заданий и времени не открываются (см. выше);
-//   • в витрине наград только ПОЛУЧЕННЫЕ медали — чужие недоделки не витрина;
-//   • нет кнопки «Мои друзья» — это раздел владельца;
-//   • сверху кнопки «назад» и «Написать».
-//
 // Дружба. Состоявшаяся дружба — метка «Друг» в шапке рядом с ролью, отдельной
 // карточки для неё нет: плашка на всю ширину ради одного слова отодвигала вниз
 // весь профиль. FriendRequestCard остаётся только для состояний, требующих
 // действия: отправить запрос, принять или отклонить входящий, ждать ответа.
-//
-// Профиль учителя оставлен как был: у него другие данные (слоты, часы с вами,
-// созданные задания), ученическая шапка с уровнем и опытом ему не подходит.
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
@@ -70,7 +66,7 @@ import { StudyTimeCard } from "@/components/StudyTimeCard";
 import { ScoreCard } from "@/components/ScoreCard";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { Glyph } from "@/components/ui/Glyph";
-import { SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 import { fc, type DeckWithAssign, type FlashcardStatsWithLevel } from "@/hooks/useFlashcards";
@@ -270,9 +266,11 @@ export default function FriendProfileScreen() {
 
   const isStudent = user?.role === "student";
   const isTeacherViewer = isTeacherOrAdmin(user?.role ?? "");
-  // Чей профиль открыт: у учителя ученические счётчики всегда нули, поэтому
-  // весь блок цифр для него другой.
+  // Чей профиль открыт: у учителя и родителя ученические счётчики всегда нули,
+  // поэтому у каждого своя вёрстка.
   const isTeacherProfile = isTeacherOrAdmin(profile?.role ?? "");
+  const isParentProfile = profile?.role === "parent";
+  const isStudentProfile = !isTeacherProfile && !isParentProfile;
 
   // Прогресс ученика по словам (флеш-карточки) + CEFR — видит учитель.
   const [wordStats, setWordStats] = useState<FlashcardStatsWithLevel | null>(null);
@@ -342,7 +340,7 @@ export default function FriendProfileScreen() {
   }, [friendId]);
 
   // Интересы открыты всем авторизованным (см. routes/interests.ts): по ним
-  // видно, о чём с человеком можно поговорить.
+  // видно, о чём с человеком можно поговорить. Родителя это тоже касается.
   const loadInterests = useCallback(async () => {
     if (!friendId) return;
     try {
@@ -473,7 +471,7 @@ export default function FriendProfileScreen() {
   const avatarColor = profile.avatarColor ?? "#6366f1";
   const avatarEmoji = profile.avatarEmoji ?? "🦁";
   const isSelf = user?.id === friendId;
-  const canWrite = !isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends");
+  const canWrite = !isSelf && (!isStudent || !isStudentProfile || friendStatus === "friends");
   const areFriends = friendStatus === "friends";
 
   // Уровень и опыт считаются из очков теми же таблицами, что на своём профиле:
@@ -503,6 +501,70 @@ export default function FriendProfileScreen() {
   // общий средний балл из профиля, как было раньше.
   const activePeriod = gameStats?.periodStats?.[period] ?? null;
   const shownAverage = activePeriod ? activePeriod.average : (profile.averageScore ?? null);
+
+  // ── Профиль родителя ──
+  //
+  // Здесь только человек: кто он, что о себе написал, как ему написать.
+  // Учебных блоков нет вовсе — не «скрыты», а не существуют: родитель не
+  // решает задания, не набирает очки и не получает медали.
+  if (isParentProfile) {
+    return (
+      <View style={s.container}>
+        <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+          <ProfileHero
+            name={profile.name}
+            username={profile.username}
+            avatarEmoji={avatarEmoji}
+            avatarColor={avatarColor}
+            avatarUrl={profile.avatarUrl}
+            roleLabel="Родитель"
+            ageLabel={null}
+            online={profile.isOnline}
+            level={null}
+            stats={null}
+            xp={null}
+            paddingTop={screenTop(insets)}
+            onBack={() => router.back()}
+            action={canWrite
+              ? { icon: "chat", label: "Написать", onPress: () => router.push(`/(main)/chat/${friendId}` as any) }
+              : null}
+          />
+
+          <AboutCard
+            bio={profile.bio ?? ""}
+            onSaveBio={() => {}}
+            interests={interests}
+            onSaveInterests={() => {}}
+            readOnly
+          />
+
+          {/* Одна поясняющая строка вместо пустого экрана: без неё профиль
+              выглядит недогруженным, хотя показывать больше нечего. */}
+          <View style={s.section}>
+            <View style={{
+              flexDirection: "row", alignItems: "center", gap: 10,
+              backgroundColor: colors.muted, borderRadius: radii.md, padding: 14,
+            }}>
+              <Glyph name="users" size={17} color={colors.mutedForeground} />
+              <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, lineHeight: 18 }}>
+                Родитель следит за занятиями своего ребёнка. Заданий, очков и наград у него нет.
+              </Text>
+            </View>
+          </View>
+
+          {canWrite && (
+            <View style={{ paddingHorizontal: 20 }}>
+              <ChunkyButton
+                label="Написать"
+                icon="chat"
+                onPress={() => router.push(`/(main)/chat/${friendId}` as any)}
+              />
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
 
   // ── Профиль учителя: прежняя вёрстка ──
   if (isTeacherProfile) {
