@@ -5,6 +5,19 @@
 // показывается глиф из своего набора, подобранный по сложности (см. MedalFace).
 // Файл данных при этом не меняется.
 //
+// ── Заголовок и грань ───────────────────────────────────────────────────────
+// Блок называется. Раньше проп title принимался, но нигде не рисовался, и
+// веер медалей висел без подписи: понять, что это витрина наград, а не просто
+// ряд кружков, можно было только по контексту. Название стоит НАД карточкой
+// (SectionLabel), как «Успеваемость» над средним баллом.
+//
+// Под карточкой лежит нижняя грань — тот же приём, что у ChunkyButton и
+// остальных карточек профиля: отдельный слой цвета EDGE_COLOR, сдвинутый вниз
+// на EDGE. Грань есть, но блок НЕ проседает при нажатии: проседание обещает
+// действие, а витрина целиком не кнопка — нажимаются веер, стрелка и медали
+// внутри. Так же выглядит и на чужом профиле: там используется этот же
+// компонент.
+//
 // ── Компактный вид ──────────────────────────────────────────────────────────
 // Раньше блок занимал пол-экрана: карточка следующей награды, сетка полученных
 // и раскрытый по умолчанию список из ~36 закрытых медалей. Три десятка
@@ -76,7 +89,7 @@ import { useColors } from "@/hooks/useColors";
 import type { Achievement, AchievementDifficulty, AchievementStats } from "@/constants/achievements";
 import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { ChunkyButton } from "@/components/ui/GameKit";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii, chunky, timing } from "@/constants/theme";
 
 interface AchievementsShowcaseProps {
@@ -88,10 +101,15 @@ interface AchievementsShowcaseProps {
    * УЖЕ собрал, а не чего ему не хватает.
    */
   showLocked?: boolean;
+  /** Заголовок над блоком. Рисуется меткой секции, а не внутри карточки. */
   title?: string;
   /** Показатели ученика. Без них прогресс посчитать нечем. */
   stats?: AchievementStats;
 }
+
+/** Толщина нижней грани карточки и её цвет — как у остальных блоков профиля. */
+const EDGE = 6;
+const EDGE_COLOR = "#c9bdf0";
 
 /** Фолбэк-глиф: лёгкая — вспышка, средняя — медаль, сложная — трофей. */
 function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
@@ -546,21 +564,31 @@ export function AchievementsShowcase({
     : FAN_SIZE;
 
   return (
-    <View
-      style={[
-        styles.container,
-        {
-          backgroundColor: colors.card,
-          borderColor: colors.border,
-          shadowColor: accents.violetDeep,
-        },
-      ]}
-      onLayout={(e) => {
-        // Внутренняя ширина блока без паддингов: по ней раскладывается веер.
-        const w = e.nativeEvent.layout.width - 30;
-        if (w > 0 && Math.abs(w - boxWidth) > 1) setBoxWidth(w);
-      }}
-    >
+    <View style={styles.wrap}>
+      {/* Название секции — над карточкой, а не внутри: так же подписаны
+          «Успеваемость» и «Мои задания», и блоки профиля читаются списком. */}
+      {!!title && <SectionLabel>{title}</SectionLabel>}
+
+      {/* Оболочка с нижней гранью. Место под грань — paddingBottom, сама грань —
+          отдельный слой под корпусом. Нажатием корпус НЕ проседает. */}
+      <View style={styles.shell}>
+        <View style={styles.edge} />
+
+        <View
+          style={[
+            styles.container,
+            {
+              backgroundColor: colors.card,
+              borderColor: colors.border,
+              shadowColor: accents.violetDeep,
+            },
+          ]}
+          onLayout={(e) => {
+            // Внутренняя ширина блока без паддингов: по ней раскладывается веер.
+            const w = e.nativeEvent.layout.width - 30;
+            if (w > 0 && Math.abs(w - boxWidth) > 1) setBoxWidth(w);
+          }}
+        >
       {/* ── Веер ценных медалей и счётчик ── */}
       <View style={styles.lead}>
         {showcase.length === 0 ? (
@@ -695,6 +723,8 @@ export function AchievementsShowcase({
           )}
         </View>
       )}
+        </View>
+      </View>
 
       <BadgeDetailModal
         achievement={selected?.achievement ?? null}
@@ -707,9 +737,18 @@ export function AchievementsShowcase({
 }
 
 const styles = StyleSheet.create({
+  // Внешняя обёртка держит отступы блока: заголовок должен стоять по одной
+  // линии с карточкой, поэтому марджины ушли из container сюда.
+  wrap: { marginHorizontal: 20, marginBottom: 16 },
+  // Оболочка с местом под грань.
+  shell: { paddingBottom: EDGE },
+  // Грань: сдвинута вниз на свою толщину и выглядывает из-под корпуса.
+  edge: {
+    position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
+    borderRadius: radii.md, backgroundColor: EDGE_COLOR,
+  },
   container: {
-    borderRadius: radii.md, padding: 15, marginBottom: 16, borderWidth: 1,
-    marginHorizontal: 20,
+    borderRadius: radii.md, padding: 15, borderWidth: 1,
     shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.13, shadowRadius: 15, elevation: 3,
   },
 
