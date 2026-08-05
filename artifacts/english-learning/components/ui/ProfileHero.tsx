@@ -9,6 +9,15 @@
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
 // профиля из соцсети», а не как награда.
 //
+// ── Про метки ───────────────────────────────────────────────────────────────
+// В ряду под именем стоят роль, возраст, «В сети» и «Друг». Все они отвечают
+// на вопрос «кто это передо мной», поэтому живут вместе. Дружба раньше была
+// отдельной карточкой на всю ширину под шапкой — целая плашка ради одного
+// слова, которая отодвигала вниз весь профиль.
+//
+// «Друг» единственная золотая: остальные метки описывают самого человека, а
+// эта — вашу связь с ним, и её видно первой.
+//
 // ── Про счётчики ────────────────────────────────────────────────────────────
 // Их два, а не три. Три узкие карточки не помещались рядом с аватаром, и
 // сетка съезжала вниз, оставляя пустой тёмный прямоугольник.
@@ -72,6 +81,8 @@ export interface ProfileHeroProps {
   ageLabel?: string | null;
   /** Зелёная метка «В сети». Показывается только на чужом профиле. */
   online?: boolean;
+  /** Золотая метка «Друг»: заявка принята с обеих сторон. */
+  friend?: boolean;
   /** Уровень: на шильде только номер, название — под полосой опыта. */
   level?: { number: number; title: string } | null;
   /** Счётчики под именем. Пусто — блок не рисуется. */
@@ -95,7 +106,7 @@ export interface ProfileHeroProps {
 
 export function ProfileHero({
   name, username, avatarEmoji, avatarColor, avatarUrl, saving,
-  onEditAvatar, roleLabel, ageLabel, online, level, stats, xp, paddingTop,
+  onEditAvatar, roleLabel, ageLabel, online, friend, level, stats, xp, paddingTop,
   onBack, action,
 }: ProfileHeroProps) {
   const [imageFailed, setImageFailed] = React.useState(false);
@@ -197,6 +208,14 @@ export function ProfileHero({
           <Text style={s.username} numberOfLines={1}>@{username}</Text>
           <View style={s.badgeRow}>
             <GlassPill text={roleLabel} />
+            {/* «Друг» идёт сразу за ролью: это главное, что нужно знать о
+                человеке при переходе в его профиль. */}
+            {friend && (
+              <View style={s.friendPill}>
+                <Glyph name="handshake" size={12} color="#42200a" />
+                <Text style={s.friendText}>Друг</Text>
+              </View>
+            )}
             {!!ageLabel && <GlassPill text={ageLabel} icon="calendar" />}
             {online && (
               <View style={s.onlinePill}>
@@ -314,6 +333,16 @@ const s = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
   },
   glassPillText: { fontSize: 11.5, fontWeight: "800", color: "#ffffff" },
+
+  // «Друг» — единственная заливная метка в ряду: она про отношения, а не про
+  // самого человека, и должна выхватываться взглядом среди «стеклянных».
+  friendPill: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    backgroundColor: accents.gold,
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.55)",
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
+  },
+  friendText: { fontSize: 11.5, fontWeight: "900", color: "#42200a" },
 
   // «В сети» — единственная зелёная точка в интерфейсе: это статус связи,
   // а не оценка, поэтому фирменный фиолетовый здесь не подходит.
