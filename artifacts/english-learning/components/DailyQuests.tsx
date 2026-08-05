@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Цель дня: кольцо времени в шапке и чек-лист из 2–4 задач.
+// Цель дня: кольцо времени в шапке и чек-лист учебных задач.
 //
 // Карточка собрана по утверждённому референсу (profile-blocks-preview):
 //   • слева кольцо с процентом, дуга золотая на светлой канавке;
-//   • справа «СЕГОДНЯ», крупное «2 из 15 минут» и строка «Ещё 13 минут — и
+//   • справа «СЕГОДНЯ», крупное «3 из 15 минут» и строка «Ещё 12 минут — и
 //     цель закрыта»: главное число дня читается раньше всего остального;
-//   • золотая пилюля с очками в правом верхнем углу;
+//   • золотая пилюля с очками за день в правом верхнем углу;
 //   • ниже задачи с квадратными галочками, выполненные — зачёркнуты;
 //   • внизу кнопка «Изменить цель».
 //
@@ -13,10 +13,12 @@
 // поэтому экран профиля своего заголовка над блоком не ставит, иначе надпись
 // стояла бы дважды.
 //
-// Что было не так раньше: задача была одна — «время в приложении». Её
-// закрывает открытая вкладка, то есть цель не требовала ничего сделать.
+// Окно выбора цели показывает не только минуты, но и очки за каждый вариант:
+// раньше все цели давали одинаково, и 10 минут были выгоднее всего — та же
+// награда за втрое меньшую работу. Теперь видно, что 30 минут стоят дороже.
+//
 // Сами задачи собирает utils/dailyQuests.ts — там же объяснено, почему набор
-// детерминированный.
+// детерминированный и почему в нём нет пункта «зайти в приложение».
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState } from "react";
@@ -27,7 +29,7 @@ import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
-import { plural, type DailyPlan } from "@/utils/dailyQuests";
+import { plural, pointsForGoal, type DailyPlan } from "@/utils/dailyQuests";
 
 /** Варианты личной цели по времени. Совпадают с валидацией на сервере. */
 const GOAL_OPTIONS = [10, 15, 20, 30];
@@ -137,13 +139,19 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     },
     opts: { flexDirection: "row", gap: 8, marginBottom: 18 },
     opt: {
-      flex: 1, paddingVertical: 14, borderRadius: radii.sm, alignItems: "center",
+      flex: 1, paddingVertical: 12, borderRadius: radii.sm, alignItems: "center",
       backgroundColor: colors.muted, borderWidth: 2, borderColor: "transparent",
     },
     optOn: { backgroundColor: colors.primary + "18", borderColor: colors.primary },
     optNum: { fontSize: 19, fontWeight: "900", color: colors.foreground, fontVariant: ["tabular-nums"] },
     optNumOn: { color: colors.primary },
-    optCap: { fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 3 },
+    optCap: { fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 2 },
+    // Награда за вариант: золотая, как все очки в приложении.
+    optPts: {
+      marginTop: 7, paddingHorizontal: 7, paddingVertical: 3,
+      borderRadius: radii.pill, backgroundColor: accents.gold + "2e",
+    },
+    optPtsText: { fontSize: 10.5, fontWeight: "900", color: "#8a5a00", fontVariant: ["tabular-nums"] },
   });
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
@@ -233,7 +241,8 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
             <View style={s.handle} />
             <Text style={s.sheetTitle}>Сколько заниматься в день</Text>
             <Text style={s.sheetSub}>
-              Меняется только цель по времени. Остальные задачи дня приложение подбирает само.
+              Чем длиннее занятие, тем больше очков за закрытую цель. Учебные задачи дня
+              приложение подбирает само.
             </Text>
 
             <View style={s.opts}>
@@ -247,6 +256,9 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
                   >
                     <Text style={[s.optNum, on && s.optNumOn]}>{m}</Text>
                     <Text style={s.optCap}>минут</Text>
+                    <View style={s.optPts}>
+                      <Text style={s.optPtsText}>+{pointsForGoal(m)}</Text>
+                    </View>
                   </Pressable>
                 );
               })}
