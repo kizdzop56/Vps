@@ -5,10 +5,12 @@
 // закрывая вкладку, поэтому она ничего не требовала и ничему не учила.
 //
 // Теперь у дня два слоя:
-//   • ВРЕМЯ — заголовок карточки и кольцо прогресса. Это по-прежнему главное
-//     число дня («2 из 15 минут»), но уже не единственная задача.
-//   • ЗАДАЧИ — чек-лист из 2–4 пунктов разного плана: зайти в приложение,
-//     выполнить задание, повторить слова, поговорить с тьютором.
+//   • ВРЕМЯ — заголовок карточки и кольцо прогресса. Главное число дня
+//     («3 из 15 минут»), но уже не единственная задача.
+//   • ЗАДАЧИ — чек-лист из 2–4 пунктов. ВСЕ задачи требуют реальной учёбы:
+//     повторить слова, выучить новые, сдать задание, поговорить с тьютором.
+//     Пунктов вроде «зайти в приложение» здесь намеренно нет: галочка за вход
+//     в приложение поощряет открыть вкладку, а не заниматься.
 //
 // Набор задач НЕ случайный в привычном смысле: он детерминированно выводится из
 // даты. Это важно по трём причинам:
@@ -24,11 +26,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Что именно требует задача. Время сюда не входит — оно в шапке карточки. */
-export type QuestKind = "login" | "assignment" | "words" | "voice";
+export type QuestKind = "words" | "newWords" | "assignment" | "voice";
 
 export interface Quest {
   kind: QuestKind;
-  /** Текст задачи: «Выполнить задание». */
+  /** Текст задачи: «Повторить слова». */
   title: string;
   /** Сделано. */
   current: number;
@@ -38,10 +40,7 @@ export interface Quest {
   done: boolean;
   /** Очки за выполнение. */
   points: number;
-  /**
-   * Подпись справа: «0 / 10». У выполненных и у задач без счёта пустая —
-   * галочки и зачёркнутого текста достаточно, цифра рядом только шумит.
-   */
+  /** Подпись справа: «0 / 10». У выполненных пустая — галочки достаточно. */
   counter: string;
 }
 
@@ -56,6 +55,7 @@ export interface TimeGoal {
   /** Заполненность кольца, 0–100. */
   percent: number;
   done: boolean;
+  /** Очки за закрытую цель по времени. Зависят от самой цели. */
   points: number;
 }
 
@@ -80,10 +80,37 @@ export interface QuestInput {
   todayCompletions: number;
   /** Разговоров с тьютором сегодня. */
   todayVoiceSessions: number;
-  /** Слов пройдено сегодня. */
+  /** Слов повторено сегодня. */
   wordsToday: number;
+  /** Слов доведено до «выучено» сегодня. */
+  learnedToday: number;
   /** Личная цель по словам. */
   dailyWordGoal: number;
+}
+
+/**
+ * Очки за цель по времени.
+ *
+ * Раньше за любую цель давали одинаково — и выбрать 10 минут было выгоднее:
+ * та же награда за втрое меньшую работу. Теперь награда растёт быстрее самой
+ * цели (30 минут вдвое дольше 15, но приносит в 2.4 раза больше), чтобы
+ * тянуться к длинному занятию имело смысл.
+ *
+ * Значения ключей совпадают с вариантами в окне настройки и с валидацией на
+ * сервере (PATCH /gamification/daily-goal).
+ */
+export const GOAL_POINTS: Record<number, number> = {
+  10: 15,
+  15: 25,
+  20: 40,
+  30: 60,
+};
+
+/** Очки за произвольную цель: для значений вне таблицы считаем пропорцией. */
+export function pointsForGoal(minutes: number): number {
+  const exact = GOAL_POINTS[minutes];
+  if (exact) return exact;
+  return Math.max(10, Math.round((minutes / 15) * 25));
 }
 
 /** Русское склонение по числу. */
@@ -119,35 +146,41 @@ export function todayKey(d = new Date()): string {
 /** Описание задачи по типу. Цель подставляется снаружи. */
 function buildQuest(kind: QuestKind, target: number, current: number): Quest {
   const done = current >= target;
-  const shown = Math.min(current, target);
-  const counter = done ? "" : `${shown} / ${target}`;
+  const counter = done ? "" : `${Math.min(current, target)} / ${target}`;
 
   switch (kind) {
-    // Единственная задача, которая закрывается сама фактом захода. Она стоит
-    // первой намеренно: список, в котором уже есть галочка, ребёнок дочитывает
-    // до конца, а пустой чек-лист выглядит как список долгов.
-    case "login":
-      return { kind, target, current, done, points: 10, title: "Зайти в приложение", counter: "" };
+    case "words":
+      return {
+        kind, target, current, done, counter, points: 25,
+        title: `Повторить ${target} ${plural(target, ["слово", "слова", "слов"])}`,
+      };
+    case "newWords":
+      return {
+        kind, target, current, done, counter, points: 30,
+        title: `Выучить ${target} ${plural(target, ["новое слово", "новых слова", "новых слов"])}`,
+      };
     case "assignment":
       return {
-        kind, target, current, done, points: 30, counter,
+        kind, target, current, done, counter, points: 35,
         title: target === 1
-          ? "Выполнить задание"
+          ? "Выполнить задание от учителя"
           : `Выполнить ${target} ${plural(target, ["задание", "задания", "заданий"])}`,
       };
-    case "words":
-      return { kind, target, current, done, points: 25, counter, title: "Повторить слова" };
     case "voice":
-      return { kind, target, current, done, points: 35, counter, title: "Поговорить с тьютором" };
+      return {
+        kind, target, current, done, counter, points: 40,
+        title: "Поговорить с тьютором",
+      };
   }
 }
 
 /**
- * План на сегодня: цель по времени и от двух до четырёх задач.
+ * План на сегодня: цель по времени и от двух до четырёх учебных задач.
  *
- * Первая задача всегда «Зайти в приложение», остальные добираются из пула по
- * дате. Порядок перебора сдвигается по дате, поэтому в разные дни выпадают
- * разные типы, но внутри одного дня список неизменен.
+ * «Повторить слова» есть всегда: это то, что ученик может сделать в любой день
+ * без учителя и без интернета сверх приложения. Остальные добираются из пула,
+ * порядок перебора сдвигается по дате — в разные дни выпадают разные типы, но
+ * внутри одного дня список неизменен.
  */
 export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPlan {
   const seed = seedFromDate(dateKey);
@@ -161,14 +194,15 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
     remaining: Math.max(0, target - current),
     percent: Math.min(100, Math.round((current / target) * 100)),
     done: current >= target,
-    points: 20,
+    points: pointsForGoal(target),
   };
 
   // ── Задачи: 2, 3 или 4 ──
   const count = 2 + (seed % 3);
-  const quests: Quest[] = [buildQuest("login", 1, 1)];
+  const wordGoal = Math.max(5, input.dailyWordGoal || 10);
+  const quests: Quest[] = [buildQuest("words", wordGoal, input.wordsToday)];
 
-  const pool: QuestKind[] = ["assignment", "words", "voice"];
+  const pool: QuestKind[] = ["assignment", "newWords", "voice"];
   const offset = seed % pool.length;
 
   for (let i = 0; i < pool.length && quests.length < count; i++) {
@@ -182,9 +216,10 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
       continue;
     }
 
-    if (kind === "words") {
-      // Опираемся на личную цель из настроек карточек: у новичка она меньше.
-      quests.push(buildQuest("words", Math.max(5, input.dailyWordGoal || 10), input.wordsToday));
+    if (kind === "newWords") {
+      // Новые слова даются тяжелее повторения, поэтому их всего 2–3 за день.
+      const n = 2 + (seed % 2);
+      quests.push(buildQuest("newWords", n, input.learnedToday));
       continue;
     }
 
