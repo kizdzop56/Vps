@@ -10,10 +10,18 @@
 // показывали «Цель на сегодня выполнена! +20 очков получено», а профиль в ту же
 // секунду — 100% по времени, невыполненные задачи дня и +15 очков за цель.
 //
-// Теперь источник один: buildDailyPlan. Здесь он только показан плотнее —
-// кольцо, строка времени, счётчик задач и золотая пилюля с очками ЗА ЦЕЛЬ
-// (ровно та цифра, что подписана в окне выбора цели). Праздничное состояние
-// включается, когда закрыто и время, и все задачи дня, — как в профиле.
+// Теперь источник один: buildDailyPlan.
+//
+// ── Свёрнуто и раскрыто ─────────────────────────────────────────────────────
+// В свёрнутом виде — кольцо времени, счётчик задач и награда. Нажатие
+// раскрывает чек-лист: те же задачи, что в профиле. До этого из «Заданий» было
+// видно только время, и чтобы узнать, что ещё осталось сделать, приходилось
+// уходить в профиль.
+//
+// ── Награда ─────────────────────────────────────────────────────────────────
+// В пилюле — очки за ПОЛНОСТЬЮ закрытый день (plan.reward). Цен у отдельных
+// задач больше нет: раньше выполненная задача показывала «+35», и это читалось
+// как начисление за неё одну.
 //
 // Выбор цели из шапки убран намеренно. Он применял новую цель мгновенно, а по
 // правилу она вступает в силу со следующего дня (иначе набор задач можно
@@ -26,7 +34,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, AppState, Platform } from "react-native";
+import { View, Text, Pressable, StyleSheet, AppState, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle } from "react-native-svg";
 import authStorage from "@/utils/authStorage";
@@ -96,6 +104,7 @@ const EMPTY: ProgressInput = {
 
 export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
   const [live, setLive] = useState<ProgressInput>(EMPTY);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     const [gam, words] = await Promise.all([
@@ -147,7 +156,7 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
     dailyWordGoal: live.dailyWordGoal,
   });
 
-  const { time, quests, doneCount, allDone } = plan;
+  const { time, quests, doneCount, allDone, reward } = plan;
   const total = quests.length;
 
   const r = (RING - STROKE) / 2;
@@ -172,68 +181,107 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
       : `Ещё ${time.remaining} ${remainingWord} · задачи ${doneCount} из ${total}`;
 
   return (
-    <LinearGradient
-      colors={(allDone ? gradients.reward : CARD_GRADIENT) as unknown as string[]}
-      start={{ x: 0.1, y: 0 }}
-      end={{ x: 0.9, y: 1 }}
-      style={s.card}
+    <Pressable
+      onPress={() => setOpen((v) => !v)}
+      accessibilityRole="button"
+      accessibilityLabel={open ? "Свернуть цель дня" : "Показать задачи дня"}
+      style={{ marginBottom: 12 }}
     >
-      <View pointerEvents="none" style={s.blob} />
+      <LinearGradient
+        colors={(allDone ? gradients.reward : CARD_GRADIENT) as unknown as string[]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={s.card}
+      >
+        <View pointerEvents="none" style={s.blob} />
 
-      <View style={s.row}>
-        {allDone ? (
-          <View style={s.trophy}>
-            <Glyph name="trophy" size={26} color="#ffffff" />
+        <View style={s.row}>
+          {allDone ? (
+            <View style={s.trophy}>
+              <Glyph name="trophy" size={26} color="#ffffff" />
+            </View>
+          ) : (
+            <View style={s.ring}>
+              <Svg width={RING} height={RING}>
+                <Circle
+                  cx={RING / 2} cy={RING / 2} r={r}
+                  stroke="rgba(255,255,255,0.26)" strokeWidth={STROKE} fill="none"
+                />
+                <Circle
+                  cx={RING / 2} cy={RING / 2} r={r}
+                  stroke={accents.gold} strokeWidth={STROKE} fill="none" strokeLinecap="round"
+                  strokeDasharray={`${circumference}`}
+                  strokeDashoffset={circumference * (1 - time.percent / 100)}
+                  transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
+                />
+              </Svg>
+              <Text style={s.ringText}>{time.percent}%</Text>
+            </View>
+          )}
+
+          <View style={s.mid}>
+            <Text style={s.lbl}>Цель дня</Text>
+            <Text style={s.title} numberOfLines={1}>{title}</Text>
+            <Text style={s.sub} numberOfLines={1}>{sub}</Text>
+          </View>
+
+          {/* Очки за полностью закрытый день. Отдельные задачи цены не имеют. */}
+          <LinearGradient
+            colors={[accents.gold, accents.amber]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.pts}
+          >
+            <Text style={s.ptsText}>+{reward}</Text>
+          </LinearGradient>
+        </View>
+
+        {/* Свёрнуто: задачи сегментами. Раскрыто: сам чек-лист. */}
+        {open ? (
+          <View style={s.list}>
+            {quests.map((q) => (
+              <View key={q.kind} style={[s.task, q.done && s.taskDone]}>
+                <View style={[s.box, q.done && s.boxDone]}>
+                  {q.done && <Glyph name="check" size={11} color={accents.violetDeep} />}
+                </View>
+                <Text style={[s.taskText, q.done && s.taskTextDone]} numberOfLines={1}>
+                  {q.title}
+                </Text>
+                <Text style={s.taskCount}>{q.done ? "" : q.counter}</Text>
+              </View>
+            ))}
+
+            <View style={s.foot}>
+              <Glyph name="star" size={12} color="rgba(255,255,255,0.86)" />
+              <Text style={s.footText}>
+                {allDone
+                  ? `Очки за день начислены: +${reward}`
+                  : `+${reward} очков придёт, когда закроешь время и все задачи`}
+              </Text>
+            </View>
           </View>
         ) : (
-          <View style={s.ring}>
-            <Svg width={RING} height={RING}>
-              <Circle
-                cx={RING / 2} cy={RING / 2} r={r}
-                stroke="rgba(255,255,255,0.26)" strokeWidth={STROKE} fill="none"
-              />
-              <Circle
-                cx={RING / 2} cy={RING / 2} r={r}
-                stroke={accents.gold} strokeWidth={STROKE} fill="none" strokeLinecap="round"
-                strokeDasharray={`${circumference}`}
-                strokeDashoffset={circumference * (1 - time.percent / 100)}
-                transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
-              />
-            </Svg>
-            <Text style={s.ringText}>{time.percent}%</Text>
+          <View style={s.pips}>
+            {quests.map((q) => (
+              <View key={q.kind} style={[s.pip, q.done && s.pipDone]} />
+            ))}
           </View>
         )}
 
-        <View style={s.mid}>
-          <Text style={s.lbl}>Цель дня</Text>
-          <Text style={s.title} numberOfLines={1}>{title}</Text>
-          <Text style={s.sub} numberOfLines={1}>{sub}</Text>
+        <View style={s.toggle}>
+          <Text style={s.toggleText}>{open ? "Свернуть" : "Что осталось сделать"}</Text>
+          <View style={{ transform: [{ rotate: open ? "-90deg" : "90deg" }] }}>
+            <Glyph name="chevron" size={12} color="rgba(255,255,255,0.8)" />
+          </View>
         </View>
-
-        {/* Ровно та награда за цель, что подписана в окне выбора в профиле. */}
-        <LinearGradient
-          colors={[accents.gold, accents.amber]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={s.pts}
-        >
-          <Text style={s.ptsText}>+{time.points}</Text>
-        </LinearGradient>
-      </View>
-
-      {/* Задачи дня сегментами: сколько закрыто, видно до перехода в профиль. */}
-      <View style={s.pips}>
-        {quests.map((q) => (
-          <View key={q.kind} style={[s.pip, q.done && s.pipDone]} />
-        ))}
-      </View>
-    </LinearGradient>
+      </LinearGradient>
+    </Pressable>
   );
 }
 
 const s = StyleSheet.create({
   card: {
-    borderRadius: radii.md, padding: 14, marginBottom: 12, overflow: "hidden",
+    borderRadius: radii.md, padding: 14, overflow: "hidden",
     shadowColor: "#7c3aed", shadowOffset: { width: 0, height: 7 },
     shadowOpacity: 0.3, shadowRadius: 18, elevation: 7,
   },
@@ -281,6 +329,40 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.24)",
   },
   pipDone: { backgroundColor: accents.gold },
+
+  list: { marginTop: 12, gap: 7 },
+  task: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingVertical: 9, paddingHorizontal: 11, borderRadius: radii.sm,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.18)",
+  },
+  taskDone: { backgroundColor: "rgba(255,255,255,0.2)", borderColor: "rgba(255,255,255,0.3)" },
+  box: {
+    width: 20, height: 20, borderRadius: 7, alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: "rgba(255,255,255,0.55)",
+  },
+  boxDone: { backgroundColor: "#fff", borderColor: "#fff" },
+  taskText: { flex: 1, fontSize: 13, fontWeight: "700", color: "#fff" },
+  taskTextDone: { color: "rgba(255,255,255,0.6)", textDecorationLine: "line-through" },
+  taskCount: {
+    fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.72)",
+    fontVariant: ["tabular-nums"],
+  },
+
+  foot: {
+    flexDirection: "row", alignItems: "center", gap: 7,
+    marginTop: 2, paddingVertical: 8, paddingHorizontal: 11,
+    borderRadius: radii.sm, backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.16)",
+  },
+  footText: { flex: 1, fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.86)" },
+
+  toggle: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
+    marginTop: 10,
+  },
+  toggleText: { fontSize: 11, fontWeight: "800", color: "rgba(255,255,255,0.8)" },
 });
 
 export default DailyGoalBar;
