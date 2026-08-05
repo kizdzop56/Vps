@@ -7,27 +7,19 @@
 // это 163 пикселя пустоты, из-за чего аватар уезжал вверх, обрезался краем
 // градиента и занимал пол-экрана, а имя с метками уходили под сгиб.
 //
-// Здесь аватар рисуется напрямую и стоит слева, а имя, метки и уровень —
-// справа. Горизонтальная раскладка компактнее: видно и кто ты, и сколько до
-// следующего уровня, без прокрутки.
-//
 // Аватар — скруглённый квадрат в золотой оправе, как медальон: тот же приём,
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
 // профиля из соцсети», а не как награда.
 //
-// Справа от аватара под именем стоят три счётчика. Первым был «очков», но это
-// то же число, что уже стоит на полосе опыта строкой ниже («650 / 700 XP»):
-// очки и опыт в проекте одно и то же, и одна цифра занимала на экране два
-// места. Вместо него — выученные слова: единственный показатель собственно
-// знания языка, остальные счётчики говорят о прилежании (серия дней) и объёме
-// работы (задания).
+// ── Про счётчики ────────────────────────────────────────────────────────────
+// Их два, а не три. Три узкие карточки не помещались рядом с аватаром, и
+// сетка съезжала вниз, оставляя над собой пустой тёмный прямоугольник —
+// именно ту «дырку», которая бросалась в глаза на скриншотах. Две карточки
+// шире, встают вровень с нижним краем аватара и закрывают пустоту целиком.
 //
-// После переноса счётчиков сверху всё ещё оставалось тёмное пятно справа от
-// имени, особенно на узких экранах: карточки начинались слишком низко и не
-// забирались под строку с ником. Шапка уплотнена: сетка справа поднята выше,
-// отступы между строками уменьшены, карточки стали чуть выше и уже, а полоса
-// опыта приблизилась к ним. Пустота не исчезает математически совсем, но
-// перестаёт бросаться в глаза как «дырка в макете».
+// Что осталось: «слов выучено» (знание языка) и «дней подряд» (привычка).
+// Что убрано: «очков» — это то же число, что на полосе опыта строкой ниже;
+// «заданий» — их разбивка целиком есть в блоке «Мои задания» ниже по экрану.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
@@ -46,12 +38,17 @@ function GlassPill({ text, icon }: { text: string; icon?: GlyphName }) {
   );
 }
 
-/** Один счётчик в шапке: крупное число и подпись. */
-function MiniStat({ value, label }: { value: number | string; label: string }) {
+/** Счётчик в шапке: значок, крупное число и подпись в одну строку. */
+function MiniStat({ value, label, icon }: { value: number | string; label: string; icon: GlyphName }) {
   return (
     <View style={s.mini}>
-      <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
-      <Text style={s.miniLabel} numberOfLines={2}>{label}</Text>
+      <View style={s.miniIcon}>
+        <Glyph name={icon} size={15} color="#ffffff" />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
+        <Text style={s.miniLabel} numberOfLines={1}>{label}</Text>
+      </View>
     </View>
   );
 }
@@ -69,18 +66,10 @@ export interface ProfileHeroProps {
   roleLabel: string;
   /** Возраст словом: «12 лет». Пусто — метки не будет. */
   ageLabel?: string | null;
-  /**
-   * Уровень и его название. Показывается только ученику.
-   * На шильде выводится один номер: названия уровней («Ученик», «Старатель»)
-   * повторяли роль в соседней метке. Название уровня целиком видно в строке
-   * под полосой опыта.
-   */
+  /** Уровень: на шильде только номер, название — под полосой опыта. */
   level?: { number: number; title: string } | null;
-  /**
-   * Три счётчика под именем. null — блок не рисуется (учитель, родитель,
-   * или статистика ещё не загружена).
-   */
-  stats?: { wordsLearned: number; streak: number; assignments: number } | null;
+  /** Два счётчика под именем. null — блок не рисуется. */
+  stats?: { wordsLearned: number; streak: number } | null;
   /** Полоса опыта. null — блок не рисуется. */
   xp?: {
     current: number;
@@ -178,14 +167,15 @@ export function ProfileHero({
           {stats && (
             <View style={s.miniRow}>
               <MiniStat
+                icon="cards"
                 value={stats.wordsLearned}
                 label={`${plural(stats.wordsLearned, ["слово", "слова", "слов"])} выучено`}
               />
               <MiniStat
+                icon="flame"
                 value={stats.streak}
                 label={`${plural(stats.streak, ["день", "дня", "дней"])} подряд`}
               />
-              <MiniStat value={stats.assignments} label="заданий" />
             </View>
           )}
         </View>
@@ -272,23 +262,30 @@ const s = StyleSheet.create({
   },
   glassPillText: { fontSize: 11.5, fontWeight: "800", color: "#ffffff" },
 
-  miniRow: { flexDirection: "row", gap: 6, marginTop: 9 },
+  // Две карточки: значок слева, число и подпись справа — так строка
+  // заполняется по горизонтали и не оставляет воздуха над сеткой.
+  miniRow: { flexDirection: "row", gap: 7, marginTop: 9 },
   mini: {
-    flex: 1, minHeight: 94, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 14,
-    alignItems: "center", justifyContent: "center",
+    flex: 1, flexDirection: "row", alignItems: "center", gap: 8,
+    paddingVertical: 8, paddingHorizontal: 9, borderRadius: 14,
     backgroundColor: "rgba(255,255,255,0.14)",
     borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
   },
+  miniIcon: {
+    width: 28, height: 28, borderRadius: 10,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
   miniValue: {
-    fontSize: 16, fontWeight: "900", color: "#ffffff",
+    fontSize: 17, fontWeight: "900", color: "#ffffff",
     letterSpacing: -0.5, fontVariant: ["tabular-nums"],
   },
   miniLabel: {
     fontSize: 9.5, fontWeight: "700", color: "rgba(255,255,255,0.72)",
-    marginTop: 4, letterSpacing: 0.1, textAlign: "center", lineHeight: 12,
+    marginTop: 1, letterSpacing: 0.1,
   },
 
-  xpBlock: { marginTop: 12 },
+  xpBlock: { marginTop: 14 },
   xpHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 },
   xpTitle: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
   xpNum: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"] },
