@@ -5,9 +5,14 @@
 // значит и слова, и тексты будут про футбол), а ученику приятно видеть в
 // профиле что-то своё, а не только цифры прогресса.
 //
-// Раньше в макете темы были, а в приложении их не было вообще: нажать было
-// некуда. Теперь метки стоят прямо под текстом, а «+ интерес» открывает окно
-// с готовым набором и полем для своей темы.
+// Как открывается выбор: нажатием на сам блок тем — отдельной кнопки
+// «+ интерес» нет. Кнопка занимала место в ряду меток и ломала выравнивание:
+// метки должны заполнять ширину карточки, а пунктирный «плюс» всегда оставался
+// висеть хвостом в конце строки.
+//
+// Тем максимум пять. Это не техническое ограничение, а смысловое: пять тем
+// ещё можно учесть при подготовке занятия, а список из десяти означает
+// «мне интересно всё» и не говорит учителю ничего.
 //
 // Хранится в users.interests (jsonb), меняется через PUT /users/:id/interests.
 // Сохраняем сразу при выборе: отдельная кнопка «Сохранить» для галочек —
@@ -34,14 +39,15 @@ export const INTEREST_PRESETS = [
   "Путешествия", "Спорт", "Кулинария", "Мода", "Машины", "Природа",
 ];
 
-const MAX_INTERESTS = 10;
+/** Больше пяти тем перестают что-либо говорить о человеке. */
+export const MAX_INTERESTS = 5;
 
 export interface AboutCardProps {
   bio: string;
   onSaveBio: (value: string) => void;
   interests: string[];
   onSaveInterests: (value: string[]) => void;
-  /** Чужой профиль — только просмотр, без карандаша и кнопки «+ интерес». */
+  /** Чужой профиль — только просмотр: ни правки текста, ни выбора тем. */
   readOnly?: boolean;
 }
 
@@ -53,22 +59,45 @@ export function AboutCard({
   const [draft, setDraft] = useState(bio);
   const [picker, setPicker] = useState(false);
   const [custom, setCustom] = useState("");
+  // Сообщение под полем своей темы: «уже добавлена» или «больше пяти нельзя».
+  const [hint, setHint] = useState("");
+
+  const has = (topic: string) =>
+    interests.some((i) => i.toLowerCase() === topic.toLowerCase());
+
+  const full = interests.length >= MAX_INTERESTS;
 
   const toggle = (topic: string) => {
-    const has = interests.some((i) => i.toLowerCase() === topic.toLowerCase());
-    if (has) {
+    setHint("");
+    if (has(topic)) {
       onSaveInterests(interests.filter((i) => i.toLowerCase() !== topic.toLowerCase()));
       return;
     }
-    if (interests.length >= MAX_INTERESTS) return;
+    if (full) {
+      setHint(`Можно выбрать не больше ${MAX_INTERESTS} тем. Убери одну, чтобы добавить новую.`);
+      return;
+    }
     onSaveInterests([...interests, topic]);
   };
 
   const addCustom = () => {
     const value = custom.trim().replace(/\s+/g, " ").slice(0, 24);
     if (!value) return;
-    if (!interests.some((i) => i.toLowerCase() === value.toLowerCase())) toggle(value);
+
+    // Повтор — самая частая ошибка: тему уже выбрали галочкой выше и не
+    // заметили. Молча ничего не делать нельзя, иначе выглядит как поломка.
+    if (has(value)) {
+      setHint(`Тема «${value}» уже добавлена`);
+      return;
+    }
+    if (full) {
+      setHint(`Можно выбрать не больше ${MAX_INTERESTS} тем. Убери одну, чтобы добавить новую.`);
+      return;
+    }
+
+    onSaveInterests([...interests, value]);
     setCustom("");
+    setHint("");
   };
 
   const s = StyleSheet.create({
@@ -90,25 +119,21 @@ export function AboutCard({
     cancelText: { fontSize: 13, color: colors.mutedForeground },
 
     // ── Метки интересов ──
-    tags: {
-      flexDirection: "row", flexWrap: "wrap", gap: 7,
-      marginTop: 12, paddingTop: 12,
-      borderTopWidth: 1, borderTopColor: colors.border,
-    },
+    // Весь блок — одна кнопка: нажатие в любом месте открывает выбор тем.
+    tagsArea: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
+    tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+    // flexGrow растягивает метки по строке, поэтому ряд всегда заканчивается
+    // ровно у края карточки, а не рваным хвостом.
     tag: {
-      flexDirection: "row", alignItems: "center", gap: 5,
-      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
+      flexGrow: 1, minWidth: 84,
+      alignItems: "center", justifyContent: "center",
+      paddingHorizontal: 11, paddingVertical: 8, borderRadius: radii.pill,
       backgroundColor: colors.primary + "14",
       borderWidth: 1, borderColor: colors.primary + "33",
     },
     tagText: { fontSize: 12.5, fontWeight: "800", color: colors.primary },
-    // Пунктирная рамка = «сюда можно добавить», как в макете.
-    addTag: {
-      flexDirection: "row", alignItems: "center", gap: 5,
-      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
-      borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.primary + "66",
-    },
-    addText: { fontSize: 12.5, fontWeight: "800", color: colors.primary },
+    emptyRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    emptyText: { flex: 1, fontSize: 13, color: colors.mutedForeground },
 
     // ── Окно выбора ──
     overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
@@ -133,10 +158,12 @@ export function AboutCard({
       backgroundColor: colors.muted, borderWidth: 2, borderColor: "transparent",
     },
     chipOn: { backgroundColor: colors.primary + "18", borderColor: colors.primary },
+    // Когда набрано пять тем, невыбранные гаснут: видно, что добавить нельзя.
+    chipOff: { opacity: 0.45 },
     chipText: { fontSize: 13, fontWeight: "800", color: colors.foreground },
     chipTextOn: { color: colors.primary },
 
-    customRow: { flexDirection: "row", gap: 8, marginBottom: 16 },
+    customRow: { flexDirection: "row", gap: 8, marginBottom: 10 },
     customInput: {
       flex: 1, backgroundColor: colors.muted, borderRadius: radii.sm,
       paddingHorizontal: 14, paddingVertical: 12,
@@ -148,11 +175,15 @@ export function AboutCard({
       alignItems: "center", justifyContent: "center",
       backgroundColor: colors.primary,
     },
-    limit: { fontSize: 11.5, color: colors.mutedForeground, marginBottom: 14 },
+    customBtnOff: { backgroundColor: colors.muted },
+    hintRow: {
+      flexDirection: "row", alignItems: "center", gap: 8,
+      backgroundColor: accents.amber + "1f", borderRadius: radii.sm,
+      paddingHorizontal: 11, paddingVertical: 9, marginBottom: 12,
+    },
+    hintText: { flex: 1, fontSize: 12, fontWeight: "700", color: "#8a5a00", lineHeight: 16 },
+    counter: { fontSize: 11.5, color: colors.mutedForeground, marginBottom: 14 },
   });
-
-  const selected = (topic: string) =>
-    interests.some((i) => i.toLowerCase() === topic.toLowerCase());
 
   return (
     <>
@@ -195,28 +226,28 @@ export function AboutCard({
           </Text>
         )}
 
-        {/* Метки показываем всегда, когда есть что показать; кнопка добавления —
-            только в своём профиле. */}
         {(interests.length > 0 || !readOnly) && (
-          <View style={s.tags}>
-            {interests.map((topic) => (
-              <Pressable
-                key={topic}
-                style={s.tag}
-                onPress={readOnly ? undefined : () => toggle(topic)}
-              >
-                <Text style={s.tagText}>{topic}</Text>
-                {!readOnly && <Glyph name="close" size={11} color={colors.primary} />}
-              </Pressable>
-            ))}
-
-            {!readOnly && interests.length < MAX_INTERESTS && (
-              <Pressable style={s.addTag} onPress={() => setPicker(true)}>
-                <Glyph name="plus" size={12} color={colors.primary} />
-                <Text style={s.addText}>интерес</Text>
-              </Pressable>
+          <Pressable
+            style={s.tagsArea}
+            onPress={readOnly ? undefined : () => { setHint(""); setPicker(true); }}
+            disabled={readOnly}
+          >
+            {interests.length > 0 ? (
+              <View style={s.tagsRow}>
+                {interests.map((topic) => (
+                  <View key={topic} style={s.tag}>
+                    <Text style={s.tagText} numberOfLines={1}>{topic}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={s.emptyRow}>
+                <Glyph name="spark" size={15} color={colors.primary} />
+                <Text style={s.emptyText}>Выбери темы, которые тебе интересны</Text>
+                <Glyph name="chevron" size={15} color={colors.mutedForeground} />
+              </View>
             )}
-          </View>
+          </Pressable>
         )}
       </View>
 
@@ -227,18 +258,18 @@ export function AboutCard({
               <View style={s.handle} />
               <Text style={s.sheetTitle}>Что тебе интересно</Text>
               <Text style={s.sheetSub}>
-                Учитель подберёт задания и слова по этим темам. Можно выбрать несколько
+                Учитель подберёт задания и слова по этим темам. Можно выбрать до {MAX_INTERESTS} тем
                 или дописать свою.
               </Text>
 
               <ScrollView showsVerticalScrollIndicator={false}>
                 <View style={s.grid}>
                   {INTEREST_PRESETS.map((topic) => {
-                    const on = selected(topic);
+                    const on = has(topic);
                     return (
                       <Pressable
                         key={topic}
-                        style={[s.chip, on && s.chipOn]}
+                        style={[s.chip, on && s.chipOn, !on && full && s.chipOff]}
                         onPress={() => toggle(topic)}
                       >
                         {on && <Glyph name="check" size={12} color={colors.primary} />}
@@ -253,19 +284,29 @@ export function AboutCard({
                   <TextInput
                     style={s.customInput}
                     value={custom}
-                    onChangeText={setCustom}
+                    onChangeText={(v) => { setCustom(v); if (hint) setHint(""); }}
                     placeholder="Своя тема"
                     placeholderTextColor={colors.mutedForeground}
                     maxLength={24}
                     onSubmitEditing={addCustom}
                     returnKeyType="done"
                   />
-                  <Pressable style={s.customBtn} onPress={addCustom}>
-                    <Glyph name="plus" size={18} color="#fff" />
+                  <Pressable
+                    style={[s.customBtn, full && s.customBtnOff]}
+                    onPress={addCustom}
+                  >
+                    <Glyph name="plus" size={18} color={full ? colors.mutedForeground : "#fff"} />
                   </Pressable>
                 </View>
 
-                <Text style={s.limit}>
+                {!!hint && (
+                  <View style={s.hintRow}>
+                    <Glyph name="alert" size={14} color="#8a5a00" />
+                    <Text style={s.hintText}>{hint}</Text>
+                  </View>
+                )}
+
+                <Text style={s.counter}>
                   Выбрано {interests.length} из {MAX_INTERESTS}
                 </Text>
               </ScrollView>
