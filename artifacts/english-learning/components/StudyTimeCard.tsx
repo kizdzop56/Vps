@@ -28,11 +28,16 @@
 // величина, а не как готовая картинка.
 //
 // ── Закрытие ────────────────────────────────────────────────────────────────
-// Кнопка «Закрыть» лежит ПОСЛЕДНИМ элементом внутри ScrollView, а не в
-// закреплённой полосе снизу. Закреплённая полоса — это белый прямоугольник
-// поверх содержимого: он резал последнюю строку разбора и был виден всегда,
-// даже когда закрывать ещё рано. Внутри прокрутки кнопка появляется ровно
-// там, где разбор кончился. Крестик в шапке оставлен как быстрый выход.
+// Одна кнопка «Закрыть», ЛИПКАЯ: она лежит поверх окна и прижата к низу
+// экрана, поэтому доступна на любой прокрутке. Раньше кнопка ехала вместе с
+// содержимым, и до неё нужно было долистать весь разбор.
+//
+// Закреплённой белой полосы под ней нет: кнопка висит над содержимым, а под
+// ней короткая растяжка от прозрачного к фону окна. Место под кнопку выделено
+// отступом внизу прокрутки, поэтому последняя строка разбора не обрезается.
+//
+// Крестик из шапки убран: две кнопки для одного действия — лишний элемент.
+// Тап по затемнению по-прежнему закрывает.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
@@ -51,6 +56,7 @@ import {
   ActivityIndicator, ScrollView,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Line } from "react-native-svg";
 import { useColors } from "@/hooks/useColors";
 import authStorage from "@/utils/authStorage";
@@ -64,6 +70,10 @@ const NATIVE_DRIVER = Platform.OS !== "web";
 /** Рост столбиков при открытии окна. */
 const FILL_MS = 700;
 const FILL_STEP_MS = 55;
+
+/** Липкая кнопка: её высота вместе с гранью и растяжка над ней. */
+const STICKY_H = 62;
+const STICKY_FADE = 28;
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -317,6 +327,7 @@ export function StudyTimeCard({
   studentId, totalMinutes, todaySeconds, canOpen = true, style,
 }: StudyTimeCardProps) {
   const colors = useColors();
+  const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState<TimeSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,6 +360,9 @@ export function StudyTimeCard({
     setOpen(true);
     load();
   };
+
+  // Липкая кнопка стоит на этой высоте, а прокрутка получает её же отступом.
+  const stickyBottom = 16 + insets.bottom;
 
   return (
     <View style={[{ flex: 1, paddingBottom: EDGE }, style]}>
@@ -410,18 +424,6 @@ export function StudyTimeCard({
 
             <View style={s.sheetHead}>
               <Text style={[s.sheetTitle, { color: colors.foreground }]}>Время в приложении</Text>
-              {/* Быстрый выход. Основная кнопка «Закрыть» — внизу прокрутки. */}
-              <Pressable
-                onPress={() => setOpen(false)}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel="Закрыть"
-                style={({ pressed }) => [
-                  s.close, { backgroundColor: colors.muted }, pressed && { opacity: 0.7 },
-                ]}
-              >
-                <Glyph name="close" size={18} color={colors.mutedForeground} />
-              </Pressable>
             </View>
 
             {loading && !summary ? (
@@ -435,29 +437,29 @@ export function StudyTimeCard({
                   {error}
                 </Text>
                 <ChunkyButton label="Повторить" icon="repeat" onPress={load} style={{ alignSelf: "stretch" }} />
-                <ChunkyButton
-                  label="Закрыть"
-                  tone="dark"
-                  center
-                  onPress={() => setOpen(false)}
-                  style={{ alignSelf: "stretch" }}
-                />
+                <View style={{ height: STICKY_H }} />
               </View>
             ) : summary ? (
-              <ScrollView showsVerticalScrollIndicator={false}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: stickyBottom + STICKY_H + STICKY_FADE }}
+              >
                 <SummaryBody summary={summary} colors={colors} run={run} />
-                {/* Кнопка едет вместе с содержимым: закреплённая полоса внизу
-                    перекрывала бы последнюю строку разбора белым фоном. */}
-                <ChunkyButton
-                  label="Закрыть"
-                  tone="dark"
-                  center
-                  onPress={() => setOpen(false)}
-                  style={{ marginTop: 18 }}
-                />
-                <View style={{ height: 12 }} />
               </ScrollView>
             ) : null}
+
+            {/* Растяжка под кнопкой: содержимое уезжает под неё затуханием, а
+                не обрывом. Клики не перехватывает. */}
+            <LinearGradient
+              pointerEvents="none"
+              colors={[colors.card + "00", colors.card]}
+              style={[s.fade, { bottom: stickyBottom + STICKY_H - 6 }]}
+            />
+
+            {/* Липкая кнопка: одна на всё окно, всегда на одном месте. */}
+            <View style={[s.sticky, { bottom: stickyBottom }]}>
+              <ChunkyButton label="Закрыть" tone="dark" center onPress={() => setOpen(false)} />
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -676,15 +678,15 @@ const s = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
   sheet: {
     borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
-    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 24, maxHeight: "88%",
+    paddingTop: 12, paddingHorizontal: 20, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
   sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
   sheetTitle: { flex: 1, fontSize: 19, fontWeight: "900", letterSpacing: -0.4 },
-  close: {
-    width: 36, height: 36, borderRadius: 13,
-    alignItems: "center", justifyContent: "center",
-  },
+
+  // Липкая кнопка и растяжка под ней.
+  sticky: { position: "absolute", left: 20, right: 20 },
+  fade: { position: "absolute", left: 0, right: 0, height: STICKY_FADE + 6 },
 
   hero: { borderRadius: radii.md, borderWidth: 1, padding: 16, alignItems: "flex-start" },
   heroLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.2, textTransform: "uppercase" },
