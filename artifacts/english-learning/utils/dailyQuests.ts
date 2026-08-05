@@ -12,6 +12,17 @@
 //     Пунктов вроде «зайти в приложение» здесь намеренно нет: галочка за вход
 //     в приложение поощряет открыть вкладку, а не заниматься.
 //
+// ── Награда ─────────────────────────────────────────────────────────────────
+// Награда за день ОДНА и выдаётся только за полностью закрытый день: время и
+// все задачи. Раньше у каждой задачи была своя цена (+25…+45), и выполненная
+// задача показывала «+35» — это читалось как начисление за отдельную задачу,
+// хотя ничего не начислялось вовсе: все эти числа были нарисованы.
+//
+// Размер награды зависит от тяжести цели по времени (GOAL_POINTS). Реальное
+// начисление делает сервер, один раз в сутки: POST /gamification/daily-goal/claim.
+// Клиент только показывает награду и просит её выдать, когда день закрыт;
+// проверку выполнения сервер делает заново и клиенту на слово не верит.
+//
 // Набор задач НЕ случайный в привычном смысле: он детерминированно выводится из
 // даты. Это важно по трём причинам:
 //   1. Задачи не должны меняться при каждом обновлении экрана — иначе ученик
@@ -20,6 +31,10 @@
 //      всегда даёт один и тот же набор.
 //   3. День ото дня набор всё-таки меняется, иначе «цель дня» превратится в
 //      постоянный список.
+//
+// ВАЖНО: этот расчёт продублирован на сервере (api-server/src/lib/dailyPlan.ts).
+// Правки должны идти в оба файла одновременно, иначе клиент покажет закрытый
+// день, а сервер откажется выдавать награду.
 //
 // Прогресс берётся из уже загруженных счётчиков (см. GET /gamification/stats и
 // GET /flashcards/stats) — новых запросов эта логика не добавляет.
@@ -38,8 +53,6 @@ export interface Quest {
   target: number;
   /** Задача закрыта. */
   done: boolean;
-  /** Очки за выполнение. */
-  points: number;
   /** Подпись справа: «0 / 10». У выполненных пустая — галочки достаточно. */
   counter: string;
 }
@@ -57,10 +70,6 @@ export interface TimeGoal {
   /** Заполненность кольца, 0–100. */
   percent: number;
   done: boolean;
-  /** Очки именно за сегодняшнюю цель. */
-  points: number;
-  /** Очки за цель, выбранную на завтра. */
-  nextPoints: number;
 }
 
 export interface DailyPlan {
@@ -68,10 +77,12 @@ export interface DailyPlan {
   quests: Quest[];
   /** Сколько задач закрыто (без учёта времени). */
   doneCount: number;
-  /** Все задачи дня и время закрыты. */
+  /** Все задачи дня и время закрыты — только тогда положена награда. */
   allDone: boolean;
-  /** Очки за весь день: сегодняшняя цель по времени + все задачи. */
-  totalPoints: number;
+  /** Очки за полностью закрытый день. Единственная награда дня. */
+  reward: number;
+  /** Награда за цель, выбранную на завтра. Показывается в окне выбора. */
+  nextReward: number;
 }
 
 /** Данные, из которых собирается день. */
@@ -95,7 +106,7 @@ export interface QuestInput {
 }
 
 /**
- * Очки за цель по времени.
+ * Очки за полностью закрытый день. Зависят от выбранной цели по времени.
  *
  * Раньше за любую цель давали одинаково — и выбрать 10 минут было выгоднее:
  * та же награда за втрое меньшую работу. Теперь награда растёт быстрее самой
@@ -147,30 +158,30 @@ export function todayKey(d = new Date()): string {
 }
 
 /** Описание задачи по типу. Цель подставляется снаружи. */
-function buildQuest(kind: QuestKind, target: number, current: number, points: number): Quest {
+function buildQuest(kind: QuestKind, target: number, current: number): Quest {
   const done = current >= target;
   const counter = done ? "" : `${Math.min(current, target)} / ${target}`;
 
   switch (kind) {
     case "words":
       return {
-        kind, target, current, done, counter, points,
+        kind, target, current, done, counter,
         title: `Повторить ${target} ${plural(target, ["слово", "слова", "слов"])}`,
       };
     case "newWords":
       return {
-        kind, target, current, done, counter, points,
+        kind, target, current, done, counter,
         title: `Выучить ${target} ${plural(target, ["новое слово", "новых слова", "новых слов"])}`,
       };
     case "assignment":
       return {
-        kind, target, current, done, counter, points,
+        kind, target, current, done, counter,
         title: target === 1
           ? "Выполнить задание от учителя"
           : `Выполнить ${target} ${plural(target, ["задание", "задания", "заданий"])}`,
       };
     case "voice":
-      return { kind, target, current, done, counter, points, title: "Поговорить с тьютором" };
+      return { kind, target, current, done, counter, title: "Поговорить с тьютором" };
   }
 }
 
@@ -207,8 +218,6 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
     remaining: Math.max(0, activeTarget - current),
     percent: Math.min(100, Math.round((current / activeTarget) * 100)),
     done: current >= activeTarget,
-    points: pointsForGoal(activeTarget),
-    nextPoints: pointsForGoal(selectedTarget),
   };
 
   // ── Задачи: 2, 3 или 4. Базовое число зависит и от даты, и от тяжести цели ──
@@ -219,7 +228,7 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
 
   // Повторение слов есть всегда и растёт вместе с целью по времени.
   const wordGoal = Math.max(5, input.dailyWordGoal || 10) + (tier >= 1 ? 2 : 0) + (tier >= 3 ? 3 : 0);
-  quests.push(buildQuest("words", wordGoal, input.wordsToday, 25 + tier * 5));
+  quests.push(buildQuest("words", wordGoal, input.wordsToday));
 
   const pool: QuestKind[] = ["assignment", "newWords", "voice"];
   const offset = seed % pool.length;
@@ -230,20 +239,20 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
     if (kind === "assignment") {
       // Чем тяжелее цель по времени, тем выше шанс получить 2 задания.
       const n = tier >= 2 ? 2 : 1;
-      quests.push(buildQuest("assignment", n, input.todayCompletions, 35 + tier * 5));
+      quests.push(buildQuest("assignment", n, input.todayCompletions));
       continue;
     }
 
     if (kind === "newWords") {
       // Новые слова даются тяжелее повторения, поэтому их всего 2–5 за день.
       const n = 2 + tier;
-      quests.push(buildQuest("newWords", n, input.learnedToday, 30 + tier * 5));
+      quests.push(buildQuest("newWords", n, input.learnedToday));
       continue;
     }
 
     // Разговор с тьютором на сложных целях может стать двумя разговорами.
     const n = tier >= 3 ? 2 : 1;
-    quests.push(buildQuest("voice", n, input.todayVoiceSessions, 40 + tier * 5));
+    quests.push(buildQuest("voice", n, input.todayVoiceSessions));
   }
 
   const doneCount = quests.filter((q) => q.done).length;
@@ -253,6 +262,7 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
     quests,
     doneCount,
     allDone: time.done && doneCount === quests.length,
-    totalPoints: time.points + quests.reduce((sum, q) => sum + q.points, 0),
+    reward: pointsForGoal(activeTarget),
+    nextReward: pointsForGoal(selectedTarget),
   };
 }
