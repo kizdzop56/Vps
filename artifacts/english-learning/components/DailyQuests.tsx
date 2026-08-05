@@ -5,14 +5,20 @@
 //   • слева кольцо с процентом, дуга золотая на светлой канавке;
 //   • справа «СЕГОДНЯ», крупное «6 из 20 минут» и строка «Ещё 14 минут — и
 //     цель закрыта»: главное число дня читается раньше всего остального;
-//   • золотая пилюля с очками ЗА САМУ ЦЕЛЬ в правом верхнем углу;
+//   • золотая пилюля с наградой ЗА ВЕСЬ ДЕНЬ в правом верхнем углу;
 //   • ниже задачи с квадратными галочками, выполненные — зачёркнуты;
 //   • внизу кнопка «Изменить цель».
 //
-// В пилюле раньше стояла сумма за весь день (цель + все задачи): в окне выбора
-// у цели «20 минут» написано +40, а на карточке светилось +160 — цифры
-// выглядели враньём. Теперь пилюля показывает ровно ту награду, которая
-// подписана у выбранной цели, а очки за задачи видны у самих задач.
+// ── Награда одна на день ────────────────────────────────────────────────────
+// У каждой задачи была своя цена, и выполненная задача показывала «+35». Это
+// читалось как «мне начислили 35 очков за эту задачу», хотя награда задумана за
+// цель дня целиком. Хуже того: ни одна из этих цифр никому не начислялась — они
+// были нарисованы и всё.
+//
+// Теперь очки одни: сумма за ПОЛНОСТЬЮ закрытый день (время + все задачи). Пока
+// день не закрыт, у пилюли подпись «за весь день», чтобы цифра не выглядела
+// уже полученной. Начисляет сервер, один раз в сутки:
+// POST /gamification/daily-goal/claim.
 //
 // Смена цели применяется со СЛЕДУЮЩЕГО дня (см. PATCH /gamification/daily-goal):
 // набор задач зависит от тяжести цели, и мгновенная смена позволяла бы
@@ -24,7 +30,7 @@
 // детерминированный и почему в нём нет пункта «зайти в приложение».
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, Pressable, Modal, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle } from "react-native-svg";
@@ -47,13 +53,27 @@ export interface DailyQuestsProps {
   plan: DailyPlan;
   /** Цель, выбранная на завтра — она подсвечивается в окне настройки. */
   goalMinutes: number;
+  /** Награда за сегодня уже получена. */
+  claimed?: boolean;
   onGoalChange?: (minutes: number) => void;
+  /**
+   * Забрать награду за закрытый день. Вызывается сама, как только план
+   * сходится: отдельная кнопка «получить» была бы лишним шагом, ребёнок и так
+   * всё сделал.
+   */
+  onClaim?: () => void;
 }
 
-export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProps) {
+export function DailyQuests({ plan, goalMinutes, claimed, onGoalChange, onClaim }: DailyQuestsProps) {
   const colors = useColors();
   const [editing, setEditing] = useState(false);
-  const { time, quests } = plan;
+  const { time, quests, allDone } = plan;
+
+  // День сошёлся — просим очки. Сервер сам решит, выдавать ли: повторный вызов
+  // безопасен и отвечает alreadyClaimed.
+  useEffect(() => {
+    if (allDone && !claimed) onClaim?.();
+  }, [allDone, claimed, onClaim]);
 
   const r = (RING - STROKE) / 2;
   const circumference = 2 * Math.PI * r;
@@ -89,11 +109,15 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     },
     sub: { fontSize: 12.5, fontWeight: "600", color: "rgba(255,255,255,0.82)", marginTop: 6, lineHeight: 17 },
 
-    pts: {
-      position: "absolute", top: 14, right: 14,
-      paddingHorizontal: 11, paddingVertical: 5, borderRadius: radii.pill,
-    },
+    // Пилюля награды. Подпись под ней объясняет, за что цифра, — иначе она
+    // читается как уже начисленные очки.
+    ptsWrap: { position: "absolute", top: 14, right: 14, alignItems: "flex-end" },
+    pts: { paddingHorizontal: 11, paddingVertical: 5, borderRadius: radii.pill },
     ptsText: { fontSize: 12, fontWeight: "900", color: "#42200a" },
+    ptsCap: {
+      fontSize: 8.5, fontWeight: "800", letterSpacing: 0.4, textTransform: "uppercase",
+      color: "rgba(255,255,255,0.66)", marginTop: 3,
+    },
 
     list: { marginTop: 15, gap: 8 },
     row: {
@@ -114,6 +138,16 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
       fontSize: 12.5, fontWeight: "800", color: "rgba(255,255,255,0.72)",
       fontVariant: ["tabular-nums"],
     },
+
+    // Итог дня: одна строка вместо цены у каждой задачи.
+    total: {
+      flexDirection: "row", alignItems: "center", gap: 8,
+      marginTop: 10, paddingVertical: 9, paddingHorizontal: 11,
+      borderRadius: radii.sm, backgroundColor: "rgba(255,255,255,0.12)",
+      borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+    },
+    totalDone: { backgroundColor: accents.gold + "33", borderColor: accents.gold + "88" },
+    totalText: { flex: 1, fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.88)", lineHeight: 16 },
 
     // Ждущая своего часа цель: не кнопка, а тихая подпись.
     pending: {
@@ -171,6 +205,7 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
   const remainingWord = plural(time.remaining, ["минута", "минуты", "минут"]);
+  const left = quests.length - plan.doneCount + (time.done ? 0 : 1);
 
   return (
     <>
@@ -217,15 +252,18 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
           </View>
         </View>
 
-        {/* Ровно та награда, что подписана у выбранной цели в окне настройки. */}
-        <LinearGradient
-          colors={[accents.gold, accents.amber]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={s.pts}
-        >
-          <Text style={s.ptsText}>+{time.points}</Text>
-        </LinearGradient>
+        {/* Одна награда на весь день. Подпись объясняет, за что она. */}
+        <View style={s.ptsWrap}>
+          <LinearGradient
+            colors={[accents.gold, accents.amber]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.pts}
+          >
+            <Text style={s.ptsText}>+{plan.reward}</Text>
+          </LinearGradient>
+          <Text style={s.ptsCap}>{claimed ? "получено" : "за весь день"}</Text>
+        </View>
 
         <View style={s.list}>
           {quests.map((q) => (
@@ -236,9 +274,25 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
               <Text style={[s.rowText, q.done && s.rowTextDone]} numberOfLines={1}>
                 {q.title}
               </Text>
-              <Text style={s.rowCount}>{q.done ? `+${q.points}` : q.counter}</Text>
+              {/* У выполненной задачи цены нет: очки платят за день целиком. */}
+              <Text style={s.rowCount}>{q.done ? "готово" : q.counter}</Text>
             </View>
           ))}
+        </View>
+
+        <View style={[s.total, (allDone || claimed) && s.totalDone]}>
+          <Glyph
+            name={allDone ? "star" : "target"}
+            size={14}
+            color={allDone ? accents.gold : "rgba(255,255,255,0.8)"}
+          />
+          <Text style={s.totalText}>
+            {claimed
+              ? `День закрыт полностью. Начислено ${plan.reward} ${plural(plan.reward, ["очко", "очка", "очков"])}`
+              : allDone
+                ? "День закрыт полностью — начисляем очки"
+                : `Очки придут, когда закроешь всё: осталось ${left} ${plural(left, ["пункт", "пункта", "пунктов"])}`}
+          </Text>
         </View>
 
         {!!pendingGoal && (
@@ -265,7 +319,7 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
             <View style={s.handle} />
             <Text style={s.sheetTitle}>Сколько заниматься в день</Text>
             <Text style={s.sheetSub}>
-              Чем длиннее занятие, тем больше очков за закрытую цель и тем сложнее задачи дня.
+              Чем длиннее занятие, тем больше очков за полностью закрытый день и тем сложнее задачи.
             </Text>
 
             <View style={s.opts}>
