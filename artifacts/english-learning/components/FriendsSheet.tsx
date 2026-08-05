@@ -17,6 +17,13 @@
 // смотрит прогресс. Теперь у него своя ветка, как у учителя
 // (GET /connections/student/parents).
 //
+// ── Псевдоним у всех, кто не набирает очки ──────────────────────────────────
+// Под именем учителя и родителя стоит @псевдоним. Раньше у родителя там была
+// фраза «Видит твой прогресс» — она объясняла роль, которую и так объявляет
+// плашка «Родитель», а по-настоящему полезного (как его найти и не спутать с
+// однофамильцем) в строке не оставалось. Псевдоним уникален, поэтому он и
+// стоит в строке; у друзей его место занимают очки.
+//
 // ── Один человек — одна строка ──────────────────────────────────────────────
 // Родитель или учитель может вдобавок числиться в друзьях: /connections/friends
 // отдаёт все дружбы независимо от роли. Из-за этого Ольга-родитель попадала в
@@ -36,6 +43,12 @@
 // В базе пола нет, а «Ещё не начинал заниматься» про Дашу читается как ошибка.
 // Поэтому все подписи о людях — в форме «начинал(а)»: скобка некрасива, но
 // честнее, чем угаданный род.
+//
+// ── Заголовок листа ─────────────────────────────────────────────────────────
+// Рядом с «Друзья» стоит счётчик людей — и только на вкладке списка. На
+// вкладке добавления там раньше висело слово «добавить», дублировавшее
+// подсвеченную кнопку переключателя под заголовком: одно и то же слово в двух
+// строках подряд, причём в позиции, где ждёшь количество.
 //
 // ── Удаление ────────────────────────────────────────────────────────────────
 // Кнопка удаления — красный кружок в строке друга, а не серый значок рядом с
@@ -146,6 +159,16 @@ function plural(n: number, forms: [string, string, string]): string {
   if (last === 1) return forms[0];
   if (last >= 2 && last <= 4) return forms[1];
   return forms[2];
+}
+
+/**
+ * Подпись под именем человека без очков: псевдоним, а при наличии — ещё и «в
+ * сети». Псевдоним нужен, чтобы человека можно было найти и не спутать с
+ * однофамильцем; роль объявляет плашка рядом с именем.
+ */
+function handleNote(username: string, online?: boolean): string {
+  const at = `@${username}`;
+  return online ? `${at} · в сети` : at;
 }
 
 // ── Заголовок группы ────────────────────────────────────────────────────────
@@ -786,15 +809,18 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
               backgroundColor: colors.border, alignSelf: "center",
             }} />
 
+            {/* Рядом с заголовком — только счётчик людей. На вкладке
+                добавления здесь ничего нет: слово «добавить» дублировало
+                кнопку переключателя строкой ниже. */}
             <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10, paddingTop: 14, paddingBottom: 12 }}>
               <Text style={{ fontSize: 22, fontWeight: "900", letterSpacing: -0.5, color: colors.foreground }}>
                 Друзья
               </Text>
-              <Text style={{ fontSize: 15, fontWeight: "800", color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-                {tab === "add"
-                  ? "добавить"
-                  : total === 0 ? "пока никого" : `${total} ${plural(total, ["человек", "человека", "человек"])}`}
-              </Text>
+              {tab === "list" && (
+                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                  {total === 0 ? "пока никого" : `${total} ${plural(total, ["человек", "человека", "человек"])}`}
+                </Text>
+              )}
             </View>
 
             <ScrollView
@@ -803,7 +829,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
               contentContainerStyle={{ paddingBottom: scrollPad }}
             >
               <Segmented
-                options={[{ key: "list", label: "Мои связи" }, { key: "add", label: "Добавить" }]}
+                options={[{ key: "list", label: "Мои друзья" }, { key: "add", label: "Добавить" }]}
                 value={tab}
                 onChange={(k) => { setTab(k); setRemoving(null); }}
               />
@@ -875,7 +901,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                             color={t.avatarColor ?? "#6366f1"}
                             avatarUrl={t.avatarUrl}
                             online={t.isOnline}
-                            note={t.isOnline ? "В сети" : `@${t.username}`}
+                            note={handleNote(t.username, t.isOnline)}
                             pill="Учитель"
                             pillTone="tutor"
                             onPress={() => { onClose(); onOpenFriend(t.id); }}
@@ -885,7 +911,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                     )}
 
                     {/* Родители: своя ветка, как у учителя. Очков у них нет —
-                        они не учат язык, а следят за ребёнком. */}
+                        они не учат язык, а следят за ребёнком. Под именем
+                        стоит псевдоним: роль уже написана в плашке. */}
                     {parents.length > 0 && (
                       <>
                         <GroupLabel title={parents.length > 1 ? "Родители" : "Родитель"} />
@@ -898,7 +925,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                             color={p.avatarColor ?? "#ec4899"}
                             avatarUrl={p.avatarUrl}
                             online={p.isOnline}
-                            note={p.isOnline ? "В сети · видит твой прогресс" : "Видит твой прогресс"}
+                            note={handleNote(p.username, p.isOnline)}
                             pill="Родитель"
                             pillTone="parent"
                             onPress={() => { onClose(); onOpenFriend(p.id); }}
