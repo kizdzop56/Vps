@@ -1,18 +1,46 @@
+// Чужой профиль: ученика или учителя.
+//
+// Оформление ученика ровно то же, что на своём профиле (app/(main)/profile.tsx):
+// та же шапка-герой (ProfileHero), тот же блок «О себе» с интересами
+// (AboutCard в режиме просмотра), те же карточки успеваемости и та же витрина
+// наград. Раньше здесь была своя вёрстка — круглый аватар по центру и три
+// серые плитки, — и переход из списка друзей выглядел как переход в другое
+// приложение.
+//
+// Что отличается от своего профиля, и почему:
+//   • нет цели дня — это личный план, чужой ученик им не управляет;
+//   • «О себе» и интересы только на просмотр;
+//   • в шапке счётчики «очков» и «заданий», а не «слов выучено» и «дней
+//     подряд»: статистику по словам и серию сервер отдаёт только自 владельцу,
+//     учителю и родителю (см. canViewStudent в routes/flashcards.ts);
+//   • сверху кнопки «назад» и «Написать».
+//
+// Профиль учителя оставлен как был: у него другие данные (слоты, часы с вами,
+// созданные задания), ученическая шапка с уровнем и опытом ему не подходит.
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Platform, Modal,
 } from "react-native";
+import Svg, { Circle } from "react-native-svg";
+import { LinearGradient } from "expo-linear-gradient";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
-import { ACHIEVEMENTS, getUnlockedAchievements, type AchievementStats } from "@/constants/achievements";
+import { getUnlockedAchievements, getLockedAchievements, type AchievementStats } from "@/constants/achievements";
+import { getXpProgress } from "@/constants/xpLevels";
 import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
+import { AboutCard } from "@/components/AboutCard";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
+import { ProfileHero } from "@/components/ui/ProfileHero";
+import { Glyph } from "@/components/ui/Glyph";
+import { SectionLabel } from "@/components/ui/GameKit";
+import { accents, gradients, radii } from "@/constants/theme";
+import { screenTop } from "@/constants/layout";
 import { fc, type DeckWithAssign, type FlashcardStatsWithLevel } from "@/hooks/useFlashcards";
 
 // Подписи уровня знаний (возрастной, из профиля) на русском.
@@ -31,6 +59,10 @@ const ASSIGNMENT_TYPE_LABELS: Record<string, string> = {
   reading: "Чтение",
   video: "Видео",
   free_form: "Свободная форма",
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  student: "Ученик", parent: "Родитель", teacher: "Учитель", admin: "Администратор",
 };
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -62,6 +94,7 @@ type FriendProfile = {
   knowledgeLevel: string | null;
   totalPoints: number;
   totalTimeMinutes: number;
+  averageScore: number | null;
   bio: string | null;
   age: number | null;
   dateOfBirth: string | null;
@@ -118,6 +151,24 @@ function formatTime(minutes: number) {
   return `${h} ч ${m} мин`;
 }
 
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+function ageWord(n: number): string {
+  if (n >= 11 && n <= 14) return `${n} лет`;
+  const mod = n % 10;
+  if (mod === 1) return `${n} год`;
+  if (mod >= 2 && mod <= 4) return `${n} года`;
+  return `${n} лет`;
+}
+
 // Слот приходит строками "YYYY-MM-DD" и "HH:MM" (как хранится в БД, UTC).
 // Разбираем вручную, без парсинга локальной зоной, иначе дата съезжает на день.
 const SLOT_WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
@@ -136,6 +187,32 @@ function formatSlot(slot: { date: string; startTime: string; endTime: string }) 
   return `${d} ${month}, ${wd} · ${slot.startTime}–${slot.endTime}`;
 }
 
+/** Кольцо среднего балла — то же, что на своём профиле. */
+function ScoreRing({ score, color, size = 64 }: { score: number | null; color: string; size?: number }) {
+  const stroke = 8;
+  const r = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score ?? 0));
+  return (
+    <Svg width={size} height={size}>
+      <Circle
+        cx={size / 2} cy={size / 2} r={r}
+        stroke="rgba(99,102,241,0.16)" strokeWidth={stroke} fill="none"
+      />
+      {score !== null && (
+        <Circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke={color} strokeWidth={stroke} fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${circumference}`}
+          strokeDashoffset={circumference * (1 - pct / 100)}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      )}
+    </Svg>
+  );
+}
+
 export default function FriendProfileScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const friendId = parseInt(id || "0", 10);
@@ -151,6 +228,7 @@ export default function FriendProfileScreen() {
   const [friendshipId, setFriendshipId] = useState<number | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
+  const [interests, setInterests] = useState<string[]>([]);
   const onlinePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isStudent = user?.role === "student";
@@ -211,6 +289,18 @@ export default function FriendProfileScreen() {
     }
   }, [friendId]);
 
+  // Интересы открыты всем авторизованным (см. routes/interests.ts): по ним
+  // видно, о чём с человеком можно поговорить.
+  const loadInterests = useCallback(async () => {
+    if (!friendId) return;
+    try {
+      const data = await apiFetch(`/api/users/${friendId}/interests`);
+      setInterests(Array.isArray(data?.interests) ? data.interests : []);
+    } catch {
+      setInterests([]);
+    }
+  }, [friendId]);
+
   // Lightweight poll — only refreshes isOnline, no full reload
   const pollOnlineStatus = useCallback(async () => {
     if (!friendId) return;
@@ -235,12 +325,13 @@ export default function FriendProfileScreen() {
     loadProfile();
     loadFriendStatus();
     loadCategoryStats();
+    loadInterests();
     // Poll online status every 30s so it stays up-to-date
     onlinePollerRef.current = setInterval(pollOnlineStatus, 30_000);
     return () => {
       if (onlinePollerRef.current) clearInterval(onlinePollerRef.current);
     };
-  }, [loadProfile, loadFriendStatus, loadCategoryStats, pollOnlineStatus]);
+  }, [loadProfile, loadFriendStatus, loadCategoryStats, loadInterests, pollOnlineStatus]);
 
   const handleSendRequest = async () => {
     setActionLoading(true);
@@ -250,7 +341,7 @@ export default function FriendProfileScreen() {
         body: JSON.stringify({ userId: friendId }),
       });
       setFriendStatus("pending_sent");
-    } catch (e: any) {
+    } catch {
       /* silent */
     } finally {
       setActionLoading(false);
@@ -282,15 +373,36 @@ export default function FriendProfileScreen() {
 
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    header: {
-      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
+    scroll: { paddingBottom: insets.bottom + 40 },
+    section: { paddingHorizontal: 20, marginBottom: 16 },
+    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 28 },
+
+    scoreCard: {
+      flexDirection: "row", alignItems: "center", gap: 14,
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
+      borderWidth: 1, borderColor: colors.border,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
+    },
+    scoreLabel: {
+      fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase",
+      color: colors.mutedForeground,
+    },
+    scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
+    scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
+
+    timerValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff", fontVariant: ["tabular-nums"] },
+    timerLabel: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 2 },
+
+    // Шапка для профиля учителя: она осталась прежней, поэтому ей нужен свой
+    // ряд с кнопкой «назад».
+    plainHeader: {
+      paddingTop: screenTop(insets),
       paddingHorizontal: 20, paddingBottom: 12,
       flexDirection: "row", alignItems: "center", gap: 12,
     },
     backBtn: { width: 36, height: 36, justifyContent: "center", alignItems: "center" },
     headerTitle: { fontSize: 18, fontWeight: "800", color: colors.foreground, flex: 1 },
-    scroll: { paddingHorizontal: 20, paddingBottom: insets.bottom + 40 },
-    center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
   });
 
   if (loading) {
@@ -304,14 +416,14 @@ export default function FriendProfileScreen() {
   if (error || !profile) {
     return (
       <View style={s.container}>
-        <View style={s.header}>
+        <View style={s.plainHeader}>
           <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
             <Feather name="arrow-left" size={22} color={colors.foreground} />
           </TouchableOpacity>
         </View>
         <View style={s.center}>
-          <Text style={{ fontSize: 40 }}>😕</Text>
-          <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>Не удалось загрузить</Text>
+          <Glyph name="alert" size={40} color={colors.mutedForeground} />
+          <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>Не удалось загрузить</Text>
           <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
             {error || "Профиль недоступен"}
           </Text>
@@ -332,219 +444,295 @@ export default function FriendProfileScreen() {
     earlyBirdSessions: 0,
   };
   const unlocked = getUnlockedAchievements(achievementStats);
+  const locked = getLockedAchievements(achievementStats);
 
   const avatarColor = profile.avatarColor ?? "#6366f1";
   const avatarEmoji = profile.avatarEmoji ?? "🦁";
   const isSelf = user?.id === friendId;
+  const canWrite = !isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends");
 
-  return (
-    <View style={s.container}>
-      <View style={s.header}>
-        <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
-          <Feather name="arrow-left" size={22} color={colors.foreground} />
-        </TouchableOpacity>
-        <Text style={s.headerTitle}>{isTeacherProfile ? "Профиль учителя" : "Профиль ученика"}</Text>
-        {/* Кнопка чата — доступна учителю (связан с учеником), ученикам-друзьям
-            и ученику на профиле учителя (дружба бывает только между учениками).
-            Сервер всё равно проверит связь. */}
-        {!isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends") && (
-          <TouchableOpacity
-            onPress={() => router.push(`/(main)/chat/${friendId}` as any)}
-            style={{
-              flexDirection: "row", alignItems: "center", gap: 6,
-              backgroundColor: colors.primary, borderRadius: 12,
-              paddingHorizontal: 12, paddingVertical: 8,
-            }}
-          >
-            <Feather name="message-circle" size={16} color="#fff" />
-            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Написать</Text>
+  // Уровень и опыт считаются из очков теми же таблицами, что на своём профиле:
+  // очки и XP в проекте одно и то же (см. constants/xpLevels.ts).
+  const xpProgress = getXpProgress(profile.totalPoints);
+
+  const scoreTint = profile.averageScore === null || profile.averageScore === undefined
+    ? colors.mutedForeground
+    : profile.averageScore >= 70 ? colors.success
+      : profile.averageScore >= 50 ? accents.amber
+        : colors.destructive;
+
+  // ── Профиль учителя: прежняя вёрстка ──
+  if (isTeacherProfile) {
+    return (
+      <View style={s.container}>
+        <View style={s.plainHeader}>
+          <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
+            <Feather name="arrow-left" size={22} color={colors.foreground} />
           </TouchableOpacity>
-        )}
-      </View>
-
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-
-        {/* ── Avatar + name ── */}
-        <View style={{
-          alignItems: "center", paddingVertical: 24,
-          backgroundColor: colors.card, borderRadius: 20,
-          borderWidth: 1, borderColor: colors.border, marginBottom: 16,
-        }}>
-          <AnimatedAvatar
-            size={90}
-            avatarColor={avatarColor}
-            avatarEmoji={avatarEmoji}
-            avatarUrl={profile.avatarUrl}
-            animated={profile.isOnline ?? false}
-            onlineDot={profile.isOnline ?? false}
-          />
-
-          <Text style={{ fontSize: 22, fontWeight: "800", color: colors.foreground, marginBottom: 3 }}>
-            {profile.name}
-          </Text>
-          <Text style={{ fontSize: 14, color: colors.mutedForeground, marginBottom: 8 }}>
-            @{profile.username}
-          </Text>
-
-          <View style={{
-            flexDirection: "row", alignItems: "center", gap: 5,
-            backgroundColor: profile.isOnline ? "#dcfce7" : "rgba(220,210,255,0.4)",
-            paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20,
-            marginBottom: 0,
-          }}>
-            <View style={{
-              width: 7, height: 7, borderRadius: 4,
-              backgroundColor: profile.isOnline ? "#22c55e" : "#94a3b8",
-            }} />
-            <Text style={{
-              fontSize: 12, fontWeight: "700",
-              color: profile.isOnline ? "#15803d" : "#64748b",
-            }}>
-              {profile.isOnline ? "В сети" : "Не в сети"}
-            </Text>
-          </View>
-
+          <Text style={s.headerTitle}>Профиль учителя</Text>
+          {canWrite && (
+            <TouchableOpacity
+              onPress={() => router.push(`/(main)/chat/${friendId}` as any)}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 6,
+                backgroundColor: colors.primary, borderRadius: 12,
+                paddingHorizontal: 12, paddingVertical: 8,
+              }}
+            >
+              <Feather name="message-circle" size={16} color="#fff" />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Написать</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        {/* ── Friend request card (only students, not self) ── */}
-        {isStudent && !isSelf && profile.role === "student" && (
-          <FriendRequestCard
-            status={friendStatus}
-            name={profile.name}
-            loading={actionLoading}
-            onSend={handleSendRequest}
-            onAccept={handleAccept}
-            onDecline={handleDecline}
-            colors={colors}
-          />
-        )}
-
-        {/* ── Bio ── */}
-        {!!profile.bio && (
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
           <View style={{
-            backgroundColor: colors.card, borderRadius: 16, padding: 16,
+            alignItems: "center", paddingVertical: 24,
+            backgroundColor: colors.card, borderRadius: 20,
             borderWidth: 1, borderColor: colors.border, marginBottom: 16,
           }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 6 }}>
-              О себе
+            <AnimatedAvatar
+              size={90}
+              avatarColor={avatarColor}
+              avatarEmoji={avatarEmoji}
+              avatarUrl={profile.avatarUrl}
+              animated={profile.isOnline ?? false}
+              onlineDot={profile.isOnline ?? false}
+            />
+            <Text style={{ fontSize: 22, fontWeight: "800", color: colors.foreground, marginBottom: 3 }}>
+              {profile.name}
             </Text>
-            <Text style={{ fontSize: 14, color: colors.foreground, lineHeight: 20 }}>
-              {profile.bio}
+            <Text style={{ fontSize: 14, color: colors.mutedForeground, marginBottom: 8 }}>
+              @{profile.username}
             </Text>
+            <View style={{
+              flexDirection: "row", alignItems: "center", gap: 5,
+              backgroundColor: profile.isOnline ? "#dcfce7" : "rgba(220,210,255,0.4)",
+              paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20,
+            }}>
+              <View style={{
+                width: 7, height: 7, borderRadius: 4,
+                backgroundColor: profile.isOnline ? "#22c55e" : "#94a3b8",
+              }} />
+              <Text style={{
+                fontSize: 12, fontWeight: "700",
+                color: profile.isOnline ? "#15803d" : "#64748b",
+              }}>
+                {profile.isOnline ? "В сети" : "Не в сети"}
+              </Text>
+            </View>
           </View>
-        )}
 
-        {isTeacherProfile ? (
-          /* ── Профиль учителя: слоты и часы с вами, его задания ── */
+          {!!profile.bio && (
+            <View style={{
+              backgroundColor: colors.card, borderRadius: 16, padding: 16,
+              borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+            }}>
+              <SectionLabel>О себе</SectionLabel>
+              <Text style={{ fontSize: 14, color: colors.foreground, lineHeight: 20 }}>
+                {profile.bio}
+              </Text>
+            </View>
+          )}
+
           <TeacherProfileStatsSection
             stats={teacherStats}
             failed={teacherStatsError}
             teacherName={profile.name}
             colors={colors}
           />
-        ) : (
-          <>
-            {/* ── Stats row ── */}
-            <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
-              {[
-                { icon: "star", color: "#ec4899", value: profile.totalPoints, label: "Очки" },
-                { icon: "check-circle", color: "#6366f1", value: profile.completedAssignments, label: "Заданий" },
-                { icon: "clock", color: colors.primary, value: formatTime(profile.totalTimeMinutes ?? 0), label: "Время" },
-              ].map((stat) => (
-                <View key={stat.label} style={{
-                  flex: 1, backgroundColor: colors.card, borderRadius: 14, padding: 14,
-                  alignItems: "center", borderWidth: 1, borderColor: colors.border,
-                }}>
-                  <Feather name={stat.icon as any} size={20} color={stat.color} />
-                  <Text style={{ fontSize: stat.label === "Время" ? 14 : 22, fontWeight: "900", color: colors.foreground, marginTop: 6, marginBottom: 2 }}>
-                    {stat.value}
-                  </Text>
-                  <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>
-                    {stat.label}
-                  </Text>
-                </View>
-              ))}
-            </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
-            {/* ── Задания по категориям ── */}
-            <View style={{
-              backgroundColor: colors.card, borderRadius: 16, padding: 16,
-              borderWidth: 1, borderColor: colors.border, marginBottom: 16,
-            }}>
-              <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>
-                Задания по категориям
-              </Text>
-              <AssignmentRingsChart stats={categoryStats} colors={colors} />
-            </View>
-          </>
-        )}
+  // ── Профиль ученика: то же оформление, что и свой ──
+  return (
+    <View style={s.container}>
+      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+        <ProfileHero
+          name={profile.name}
+          username={profile.username}
+          avatarEmoji={avatarEmoji}
+          avatarColor={avatarColor}
+          avatarUrl={profile.avatarUrl}
+          roleLabel={ROLE_LABELS[profile.role] ?? profile.role}
+          ageLabel={profile.age ? ageWord(profile.age) : null}
+          online={profile.isOnline}
+          level={{ number: xpProgress.current.level, title: xpProgress.current.title }}
+          stats={[
+            { icon: "star", value: profile.totalPoints, label: "очков" },
+            {
+              icon: "check",
+              value: profile.completedAssignments,
+              label: plural(profile.completedAssignments, ["задание", "задания", "заданий"]),
+            },
+          ]}
+          xp={{
+            current: profile.totalPoints,
+            nextAt: xpProgress.next?.xpRequired ?? null,
+            nextTitle: xpProgress.next?.title ?? null,
+            nextLevel: xpProgress.next?.level ?? null,
+            percent: xpProgress.progressPercent,
+          }}
+          paddingTop={screenTop(insets)}
+          onBack={() => router.back()}
+          action={canWrite
+            ? { icon: "chat", label: "Написать", onPress: () => router.push(`/(main)/chat/${friendId}` as any) }
+            : null}
+        />
 
-        {/* ── Учителю: уровень знаний, прогресс по словам, отправка колод ── */}
-        {isTeacherViewer && profile.role === "student" && (
-          <View style={{
-            backgroundColor: colors.card, borderRadius: 16, padding: 16,
-            borderWidth: 1, borderColor: colors.border, marginBottom: 16,
-          }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
-              Знания и слова
-            </Text>
-
-            {/* Уровни: возрастной (из профиля) + CEFR (из теста) */}
-            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
-              <View style={{ flex: 1, backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12 }}>
-                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>Уровень</Text>
-                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.primary }}>
-                  {profile.knowledgeLevel ? (KNOWLEDGE_LABELS[profile.knowledgeLevel] ?? profile.knowledgeLevel) : "—"}
-                </Text>
-              </View>
-              <View style={{ flex: 1, backgroundColor: "#ec489912", borderRadius: 12, padding: 12 }}>
-                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
-                <Text style={{ fontSize: 15, fontWeight: "800", color: "#db2777" }}>
-                  {wordStats?.placementLevel ?? "не пройден"}
-                </Text>
-              </View>
-            </View>
-
-            {/* Прогресс по словам */}
-            <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
-              {[
-                { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
-                { value: wordStats?.totalWords ?? 0, label: "В изучении" },
-                { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
-              ].map((it) => (
-                <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
-                  <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{it.value}</Text>
-                  <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
-                </View>
-              ))}
-            </View>
-
-            <TouchableOpacity
-              onPress={() => setAssignOpen(true)}
-              style={{
-                backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
-                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-              }}
-            >
-              <Feather name="send" size={16} color="#fff" />
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Отправить колоду</Text>
-            </TouchableOpacity>
+        {/* Заявка в друзья: только между учениками и не самому себе. */}
+        {isStudent && !isSelf && (
+          <View style={{ paddingHorizontal: 20 }}>
+            <FriendRequestCard
+              status={friendStatus}
+              name={profile.name}
+              loading={actionLoading}
+              onSend={handleSendRequest}
+              onAccept={handleAccept}
+              onDecline={handleDecline}
+              colors={colors}
+            />
           </View>
         )}
 
-        {/* Витрина наград завязана на решённые задания и очки — у учителя их
-            нет, поэтому показываем её только на профиле ученика. */}
-        {!isTeacherProfile && (
-          <AchievementsShowcase
-            unlocked={unlocked}
-            showLocked={false}
-            title="Витрина наград"
-          />
+        {/* «О себе» и интересы — только просмотр. */}
+        <AboutCard
+          bio={profile.bio ?? ""}
+          onSaveBio={() => {}}
+          interests={interests}
+          onSaveInterests={() => {}}
+          readOnly
+        />
+
+        {/* ── Успеваемость: те же карточки, что на своём профиле ── */}
+        <View style={s.section}>
+          <SectionLabel>Успеваемость</SectionLabel>
+          <View style={s.scoreCard}>
+            <ScoreRing score={profile.averageScore ?? null} color={scoreTint} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.scoreLabel}>Средний балл</Text>
+              <Text style={[s.scoreValue, { color: scoreTint }]}>
+                {profile.averageScore === null || profile.averageScore === undefined
+                  ? "—"
+                  : `${profile.averageScore}%`}
+              </Text>
+              <Text style={s.scoreHint}>
+                {profile.completedAssignments === 0
+                  ? "Пока нет проверенных работ"
+                  : `${profile.completedAssignments} ${plural(profile.completedAssignments, ["работа", "работы", "работ"])} · ${profile.totalPoints} очков`}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
+            <View style={{
+              flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
+              borderWidth: 1, borderColor: colors.border,
+              shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+              shadowOpacity: 0.14, shadowRadius: 14, elevation: 3,
+            }}>
+              <SectionLabel>Задания</SectionLabel>
+              <AssignmentRingsChart stats={categoryStats} colors={colors} />
+            </View>
+
+            <LinearGradient
+              colors={gradients.action as unknown as string[]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={{
+                flex: 1, borderRadius: radii.md, padding: 14,
+                justifyContent: "center",
+                shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: 0.32, shadowRadius: 16, elevation: 6,
+              }}
+            >
+              <View style={{ alignItems: "center", gap: 8 }}>
+                <View style={{
+                  width: 48, height: 48, borderRadius: radii.sm + 2,
+                  backgroundColor: "rgba(255,255,255,0.22)",
+                  justifyContent: "center", alignItems: "center",
+                }}>
+                  <Glyph name="clock" size={24} color="#ffffff" />
+                </View>
+                <Text style={[s.timerValue, { textAlign: "center" }]}>
+                  {formatTime(profile.totalTimeMinutes ?? 0)}
+                </Text>
+                <Text style={[s.timerLabel, { textAlign: "center" }]}>За всё время</Text>
+              </View>
+            </LinearGradient>
+          </View>
+        </View>
+
+        {/* ── Учителю: уровень знаний, прогресс по словам, отправка колод ── */}
+        {isTeacherViewer && (
+          <View style={s.section}>
+            <SectionLabel>Знания и слова</SectionLabel>
+            <View style={{
+              backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
+              borderWidth: 1, borderColor: colors.border,
+              shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
+              shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
+            }}>
+              <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+                <View style={{ flex: 1, backgroundColor: colors.primary + "12", borderRadius: 12, padding: 12 }}>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>Уровень</Text>
+                  <Text style={{ fontSize: 15, fontWeight: "800", color: colors.primary }}>
+                    {profile.knowledgeLevel ? (KNOWLEDGE_LABELS[profile.knowledgeLevel] ?? profile.knowledgeLevel) : "—"}
+                  </Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: accents.magenta + "12", borderRadius: 12, padding: 12 }}>
+                  <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
+                  <Text style={{ fontSize: 15, fontWeight: "800", color: accents.magenta }}>
+                    {wordStats?.placementLevel ?? "не пройден"}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+                {[
+                  { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
+                  { value: wordStats?.totalWords ?? 0, label: "В изучении" },
+                  { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
+                ].map((it) => (
+                  <View key={it.label} style={{ flex: 1, alignItems: "center" }}>
+                    <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
+                      {it.value}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center" }}>{it.label}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <TouchableOpacity
+                onPress={() => setAssignOpen(true)}
+                style={{
+                  backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12,
+                  flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                }}
+              >
+                <Glyph name="send" size={16} color="#fff" />
+                <Text style={{ color: "#fff", fontWeight: "800", fontSize: 14 }}>Отправить колоду</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         )}
 
+        {/* Витрина наград: тот же компонент, что на своём профиле. Закрытые
+            медали показываем — по ним видно, куда человек движется. */}
+        <AchievementsShowcase
+          unlocked={unlocked}
+          locked={locked}
+          showLocked={true}
+          stats={achievementStats}
+          title="Витрина наград"
+        />
       </ScrollView>
 
-      {isTeacherViewer && profile.role === "student" && (
+      {isTeacherViewer && (
         <AssignDeckModal
           visible={assignOpen}
           onClose={() => setAssignOpen(false)}
@@ -574,9 +762,9 @@ function TeacherProfileStatsSection({
     return (
       <View style={{
         backgroundColor: colors.card, borderRadius: 16, padding: 20,
-        borderWidth: 1, borderColor: colors.border, marginBottom: 16, alignItems: "center", gap: 6,
+        borderWidth: 1, borderColor: colors.border, marginBottom: 16, alignItems: "center", gap: 8,
       }}>
-        <Text style={{ fontSize: 28 }}>📉</Text>
+        <Glyph name="alert" size={26} color={colors.mutedForeground} />
         <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
           Не удалось загрузить статистику учителя
         </Text>
@@ -722,9 +910,7 @@ function TeacherProfileStatsSection({
           backgroundColor: colors.card, borderRadius: 16, padding: 16,
           borderWidth: 1, borderColor: colors.border, marginBottom: 16,
         }}>
-          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }}>
-            Ваш прогресс по его заданиям
-          </Text>
+          <SectionLabel>Ваш прогресс по его заданиям</SectionLabel>
 
           <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
             {[
@@ -799,9 +985,7 @@ function TeacherProfileStatsSection({
           backgroundColor: colors.card, borderRadius: 16, padding: 16,
           borderWidth: 1, borderColor: colors.border, marginBottom: 16,
         }}>
-          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
-            Задания от учителя
-          </Text>
+          <SectionLabel>Задания от учителя</SectionLabel>
 
           {p.recentAssignments.map((a) => (
             <TouchableOpacity
@@ -814,13 +998,13 @@ function TeacherProfileStatsSection({
             >
               <View style={{
                 width: 32, height: 32, borderRadius: 10,
-                backgroundColor: a.done ? "#22c55e18" : colors.muted,
+                backgroundColor: a.done ? colors.primary + "18" : colors.muted,
                 alignItems: "center", justifyContent: "center",
               }}>
-                <Feather
+                <Glyph
                   name={a.done ? "check" : "clock"}
                   size={15}
-                  color={a.done ? "#16a34a" : colors.mutedForeground}
+                  color={a.done ? colors.primary : colors.mutedForeground}
                 />
               </View>
               <View style={{ flex: 1 }}>
@@ -834,7 +1018,7 @@ function TeacherProfileStatsSection({
               </View>
               <Text style={{
                 fontSize: 13, fontWeight: "800",
-                color: a.done ? "#16a34a" : colors.mutedForeground,
+                color: a.done ? colors.primary : colors.mutedForeground,
               }}>
                 {a.done ? `${a.score ?? 0}%` : "не сдано"}
               </Text>
@@ -935,7 +1119,7 @@ function AssignDeckModal({
             <ActivityIndicator color={colors.primary} size="large" style={{ marginVertical: 40 }} />
           ) : decks.length === 0 ? (
             <View style={{ alignItems: "center", paddingVertical: 30, gap: 12 }}>
-              <Text style={{ fontSize: 40 }}>📚</Text>
+              <Glyph name="cards" size={40} color={colors.mutedForeground} />
               <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>У вас нет своих колод</Text>
               <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
                 Создайте колоду и добавьте слова, чтобы отправить её ученику.
@@ -979,7 +1163,7 @@ function AssignDeckModal({
                         <ActivityIndicator size={14} color={on ? colors.mutedForeground : "#fff"} />
                       ) : (
                         <>
-                          <Feather name={on ? "check" : "send"} size={14} color={on ? colors.mutedForeground : "#fff"} />
+                          <Glyph name={on ? "check" : "send"} size={14} color={on ? colors.mutedForeground : "#fff"} />
                           <Text style={{ fontSize: 13, fontWeight: "700", color: on ? colors.mutedForeground : "#fff" }}>
                             {on ? "Отправлено" : "Отправить"}
                           </Text>
@@ -1014,19 +1198,19 @@ function FriendRequestCard({
     return (
       <View style={{
         flexDirection: "row", alignItems: "center", gap: 12,
-        backgroundColor: "#e0e7ff", borderRadius: 16, padding: 16,
-        borderWidth: 1.5, borderColor: "#a5b4fc", marginBottom: 16,
+        backgroundColor: colors.primary + "12", borderRadius: radii.md, padding: 14,
+        borderWidth: 1.5, borderColor: colors.primary + "33", marginBottom: 14,
       }}>
         <View style={{
-          width: 40, height: 40, borderRadius: 20,
-          backgroundColor: "#4f46e520",
+          width: 40, height: 40, borderRadius: 14,
+          backgroundColor: colors.primary + "1f",
           justifyContent: "center", alignItems: "center",
         }}>
-          <Feather name="user-check" size={20} color="#4f46e5" />
+          <Glyph name="handshake" size={20} color={colors.primary} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 14, fontWeight: "800", color: "#4338ca" }}>Вы друзья</Text>
-          <Text style={{ fontSize: 12, color: "#4f46e5" }}>с {name}</Text>
+          <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>Вы друзья</Text>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground }}>с {name}</Text>
         </View>
       </View>
     );
@@ -1036,19 +1220,19 @@ function FriendRequestCard({
     return (
       <View style={{
         flexDirection: "row", alignItems: "center", gap: 12,
-        backgroundColor: "#fce7f3", borderRadius: 16, padding: 16,
-        borderWidth: 1.5, borderColor: "#fbcfe8", marginBottom: 16,
+        backgroundColor: accents.magenta + "12", borderRadius: radii.md, padding: 14,
+        borderWidth: 1.5, borderColor: accents.magenta + "33", marginBottom: 14,
       }}>
         <View style={{
-          width: 40, height: 40, borderRadius: 20,
-          backgroundColor: "#9d174d20",
+          width: 40, height: 40, borderRadius: 14,
+          backgroundColor: accents.magenta + "1f",
           justifyContent: "center", alignItems: "center",
         }}>
-          <Feather name="clock" size={20} color="#9d174d" />
+          <Glyph name="clock" size={20} color={accents.magenta} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 14, fontWeight: "800", color: "#9d174d" }}>Запрос отправлен</Text>
-          <Text style={{ fontSize: 12, color: "#9d174d" }}>Ожидаем ответа от {name}</Text>
+          <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>Запрос отправлен</Text>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground }}>Ожидаем ответа от {name}</Text>
         </View>
       </View>
     );
@@ -1057,19 +1241,19 @@ function FriendRequestCard({
   if (status === "pending_received") {
     return (
       <View style={{
-        backgroundColor: colors.card, borderRadius: 16, padding: 16,
-        borderWidth: 1.5, borderColor: colors.primary + "50", marginBottom: 16,
+        backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
+        borderWidth: 1.5, borderColor: colors.primary + "50", marginBottom: 14,
       }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <View style={{
-            width: 40, height: 40, borderRadius: 20,
+            width: 40, height: 40, borderRadius: 14,
             backgroundColor: colors.primary + "15",
             justifyContent: "center", alignItems: "center",
           }}>
-            <Feather name="user-plus" size={20} color={colors.primary} />
+            <Glyph name="userPlus" size={20} color={colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>
+            <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
               {name} хочет дружить
             </Text>
             <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
@@ -1088,7 +1272,7 @@ function FriendRequestCard({
           >
             {loading
               ? <ActivityIndicator size={16} color="#fff" />
-              : <Text style={{ fontSize: 14, fontWeight: "700", color: "#fff" }}>Принять</Text>
+              : <Text style={{ fontSize: 14, fontWeight: "800", color: "#fff" }}>Принять</Text>
             }
           </TouchableOpacity>
           <TouchableOpacity
@@ -1099,7 +1283,7 @@ function FriendRequestCard({
               paddingVertical: 11, alignItems: "center",
             }}
           >
-            <Text style={{ fontSize: 14, fontWeight: "700", color: colors.mutedForeground }}>Отклонить</Text>
+            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.mutedForeground }}>Отклонить</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1108,19 +1292,19 @@ function FriendRequestCard({
 
   return (
     <View style={{
-      backgroundColor: colors.card, borderRadius: 16, padding: 16,
-      borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+      backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
+      borderWidth: 1, borderColor: colors.border, marginBottom: 14,
     }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <View style={{
-          width: 40, height: 40, borderRadius: 20,
+          width: 40, height: 40, borderRadius: 14,
           backgroundColor: colors.primary + "12",
           justifyContent: "center", alignItems: "center",
         }}>
-          <Feather name="user-plus" size={20} color={colors.primary} />
+          <Glyph name="userPlus" size={20} color={colors.primary} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>
+          <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
             Добавить в друзья
           </Text>
           <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
@@ -1141,8 +1325,8 @@ function FriendRequestCard({
           ? <ActivityIndicator size={16} color="#fff" />
           : (
             <>
-              <Feather name="user-plus" size={16} color="#fff" />
-              <Text style={{ fontSize: 14, fontWeight: "700", color: "#fff" }}>Отправить запрос</Text>
+              <Glyph name="userPlus" size={16} color="#fff" />
+              <Text style={{ fontSize: 14, fontWeight: "800", color: "#fff" }}>Отправить запрос</Text>
             </>
           )
         }
