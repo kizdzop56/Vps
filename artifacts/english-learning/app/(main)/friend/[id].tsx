@@ -21,6 +21,11 @@
 //   • нет кнопки «Мои друзья» — это раздел владельца;
 //   • сверху кнопки «назад» и «Написать».
 //
+// Дружба. Состоявшаяся дружба — метка «Друг» в шапке рядом с ролью, отдельной
+// карточки для неё нет: плашка на всю ширину ради одного слова отодвигала вниз
+// весь профиль. FriendRequestCard остаётся только для состояний, требующих
+// действия: отправить запрос, принять или отклонить входящий, ждать ответа.
+//
 // Профиль учителя оставлен как был: у него другие данные (слоты, часы с вами,
 // созданные задания), ученическая шапка с уровнем и опытом ему не подходит.
 import React, { useEffect, useState, useCallback, useRef } from "react";
@@ -498,6 +503,7 @@ export default function FriendProfileScreen() {
   const avatarEmoji = profile.avatarEmoji ?? "🦁";
   const isSelf = user?.id === friendId;
   const canWrite = !isSelf && (!isStudent || isTeacherProfile || friendStatus === "friends");
+  const areFriends = friendStatus === "friends";
 
   // Уровень и опыт считаются из очков теми же таблицами, что на своём профиле:
   // очки и XP в проекте одно и то же (см. constants/xpLevels.ts).
@@ -659,6 +665,9 @@ export default function FriendProfileScreen() {
           roleLabel={ROLE_LABELS[profile.role] ?? profile.role}
           ageLabel={profile.age ? ageWord(profile.age) : null}
           online={profile.isOnline}
+          /* Дружба — метка рядом с ролью. Отдельной карточки под шапкой больше
+             нет: она занимала всю ширину ради одного слова. */
+          friend={areFriends}
           level={{ number: xpProgress.current.level, title: xpProgress.current.title }}
           stats={heroStats}
           xp={{
@@ -675,8 +684,10 @@ export default function FriendProfileScreen() {
             : null}
         />
 
-        {/* Заявка в друзья: только между учениками и не самому себе. */}
-        {isStudent && !isSelf && (
+        {/* Карточка дружбы: только когда нужно действие — отправить запрос,
+            ответить на входящий или дождаться ответа. Состоявшаяся дружба
+            живёт меткой в шапке. */}
+        {isStudent && !isSelf && !areFriends && (
           <View style={{ paddingHorizontal: 20 }}>
             <FriendRequestCard
               status={friendStatus}
@@ -1292,6 +1303,11 @@ function AssignDeckModal({
   );
 }
 
+/**
+ * Карточка дружбы. Показывается только когда от смотрящего нужно действие или
+ * когда он ждёт ответа. Состоявшаяся дружба сюда не попадает: её показывает
+ * метка «Друг» в шапке (ProfileHero props.friend).
+ */
 function FriendRequestCard({
   status, name, loading, onSend, onAccept, onDecline, colors,
 }: {
@@ -1303,29 +1319,8 @@ function FriendRequestCard({
   onDecline: () => void;
   colors: any;
 }) {
-  if (status === "loading") return null;
-
-  if (status === "friends") {
-    return (
-      <View style={{
-        flexDirection: "row", alignItems: "center", gap: 12,
-        backgroundColor: colors.primary + "12", borderRadius: radii.md, padding: 14,
-        borderWidth: 1.5, borderColor: colors.primary + "33", marginBottom: 14,
-      }}>
-        <View style={{
-          width: 40, height: 40, borderRadius: 14,
-          backgroundColor: colors.primary + "1f",
-          justifyContent: "center", alignItems: "center",
-        }}>
-          <Glyph name="handshake" size={20} color={colors.primary} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>Вы друзья</Text>
-          <Text style={{ fontSize: 12, color: colors.mutedForeground }}>с {name}</Text>
-        </View>
-      </View>
-    );
-  }
+  // "loading" — статус ещё не пришёл, "friends" — уже видно меткой в шапке.
+  if (status === "loading" || status === "friends") return null;
 
   if (status === "pending_sent") {
     return (
