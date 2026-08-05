@@ -1,38 +1,25 @@
-// Экран «Профиль»: шапка-герой со счётчиками и полосой опыта, описание,
-// цель дня, успеваемость, витрина наград и друзья.
+// Экран «Профиль»: шапка-герой со счётчиками и полосой опыта, блок «О себе»
+// с интересами, цель дня, успеваемость, витрина наград и друзья.
 //
 // Эмодзи интерфейса не используются — значки рисует собственный набор
 // (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
-// ученик, это его лицо в приложении, а не наша иконка, поэтому подборка
-// AVATAR_EMOJIS остаётся и поле avatarEmoji в базе не трогаем.
+// ученик, это его лицо в приложении, а не наша иконка.
 //
-// Шапку рисует ProfileHero (components/ui/ProfileHero.tsx).
+// Крупные блоки вынесены в компоненты:
+//   ProfileHero  — шапка (components/ui/ProfileHero.tsx);
+//   AboutCard    — «О себе» + интересы (components/AboutCard.tsx);
+//   DailyQuests  — цель дня (components/DailyQuests.tsx).
 //
 // Что переделано после обратной связи:
-//  • Справа от аватара была пустая область примерно в треть шапки: имя, ник и
-//    одна пилюля её не заполняли. Туда переехали три счётчика — выученные
-//    слова, серия дней, выполненные задания. Раньше они жили внизу экрана в
-//    блоке «Всего за время учёбы», куда надо было прокручивать; сам блок убран,
-//    чтобы одни и те же цифры не стояли на экране дважды.
-//  • Первым счётчиком были «очки», но это то же число, что на полосе опыта
-//    строкой ниже (очки и XP в проекте одно и то же). Вместо него — выученные
-//    слова: единственный показатель собственно знания языка.
-//  • Цель дня была одна — «время в приложении». Её закрывает открытая вкладка,
-//    то есть цель ничего не требовала. Теперь это цель по времени плюс 2–4
-//    УЧЕБНЫЕ задачи (см. utils/dailyQuests.ts и components/DailyQuests.tsx).
-//  • Смена цели применяется только СО СЛЕДУЮЩЕГО дня. Иначе ученик может щёлкать
-//    10/15/20/30 минут, пока не выпадет удобный набор задач, и смысл «приложение
-//    дало мне день» теряется. Поэтому здесь отдельно держим активную цель на
-//    сегодня и выбранную цель на завтра.
-//  • Цель дня стоит ПОД блоком «О себе»: сверху — кто этот ученик, ниже — что
-//    ему делать сегодня. Раньше карточка вклинивалась между шапкой и рассказом
-//    о себе и разрывала знакомство с профилем пополам.
-//  • Заголовок «ЦЕЛЬ ДНЯ» стоял и над карточкой, и внутри неё. Остался один —
-//    его рисует сама карточка, поэтому здесь своего заголовка нет.
-//
-// Блока «Действия» у ученика нет — он состоял из одной метки без содержимого.
-//
-// Наклоны убраны по всему экрану, как на остальных вкладках.
+//  • Счётчиков в шапке было три, и они не влезали рядом с аватаром — сетка
+//    съезжала вниз, оставляя тёмную пустоту. Осталось два: «слов выучено» и
+//    «дней подряд». «Очков» убрано как дубль полосы опыта, «заданий» — как
+//    дубль блока «Мои задания» ниже.
+//  • Цель дня стоит ПОД «О себе»: сверху кто этот ученик, ниже что ему делать.
+//  • Смена цели применяется со следующего дня, поэтому в карточку уходит
+//    активная цель (для расчёта дня) и выбранная (для окна настройки).
+//  • В блоке «О себе» появились интересы: их не было вообще, хотя в макете
+//    они есть. Хранятся отдельно от bio (PUT /users/:id/interests).
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView,
@@ -57,6 +44,7 @@ import { AchievementsShowcase } from "@/components/AchievementsShowcase";
 import { MascotModal, getMascotMessage } from "@/components/Mascot";
 import { AchievementToast } from "@/components/AchievementToast";
 import { DailyQuests } from "@/components/DailyQuests";
+import { AboutCard } from "@/components/AboutCard";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
 import { Glyph } from "@/components/ui/Glyph";
@@ -821,9 +809,8 @@ export default function ProfileScreen() {
   const [avatarColor, setAvatarColor] = useState(user?.avatarColor ?? "#6366f1");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(user?.avatarUrl ?? null);
   const [bio, setBio] = useState(user?.bio ?? "");
-  const [editingBio, setEditingBio] = useState(false);
-  const [bioInput, setBioInput] = useState(user?.bio ?? "");
   const [bioLoaded, setBioLoaded] = useState(false);
+  const [interests, setInterests] = useState<string[]>([]);
   const [username] = useState(user?.username ?? "");
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
@@ -858,13 +845,40 @@ export default function ProfileScreen() {
         .then((data) => {
           if (data?.bio !== undefined && !bioLoaded) {
             setBio(data.bio ?? "");
-            setBioInput(data.bio ?? "");
             setBioLoaded(true);
           }
         })
         .catch(() => { /* silent */ });
     });
   }, [user?.id]);
+
+  // Интересы лежат отдельно от профиля (см. routes/interests.ts): их правит
+  // только сам ученик, и подмешивать массив в общий PATCH профиля не нужно.
+  const loadInterests = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const data = await apiFetch(`/api/users/${user.id}/interests`);
+      setInterests(Array.isArray(data?.interests) ? data.interests : []);
+    } catch { /* silent */ }
+  }, [user?.id]);
+
+  useEffect(() => { loadInterests(); }, [loadInterests]);
+
+  const saveInterests = useCallback(async (next: string[]) => {
+    if (!user?.id) return;
+    const prev = interests;
+    setInterests(next); // оптимистично: метки должны реагировать мгновенно
+    try {
+      const data = await apiFetch(`/api/users/${user.id}/interests`, {
+        method: "PUT",
+        body: JSON.stringify({ interests: next }),
+      });
+      if (Array.isArray(data?.interests)) setInterests(data.interests);
+    } catch {
+      setInterests(prev);
+      Alert.alert("Не удалось сохранить", "Проверьте интернет-соединение и попробуйте снова.");
+    }
+  }, [user?.id, interests]);
 
   useEffect(() => {
     if (!isStudent) return;
@@ -1191,12 +1205,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleBioSave = () => {
-    setBio(bioInput);
-    setEditingBio(false);
-    saveProfile({ bio: bioInput });
-  };
-
   if (!user) return null;
 
   const scoreTint = periodStats.average === null
@@ -1208,21 +1216,6 @@ export default function ProfileScreen() {
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { paddingBottom: insets.bottom + 100 },
-
-    bioBox: {
-      backgroundColor: colors.card, borderRadius: radii.md, padding: 15,
-      borderWidth: 1, borderColor: colors.border, marginHorizontal: 20, marginBottom: 14,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
-    },
-    bioText: { fontSize: 14.5, color: colors.foreground, lineHeight: 21 },
-    bioPlaceholder: { fontSize: 14, color: colors.mutedForeground, fontStyle: "italic" },
-    bioInput: { fontSize: 14.5, color: colors.foreground, lineHeight: 21, minHeight: 60 },
-    bioActions: { flexDirection: "row", gap: 8, marginTop: 8, justifyContent: "flex-end" },
-    bioSaveBtn: { backgroundColor: colors.primary, borderRadius: 9, paddingHorizontal: 15, paddingVertical: 7 },
-    bioSaveText: { fontSize: 13, fontWeight: "800", color: "#fff" },
-    bioCancelBtn: { paddingHorizontal: 14, paddingVertical: 7 },
-    bioCancelText: { fontSize: 13, color: colors.mutedForeground },
 
     section: { paddingHorizontal: 20, marginBottom: 16 },
 
@@ -1345,11 +1338,7 @@ export default function ProfileScreen() {
             ? { number: xpProgress.current.level, title: xpProgress.current.title }
             : null}
           stats={isStudent && gamStats
-            ? {
-                wordsLearned: wordStats.totalLearned,
-                streak: gamStats.loginStreak,
-                assignments: gamStats.completedAssignments,
-              }
+            ? { wordsLearned: wordStats.totalLearned, streak: gamStats.loginStreak }
             : null}
           xp={isStudent && gamStats
             ? {
@@ -1408,42 +1397,14 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        <View style={s.bioBox}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-            <SectionLabel style={{ marginBottom: 0 }}>О себе</SectionLabel>
-            {!editingBio && (
-              <Pressable onPress={() => { setBioInput(bio); setEditingBio(true); }} hitSlop={10}>
-                <Glyph name="pen" size={14} color={colors.primary} />
-              </Pressable>
-            )}
-          </View>
-
-          {editingBio ? (
-            <>
-              <TextInput
-                style={s.bioInput}
-                value={bioInput}
-                onChangeText={setBioInput}
-                placeholder="Расскажи о себе..."
-                placeholderTextColor={colors.mutedForeground}
-                multiline
-                autoFocus
-              />
-              <View style={s.bioActions}>
-                <TouchableOpacity style={s.bioCancelBtn} onPress={() => setEditingBio(false)}>
-                  <Text style={s.bioCancelText}>Отмена</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.bioSaveBtn} onPress={handleBioSave}>
-                  <Text style={s.bioSaveText}>Сохранить</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          ) : (
-            <Text style={bio ? s.bioText : s.bioPlaceholder}>
-              {bio || "Нажми на карандаш, чтобы добавить описание"}
-            </Text>
-          )}
-        </View>
+        {/* «О себе» + интересы. Стоит сразу под шапкой: сначала знакомство
+            с человеком, потом дела на сегодня. */}
+        <AboutCard
+          bio={bio}
+          onSaveBio={(value) => { setBio(value); saveProfile({ bio: value }); }}
+          interests={interests}
+          onSaveInterests={saveInterests}
+        />
 
         {isStudent && dailyPlan && (
           <View style={s.section}>
