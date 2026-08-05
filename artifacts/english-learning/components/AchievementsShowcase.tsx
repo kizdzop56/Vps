@@ -9,9 +9,19 @@
 // и раскрытый по умолчанию список из ~36 закрытых медалей. Три десятка
 // одинаковых замков висели постоянно и не сообщали ничего сверх счётчика.
 //
-// Теперь сверху: стопка последних медалей веером, счётчик «14 / 50», разбивка
-// по сложности и строка ближайшей цели. Полный список свёрнут и раскрывается
-// стрелкой на месте — новых экранов и модальных окон блок не создаёт.
+// Сейчас сверху: веер из САМЫХ ЦЕННЫХ медалей, счётчик «14 / 50», разбивка по
+// сложности и строка ближайшей цели. Полный список свёрнут.
+//
+// ── Про веер ────────────────────────────────────────────────────────────────
+// В веере лежат не последние по времени медали, а самые ценные: сначала hard,
+// потом medium, потом easy (см. byValue). Витрина — это то, чем хвастаются, и
+// «Бог знаний» там нужнее, чем «Первые очки», полученные пять минут назад.
+//
+// Нажатие на веер раскрывает его: карточки разъезжаются из нахлёста в ряд и
+// под ними появляются названия. Второе нажатие складывает обратно. Раскрытие
+// сделано анимацией по одному значению fan (0…1), а положение каждой медали
+// считается от него — так не нужно ни менять высоту блока, ни анимировать
+// layout-свойства (они дёргаются на слабых телефонах).
 //
 // ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
 // Счётчик сначала был сделан так:
@@ -19,12 +29,9 @@
 //   <Text style={count}>14<Text style={countTotal}> / 50</Text></Text>
 //
 // В Safari это роняло ВЕСЬ экран профиля с ошибкой «Cannot set indexed
-// properties on this object» (react-native-web пытается дописать свойства в
-// унаследованный стиль вложенного span, и WebKit это запрещает). Три подряд
-// белых экрана были из-за одной этой строки.
-//
-// Правило: НЕ вкладывать Text в Text. Разные кегли — это два отдельных Text
-// в строке с flexDirection: "row" и alignItems: "baseline".
+// properties on this object». Три подряд белых экрана были из-за одной строки.
+// Правило: НЕ вкладывать Text в Text. Разные кегли — два отдельных Text в
+// строке с flexDirection: "row" и alignItems: "baseline".
 import React, { useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
@@ -35,7 +42,7 @@ import type { Achievement, AchievementDifficulty, AchievementStats } from "@/con
 import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton } from "@/components/ui/GameKit";
-import { accents, radii, chunky } from "@/constants/theme";
+import { accents, radii, chunky, timing } from "@/constants/theme";
 
 interface AchievementsShowcaseProps {
   unlocked: Achievement[];
@@ -52,6 +59,11 @@ function fallbackGlyph(difficulty: AchievementDifficulty): GlyphName {
   if (difficulty === "medium") return "medal";
   return "spark";
 }
+
+/** Вес сложности: по нему медали в веере сортируются от ценных к простым. */
+const DIFFICULTY_WEIGHT: Record<AchievementDifficulty, number> = {
+  hard: 3, medium: 2, easy: 1,
+};
 
 /** Полоса прогресса в цвете награды. */
 function ProgressTrack({
@@ -71,6 +83,68 @@ function ProgressTrack({
         style={{ height: "100%", width: `${Math.max(percent, 3)}%`, borderRadius: radii.pill }}
       />
     </View>
+  );
+}
+
+// ── Веер ────────────────────────────────────────────────────────────────────
+
+const FAN_SIZE = 52;      // диаметр медали в веере
+const FAN_STACKED = 15;   // сдвиг соседней медали в сложенном виде
+const FAN_OPEN = 58;      // сдвиг в раскрытом виде (медаль + зазор)
+
+/**
+ * Одна медаль веера. Позиция интерполируется из общего значения fan:
+ * 0 — сложено (нахлёст, лёгкий наклон), 1 — раскрыто (ряд, без наклона).
+ */
+function FanMedal({
+  achievement, index, fan, onPress,
+}: {
+  achievement: Achievement;
+  index: number;
+  fan: Animated.Value;
+  onPress: () => void;
+}) {
+  const from = index * FAN_STACKED;
+  const to = index * FAN_OPEN;
+
+  return (
+    <Animated.View
+      style={[
+        styles.fanItem,
+        {
+          zIndex: 10 - index,
+          transform: [
+            { translateX: fan.interpolate({ inputRange: [0, 1], outputRange: [from, to] }) },
+            // Небольшой наклон в сложенном виде — из-за него стопка читается
+            // как веер карт, а не как ряд слипшихся кружков.
+            { rotate: fan.interpolate({
+                inputRange: [0, 1],
+                outputRange: [`${(index - 1) * 5}deg`, "0deg"],
+              }) },
+          ],
+        },
+      ]}
+    >
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Награда «${achievement.title}»`}
+        style={[
+          styles.fanMedal,
+          {
+            borderColor: achievement.color + "66",
+            backgroundColor: achievement.bgColor,
+            shadowColor: achievement.color,
+          },
+        ]}
+      >
+        {achievement.image ? (
+          <Image source={achievement.image} style={styles.fanImg} resizeMode="cover" />
+        ) : (
+          <Glyph name={fallbackGlyph(achievement.difficulty)} size={24} color={achievement.color} />
+        )}
+      </Pressable>
+    </Animated.View>
   );
 }
 
@@ -300,6 +374,9 @@ export function AchievementsShowcase({
   const [selected, setSelected] = useState<{ achievement: Achievement; isLocked: boolean } | null>(null);
   // Список свёрнут: ради этого блок и переделывали.
   const [expanded, setExpanded] = useState(false);
+  // Веер сложен. Раскрывается по нажатию на сам веер, а не на стрелку.
+  const [fanOpen, setFanOpen] = useState(false);
+  const fan = React.useRef(new Animated.Value(0)).current;
 
   const total = unlocked.length + locked.length;
 
@@ -309,8 +386,40 @@ export function AchievementsShowcase({
     [locked, stats],
   );
 
-  // Три последние медали для стопки: свежая сверху.
-  const stack = unlocked.slice(-3).reverse();
+  /**
+   * Медали веера: самые ценные, а не самые свежие. Сортируем по сложности,
+   * внутри одной сложности сохраняем порядок каталога (он идёт от простых
+   * условий к сложным, поэтому «100 заданий» окажется впереди «10 заданий»).
+   */
+  const showcase = React.useMemo(() => {
+    const order = new Map(unlocked.map((a, i) => [a.id, i]));
+    return [...unlocked]
+      .sort((a, b) => {
+        const byValue = DIFFICULTY_WEIGHT[b.difficulty] - DIFFICULTY_WEIGHT[a.difficulty];
+        if (byValue !== 0) return byValue;
+        return (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0);
+      })
+      .slice(0, 4);
+  }, [unlocked]);
+
+  const toggleFan = () => {
+    const to = fanOpen ? 0 : 1;
+    setFanOpen(!fanOpen);
+    Animated.timing(fan, {
+      toValue: to,
+      duration: timing.panel,
+      easing: Easing.out(Easing.cubic),
+      // Позиции считаются трансформами, поэтому нативный драйвер уместен и на
+      // вебе даёт плавность без пересчёта layout.
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Ширина веера: в сложенном виде — нахлёст, в раскрытом — ряд. Держим
+  // максимум, чтобы соседний текст не прыгал во время анимации.
+  const fanWidth = showcase.length > 0
+    ? FAN_SIZE + (showcase.length - 1) * (fanOpen ? FAN_OPEN : FAN_STACKED)
+    : FAN_SIZE;
 
   // Разбивка по сложности отвечает на вопрос «куда расти»: по общему счётчику
   // не видно, что лёгкие почти собраны, а сложных нет вовсе.
@@ -333,46 +442,45 @@ export function AchievementsShowcase({
         shadowColor: accents.violetDeep,
       },
     ]}>
-      {/* ── Стопка медалей и счётчик ── */}
+      {/* ── Веер ценных медалей и счётчик ── */}
       <View style={styles.lead}>
-        <View style={[styles.stack, { width: stack.length > 0 ? 52 + (stack.length - 1) * 15 : 52 }]}>
-          {stack.length === 0 ? (
-            <View style={styles.stackEmpty}>
-              <Glyph name="trophy" size={22} color="rgba(139,92,246,0.45)" />
-            </View>
-          ) : (
-            stack.map((a, i) => (
-              <View
-                key={a.id}
-                style={[
-                  styles.stackItem,
-                  {
-                    left: i * 15,
-                    zIndex: stack.length - i,
-                    opacity: 1 - i * 0.12,
-                    borderColor: a.color + "66",
-                    backgroundColor: a.bgColor,
-                  },
-                ]}
-              >
-                {a.image ? (
-                  <Image source={a.image} style={styles.stackImg} resizeMode="cover" />
-                ) : (
-                  <Glyph name={fallbackGlyph(a.difficulty)} size={24} color={a.color} />
-                )}
-              </View>
-            ))
-          )}
-        </View>
-
-        {/* Два отдельных Text в строке, а не Text внутри Text — см. шапку файла. */}
-        <View style={styles.leadText}>
-          <View style={styles.countRow}>
-            <Text style={[styles.count, { color: colors.foreground }]}>{unlocked.length}</Text>
-            <Text style={[styles.countTotal, { color: colors.mutedForeground }]}>/ {total}</Text>
+        {showcase.length === 0 ? (
+          <View style={styles.fanEmpty}>
+            <Glyph name="trophy" size={22} color="rgba(139,92,246,0.45)" />
           </View>
-          <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
-        </View>
+        ) : (
+          <Pressable
+            onPress={toggleFan}
+            style={[styles.fanBox, { width: fanWidth }]}
+            accessibilityRole="button"
+            accessibilityLabel={fanOpen ? "Сложить лучшие награды" : "Раскрыть лучшие награды"}
+          >
+            {showcase.map((a, i) => (
+              <FanMedal
+                key={a.id}
+                achievement={a}
+                index={i}
+                fan={fan}
+                // В сложенном виде тап по медали раскрывает веер, в раскрытом —
+                // открывает саму награду. Иначе по слипшимся кружкам не попасть.
+                onPress={() => (fanOpen
+                  ? setSelected({ achievement: a, isLocked: false })
+                  : toggleFan())}
+              />
+            ))}
+          </Pressable>
+        )}
+
+        {/* Счётчик прячем, когда веер раскрыт: места в строке уже нет. */}
+        {!fanOpen && (
+          <View style={styles.leadText}>
+            <View style={styles.countRow}>
+              <Text style={[styles.count, { color: colors.foreground }]}>{unlocked.length}</Text>
+              <Text style={[styles.countTotal, { color: colors.mutedForeground }]}>/ {total}</Text>
+            </View>
+            <Text style={[styles.countCap, { color: colors.mutedForeground }]}>наград получено</Text>
+          </View>
+        )}
 
         <TouchableOpacity
           style={[styles.openBtn, { backgroundColor: colors.primary + "14" }]}
@@ -386,6 +494,22 @@ export function AchievementsShowcase({
           </View>
         </TouchableOpacity>
       </View>
+
+      {/* Названия появляются только у раскрытого веера: в сложенном виде
+          подписывать нечего, медали перекрывают друг друга. */}
+      {fanOpen && showcase.length > 0 && (
+        <View style={styles.fanLabels}>
+          {showcase.map((a) => (
+            <Text
+              key={a.id}
+              style={[styles.fanLabel, { color: a.color }]}
+              numberOfLines={2}
+            >
+              {a.title}
+            </Text>
+          ))}
+        </View>
+      )}
 
       {/* ── Разбивка по сложности ── */}
       <View style={styles.tiers}>
@@ -503,28 +627,35 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.13, shadowRadius: 15, elevation: 3,
   },
 
-  // ── Стопка ──
+  // ── Веер ──
   lead: { flexDirection: "row", alignItems: "center", gap: 14 },
-  stack: { height: 56, justifyContent: "center" },
-  stackItem: {
-    position: "absolute",
-    width: 52, height: 52, borderRadius: 26, borderWidth: 2,
+  fanBox: { height: FAN_SIZE + 8, justifyContent: "center" },
+  fanItem: { position: "absolute" },
+  fanMedal: {
+    width: FAN_SIZE, height: FAN_SIZE, borderRadius: FAN_SIZE / 2, borderWidth: 2,
     overflow: "hidden", alignItems: "center", justifyContent: "center",
+    shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.32, shadowRadius: 8, elevation: 4,
   },
-  stackImg: { width: 52, height: 52 },
-  stackEmpty: {
-    width: 52, height: 52, borderRadius: 26,
+  fanImg: { width: FAN_SIZE, height: FAN_SIZE },
+  fanEmpty: {
+    width: FAN_SIZE, height: FAN_SIZE, borderRadius: FAN_SIZE / 2,
     alignItems: "center", justifyContent: "center",
     borderWidth: 2, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.35)",
     backgroundColor: "rgba(160,140,220,0.1)",
   },
+  fanLabels: { flexDirection: "row", marginTop: 8, gap: 6 },
+  fanLabel: {
+    width: FAN_OPEN - 6, fontSize: 8.5, fontWeight: "800",
+    textAlign: "center", lineHeight: 11,
+  },
+
   leadText: { flex: 1, minWidth: 0 },
   countRow: { flexDirection: "row", alignItems: "baseline", gap: 5 },
   count: { fontSize: 27, fontWeight: "900", letterSpacing: -0.9, fontVariant: ["tabular-nums"] },
   countTotal: { fontSize: 15, fontWeight: "800", fontVariant: ["tabular-nums"] },
   countCap: { fontSize: 12, fontWeight: "700", marginTop: 2 },
   openBtn: {
-    width: 34, height: 34, borderRadius: 12,
+    width: 34, height: 34, borderRadius: 12, marginLeft: "auto",
     alignItems: "center", justifyContent: "center",
   },
 
