@@ -40,8 +40,10 @@
 // название видно в карточке награды по тапу.
 //
 // ── Закрытие карточки ───────────────────────────────────────────────────────
-// Крестик в углу и тап по фону. Кнопки «Закрыть» во всю ширину внизу больше
-// нет: она была последней такой полосой в приложении и просто занимала место.
+// Кнопка «Закрыть» — последний элемент САМОЙ карточки, на её же фоне. Белой
+// полосы по краям нет: это не отдельный закреплённый слой поверх содержимого,
+// а обычная строка в потоке. Крестик в углу оставлен как быстрый выход, тап по
+// затемнению тоже закрывает.
 //
 // ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
 // Счётчик сначала был сделан так:
@@ -61,6 +63,7 @@ import { useColors } from "@/hooks/useColors";
 import type { Achievement, AchievementDifficulty, AchievementStats } from "@/constants/achievements";
 import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ChunkyButton } from "@/components/ui/GameKit";
 import { accents, radii, chunky, timing } from "@/constants/theme";
 
 interface AchievementsShowcaseProps {
@@ -346,8 +349,7 @@ function BadgeDetailModal({
           style={[styles.modalCard, { backgroundColor: colors.card }]}
           onPress={() => {}}
         >
-          {/* Крестик в углу — единственная кнопка закрытия. Полосу «Закрыть»
-              внизу убрали: она занимала место и повторяла тап по фону. */}
+          {/* Быстрый выход. Основная кнопка «Закрыть» — внизу карточки. */}
           <Pressable
             onPress={onClose}
             hitSlop={10}
@@ -453,6 +455,16 @@ function BadgeDetailModal({
               {isLocked ? achievement.requirement : achievement.description}
             </Text>
           </View>
+
+          {/* Кнопка стоит в потоке карточки, на её же фоне: отдельной белой
+              полосы по краям нет. */}
+          <ChunkyButton
+            label="Закрыть"
+            tone="dark"
+            center
+            onPress={onClose}
+            style={{ alignSelf: "stretch", marginTop: 16 }}
+          />
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
