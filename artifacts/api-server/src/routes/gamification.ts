@@ -41,6 +41,50 @@ function computeLevel(xp: number): number {
   return Math.min(level, 50);
 }
 
+// ── Чтение пользователя ─────────────────────────────────────────────────────
+//
+// ВАЖНО: колонки перечисляются ЯВНО. `db.select().from(usersTable)` разворачивается
+// в SELECT по всем полям схемы, и стоит добавить в схему новый столбец, как
+// каждый такой запрос падает на любой базе, где миграция ещё не накатана. Так
+// один столбец daily_goal_claimed_date уронил цель дня сразу на двух экранах.
+const USER_FIELDS = {
+  id: usersTable.id,
+  totalPoints: usersTable.totalPoints,
+  totalTimeMinutes: usersTable.totalTimeMinutes,
+  xpLevel: usersTable.xpLevel,
+  dailyGoalMinutes: usersTable.dailyGoalMinutes,
+  nextDailyGoalMinutes: usersTable.nextDailyGoalMinutes,
+  dailyGoalAppliedDate: usersTable.dailyGoalAppliedDate,
+  loginStreak: usersTable.loginStreak,
+  lastLoginDate: usersTable.lastLoginDate,
+  mascotName: usersTable.mascotName,
+} as const;
+
+// Один раз узнав, что столбца награды нет, больше не долбим базу заведомо
+// падающим запросом на каждый заход в профиль.
+let claimedColumnMissing = false;
+
+/**
+ * День последней выданной награды за цель дня.
+ *
+ * Живёт в отдельном запросе, потому что столбец мог ещё не приехать в базу:
+ * до миграции возвращаем null («сегодня не выдавали»), и весь остальной
+ * экран продолжает работать.
+ */
+async function readClaimedDate(userId: number): Promise<string | null> {
+  if (claimedColumnMissing) return null;
+  try {
+    const result: any = await db.execute(
+      sql`select daily_goal_claimed_date::text as claimed from users where id = ${userId}`,
+    );
+    const rows = Array.isArray(result) ? result : result?.rows ?? [];
+    return rows[0]?.claimed ?? null;
+  } catch {
+    claimedColumnMissing = true;
+    return null;
+  }
+}
+
 // Время ученика по данным сессий. Считается в одном месте, чтобы условия наград
 // и цифры в профиле не расходились.
 // Важно: у открытой сессии засчитывается только время, подтверждённое heartbeat —
@@ -194,7 +238,7 @@ type ServerAchievementStats = {
 
 // Считает статы пользователя из БД (те же источники, что и /gamification/stats).
 async function computeAchievementStats(userId: number): Promise<ServerAchievementStats | null> {
-  const [userData] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  const [userData] = await db.select(USER_FIELDS).from(usersTable).where(eq(usersTable.id, userId));
   if (!userData) return null;
 
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
@@ -314,7 +358,7 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   const user = getUser(req);
   const userId = user.userId;
 
-  const [userData] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  const [userData] = await db.select(USER_FIELDS).from(usersTable).where(eq(usersTable.id, userId));
   if (!userData) {
     res.status(404).json({ error: "User not found" });
     return;
@@ -327,6 +371,8 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     nextDailyGoalMinutes: userData.nextDailyGoalMinutes ?? null,
     dailyGoalAppliedDate: userData.dailyGoalAppliedDate ?? null,
   });
+
+  const claimedDate = await readClaimedDate(userId);
 
   // Voice chat sessions count — только сессии с реальным разговором
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
@@ -398,7 +444,7 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     nextDailyGoalMinutes: goal.next,
     // Награда за сегодняшний день уже получена? Клиент по этому полю показывает
     // «получено» вместо «+40» и не дёргает claim повторно.
-    dailyGoalClaimedToday: (userData.dailyGoalClaimedDate ?? null) === todayKey(),
+    dailyGoalClaimedToday: claimedDate === todayKey(),
     loginStreak: userData.loginStreak,
     lastLoginDate: userData.lastLoginDate,
     todayMinutes,
@@ -428,7 +474,7 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
   const user = getUser(req);
   const userId = user.userId;
 
-  const [userData] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  const [userData] = await db.select(USER_FIELDS).from(usersTable).where(eq(usersTable.id, userId));
   if (!userData) {
     res.status(404).json({ error: "User not found" });
     return;
@@ -445,7 +491,7 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
 
   // Уже забрал сегодня — отвечаем спокойно, без ошибки: клиент вызывает claim
   // при каждом обновлении экрана, пока день закрыт.
-  if ((userData.dailyGoalClaimedDate ?? null) === today) {
+  if ((await readClaimedDate(userId)) === today) {
     res.json({
       alreadyClaimed: true,
       awarded: 0,
@@ -485,14 +531,30 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
   const newTotal = userData.totalPoints + plan.reward;
   const newLevel = computeLevel(newTotal);
 
-  await db.update(usersTable)
-    .set({
-      totalPoints: newTotal,
-      xpLevel: newLevel,
-      dailyGoalClaimedDate: today,
-      updatedAt: new Date(),
-    })
-    .where(eq(usersTable.id, userId));
+  // Очки и отметка о выдаче пишутся ОДНИМ запросом. Если столбца ещё нет в
+  // базе, падает всё целиком и очки не начисляются: без отметки награду можно
+  // было бы забирать бесконечно.
+  try {
+    await db.update(usersTable)
+      .set({
+        totalPoints: newTotal,
+        xpLevel: newLevel,
+        dailyGoalClaimedDate: today,
+        updatedAt: new Date(),
+      })
+      .where(eq(usersTable.id, userId));
+  } catch {
+    claimedColumnMissing = true;
+    res.json({
+      alreadyClaimed: false,
+      awarded: 0,
+      reward: plan.reward,
+      pending: [],
+      totalPoints: userData.totalPoints,
+      xpLevel: computeLevel(userData.totalPoints),
+    });
+    return;
+  }
 
   res.json({
     alreadyClaimed: false,
