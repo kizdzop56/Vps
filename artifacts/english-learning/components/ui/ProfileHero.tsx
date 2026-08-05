@@ -26,10 +26,23 @@
 //   свой профиль  — «слов выучено» и «дней подряд» (эти данные есть только
 //                   у себя: чужую статистику по словам сервер не отдаёт);
 //   чужой профиль — «очков» и «заданий» (их видно из GET /users/:id).
+//
+// ── Про полосу опыта ────────────────────────────────────────────────────────
+// Полоса наливается от нуля при появлении и по ней бесконечно бежит блик.
+// Опыт — единственная величина в профиле, которая только растёт и никогда не
+// сбрасывается, поэтому она единственная и «живая»: остальные шкалы просто
+// вырастают один раз и стоят.
+//
+// ГРАБЛИ. Ширина нативным драйвером не анимируется ни на одной платформе, а
+// блик двигается через left — тоже layout-свойство. Поэтому здесь всегда
+// useNativeDriver: false. Анимаций две на весь экран, нагрузки нет.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
-import { View, Text, Image, TouchableOpacity, ActivityIndicator, StyleSheet } from "react-native";
+import {
+  View, Text, Image, TouchableOpacity, ActivityIndicator, StyleSheet,
+  Animated, Easing,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Glyph, type GlyphName } from "./Glyph";
 import { accents, gradients, radii } from "@/constants/theme";
@@ -61,6 +74,80 @@ function MiniStat({ value, label, icon }: HeroStat) {
         <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
         <Text style={s.miniLabel} numberOfLines={1}>{label}</Text>
       </View>
+    </View>
+  );
+}
+
+/**
+ * Полоса опыта: наливается от нуля, потом по ней бесконечно бежит блик.
+ *
+ * Блик — косая белая полоса на 45 % ширины заполненной части. Она прозрачна на
+ * концах пробега и заметна в середине, поэтому появление и уход не читаются как
+ * рывок. Пауза между проходами задана самой кривой прозрачности: последнюю
+ * треть цикла блик невидим.
+ */
+function XpTrack({ percent }: { percent: number }) {
+  const fill = React.useRef(new Animated.Value(0)).current;
+  const glide = React.useRef(new Animated.Value(0)).current;
+  const target = Math.max(2, Math.min(100, percent));
+
+  // Наполнение: при каждом изменении процента полоса доезжает заново.
+  React.useEffect(() => {
+    fill.setValue(0);
+    const anim = Animated.timing(fill, {
+      toValue: 1,
+      duration: 900,
+      easing: Easing.out(Easing.cubic),
+      // Ширину нативный драйвер не анимирует.
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [target, fill]);
+
+  // Блик: бесконечный цикл. Живёт независимо от наполнения, поэтому не
+  // перезапускается при смене процента.
+  React.useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(glide, {
+        toValue: 1,
+        duration: 2600,
+        easing: Easing.linear,
+        useNativeDriver: false,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [glide]);
+
+  return (
+    <View style={s.xpTrack}>
+      <Animated.View style={[
+        s.xpFill,
+        {
+          width: fill.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${target}%`] }),
+        },
+      ]}>
+        <LinearGradient
+          colors={gradients.progress as unknown as string[]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: "absolute", top: 0, bottom: 0, width: "45%",
+            backgroundColor: "#ffffff",
+            opacity: glide.interpolate({
+              inputRange: [0, 0.3, 0.62, 1],
+              outputRange: [0, 0.42, 0, 0],
+            }),
+            left: glide.interpolate({ inputRange: [0, 1], outputRange: ["-50%", "140%"] }),
+            transform: [{ skewX: "-18deg" }],
+          }}
+        />
+      </Animated.View>
     </View>
   );
 }
@@ -243,14 +330,7 @@ export function ProfileHero({
               {xp.nextAt !== null ? `${xp.current} / ${xp.nextAt} XP` : `${xp.current} XP · максимум`}
             </Text>
           </View>
-          <View style={s.xpTrack}>
-            <LinearGradient
-              colors={gradients.progress as unknown as string[]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={[s.xpFill, { width: `${Math.max(xp.percent, 2)}%` }]}
-            />
-          </View>
+          <XpTrack percent={xp.percent} />
           <Text style={s.xpNext}>
             {xp.nextAt !== null && xp.nextLevel !== null
               ? `До уровня ${xp.nextLevel} «${xp.nextTitle}» осталось ${xp.nextAt - xp.current} XP`
@@ -387,7 +467,7 @@ const s = StyleSheet.create({
     overflow: "hidden", padding: 2,
   },
   xpFill: {
-    height: "100%", borderRadius: radii.pill,
+    height: "100%", borderRadius: radii.pill, overflow: "hidden",
     shadowColor: accents.magenta,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.75, shadowRadius: 8, elevation: 4,
