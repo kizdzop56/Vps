@@ -24,12 +24,16 @@
 //    insets.top + 67: лишние 67 пикселей оставляли над заголовком пустую
 //    полосу примерно в восьмую часть экрана.
 //  • Время в окнах «Добавить слот» и «Предложить своё время» выбирается
-//    компонентом TimeRangePicker: начало плюс длительность вместо двух
-//    независимых барабанов. Подробности и причины — в самом компоненте.
+//    компонентом TimeRangePicker: привычные крутилки оставлены, но конец
+//    подстраивается автоматически.
 //
-// Цветная полоса слева у карточек (borderLeftWidth: 4) убрана ещё раньше:
-// полоса читается как след от вёрстки, а не как смысл. Статус несут заливка,
-// рамка и пилюля. Наклоны тоже убраны — как на остальных вкладках.
+// Что починилось после обратной связи:
+//  • Кнопка «Предложить своё время» дублировалась: одна в шапке и ещё одна
+//    внизу списка. Нижнюю убрали. Главное действие должно быть одно.
+//  • Имя учителя в свободном слоте стало темнее и тяжелее: раньше оно
+//    сливалось с подписью «окно для записи».
+//  • Сама кнопка «Своё время» стала спокойнее: не такая же тяжёлая, как
+//    основная CTA «Записаться», а вторичное действие в контуре успеха.
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
@@ -113,7 +117,6 @@ type LessonHistoryItem = {
 const DAY_SHORT = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const DAY_FULL = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
 const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
-/** Родительный падеж — для строки «4 августа». */
 const MONTH_GEN = [
   "января", "февраля", "марта", "апреля", "мая", "июня",
   "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -122,7 +125,6 @@ const MONTH_FULL = [
   "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
   "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
 ];
-// Неделя начинается с понедельника — как в русских календарях.
 const WEEK_HEAD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 function localDateStr(d = new Date()) {
@@ -141,10 +143,6 @@ function formatDateWithDay(dateStr: string | null) {
   return `${d.getDate()} ${MONTH_SHORT[d.getMonth()]}, ${DAY_SHORT[d.getDay()]}`;
 }
 
-/**
- * Человеческая подпись дня: «сегодня», «завтра» или дата с днём недели.
- * «завтра в 17:00» читается быстрее, чем «5 авг, Ср, 17:00».
- */
 function humanDay(dateStr: string): string {
   const today = todayStr();
   if (dateStr === today) return "сегодня";
@@ -154,7 +152,6 @@ function humanDay(dateStr: string): string {
   return formatDateWithDay(dateStr);
 }
 
-/** «сегодня» / «завтра» / «вторник» — подпись под крупной датой в шапке. */
 function dayCaption(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
   const weekday = DAY_FULL[d.getDay()];
@@ -166,13 +163,11 @@ function dayCaption(dateStr: string): string {
   return weekday;
 }
 
-/** Первая буква имени для аватара без картинки. Пропускаем знаки и пробелы. */
 function initialOf(name?: string | null, fallback = "У") {
   const m = (name ?? "").match(/[\p{L}\p{N}]/u);
   return (m?.[0] ?? fallback).toUpperCase();
 }
 
-/** Понедельник недели, в которую попадает дата. */
 function weekStart(dateStr: string): Date {
   const d = new Date(dateStr + "T00:00:00");
   const offset = (d.getDay() + 6) % 7;
@@ -180,7 +175,6 @@ function weekStart(dateStr: string): Date {
   return d;
 }
 
-/** Семь дат недели, начиная с понедельника. */
 function buildWeek(anchor: string): string[] {
   const start = weekStart(anchor);
   return Array.from({ length: 7 }, (_, i) => {
@@ -190,10 +184,6 @@ function buildWeek(anchor: string): string[] {
   });
 }
 
-/**
- * Сетка месяца: массив недель по 7 ячеек, null — «чужой» день. Смещение
- * считается от понедельника: getDay() отдаёт 0 для воскресенья.
- */
 function buildMonthGrid(year: number, month: number): (string | null)[][] {
   const first = new Date(year, month, 1);
   const offset = (first.getDay() + 6) % 7;
@@ -206,7 +196,6 @@ function buildMonthGrid(year: number, month: number): (string | null)[][] {
   return weeks;
 }
 
-// ── Past-slot helper ──────────────────────────────────────────────────
 function isPastSlot(date: string, endTime: string): boolean {
   const now = new Date();
   const todayLocal = localDateStr(now);
@@ -218,7 +207,6 @@ function isPastSlot(date: string, endTime: string): boolean {
   return slotEnd <= now;
 }
 
-/** «через 12 минут» / «идёт сейчас» — подпись у ближайшего слота дня. */
 function untilLabel(date: string, startTime: string, endTime: string): string | null {
   if (date !== todayStr()) return null;
   const now = new Date();
@@ -236,11 +224,6 @@ function untilLabel(date: string, startTime: string, endTime: string): string | 
   return m === 0 ? `через ${h} ч` : `через ${h} ч ${m} мин`;
 }
 
-/**
- * Разумное начало для нового слота: следующий круглый получас от текущего
- * времени, если день сегодняшний, иначе девять утра. Раньше окно всегда
- * открывалось на 09:00, и вечером приходилось крутить колесо через полдня.
- */
 function defaultStartFor(date: string): string {
   if (date !== todayStr()) return "09:00";
   const now = new Date();
@@ -248,8 +231,6 @@ function defaultStartFor(date: string): string {
   return toTime(Math.min(rounded, 23 * 60 + 30));
 }
 
-// Статусы слота для ученика. Значки — из собственного набора: цвет управляется
-// темой, вид одинаков на iOS, Android и в вебе.
 const STATUS_CFG: Record<string, { label: string; color: string; icon: GlyphName }> = {
   available:    { label: "Свободно",  color: "#6366f1", icon: "target" },
   pending:      { label: "Ожидает",   color: "#ec4899", icon: "clock"  },
@@ -262,15 +243,13 @@ const BOOKING_CFG: Record<string, { label: string; color: string; icon: GlyphNam
   rejected:  { label: "Отклонено",    color: "#e11d48", icon: "close" },
 };
 
-// Цвета точек занятости. Совпадают с палитрой: success / warning / primary.
-const DOT_LESSON  = "#8b5cf6"; // занятие подтверждено
-const DOT_PENDING = "#ec4899"; // есть заявка в ожидании
-const DOT_FREE    = "#6366f1"; // есть свободный слот
+const DOT_LESSON  = "#8b5cf6";
+const DOT_PENDING = "#ec4899";
+const DOT_FREE    = "#6366f1";
 
 type DayMeta = { free: number; pending: number; lesson: number; past: number };
 const EMPTY_META: DayMeta = { free: 0, pending: 0, lesson: 0, past: 0 };
 
-// ── Component ─────────────────────────────────────────────────────────
 export default function CalendarScreen() {
   const { user } = useAuth();
   const colors = useColors();
@@ -287,14 +266,11 @@ export default function CalendarScreen() {
   const [lessonHistory, setLessonHistory] = useState<LessonHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Обзор месяца: все слоты (без параметра date) — нужен для точек занятости
-  // в полосе недели, в сетке месяца и для карточки ближайшего занятия.
   const [monthSlots, setMonthSlots] = useState<(TeacherSlot | StudentSlot)[]>([]);
   const [monthAnchor, setMonthAnchor] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
-  // Сетка месяца открывается по кнопке: в обычном режиме хватает недели.
   const [showMonth, setShowMonth] = useState(false);
 
   const [deleteSlotId, setDeleteSlotId] = useState<number | null>(null);
@@ -302,9 +278,6 @@ export default function CalendarScreen() {
 
   const [bookingFilter, setBookingFilter] = useState<"all" | "pending" | "confirmed" | "rejected">("all");
 
-  // ── Окно «Добавить слот» (учитель) ──
-  // Время хранится строками HH:MM, а не четырьмя числами: так его напрямую
-  // отдаём и на сервер, и в TimeRangePicker.
   const [showAdd, setShowAdd] = useState(false);
   const [addStart, setAddStart] = useState("09:00");
   const [addEnd, setAddEnd] = useState("10:00");
@@ -314,7 +287,6 @@ export default function CalendarScreen() {
   const [bookNote, setBookNote] = useState("");
   const [booking, setBooking] = useState(false);
 
-  // ── Запрос своего времени (ученик) ──
   const [customRequests, setCustomRequests] = useState<CustomRequest[]>([]);
   const [showCustomReq, setShowCustomReq] = useState(false);
   const [crTeachers, setCrTeachers] = useState<TeacherBasic[]>([]);
@@ -376,8 +348,6 @@ export default function CalendarScreen() {
     }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests]),
   );
 
-  // Автообновление раз в 10 с: прошедшие слоты уходят, новые появляются без
-  // ручного переключения вкладок.
   useEffect(() => {
     const id = setInterval(() => {
       loadSlots(selectedDate);
@@ -412,8 +382,6 @@ export default function CalendarScreen() {
   }, [selectedDate, loadSlots, loadMonthSlots, loadBookings, loadCustomRequests, loadHistory, activeTab]);
 
   // ── Занятость по дням ───────────────────────────────────────────────
-  // Каждый слот попадает ровно в одну корзину: прошедший / занятие /
-  // ожидает / свободен — иначе точки в ячейке врали бы о состоянии дня.
   const dayMeta = useMemo(() => {
     const map: Record<string, DayMeta> = {};
     for (const slot of monthSlots) {
@@ -430,14 +398,13 @@ export default function CalendarScreen() {
         if (st === "confirmed_me") acc.lesson += 1;
         else if (st === "pending") acc.pending += 1;
         else if (st === "available") acc.free += 1;
-        else acc.past += 1; // unavailable — занято другим учеником, для меня не слот
+        else acc.past += 1;
       }
       map[slot.date] = acc;
     }
     return map;
   }, [monthSlots, isTeacherRole]);
 
-  /** Ближайшее подтверждённое занятие — среди уже загруженных слотов. */
   const nextLesson = useMemo(() => {
     const upcoming = monthSlots
       .filter((slot) => {
@@ -462,7 +429,6 @@ export default function CalendarScreen() {
   const selectedMeta = dayMeta[selectedDate] ?? EMPTY_META;
   const weekDates = useMemo(() => buildWeek(selectedDate), [selectedDate]);
 
-  /** Перейти на дату: синхронизируем и неделю, и месяц в модалке. */
   const goToDate = useCallback((date: string) => {
     const d = new Date(date + "T00:00:00");
     setMonthAnchor(new Date(d.getFullYear(), d.getMonth(), 1));
@@ -487,8 +453,6 @@ export default function CalendarScreen() {
         body: JSON.stringify({ date: selectedDate, startTime: addStart, endTime: addEnd }),
       });
       setShowAdd(false);
-      // Следующий слот предлагаем сразу после этого: обычно учитель ставит
-      // несколько подряд, и возвращать 09:00 каждый раз бессмысленно.
       const nextStart = addEnd;
       setAddStart(nextStart);
       setAddEnd(toTime(toMinutes(nextStart) + 60));
@@ -532,7 +496,7 @@ export default function CalendarScreen() {
         method: "PATCH", body: JSON.stringify({ status }),
       });
       await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()]);
-    } catch (e: any) { /* silent on web */ }
+    } catch (e: any) { /* silent */ }
   };
 
   const handleRespondCustom = async (requestId: number, status: "confirmed" | "rejected") => {
@@ -541,7 +505,7 @@ export default function CalendarScreen() {
         method: "PATCH", body: JSON.stringify({ status }),
       });
       await Promise.all([loadSlots(selectedDate), loadMonthSlots(), loadBookings(), loadCustomRequests()]);
-    } catch (e: any) { /* silent on web */ }
+    } catch (e: any) { /* silent */ }
   };
 
   const handleOpenCustomReq = async () => {
@@ -606,8 +570,6 @@ export default function CalendarScreen() {
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
 
-    // ── Шапка ──
-    // Заголовка «Календарь» нет: вкладка уже подписана в нижней панели.
     header: {
       flexDirection: "row", alignItems: "flex-start", gap: 12,
       paddingTop: screenTop(insets),
@@ -615,16 +577,17 @@ export default function CalendarScreen() {
     },
     headDate: { fontSize: 26, fontWeight: "900", letterSpacing: -0.8, color: colors.foreground },
     headCaption: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
-    headBtnEdge: {
-      position: "absolute", left: 0, right: 0, top: 4, bottom: 0, borderRadius: radii.pill,
-    },
-    headBtn: {
-      flexDirection: "row", alignItems: "center", gap: 7,
-      paddingHorizontal: 15, paddingVertical: 11, borderRadius: radii.pill,
-    },
-    headBtnText: { fontSize: 13, fontWeight: "900", color: "#fff" },
 
-    // ── Вкладки ──
+    // Кнопка в шапке спокойнее основной CTA «Записаться»: это вторичное
+    // действие, и она не должна орать тем же весом.
+    headPill: {
+      flexDirection: "row", alignItems: "center", gap: 7,
+      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.pill,
+      backgroundColor: colors.success + "14",
+      borderWidth: 1.5, borderColor: colors.success + "3a",
+    },
+    headPillText: { fontSize: 12.5, fontWeight: "800", color: colors.success },
+
     tabRow: { flexDirection: "row", paddingHorizontal: 16, paddingTop: 12, gap: 6 },
     tab: {
       flex: 1, paddingVertical: 10, borderRadius: radii.sm + 2, alignItems: "center",
@@ -645,7 +608,6 @@ export default function CalendarScreen() {
     },
     badgeText: { fontSize: 10, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
 
-    // ── Ближайшее занятие ──
     nextCard: {
       borderRadius: radii.lg, padding: 15, marginBottom: 14,
       flexDirection: "row", alignItems: "center", gap: 13,
@@ -665,7 +627,6 @@ export default function CalendarScreen() {
     nextWhen: { fontSize: 18, fontWeight: "900", letterSpacing: -0.4, color: "#fff", marginTop: 4 },
     nextWho: { fontSize: 12, color: "rgba(255,255,255,0.82)", marginTop: 4 },
 
-    // ── Полоса недели ──
     weekCard: {
       backgroundColor: colors.card, borderRadius: radii.lg,
       paddingVertical: 12, paddingHorizontal: 10, marginBottom: 14,
@@ -682,22 +643,21 @@ export default function CalendarScreen() {
     },
     monthBtnText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
     weekRow: { flexDirection: "row", gap: 4 },
-    // Высота ячейки фиксирована: иначе выбранный день с заливкой выглядит
-    // выше соседних, и полоса недели «прыгает» при переключении.
+    // Один и тот же размер у всех дней: при переключении соседний день не
+    // должен оставлять после себя тень или подложку, как это было на скрине.
     dayCell: {
       flex: 1, height: 62, borderRadius: 14,
       alignItems: "center", justifyContent: "center", overflow: "hidden",
+      backgroundColor: "transparent",
     },
     dayW: { fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.3 },
     dayN: { fontSize: 17, fontWeight: "800", color: colors.foreground, marginTop: 5, fontVariant: ["tabular-nums"] },
     dotRow: { flexDirection: "row", gap: 2.5, height: 5, marginTop: 5, alignItems: "center" },
     dot: { width: 5, height: 5, borderRadius: 2.5 },
 
-    // ── Сводка дня ──
     summary: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginBottom: 13 },
     summaryDone: { marginLeft: "auto", fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
 
-    // ── Строка расписания ──
     slotRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
     slotTimeCol: { width: 46, paddingTop: 13, alignItems: "flex-end" },
     slotFrom: { fontSize: 14, fontWeight: "800", color: colors.foreground, fontVariant: ["tabular-nums"] },
@@ -710,7 +670,9 @@ export default function CalendarScreen() {
       shadowOpacity: 0.12, shadowRadius: 13, elevation: 3,
     },
     cardRow: { flexDirection: "row", alignItems: "center", gap: 9 },
-    cardWho: { fontSize: 14.5, fontWeight: "800", color: colors.foreground },
+    // Имя учителя / ученика тяжелее и темнее подписи снизу. На скрине "Мария"
+    // сливалась с "окно для записи" как один серый блок текста.
+    cardWho: { fontSize: 16, fontWeight: "900", color: colors.foreground, letterSpacing: -0.2 },
     cardMeta: { fontSize: 12, fontWeight: "600", color: colors.mutedForeground, marginTop: 3 },
     cardNote: {
       fontSize: 12.5, color: colors.mutedForeground, fontStyle: "italic",
@@ -726,7 +688,6 @@ export default function CalendarScreen() {
     act: { flex: 1, paddingVertical: 10, borderRadius: radii.sm, alignItems: "center" },
     actText: { fontSize: 13, fontWeight: "800" },
 
-    // ── Линия «сейчас» ──
     nowLine: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12, marginTop: 2 },
     nowDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: accents.magenta },
     nowText: { fontSize: 10.5, fontWeight: "900", color: accents.magenta, letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
@@ -775,7 +736,6 @@ export default function CalendarScreen() {
 
     statusLabel: { fontSize: 12, fontWeight: "800" },
 
-    // ── Модалки ──
     overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
     sheet: {
       backgroundColor: colors.card,
@@ -787,7 +747,6 @@ export default function CalendarScreen() {
       width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border,
       alignSelf: "center", marginBottom: 16,
     },
-    // Заголовок листа: дата уходит в подпись, а не во вторую строку названия.
     sheetHead: { marginBottom: 18 },
     sheetTitle: { fontSize: 20, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground },
     sheetSub: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 4 },
@@ -807,7 +766,6 @@ export default function CalendarScreen() {
       flexDirection: "row", alignItems: "center", gap: 9,
     },
 
-    // ── Сетка месяца в модалке ──
     monthHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14 },
     monthTitle: { flex: 1, fontSize: 17, fontWeight: "900", letterSpacing: -0.35, color: colors.foreground, textAlign: "center" },
     monthNav: {
@@ -820,6 +778,7 @@ export default function CalendarScreen() {
     mCell: {
       flex: 1, aspectRatio: 1, margin: 1.5, borderRadius: 12,
       alignItems: "center", justifyContent: "center", overflow: "hidden",
+      backgroundColor: "transparent",
     },
     mCellFilled: { backgroundColor: colors.muted },
     mNum: { fontSize: 14, fontWeight: "700", color: colors.foreground, fontVariant: ["tabular-nums"] },
@@ -831,7 +790,6 @@ export default function CalendarScreen() {
     legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
     legendText: { fontSize: 11, color: colors.mutedForeground, fontWeight: "700" },
 
-    // ── Карточки запросов / записей ──
     reqCard: {
       borderRadius: radii.md, borderWidth: 1.5,
       backgroundColor: colors.card, marginBottom: 12, padding: 14, gap: 10,
@@ -857,7 +815,6 @@ export default function CalendarScreen() {
     btnText: { fontSize: 13, fontWeight: "800", color: "#fff" },
     btnTextDanger: { fontSize: 13, fontWeight: "800", color: colors.destructive },
 
-    // Выбор учителя в запросе своего времени.
     teacherRow: {
       flexDirection: "row", alignItems: "center", gap: 10,
       padding: 11, borderRadius: radii.sm, marginBottom: 16,
@@ -866,18 +823,12 @@ export default function CalendarScreen() {
     teacherName: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground },
   });
 
-  /**
-   * Оформление карточки по цвету статуса: рамка, лёгкая заливка и тень.
-   * Вынесено в одно место, чтобы статус везде выглядел одинаково и чтобы
-   * цветную полосу слева нельзя было случайно вернуть.
-   */
   const statusSkin = (color: string, muted = false) => ({
     borderColor: muted ? colors.border : color + "55",
     backgroundColor: muted ? colors.card : color + "0a",
     shadowColor: muted ? accents.violetDeep : color,
   });
 
-  /** Пустое состояние: глиф в градиентной плашке плюс текст. */
   const renderEmpty = (glyph: GlyphName, title: string, text?: string) => (
     <View style={s.emptyBox}>
       <LinearGradient
@@ -893,14 +844,12 @@ export default function CalendarScreen() {
     </View>
   );
 
-  /** Аватар из буквы имени: используется, когда картинки профиля нет. */
   const renderLetterAvatar = (name: string | null | undefined, bg: string | null, size: number) => (
     <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg ?? colors.primary }]}>
       <Text style={[s.avatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
     </View>
   );
 
-  // ── Ближайшее занятие ───────────────────────────────────────────────
   const renderNextLesson = () => {
     if (!nextLesson) return null;
     const who = isTeacherRole
@@ -930,7 +879,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Полоса недели ───────────────────────────────────────────────────
   const renderWeekStrip = () => {
     const today = todayStr();
     const anchor = new Date(selectedDate + "T00:00:00");
@@ -1000,7 +948,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Сводка дня ──────────────────────────────────────────────────────
   const renderDaySummary = () => {
     const chips: { icon: GlyphName; color: string; text: string }[] = [];
     if (selectedMeta.lesson > 0)  chips.push({ icon: "check",  color: DOT_LESSON,  text: `${selectedMeta.lesson} занятие` });
@@ -1021,7 +968,6 @@ export default function CalendarScreen() {
     );
   };
 
-  /** Отсечка текущего момента внутри дня. */
   const renderNowLine = () => {
     const now = new Date();
     const hh = String(now.getHours()).padStart(2, "0");
@@ -1035,7 +981,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // Подсказка «где слоты есть» — чтобы пустой день не был тупиком.
   const renderJumpHints = () => {
     if (nextBusyDates.length === 0) return null;
     return (
@@ -1061,7 +1006,6 @@ export default function CalendarScreen() {
     );
   };
 
-  /** Обёртка строки расписания: колонка времени слева, карточка справа. */
   const renderSlotRow = (startTime: string, endTime: string, card: React.ReactNode, key: React.Key) => (
     <View key={key} style={s.slotRow}>
       <View style={s.slotTimeCol}>
@@ -1072,7 +1016,6 @@ export default function CalendarScreen() {
     </View>
   );
 
-  // ── Слот учителя ────────────────────────────────────────────────────
   const renderTeacherSlotCard = (slot: TeacherSlot, dimmed = false) => {
     const pending = slot.bookings.filter((b) => b.status === "pending");
     const confirmed = slot.bookings.find((b) => b.status === "confirmed");
@@ -1085,8 +1028,6 @@ export default function CalendarScreen() {
         s.card,
         statusSkin(accent, dimmed),
         dimmed && { opacity: 0.5 },
-        // Свободный слот — пунктир без заливки: пустое место должно выглядеть
-        // пустым, а не такой же плотной карточкой, как занятое.
         !dimmed && !isBusy && pending.length === 0 && {
           borderStyle: "dashed", backgroundColor: "transparent",
           shadowOpacity: 0, elevation: 0,
@@ -1122,8 +1063,6 @@ export default function CalendarScreen() {
 
         {!!confirmed?.note && <Text style={s.cardNote}>«{confirmed.note}»</Text>}
 
-        {/* Заявки решаются прямо здесь: раньше ради двух кнопок приходилось
-            уходить на вкладку «Запросы» и терять контекст дня. */}
         {!dimmed && pending.map((b) => (
           <View key={b.id}>
             {!!b.note && <Text style={s.cardNote}>«{b.note}»</Text>}
@@ -1162,7 +1101,6 @@ export default function CalendarScreen() {
     return renderSlotRow(slot.startTime, slot.endTime, card, slot.id);
   };
 
-  // ── Слот ученика ────────────────────────────────────────────────────
   const renderStudentSlotCard = (slot: StudentSlot, dimmed = false) => {
     const meta = STATUS_CFG[slot.status];
     const until = untilLabel(slot.date, slot.startTime, slot.endTime);
@@ -1181,7 +1119,7 @@ export default function CalendarScreen() {
         <View style={s.cardRow}>
           {!isFree && renderLetterAvatar(slot.teacherName, null, 34)}
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={[s.cardWho, isFree && { color: colors.mutedForeground }]} numberOfLines={1}>
+            <Text style={[s.cardWho, isFree && { color: colors.foreground }]} numberOfLines={1}>
               {slot.teacherName ?? "Учитель"}
             </Text>
             <Text style={s.cardMeta}>
@@ -1218,7 +1156,6 @@ export default function CalendarScreen() {
     return renderSlotRow(slot.startTime, slot.endTime, card, slot.id);
   };
 
-  /** День расписания: прошедшие слоты, линия «сейчас», предстоящие. */
   const renderDaySchedule = (
     past: (TeacherSlot | StudentSlot)[],
     active: (TeacherSlot | StudentSlot)[],
@@ -1234,7 +1171,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Учитель: расписание ─────────────────────────────────────────────
   const renderTeacherSchedule = () => {
     const daySlots = slots as TeacherSlot[];
     const active = daySlots.filter((sl) => !isPastSlot(sl.date, sl.endTime));
@@ -1269,7 +1205,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Учитель: запросы ────────────────────────────────────────────────
   const renderTeacherRequests = () => {
     const totalCount = bookings.length + customRequests.length;
     return (
@@ -1331,7 +1266,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Ученик: расписание ──────────────────────────────────────────────
   const renderStudentSchedule = () => {
     const daySlots = slots as StudentSlot[];
     const active = daySlots.filter((sl) => !isPastSlot(sl.date, sl.endTime));
@@ -1360,20 +1294,10 @@ export default function CalendarScreen() {
           renderEmpty("check", "Все занятия завершены", "На этот день больше ничего не запланировано")}
 
         {renderDaySchedule(past, active, (slot, dimmed) => renderStudentSlotCard(slot as StudentSlot, dimmed))}
-
-        <TouchableOpacity
-          style={[s.addBtn, { borderColor: colors.success }]}
-          activeOpacity={0.8}
-          onPress={handleOpenCustomReq}
-        >
-          <Glyph name="clock" size={17} color={colors.success} />
-          <Text style={[s.addBtnText, { color: colors.success }]}>Предложить своё время</Text>
-        </TouchableOpacity>
       </ScrollView>
     );
   };
 
-  // ── Ученик: мои записи ──────────────────────────────────────────────
   const renderStudentBookings = () => {
     const FILTERS: { key: "all"|"pending"|"confirmed"|"rejected"; label: string }[] = [
       { key: "all",      label: "Все"         },
@@ -1515,7 +1439,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Учитель: история ────────────────────────────────────────────────
   const renderTeacherHistory = () => {
     if (historyLoading) {
       return <ActivityIndicator style={{ marginTop: 48 }} color={colors.primary} size="large" />;
@@ -1591,15 +1514,12 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Модалка месяца ──────────────────────────────────────────────────
   const renderMonthModal = () => {
     const year = monthAnchor.getFullYear();
     const month = monthAnchor.getMonth();
     const weeks = buildMonthGrid(year, month);
     const today = todayStr();
     const now = new Date();
-    // Назад не листаем дальше текущего месяца: в прошлом слот всё равно
-    // нельзя ни создать, ни занять (см. isInPast на сервере).
     const canGoBack = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth());
     const shiftMonth = (delta: number) => setMonthAnchor(new Date(year, month + delta, 1));
 
@@ -1694,9 +1614,6 @@ export default function CalendarScreen() {
     );
   };
 
-  // ── Окно «Добавить слот» ────────────────────────────────────────────
-  // Валидность теперь сводится к одному условию: время не в прошлом.
-  // «Конец раньше начала» невозможно — конец считается из длительности.
   const addPast = isPastSlot(selectedDate, addEnd);
   const renderAddSlotModal = () => (
     <Modal visible={showAdd} transparent animationType="slide" onRequestClose={() => setShowAdd(false)}>
@@ -1735,7 +1652,6 @@ export default function CalendarScreen() {
     </Modal>
   );
 
-  // ── Окно «Предложить своё время» ────────────────────────────────────
   const crPast = isPastSlot(selectedDate, crEnd);
   const crBlocked = crPast || !crTeacherId;
   const renderCustomReqModal = () => (
@@ -1749,8 +1665,6 @@ export default function CalendarScreen() {
               <Text style={s.sheetSub}>{formatDateWithDay(selectedDate)}</Text>
             </View>
 
-            {/* Один учитель — просто строка с именем: выбирать не из чего,
-                а раньше здесь всё равно висел ряд чипов. */}
             {crTeachers.length === 0 ? (
               <View style={s.errorBox}>
                 <Glyph name="alert" size={16} color={colors.destructive} />
@@ -1832,7 +1746,6 @@ export default function CalendarScreen() {
     </Modal>
   );
 
-  // ── Окно записи на слот (ученик) ────────────────────────────────────
   const renderBookModal = () => (
     <Modal visible={!!bookSlot} transparent animationType="slide" onRequestClose={() => setBookSlot(null)}>
       <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setBookSlot(null)}>
@@ -1964,7 +1877,6 @@ export default function CalendarScreen() {
         onCancel={() => setDeleteSlotId(null)}
       />
 
-      {/* ── Шапка: дата вместо слова «Календарь» ── */}
       <View style={s.header}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={s.headDate}>
@@ -1974,10 +1886,16 @@ export default function CalendarScreen() {
         </View>
 
         {/* Главное действие роли — сразу в шапке, а не в конце прокрутки. */}
-        {activeTab === "schedule" && (
+        {activeTab === "schedule" && !isTeacherRole && (
+          <Pressable style={s.headPill} onPress={handleOpenCustomReq}>
+            <Glyph name="plus" size={14} color={colors.success} />
+            <Text style={s.headPillText}>Своё время</Text>
+          </Pressable>
+        )}
+        {activeTab === "schedule" && isTeacherRole && (
           <View>
             <View style={[s.headBtnEdge, { backgroundColor: accents.indigoDeep }]} />
-            <Pressable onPress={() => (isTeacherRole ? openAddSlot() : handleOpenCustomReq())}>
+            <Pressable onPress={openAddSlot}>
               <LinearGradient
                 colors={gradients.action as unknown as string[]}
                 start={{ x: 0.1, y: 0 }}
@@ -1985,7 +1903,7 @@ export default function CalendarScreen() {
                 style={s.headBtn}
               >
                 <Glyph name="plus" size={14} color="#fff" />
-                <Text style={s.headBtnText}>{isTeacherRole ? "Слот" : "Своё время"}</Text>
+                <Text style={s.headBtnText}>Слот</Text>
               </LinearGradient>
             </Pressable>
             <View style={{ height: 4 }} />
