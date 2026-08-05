@@ -1,6 +1,23 @@
-import React from "react";
-import { View, Text } from "react-native";
+// ─────────────────────────────────────────────────────────────────────────────
+// Кольца результатов по типам заданий.
+//
+// Каждое кольцо — один тип (тесты, аудирование, чтение, видео, свободный
+// ответ), заполнение — средний балл по нему. Внешнее кольцо у лучшего
+// результата: так порядок читается без легенды.
+//
+// ── Анимация ────────────────────────────────────────────────────────────────
+// Дуги вычерчиваются от нуля при появлении графика и заново — при каждом
+// обновлении данных. Готовая дуга воспринимается как рисунок, растущая — как
+// величина. Анимируется strokeDashoffset (Animated-обёртка над Circle):
+// нативный драйвер SVG-атрибуты не умеет, поэтому здесь всегда JS-анимация.
+// Колец максимум четыре, нагрузки это не создаёт.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import React, { useEffect, useMemo, useRef } from "react";
+import { View, Text, Animated, Easing } from "react-native";
 import Svg, { Circle } from "react-native-svg";
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // count   — проверенные сдачи (по ним считается avgScore)
 // pending — сданные и ждущие проверки учителя (у free_form это норма)
@@ -33,6 +50,69 @@ const STROKE = 9;
 const GAP = 10;
 const BASE_RADIUS = 44;
 
+/** Вычерчивание дуги. Внешнее кольцо стартует первым. */
+const DRAW_MS = 900;
+const DRAW_STEP_MS = 110;
+
+/**
+ * Одно кольцо: серая канавка и дуга, которая вычерчивается от нуля.
+ *
+ * Точка на конце дуги едет вместе с ней: если поставить её сразу на конечный
+ * угол, она будет висеть в пустоте, пока линия догоняет.
+ */
+function Ring({
+  radius, color, percent, track, delay, run,
+}: {
+  radius: number;
+  color: string;
+  percent: number;
+  track: string;
+  delay: number;
+  run: number;
+}) {
+  const progress = useRef(new Animated.Value(0)).current;
+  const circumference = 2 * Math.PI * radius;
+  const target = (Math.max(0, Math.min(100, percent)) / 100) * circumference;
+
+  useEffect(() => {
+    progress.setValue(0);
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: DRAW_MS,
+      delay,
+      easing: Easing.out(Easing.cubic),
+      // SVG-атрибуты нативным драйвером не анимируются.
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [run, target, delay, progress]);
+
+  const offset = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [circumference, circumference - target],
+  });
+
+  return (
+    <>
+      <Circle
+        cx={CENTER} cy={CENTER} r={radius}
+        stroke={track} strokeWidth={STROKE} fill="none"
+      />
+      {percent > 0 && (
+        <AnimatedCircle
+          cx={CENTER} cy={CENTER} r={radius}
+          stroke={color} strokeWidth={STROKE} fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${circumference}`}
+          strokeDashoffset={offset as unknown as number}
+          transform={`rotate(-90 ${CENTER} ${CENTER})`}
+        />
+      )}
+    </>
+  );
+}
+
 export function AssignmentRingsChart({
   stats, colors,
 }: {
@@ -50,6 +130,22 @@ export function AssignmentRingsChart({
   // Кольца рисуем только для проверенных: у работы на проверке процента нет.
   const withRings = withData.filter((s) => s.count > 0);
 
+  /**
+   * Ключ перезапуска анимации. Меняется, когда меняются сами данные, поэтому
+   * график перечерчивается после каждого обновления статистики и всегда
+   * показывает актуальные цифры.
+   */
+  const run = useMemo(
+    () => withRings.map((s) => `${s.type}:${s.avgScore ?? 0}:${s.count}`).join("|"),
+    [withRings],
+  );
+  const runId = useRef(0);
+  const lastRun = useRef(run);
+  if (lastRun.current !== run) {
+    lastRun.current = run;
+    runId.current += 1;
+  }
+
   if (withData.length === 0) {
     return (
       <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 20, gap: 8 }}>
@@ -65,44 +161,17 @@ export function AssignmentRingsChart({
     <View style={{ alignItems: "center", gap: 12 }}>
       {withRings.length > 0 && (
         <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          {withRings.map((stat, i) => {
-            const r = BASE_RADIUS - i * GAP;
-            const color = RING_COLORS[stat.type] ?? colors.primary;
-            const pct = Math.max(0, Math.min(100, stat.avgScore ?? 0));
-            const circumference = 2 * Math.PI * r;
-            const dash = (pct / 100) * circumference;
-            const dotAngle = (pct / 100) * 2 * Math.PI - Math.PI / 2;
-            const dotX = CENTER + r * Math.cos(dotAngle);
-            const dotY = CENTER + r * Math.sin(dotAngle);
-            return (
-              <React.Fragment key={stat.type}>
-                <Circle
-                  cx={CENTER}
-                  cy={CENTER}
-                  r={r}
-                  stroke={colors.muted}
-                  strokeWidth={STROKE}
-                  fill="none"
-                />
-                {pct > 0 && (
-                  <Circle
-                    cx={CENTER}
-                    cy={CENTER}
-                    r={r}
-                    stroke={color}
-                    strokeWidth={STROKE}
-                    strokeLinecap="round"
-                    strokeDasharray={`${dash} ${circumference - dash}`}
-                    fill="none"
-                    transform={`rotate(-90 ${CENTER} ${CENTER})`}
-                  />
-                )}
-                {pct > 0 && (
-                  <Circle cx={dotX} cy={dotY} r={4.5} fill={color} />
-                )}
-              </React.Fragment>
-            );
-          })}
+          {withRings.map((stat, i) => (
+            <Ring
+              key={stat.type}
+              radius={BASE_RADIUS - i * GAP}
+              color={RING_COLORS[stat.type] ?? colors.primary}
+              percent={stat.avgScore ?? 0}
+              track={colors.muted}
+              delay={i * DRAW_STEP_MS}
+              run={runId.current}
+            />
+          ))}
         </Svg>
       )}
 
