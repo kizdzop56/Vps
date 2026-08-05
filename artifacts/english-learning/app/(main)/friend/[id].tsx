@@ -26,11 +26,20 @@
 //   поломанным, а строка «у родителя нет заданий и наград» рассказывала о том,
 //   чего на экране и так нет.
 //
-// ── СМОТРИМ, НО НЕ ТРОГАЕМ ──────────────────────────────────────────────────
-// Плитки «Задания» и «Время» в профиле ученика объёмные, но НЕ нажимаются:
-// canOpen={false}. Разбор по типам работ и статистика времени по дням —
-// личные данные. Грань при этом остаётся: объём здесь про материал, а не про
-// действие. Проседания при нажатии нет — оно обещало бы, что что-то откроется.
+// ── КТО МОЖЕТ ОТКРЫТЬ РАЗБОР ────────────────────────────────────────────────
+// Плитки «Задания» и «Время» объёмные всегда, но открываются только у тех, кому
+// эти данные и предназначены: у СВЯЗАННОГО учителя и родителя этого ученика
+// (плюс сам ученик и админ). Право спрашивается у сервера:
+// GET /students/:id/access → { canView } — та же проверка, что охраняет сами
+// данные (api-server/src/lib/studentAccess.ts).
+//
+// Почему у сервера, а не по роли на клиенте: «учитель» и «родитель» — это не
+// пропуск ко всем детям приложения. Иначе чужой родитель открывал бы результаты
+// чужого ребёнка, а учитель — учеников, которых у него нет. Друзьям разбор тоже
+// не положен: друзья видят очки и медали, это витрина, а не дневник.
+//
+// Смотреть можно, менять нельзя: ни одна кнопка внутри разбора ничего не
+// сохраняет, это только чтение.
 //
 // ── НИЖНИЙ ОТСТУП ───────────────────────────────────────────────────────────
 // Панель вкладок плавающая: она лежит ПОВЕРХ содержимого, а не занимает место
@@ -99,10 +108,10 @@ const ROLE_LABELS: Record<string, string> = {
 
 // Периоды «Успеваемости» — тот же набор и те же подписи, что на своём профиле.
 type StatsPeriod = "week" | "month" | "all";
-const PERIODS: { key: StatsPeriod; label: string }[] = [
-  { key: "week", label: "Неделя" },
-  { key: "month", label: "Месяц" },
-  { key: "all", label: "Всё время" },
+const PERIODS: { key: StatsPeriod; label: string; days: number | null }[] = [
+  { key: "week", label: "Неделя", days: 7 },
+  { key: "month", label: "Месяц", days: 30 },
+  { key: "all", label: "Всё время", days: null },
 ];
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
@@ -263,6 +272,19 @@ export default function FriendProfileScreen() {
   const [interests, setInterests] = useState<string[]>([]);
   const [gameStats, setGameStats] = useState<StudentProfileStats | null>(null);
   const [period, setPeriod] = useState<StatsPeriod>("all");
+  /**
+   * Право на учебные данные этого ученика: связанный учитель, его родитель,
+   * сам ученик или админ. Решает сервер (GET /students/:id/access) — по роли
+   * на клиенте это решать нельзя, «родитель» не значит «родитель ЭТОГО
+   * ребёнка».
+   */
+  const [canView, setCanView] = useState(false);
+  /**
+   * Работы ученика. Загружаются только при наличии права: без них разбор
+   * заданий считает средний балл из сводки по типам, с ними показывает ещё
+   * «Как решаешь» и «Последние работы».
+   */
+  const [submissions, setSubmissions] = useState<any[]>([]);
   // Растёт, когда пришли данные: кольца и шкалы вычерчиваются от нуля, а не
   // появляются готовыми.
   const [replay, setReplay] = useState(0);
@@ -329,6 +351,33 @@ export default function FriendProfileScreen() {
     }
   }, [friendId]);
 
+  /**
+   * Право на разбор и, если оно есть, сами работы.
+   *
+   * Два запроса подряд, а не один: работы весят заметно больше, и тянуть их
+   * тому, кто всё равно не увидит кнопку, незачем.
+   */
+  const loadAccess = useCallback(async () => {
+    if (!friendId) return;
+    try {
+      const data = await apiFetch(`/api/students/${friendId}/access`);
+      const allowed = !!data?.canView;
+      setCanView(allowed);
+      if (!allowed) { setSubmissions([]); return; }
+      try {
+        const rows = await apiFetch(`/api/students/${friendId}/submissions`);
+        setSubmissions(Array.isArray(rows) ? rows : []);
+      } catch {
+        setSubmissions([]);
+      }
+    } catch {
+      // Старый сервер без эндпоинта — считаем, что доступа нет: лучше не
+      // показать кнопку, чем показать неработающую.
+      setCanView(false);
+      setSubmissions([]);
+    }
+  }, [friendId]);
+
   // Слова, серия, срезы успеваемости и условия наград. Без этого запроса
   // профиль всё равно откроется — просто вместо «слов выучено / дней подряд»
   // в шапке останутся очки и задания.
@@ -381,12 +430,13 @@ export default function FriendProfileScreen() {
     loadCategoryStats();
     loadInterests();
     loadGameStats();
+    loadAccess();
     // Poll online status every 30s so it stays up-to-date
     onlinePollerRef.current = setInterval(pollOnlineStatus, 30_000);
     return () => {
       if (onlinePollerRef.current) clearInterval(onlinePollerRef.current);
     };
-  }, [loadProfile, loadFriendStatus, loadCategoryStats, loadInterests, loadGameStats, pollOnlineStatus]);
+  }, [loadProfile, loadFriendStatus, loadCategoryStats, loadInterests, loadGameStats, loadAccess, pollOnlineStatus]);
 
   const handleSendRequest = async () => {
     setActionLoading(true);
@@ -505,6 +555,43 @@ export default function FriendProfileScreen() {
   // общий средний балл из профиля, как было раньше.
   const activePeriod = gameStats?.periodStats?.[period] ?? null;
   const shownAverage = activePeriod ? activePeriod.average : (profile.averageScore ?? null);
+
+  /**
+   * Динамика и последние оценки для карточки балла. Считаются из работ, а они
+   * есть только у того, кому разбор разрешён: у остальных карточка остаётся
+   * одним числом, как раньше.
+   */
+  const scoreExtras = (() => {
+    if (!canView || submissions.length === 0) return { previous: null, recent: [] as number[] };
+
+    const days = PERIODS.find((p) => p.key === period)?.days ?? null;
+    const withTime = submissions
+      .map((r: any) => ({ score: r.score as number | null, at: new Date(r.submittedAt).getTime() }))
+      .filter((r) => typeof r.score === "number" && Number.isFinite(r.at))
+      .sort((a, b) => a.at - b.at);
+
+    const avg = (list: { score: number | null }[]) =>
+      list.length === 0
+        ? null
+        : Math.round(list.reduce((sum, r) => sum + (r.score ?? 0), 0) / list.length);
+
+    if (days === null) {
+      // «Всё время»: сравниваем первую половину истории со второй.
+      const half = Math.floor(withTime.length / 2);
+      return {
+        previous: withTime.length >= 4 ? avg(withTime.slice(0, half)) : null,
+        recent: withTime.slice(-8).map((r) => r.score as number),
+      };
+    }
+
+    const now = Date.now();
+    const from = now - days * 86400000;
+    const prevFrom = from - days * 86400000;
+    return {
+      previous: avg(withTime.filter((r) => r.at >= prevFrom && r.at < from)),
+      recent: withTime.filter((r) => r.at >= from).slice(-8).map((r) => r.score as number),
+    };
+  })();
 
   // ── Профиль родителя ──
   //
@@ -729,12 +816,13 @@ export default function FriendProfileScreen() {
         />
 
         {/* ── Успеваемость: та же карточка, что на своём профиле ──
-            Заголовок «Успеваемость», переключатель периода и кольцо живут
-            внутри ScoreCard. Приписки «N работ · +N очков» там больше нет:
-            цифра одна, и она главная. */}
+            Динамика и столбики появляются только у того, кому доступны работы:
+            остальным остаётся один средний балл. */}
         <View style={s.section}>
           <ScoreCard
             average={shownAverage ?? null}
+            previousAverage={scoreExtras.previous}
+            recentScores={scoreExtras.recent}
             periods={PERIODS}
             period={period}
             onPeriodChange={setPeriod}
@@ -742,22 +830,24 @@ export default function FriendProfileScreen() {
           />
         </View>
 
-        {/* ── Задания и время: те же две плитки, что на своём профиле, но без
-            нажатия. Грань и объём остаются, разбор не открывается: это чужие
-            личные данные. */}
+        {/* ── Задания и время ──
+            Разбор открывается связанному учителю и родителю: им эти цифры и
+            нужны, чтобы следить за учеником. Остальным плитки объёмные, но не
+            нажимаются: чужой дневник не для случайных зрителей. */}
         <View style={s.section}>
           <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
             <AssignmentsCard
               stats={categoryStats}
+              submissions={canView ? submissions : []}
               replay={replay}
               title="Задания"
-              canOpen={false}
+              canOpen={canView}
             />
             <StudyTimeCard
               studentId={friendId}
               totalMinutes={gameStats?.totalTimeMinutes ?? profile.totalTimeMinutes ?? 0}
               todaySeconds={(gameStats?.todayMinutes ?? 0) * 60}
-              canOpen={false}
+              canOpen={canView}
             />
           </View>
         </View>
