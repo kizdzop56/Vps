@@ -1,5 +1,5 @@
 // Экран «Профиль»: шапка-герой со счётчиками и полосой опыта, описание,
-// задачи дня, успеваемость, витрина наград и друзья.
+// цель дня, успеваемость, витрина наград и друзья.
 //
 // Эмодзи интерфейса не используются — значки рисует собственный набор
 // (components/ui/Glyph.tsx). ИСКЛЮЧЕНИЕ: аватар-эмодзи. Его выбирает сам
@@ -10,20 +10,22 @@
 //
 // Что переделано после обратной связи:
 //  • Справа от аватара была пустая область примерно в треть шапки: имя, ник и
-//    одна пилюля её не заполняли. Туда переехали три счётчика — очки, серия
-//    дней, выполненные задания. Раньше они жили внизу экрана в блоке «Всего за
-//    время учёбы», куда надо было прокручивать; сам блок убран, чтобы одни и
-//    те же цифры не стояли на экране дважды. Число наград не потерялось: оно
-//    и так есть в шапке витрины наград.
+//    одна пилюля её не заполняли. Туда переехали три счётчика — выученные
+//    слова, серия дней, выполненные задания. Раньше они жили внизу экрана в
+//    блоке «Всего за время учёбы», куда надо было прокручивать; сам блок убран,
+//    чтобы одни и те же цифры не стояли на экране дважды.
+//  • Первым счётчиком были «очки», но это то же число, что на полосе опыта
+//    строкой ниже (очки и XP в проекте одно и то же). Вместо него — выученные
+//    слова: единственный показатель собственно знания языка.
 //  • Цель дня была одна — «время в приложении». Её закрывает открытая вкладка,
-//    то есть цель ничего не требовала. Теперь это цель по времени в шапке
-//    карточки плюс чек-лист из 2–4 задач разного плана (см. utils/dailyQuests.ts
-//    и components/DailyQuests.tsx).
+//    то есть цель ничего не требовала. Теперь это цель по времени плюс 2–4
+//    УЧЕБНЫЕ задачи (см. utils/dailyQuests.ts и components/DailyQuests.tsx).
+//  • Цель дня стоит ПОД блоком «О себе»: сверху — кто этот ученик, ниже — что
+//    ему делать сегодня. Раньше карточка вклинивалась между шапкой и рассказом
+//    о себе и разрывала знакомство с профилем пополам.
 //  • Заголовок «ЦЕЛЬ ДНЯ» стоял и над карточкой, и внутри неё. Остался один —
 //    его рисует сама карточка, поэтому здесь своего заголовка нет.
 //
-// Порядок блоков собран по частоте обращения: сначала «что сделать сегодня»
-// (задачи дня), потом «как я учусь» (успеваемость), затем награды и друзья.
 // Блока «Действия» у ученика нет — он состоял из одной метки без содержимого.
 //
 // Наклоны убраны по всему экрану, как на остальных вкладках.
@@ -976,22 +978,26 @@ export default function ProfileScreen() {
   useEffect(() => { loadCategoryStats(); }, [loadCategoryStats, completedCount]);
 
   /**
-   * Прогресс по словам за сегодня. Нужен задаче дня «повторить слова»:
-   * счётчики в /gamification/stats про слова ничего не знают, они живут в
-   * журнале повторений (см. GET /flashcards/stats → wordsToday).
+   * Статистика по словам. Нужна в двух местах:
+   *   • totalLearned — счётчик «слов выучено» в шапке профиля;
+   *   • wordsToday / learnedToday — прогресс учебных задач дня.
+   * В /gamification/stats этих чисел нет: они живут в журнале повторений
+   * (см. GET /flashcards/stats).
    */
-  const [wordStats, setWordStats] = useState<{ wordsToday: number; dailyWordGoal: number }>({
-    wordsToday: 0, dailyWordGoal: 10,
+  const [wordStats, setWordStats] = useState({
+    totalLearned: 0, wordsToday: 0, learnedToday: 0, dailyWordGoal: 10,
   });
   const loadWordStats = useCallback(async () => {
     if (!isStudent) return;
     try {
       const data = await apiFetch("/api/flashcards/stats");
       setWordStats({
+        totalLearned: Number(data?.totalLearned) || 0,
         wordsToday: Number(data?.wordsToday) || 0,
+        learnedToday: Number(data?.learnedToday) || 0,
         dailyWordGoal: Number(data?.dailyWordGoal) || 10,
       });
-    } catch { /* цель по словам просто не покажет прогресс */ }
+    } catch { /* задачи по словам просто не покажут прогресс */ }
   }, [isStudent]);
 
   // ── Load gamification stats & claim daily login on focus ──────────
@@ -1063,10 +1069,10 @@ export default function ProfileScreen() {
   const locked = React.useMemo(() => getLockedAchievements(achievementStats), [achievementStats]);
 
   /**
-   * План на день: цель по времени и 2–4 задачи. Собирается из уже загруженных
-   * счётчиков, поэтому новых запросов не добавляет. Пересчитывается только при
-   * смене самих счётчиков — иначе список перетасовывался бы на каждый тик
-   * таймера.
+   * План на день: цель по времени и 2–4 учебные задачи. Собирается из уже
+   * загруженных счётчиков, поэтому новых запросов не добавляет.
+   * Пересчитывается только при смене самих счётчиков — иначе список
+   * перетасовывался бы на каждый тик таймера.
    */
   const dailyPlan = React.useMemo(() => {
     if (!gamStats) return null;
@@ -1076,6 +1082,7 @@ export default function ProfileScreen() {
       todayCompletions: gamStats.todayCompletions ?? 0,
       todayVoiceSessions: gamStats.todayVoiceSessions ?? 0,
       wordsToday: wordStats.wordsToday,
+      learnedToday: wordStats.learnedToday,
       dailyWordGoal: wordStats.dailyWordGoal,
     });
   }, [gamStats, wordStats]);
@@ -1420,10 +1427,11 @@ export default function ProfileScreen() {
             ? { number: xpProgress.current.level, title: xpProgress.current.title }
             : null}
           // Счётчики закрывают пустоту справа от аватара и заменяют собой
-          // прежний блок «Всего за время учёбы» внизу экрана.
+          // прежний блок «Всего за время учёбы» внизу экрана. Очков здесь нет
+          // намеренно: то же число стоит на полосе опыта строкой ниже.
           stats={isStudent && gamStats
             ? {
-                points: gamStats.totalPoints,
+                wordsLearned: wordStats.totalLearned,
                 streak: gamStats.loginStreak,
                 assignments: gamStats.completedAssignments,
               }
@@ -1486,20 +1494,9 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/* ── Цель дня ──
-            Стоит первой: это единственный блок, на который ученик может
-            повлиять прямо сейчас. Заголовок секции рисует сама карточка. */}
-        {isStudent && dailyPlan && (
-          <View style={s.section}>
-            <DailyQuests
-              plan={dailyPlan}
-              goalMinutes={gamStats?.dailyGoalMinutes ?? 15}
-              onGoalChange={updateDailyGoal}
-            />
-          </View>
-        )}
-
-        {/* ── Описание (bio) ── */}
+        {/* ── Описание (bio) ──
+            Стоит сразу под шапкой: сверху знакомство с человеком, и только
+            потом дела на сегодня. */}
         <View style={s.bioBox}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <SectionLabel style={{ marginBottom: 0 }}>О себе</SectionLabel>
@@ -1536,6 +1533,19 @@ export default function ProfileScreen() {
             </Text>
           )}
         </View>
+
+        {/* ── Цель дня ──
+            Идёт сразу после «О себе»: это первый блок, на который ученик может
+            повлиять прямо сейчас. Заголовок секции рисует сама карточка. */}
+        {isStudent && dailyPlan && (
+          <View style={s.section}>
+            <DailyQuests
+              plan={dailyPlan}
+              goalMinutes={gamStats?.dailyGoalMinutes ?? 15}
+              onGoalChange={updateDailyGoal}
+            />
+          </View>
+        )}
 
         {/* ── Ученик: успеваемость, задания, награды, друзья ── */}
         {isStudent && (
