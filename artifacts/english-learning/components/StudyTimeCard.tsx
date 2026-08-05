@@ -24,6 +24,12 @@
 // подсчёта времени нетривиальные (брошенная сессия засчитывается только по
 // подтверждённому heartbeat), и на клиенте они бы разошлись с профилем.
 //
+// Столбики недели вырастают от нуля при открытии: высота читается как
+// величина, а не как готовая картинка.
+//
+// Закрытие — только крестик и тап по фону. Кнопка «Закрыть» во всю ширину
+// перекрывала последнюю строку разбора и повторяла крестик.
+//
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
 //    («Cannot set indexed properties on this object»). Разные кегли в одной
@@ -31,6 +37,8 @@
 // 2. НЕ ставить useNativeDriver: true без проверки платформы. В вебе нативного
 //    драйвера нет, анимация идёт на requestAnimationFrame, а свёрнутая вкладка
 //    его останавливает — и цикл сам уже не оживает (см. AnalogClock).
+// 3. Высоту и ширину нативный драйвер не анимирует ни на одной платформе:
+//    у столбиков всегда useNativeDriver: false.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -48,6 +56,10 @@ import { accents, radii, timing } from "@/constants/theme";
 
 /** В вебе нативного драйвера нет: там анимации всегда идут на JS. */
 const NATIVE_DRIVER = Platform.OS !== "web";
+
+/** Рост столбиков при открытии окна. */
+const FILL_MS = 700;
+const FILL_STEP_MS = 55;
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -305,6 +317,8 @@ export function StudyTimeCard({
   const [summary, setSummary] = useState<TimeSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Растёт при каждом открытии: по нему столбики стартуют заново.
+  const [run, setRun] = useState(0);
   const press = useRef(new Animated.Value(0)).current;
 
   const setPress = (to: number) =>
@@ -327,6 +341,7 @@ export function StudyTimeCard({
   }, [studentId]);
 
   const openSheet = () => {
+    setRun((n) => n + 1);
     setOpen(true);
     load();
   };
@@ -391,8 +406,18 @@ export function StudyTimeCard({
 
             <View style={s.sheetHead}>
               <Text style={[s.sheetTitle, { color: colors.foreground }]}>Время в приложении</Text>
-              <Pressable onPress={() => setOpen(false)} hitSlop={10} style={{ paddingTop: 2 }}>
-                <Glyph name="close" size={20} color={colors.mutedForeground} />
+              {/* Единственная кнопка закрытия: полосы во всю ширину внизу больше
+                  нет, поэтому крестик крупный и с подложкой. */}
+              <Pressable
+                onPress={() => setOpen(false)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Закрыть"
+                style={({ pressed }) => [
+                  s.close, { backgroundColor: colors.muted }, pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Glyph name="close" size={18} color={colors.mutedForeground} />
               </Pressable>
             </View>
 
@@ -410,16 +435,10 @@ export function StudyTimeCard({
               </View>
             ) : summary ? (
               <ScrollView showsVerticalScrollIndicator={false}>
-                <SummaryBody summary={summary} colors={colors} />
+                <SummaryBody summary={summary} colors={colors} run={run} />
+                <View style={{ height: 12 }} />
               </ScrollView>
             ) : null}
-
-            <ChunkyButton
-              label="Закрыть"
-              icon="check"
-              onPress={() => setOpen(false)}
-              style={{ marginTop: 14 }}
-            />
           </Pressable>
         </Pressable>
       </Modal>
@@ -429,7 +448,46 @@ export function StudyTimeCard({
 
 // ── Содержимое разбора ──────────────────────────────────────────────────────
 
-function SummaryBody({ summary, colors }: { summary: TimeSummary; colors: any }) {
+/**
+ * Столбик дня, вырастающий от нуля.
+ *
+ * `run` меняется при каждом открытии окна, поэтому анимация играет заново, а не
+ * остаётся доигранной с прошлого раза.
+ */
+function GrowBar({
+  height, color, delay, run,
+}: {
+  height: number;
+  color: string;
+  delay: number;
+  run: number;
+}) {
+  const value = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    value.setValue(0);
+    const anim = Animated.timing(value, {
+      toValue: height,
+      duration: FILL_MS,
+      delay,
+      easing: Easing.out(Easing.cubic),
+      // Высоту нативный драйвер не анимирует ни на одной платформе.
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [run, height, delay, value]);
+
+  return <Animated.View style={[s.bar, { height: value, backgroundColor: color }]} />;
+}
+
+function SummaryBody({
+  summary, colors, run,
+}: {
+  summary: TimeSummary;
+  colors: any;
+  run: number;
+}) {
   const diff = summary.todayMinutes - summary.yesterdayMinutes;
   const week = summary.daily.slice(-7);
   const max = Math.max(1, ...week.map((d) => d.minutes));
@@ -511,7 +569,7 @@ function SummaryBody({ summary, colors }: { summary: TimeSummary; colors: any })
       <View>
         <Text style={[s.blockLabel, { color: colors.mutedForeground }]}>Последние 7 дней</Text>
         <View style={s.chart}>
-          {week.map((d) => {
+          {week.map((d, i) => {
             const isToday = d.date === todayKey;
             const h = d.minutes < 1 ? 3 : Math.max(6, Math.round((d.minutes / max) * 84));
             return (
@@ -520,16 +578,13 @@ function SummaryBody({ summary, colors }: { summary: TimeSummary; colors: any })
                   {d.minutes < 1 ? "" : formatShort(d.minutes)}
                 </Text>
                 <View style={[s.barTrack, { backgroundColor: colors.muted }]}>
-                  <View
-                    style={[
-                      s.bar,
-                      {
-                        height: h,
-                        backgroundColor: d.minutes < 1
-                          ? colors.border
-                          : isToday ? accents.gold : colors.primary,
-                      },
-                    ]}
+                  <GrowBar
+                    height={h}
+                    delay={i * FILL_STEP_MS}
+                    run={run}
+                    color={d.minutes < 1
+                      ? colors.border
+                      : isToday ? accents.gold : colors.primary}
                   />
                 </View>
                 <Text style={[s.barDay, { color: isToday ? colors.primary : colors.mutedForeground }]}>
@@ -602,11 +657,15 @@ const s = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
   sheet: {
     borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
-    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 28, maxHeight: "88%",
+    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 24, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
   sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
   sheetTitle: { flex: 1, fontSize: 19, fontWeight: "900", letterSpacing: -0.4 },
+  close: {
+    width: 36, height: 36, borderRadius: 13,
+    alignItems: "center", justifyContent: "center",
+  },
 
   hero: { borderRadius: radii.md, borderWidth: 1, padding: 16, alignItems: "flex-start" },
   heroLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.2, textTransform: "uppercase" },
