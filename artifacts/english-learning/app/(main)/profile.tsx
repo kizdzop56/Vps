@@ -10,16 +10,17 @@
 //                      профилем app/(main)/friend/[id].tsx;
 //   AboutCard        — «О себе» + интересы (components/AboutCard.tsx);
 //   DailyQuests      — цель дня (components/DailyQuests.tsx);
+//   ScoreCard        — средний балл с переключателем периода
+//                      (components/ScoreCard.tsx);
 //   AssignmentsCard  — плитка заданий с разбором результатов
 //                      (components/AssignmentsCard.tsx);
 //   StudyTimeCard    — плитка времени с живыми часами и разбором по дням
-//                      (components/StudyTimeCard.tsx). Форматирование времени
-//                      живёт там же: этому экрану оно больше не нужно.
+//                      (components/StudyTimeCard.tsx).
 //
-// Плитки «Мои задания» и «Время» стоят парой и устроены одинаково: нижняя
-// грань, проседание при нажатии, разбор по тапу. Разной физики у соседних
-// блоков быть не должно — одна плоская рядом с объёмной читается как
-// недоделанная.
+// Все карточки статистики устроены одинаково: нижняя грань и графики, которые
+// вырастают от нуля при появлении. Плоских карточек рядом с объёмными на этом
+// экране быть не должно — одна такая сразу читается как недоделанная.
+// Проседает при нажатии только то, что реально открывается: задания и время.
 //
 // Все кнопки экрана — ChunkyButton из GameKit, включая выход из аккаунта
 // (тон danger).
@@ -38,7 +39,6 @@ import {
   Platform, AppState, TextInput, Modal, FlatList, ActivityIndicator,
   Clipboard, Alert, KeyboardAvoidingView,
 } from "react-native";
-import Svg, { Circle } from "react-native-svg";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
@@ -56,6 +56,7 @@ import { MascotModal, getMascotMessage } from "@/components/Mascot";
 import { AchievementToast } from "@/components/AchievementToast";
 import { DailyQuests } from "@/components/DailyQuests";
 import { AboutCard } from "@/components/AboutCard";
+import { ScoreCard } from "@/components/ScoreCard";
 import { StudyTimeCard } from "@/components/StudyTimeCard";
 import { AssignmentsCard } from "@/components/AssignmentsCard";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
@@ -177,31 +178,6 @@ function useLiveTimer() {
   }, [syncFromStorage, startTicking, stopTicking]);
 
   return seconds;
-}
-
-function ScoreRing({ score, color, size = 64 }: { score: number | null; color: string; size?: number }) {
-  const stroke = 8;
-  const r = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(100, score ?? 0));
-  return (
-    <Svg width={size} height={size}>
-      <Circle
-        cx={size / 2} cy={size / 2} r={r}
-        stroke="rgba(99,102,241,0.16)" strokeWidth={stroke} fill="none"
-      />
-      {score !== null && (
-        <Circle
-          cx={size / 2} cy={size / 2} r={r}
-          stroke={color} strokeWidth={stroke} fill="none"
-          strokeLinecap="round"
-          strokeDasharray={`${circumference}`}
-          strokeDashoffset={circumference * (1 - pct / 100)}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-      )}
-    </Svg>
-  );
 }
 
 function AvatarPickerModal({
@@ -945,22 +921,23 @@ export default function ProfileScreen() {
     [gamStats?.todayMinutes, todaySeconds],
   );
 
-  const periodStats = React.useMemo(() => {
-    const rows: any[] = submissionRows;
+  /**
+   * Средний балл за выбранный период. Числа работ и очков здесь больше не
+   * считаются: карточка показывает только балл, а подробности — в разборе
+   * заданий.
+   */
+  const periodAverage = React.useMemo(() => {
     const days = PERIODS.find((p) => p.key === period)?.days ?? null;
     const cutoff = days === null ? 0 : Date.now() - days * 86400000;
     const inPeriod = days === null
-      ? rows
-      : rows.filter((r) => {
+      ? submissionRows
+      : submissionRows.filter((r) => {
           const t = new Date(r.submittedAt).getTime();
           return Number.isFinite(t) && t >= cutoff;
         });
     const scored = inPeriod.filter((r) => typeof r.score === "number");
-    const average = scored.length > 0
-      ? Math.round(scored.reduce((sum, r) => sum + r.score, 0) / scored.length)
-      : null;
-    const points = inPeriod.reduce((sum, r) => sum + (r.pointsEarned ?? 0), 0);
-    return { count: inPeriod.length, average, points };
+    if (scored.length === 0) return null;
+    return Math.round(scored.reduce((sum, r) => sum + r.score, 0) / scored.length);
   }, [submissions, period]);
 
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
@@ -1255,44 +1232,11 @@ export default function ProfileScreen() {
 
   if (!user) return null;
 
-  const scoreTint = periodStats.average === null
-    ? colors.mutedForeground
-    : periodStats.average >= 70 ? colors.success
-      : periodStats.average >= 50 ? accents.amber
-        : colors.destructive;
-
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { paddingBottom: insets.bottom + 100 },
 
     section: { paddingHorizontal: 20, marginBottom: 16 },
-
-    seg: {
-      flexDirection: "row", backgroundColor: colors.muted,
-      borderRadius: radii.sm + 2, padding: 3, marginBottom: 12,
-    },
-    segBtn: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
-    segBtnActive: {
-      backgroundColor: colors.card,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
-    },
-    segText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
-    segTextActive: { color: colors.foreground, fontWeight: "800" },
-
-    scoreCard: {
-      flexDirection: "row", alignItems: "center", gap: 14,
-      backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
-      borderWidth: 1, borderColor: colors.border, marginBottom: 10,
-      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
-    },
-    scoreLabel: {
-      fontSize: 11, fontWeight: "800", letterSpacing: 0.8, textTransform: "uppercase",
-      color: colors.mutedForeground,
-    },
-    scoreValue: { fontSize: 30, fontWeight: "900", letterSpacing: -1.2, marginTop: 3, fontVariant: ["tabular-nums"] },
-    scoreHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 3 },
 
     row: {
       flexDirection: "row", alignItems: "center", gap: 14,
@@ -1477,37 +1421,13 @@ export default function ProfileScreen() {
 
         {isStudent && (
           <>
-            <View style={s.section}>
-              <SectionLabel>Успеваемость</SectionLabel>
-
-              <View style={s.seg}>
-                {PERIODS.map((p) => (
-                  <TouchableOpacity
-                    key={p.key}
-                    style={[s.segBtn, period === p.key && s.segBtnActive]}
-                    onPress={() => setPeriod(p.key)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[s.segText, period === p.key && s.segTextActive]}>{p.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <View style={s.scoreCard}>
-                <ScoreRing score={periodStats.average} color={scoreTint} />
-                <View style={{ flex: 1 }}>
-                  <Text style={s.scoreLabel}>Средний балл</Text>
-                  <Text style={[s.scoreValue, { color: scoreTint }]}>
-                    {periodStats.average === null ? "—" : `${periodStats.average}%`}
-                  </Text>
-                  <Text style={s.scoreHint}>
-                    {periodStats.count === 0
-                      ? "За этот период работ нет"
-                      : `${periodStats.count} ${plural(periodStats.count, ["работа", "работы", "работ"])} · +${periodStats.points} очков`}
-                  </Text>
-                </View>
-              </View>
-            </View>
+            <ScoreCard
+              average={periodAverage}
+              periods={PERIODS}
+              period={period}
+              onPeriodChange={setPeriod}
+              style={s.section}
+            />
 
             {/* Пара плиток: задания и время. Обе объёмные и обе открывают
                 разбор — разной физики у соседей быть не должно. */}
