@@ -30,6 +30,8 @@ export interface GamificationStats {
   dailyGoalMinutes: number;
   /** Выбранная цель, которая вступит в силу завтра. */
   nextDailyGoalMinutes: number;
+  /** Награда за сегодняшний день уже получена. */
+  dailyGoalClaimedToday: boolean;
   loginStreak: number;
   lastLoginDate: string | null;
   todayMinutes: number;
@@ -54,6 +56,20 @@ export interface DailyLoginResult {
   leveledUp?: boolean;
 }
 
+/** Ответ POST /gamification/daily-goal/claim. */
+export interface DailyGoalClaimResult {
+  alreadyClaimed: boolean;
+  /** Сколько очков реально начислено. 0 — день ещё не закрыт. */
+  awarded: number;
+  /** Сколько положено за полностью закрытый день. */
+  reward?: number;
+  /** Что осталось сделать, по мнению СЕРВЕРА. */
+  pending?: { kind: string; current: number; target: number }[];
+  totalPoints: number;
+  xpLevel: number;
+  leveledUp?: boolean;
+}
+
 export function useGamification() {
   const [stats, setStats] = useState<GamificationStats | null>(null);
   const [dailyLoginResult, setDailyLoginResult] = useState<DailyLoginResult | null>(null);
@@ -70,6 +86,7 @@ export function useGamification() {
       const data: GamificationStats = {
         ...raw,
         nextDailyGoalMinutes: raw.nextDailyGoalMinutes ?? raw.dailyGoalMinutes,
+        dailyGoalClaimedToday: raw.dailyGoalClaimedToday ?? false,
         mascotName: (raw.mascotName === "Оливер" || raw.mascotName === "Oliver" || !raw.mascotName)
           ? "Снежа"
           : raw.mascotName,
@@ -89,6 +106,31 @@ export function useGamification() {
       setDailyLoginResult(data);
       if (data?.totalPoints !== undefined) {
         setStats((prev) => prev ? { ...prev, totalPoints: data.totalPoints, xpLevel: data.xpLevel, loginStreak: data.loginStreak } : prev);
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /**
+   * Забрать очки за полностью закрытую цель дня.
+   *
+   * Вызывать можно свободно: сервер сам решает, положены ли очки, и выдаёт их
+   * не больше одного раза в сутки. Клиент не считает награду и не показывает
+   * её как начисленную до ответа — раньше цифры на карточке вообще ни к чему
+   * не приводили, и это было хуже всего.
+   */
+  const claimDailyGoal = useCallback(async (): Promise<DailyGoalClaimResult | null> => {
+    try {
+      const data = await apiFetch("/api/gamification/daily-goal/claim", { method: "POST" });
+      if (data?.awarded > 0 || data?.alreadyClaimed) {
+        setStats((prev) => prev ? {
+          ...prev,
+          totalPoints: data.totalPoints ?? prev.totalPoints,
+          xpLevel: data.xpLevel ?? prev.xpLevel,
+          dailyGoalClaimedToday: true,
+        } : prev);
       }
       return data;
     } catch {
@@ -155,6 +197,7 @@ export function useGamification() {
     toastAchievement,
     loadStats,
     claimDailyLogin,
+    claimDailyGoal,
     updateDailyGoal,
     unlockAchievements,
     saveMascotName,
