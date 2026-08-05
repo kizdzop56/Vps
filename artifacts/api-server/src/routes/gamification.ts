@@ -63,6 +63,52 @@ async function computeTimeStats(userId: number, persistedMinutes: number) {
   };
 }
 
+// ── Отложенная смена цели дня ───────────────────────────────────────────────
+// Ученик может поменять цель когда угодно, но новая цель начинает действовать
+// только СО СЛЕДУЮЩЕГО дня. Иначе цель превращается в способ подобрать себе
+// задачи: набор задач дня зависит от тяжести цели, и можно было щёлкать
+// 10/15/20/30, пока не выпадет удобный.
+//
+// Хранение: dailyGoalMinutes — то, что действует сегодня; nextDailyGoalMinutes —
+// выбор ученика; dailyGoalAppliedDate — день последнего переноса.
+const VALID_GOALS = [10, 15, 20, 30];
+
+function todayKey(): string {
+  return new Date().toISOString().split("T")[0]!;
+}
+
+/**
+ * Переносит отложенную цель в активную, если сутки уже сменились.
+ * Возвращает актуальную пару целей — её и отдаём клиенту.
+ */
+async function resolveDailyGoal(user: {
+  id: number;
+  dailyGoalMinutes: number;
+  nextDailyGoalMinutes: number | null;
+  dailyGoalAppliedDate: string | null;
+}): Promise<{ active: number; next: number }> {
+  const next = user.nextDailyGoalMinutes ?? user.dailyGoalMinutes;
+  const today = todayKey();
+
+  // Первый заход после добавления полей: считаем, что цель уже применена
+  // сегодня, и ничего не меняем — иначе смена «задним числом» проскочит.
+  if (!user.dailyGoalAppliedDate) {
+    await db.update(usersTable)
+      .set({ nextDailyGoalMinutes: next, dailyGoalAppliedDate: today, updatedAt: new Date() })
+      .where(eq(usersTable.id, user.id));
+    return { active: user.dailyGoalMinutes, next };
+  }
+
+  if (user.dailyGoalAppliedDate >= today || next === user.dailyGoalMinutes) {
+    return { active: user.dailyGoalMinutes, next };
+  }
+
+  await db.update(usersTable)
+    .set({ dailyGoalMinutes: next, dailyGoalAppliedDate: today, updatedAt: new Date() })
+    .where(eq(usersTable.id, user.id));
+  return { active: next, next };
+}
+
 // Состоявшийся разговор с AI-тьютором = сессия, в которой был хотя бы один
 // обмен репликами (messageCount увеличивается на 2 за каждый обмен).
 // Пустые строки появляются сами: POST /voice-chat/sessions создаёт сессию уже
@@ -211,6 +257,14 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     return;
   }
 
+  // Цель дня: если наступили новые сутки — применяем отложенный выбор.
+  const goal = await resolveDailyGoal({
+    id: userId,
+    dailyGoalMinutes: userData.dailyGoalMinutes,
+    nextDailyGoalMinutes: userData.nextDailyGoalMinutes ?? null,
+    dailyGoalAppliedDate: userData.dailyGoalAppliedDate ?? null,
+  });
+
   // Voice chat sessions count — только сессии с реальным разговором
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
     .from(voiceChatSessionsTable)
@@ -288,7 +342,8 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   res.json({
     totalPoints: userData.totalPoints,
     xpLevel,
-    dailyGoalMinutes: userData.dailyGoalMinutes,
+    dailyGoalMinutes: goal.active,
+    nextDailyGoalMinutes: goal.next,
     loginStreak: userData.loginStreak,
     lastLoginDate: userData.lastLoginDate,
     todayMinutes,
@@ -321,7 +376,7 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
     return;
   }
 
-  const today = new Date().toISOString().split("T")[0]!;
+  const today = todayKey();
   const lastLogin = userData.lastLoginDate;
 
   // Already claimed today
@@ -380,18 +435,40 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
 });
 
 // ── PATCH /gamification/daily-goal ─────────────────────────────────────────
+// Меняем ТОЛЬКО отложенную цель: сегодняшний день уже начат, и его набор задач
+// пересобираться не должен.
 router.patch("/gamification/daily-goal", requireAuth, async (req, res) => {
   const user = getUser(req);
   const { minutes } = req.body;
-  const validOptions = [10, 15, 20, 30];
-  if (!validOptions.includes(minutes)) {
+  if (!VALID_GOALS.includes(minutes)) {
     res.status(400).json({ error: "Invalid goal. Must be 10, 15, 20, or 30 minutes." });
     return;
   }
+
+  const [current] = await db.select({
+    dailyGoalMinutes: usersTable.dailyGoalMinutes,
+    dailyGoalAppliedDate: usersTable.dailyGoalAppliedDate,
+  }).from(usersTable).where(eq(usersTable.id, user.userId));
+  if (!current) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
   await db.update(usersTable)
-    .set({ dailyGoalMinutes: minutes, updatedAt: new Date() })
+    .set({
+      nextDailyGoalMinutes: minutes,
+      // Если перенос ещё ни разу не выполнялся, фиксируем сегодняшний день —
+      // иначе ближайший же запрос статистики применил бы новую цель сразу.
+      dailyGoalAppliedDate: current.dailyGoalAppliedDate ?? todayKey(),
+      updatedAt: new Date(),
+    })
     .where(eq(usersTable.id, user.userId));
-  res.json({ dailyGoalMinutes: minutes });
+
+  res.json({
+    dailyGoalMinutes: current.dailyGoalMinutes,
+    nextDailyGoalMinutes: minutes,
+    appliesTomorrow: minutes !== current.dailyGoalMinutes,
+  });
 });
 
 // ── POST /gamification/achievements/unlock ─────────────────────────────────
