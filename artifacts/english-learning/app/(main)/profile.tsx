@@ -14,6 +14,10 @@
 //                    (components/StudyTimeCard.tsx). Форматирование времени
 //                    живёт там же: этому экрану оно больше не нужно.
 //
+// Все кнопки экрана — ChunkyButton из GameKit, включая выход из аккаунта
+// (тон danger). Своих «плоских» кнопок здесь быть не должно: одна такая уже
+// выбивалась из ряда и выглядела недоделанной.
+//
 // Очки за цель дня: карточка сама просит их выдать (onClaim), как только день
 // сходится, а признак «уже получено» приходит с сервера в
 // gamStats.dailyGoalClaimedToday. Начисляет сервер и только один раз в сутки —
@@ -1221,6 +1225,26 @@ export default function ProfileScreen() {
     }
   };
 
+  /**
+   * Выход с подтверждением. На вебе Alert.alert не показывает кнопки, поэтому
+   * там используется window.confirm — иначе выход происходил бы молча.
+   */
+  const handleLogout = useCallback(() => {
+    if (Platform.OS === "web") {
+      if (window.confirm("Выйти из аккаунта?")) logout();
+      return;
+    }
+    Alert.alert(
+      "Выйти из аккаунта?",
+      "Вы уверены, что хотите выйти из профиля?",
+      [
+        { text: "Отмена", style: "cancel" },
+        { text: "Выйти", style: "destructive", onPress: logout },
+      ],
+      { cancelable: true }
+    );
+  }, [logout]);
+
   if (!user) return null;
 
   const scoreTint = periodStats.average === null
@@ -1552,34 +1576,17 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        <Pressable
-          style={({ pressed }) => ({
-            marginHorizontal: 20, marginBottom: 8,
-            backgroundColor: colors.destructive + "10", borderRadius: radii.md,
-            padding: 16, alignItems: "center",
-            flexDirection: "row", justifyContent: "center", gap: 9,
-            borderWidth: 1, borderColor: colors.destructive + "44",
-            opacity: pressed ? 0.85 : 1,
-          })}
-          onPress={() => {
-            if (Platform.OS === "web") {
-              if (window.confirm("Выйти из аккаунта?")) logout();
-            } else {
-              Alert.alert(
-                "Выйти из аккаунта?",
-                "Вы уверены, что хотите выйти из профиля?",
-                [
-                  { text: "Отмена", style: "cancel" },
-                  { text: "Выйти", style: "destructive", onPress: logout },
-                ],
-                { cancelable: true }
-              );
-            }
-          }}
-        >
-          <Glyph name="logout" size={17} color={colors.destructive} />
-          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Выйти из аккаунта</Text>
-        </Pressable>
+        {/* Выход — такая же физическая кнопка, как остальные, только красная.
+            Раньше это была плоская плашка с рамкой: единственная кнопка на
+            экране без объёма. */}
+        <View style={{ paddingHorizontal: 20 }}>
+          <ChunkyButton
+            label="Выйти из аккаунта"
+            icon="logout"
+            tone="danger"
+            onPress={handleLogout}
+          />
+        </View>
       </ScrollView>
     </View>
   );
