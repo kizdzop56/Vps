@@ -28,9 +28,12 @@
 // чем готовая полоска, которую глаз считывает как статичную картинку.
 //
 // ── Закрытие ────────────────────────────────────────────────────────────────
-// Только крестик в шапке и тап по фону. Кнопки «Закрыть» во всю ширину внизу
-// нет: полоса в 60 пикселей закрывала собой последний блок разбора и делала то
-// же самое, что крестик.
+// Кнопка «Закрыть» стоит ВНУТРИ прокрутки, последним элементом. Раньше она
+// была закреплена в подвале окна, и белая полоса под ней перекрывала конец
+// разбора. Теперь подвала нет: кнопка едет вместе с содержимым.
+//
+// Крестик в шапке тоже остался — до кнопки внизу длинного списка ещё нужно
+// долистать.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран
@@ -46,7 +49,7 @@ import {
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
-import { SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { AssignmentRingsChart, type CategoryStat } from "@/components/AssignmentRingsChart";
 import { accents, radii, timing } from "@/constants/theme";
 
@@ -92,7 +95,7 @@ function shortDate(value: string): string {
   return `${d.getDate()} ${MONTHS[d.getMonth()] ?? ""}`;
 }
 
-/** Крестик закрытия: единственный способ закрыть окно, поэтому он крупный. */
+/** Крестик закрытия в шапке окна. */
 export function SheetClose({ onPress, colors }: { onPress: () => void; colors: any }) {
   return (
     <Pressable
@@ -182,11 +185,13 @@ export interface AssignmentsCardProps {
   submissions?: SubmissionLike[];
   /** Можно ли открыть разбор. */
   canOpen?: boolean;
+  /** Растёт при каждом входе на экран — кольца вычерчиваются заново. */
+  replay?: number;
   style?: any;
 }
 
 export function AssignmentsCard({
-  stats, submissions = [], canOpen = true, style,
+  stats, submissions = [], canOpen = true, replay = 0, style,
 }: AssignmentsCardProps) {
   const colors = useColors();
   const [open, setOpen] = useState(false);
@@ -220,7 +225,7 @@ export function AssignmentsCard({
           style={[s.body, { backgroundColor: colors.card, borderColor: colors.border }]}
         >
           <SectionLabel>Мои задания</SectionLabel>
-          <AssignmentRingsChart stats={stats} colors={colors} />
+          <AssignmentRingsChart stats={stats} colors={colors} replay={replay} />
 
           {canOpen && (
             <View style={[s.hint, { backgroundColor: colors.primary + "14" }]}>
@@ -242,6 +247,8 @@ export function AssignmentsCard({
               <SheetClose onPress={() => setOpen(false)} colors={colors} />
             </View>
 
+            {/* Кнопка едет вместе с содержимым: закреплённый подвал перекрывал
+                конец разбора белой полосой. */}
             <ScrollView showsVerticalScrollIndicator={false}>
               <AssignmentsBreakdown
                 stats={stats}
@@ -249,8 +256,12 @@ export function AssignmentsCard({
                 colors={colors}
                 run={run}
               />
-              {/* Отступ снизу: раньше место занимала кнопка «Закрыть». */}
-              <View style={{ height: 12 }} />
+              <ChunkyButton
+                label="Закрыть"
+                icon="check"
+                onPress={() => setOpen(false)}
+                style={{ marginTop: 18 }}
+              />
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -464,7 +475,7 @@ const s = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
   sheet: {
     borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
-    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 24, maxHeight: "88%",
+    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 20, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
   sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
