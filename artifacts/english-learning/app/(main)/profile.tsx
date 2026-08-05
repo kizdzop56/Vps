@@ -18,6 +18,11 @@
 //  • Цель дня стоит ПОД «О себе»: сверху кто этот ученик, ниже что ему делать.
 //  • Смена цели применяется со следующего дня, поэтому в карточку уходит
 //    активная цель (для расчёта дня) и выбранная (для окна настройки).
+//  • Кольцо времени раньше показывало снимок на момент открытия экрана: пока
+//    ученик занимался, цифра «5 из 20 минут» стояла на месте и оживала только
+//    после ручного обновления страницы. Теперь минуты берутся из живого
+//    счётчика времени (см. liveTodayMinutes), а прогресс задач сам
+//    перезапрашивается раз в минуту.
 //  • В блоке «О себе» появились интересы: их не было вообще, хотя в макете
 //    они есть. Хранятся отдельно от bio (PUT /users/:id/interests).
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -113,6 +118,9 @@ function formatSessionTime(seconds: number) {
 }
 
 const SESSION_START_KEY = "timer_session_start";
+
+/** Как часто перезапрашивать прогресс задач дня, пока экран открыт. */
+const PLAN_REFRESH_MS = 60_000;
 
 function useLiveTimer() {
   const [seconds, setSeconds] = useState(0);
@@ -925,6 +933,24 @@ export default function ProfileScreen() {
     ? Math.max(0, Math.floor((timeStats.todayMinutes ?? 0) * 60 + (Date.now() - timeStatsAt) / 1000))
     : sessionSeconds;
 
+  /**
+   * Минуты за сегодня для цели дня.
+   *
+   * Раньше сюда уходило gamStats.todayMinutes — снимок на момент загрузки
+   * экрана. Ученик занимался, а кольцо стояло на месте и оживало только после
+   * ручного обновления страницы. Живой счётчик времени (todaySeconds) тикает
+   * сам и раз в 10 секунд сверяется с сервером, поэтому берём максимум из
+   * двух: сервер может знать о времени в других вкладках, а таймер — о
+   * минутах, которые сервер ещё не успел учесть.
+   *
+   * Значение целое, поэтому пересчёт плана происходит раз в минуту, а не на
+   * каждый тик.
+   */
+  const liveTodayMinutes = React.useMemo(
+    () => Math.max(gamStats?.todayMinutes ?? 0, Math.floor(todaySeconds / 60)),
+    [gamStats?.todayMinutes, todaySeconds],
+  );
+
   const periodStats = React.useMemo(() => {
     const rows: any[] = Array.isArray(submissions) ? (submissions as any[]) : [];
     const days = PERIODS.find((p) => p.key === period)?.days ?? null;
@@ -972,12 +998,20 @@ export default function ProfileScreen() {
     } catch { /* задачи по словам просто не покажут прогресс */ }
   }, [isStudent]);
 
+  // Пока экран открыт, прогресс задач подтягивается сам: профиль — вкладка,
+  // он не размонтируется, и без опроса галочки появлялись бы только после
+  // перехода на другую вкладку и обратно.
   useFocusEffect(
     useCallback(() => {
       if (!isStudent) return;
-      loadStats();
-      loadCategoryStats();
-      loadWordStats();
+      const refresh = () => {
+        loadStats();
+        loadCategoryStats();
+        loadWordStats();
+      };
+      refresh();
+      const interval = setInterval(refresh, PLAN_REFRESH_MS);
+      return () => clearInterval(interval);
     }, [isStudent, loadStats, loadCategoryStats, loadWordStats])
   );
 
@@ -1034,7 +1068,7 @@ export default function ProfileScreen() {
   const dailyPlan = React.useMemo(() => {
     if (!gamStats) return null;
     return buildDailyPlan({
-      todayMinutes: gamStats.todayMinutes,
+      todayMinutes: liveTodayMinutes,
       activeGoalMinutes: gamStats.dailyGoalMinutes,
       selectedGoalMinutes: gamStats.nextDailyGoalMinutes ?? gamStats.dailyGoalMinutes,
       todayCompletions: gamStats.todayCompletions ?? 0,
@@ -1043,7 +1077,7 @@ export default function ProfileScreen() {
       learnedToday: wordStats.learnedToday,
       dailyWordGoal: wordStats.dailyWordGoal,
     });
-  }, [gamStats, wordStats]);
+  }, [gamStats, wordStats, liveTodayMinutes]);
 
   const xp = gamStats?.totalPoints ?? 0;
   const xpProgress = getXpProgress(xp);
