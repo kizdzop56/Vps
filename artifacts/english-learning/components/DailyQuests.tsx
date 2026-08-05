@@ -9,6 +9,14 @@
 //   • ниже задачи с квадратными галочками, выполненные — зачёркнуты;
 //   • внизу кнопка «Изменить цель».
 //
+// ── Отметка выполнения ──────────────────────────────────────────────────────
+// Незакрытая задача — пустой квадрат: это обещание, что её можно закрыть.
+// Закрытая — просто галочка без рамки. Белый квадрат с галочкой внутри читался
+// как ЕЩЁ ОДИН элемент управления (флажок, который можно снять), хотя снять
+// выполнение нельзя, да и рамка вокруг галочки уже ничего не сообщает: строка
+// и так зачёркнута и подписана «готово». Галочка крупнее прежней: без рамки
+// место освободилось.
+//
 // ── Объём и анимация ────────────────────────────────────────────────────────
 // Под карточкой тёмная нижняя грань — та же порода поверхности, что у
 // остальных блоков профиля. Проседания при нажатии нет: сама карточка не
@@ -64,6 +72,9 @@ const CARD_GRADIENT = ["#8b5cf6", "#7c3aed", "#6d28d9"] as const;
 
 /** Высота нижней грани. Совпадает с остальными карточками профиля. */
 const EDGE = 6;
+
+/** Место под отметку выполнения: пустой квадрат и галочка занимают одинаково. */
+const MARK = 23;
 
 const RING = 78;
 const STROKE = 9;
@@ -178,11 +189,14 @@ export function DailyQuests({
       borderWidth: 1, borderColor: "rgba(255,255,255,0.18)",
     },
     rowDone: { backgroundColor: "rgba(255,255,255,0.2)", borderColor: "rgba(255,255,255,0.3)" },
+    // Пустой квадрат: задачу ещё можно закрыть.
     box: {
-      width: 23, height: 23, borderRadius: 8, alignItems: "center", justifyContent: "center",
+      width: MARK, height: MARK, borderRadius: 8, alignItems: "center", justifyContent: "center",
       borderWidth: 2, borderColor: "rgba(255,255,255,0.55)",
     },
-    boxDone: { backgroundColor: "#fff", borderColor: "#fff" },
+    // Выполнено: только галочка, без рамки и подложки. Рамка читалась как
+    // флажок, который можно снять, а снять выполнение нельзя.
+    mark: { width: MARK, height: MARK, alignItems: "center", justifyContent: "center" },
     rowText: { flex: 1, fontSize: 14, fontWeight: "700", color: "#fff" },
     rowTextDone: { color: "rgba(255,255,255,0.6)", textDecorationLine: "line-through" },
     rowCount: {
@@ -322,9 +336,14 @@ export function DailyQuests({
         <View style={s.list}>
           {quests.map((q) => (
             <View key={q.kind} style={[s.row, q.done && s.rowDone]}>
-              <View style={[s.box, q.done && s.boxDone]}>
-                {q.done && <Glyph name="check" size={12} color={accents.violetDeep} />}
-              </View>
+              {/* Выполнено — просто галочка. Не выполнено — пустой квадрат. */}
+              {q.done ? (
+                <View style={s.mark}>
+                  <Glyph name="check" size={19} color="#fff" />
+                </View>
+              ) : (
+                <View style={s.box} />
+              )}
               <Text style={[s.rowText, q.done && s.rowTextDone]} numberOfLines={1}>
                 {q.title}
               </Text>
