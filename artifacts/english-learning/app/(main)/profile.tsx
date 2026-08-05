@@ -83,9 +83,19 @@ import { buildDailyPlan } from "@/utils/dailyQuests";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 
+/**
+ * Возраст из даты рождения.
+ *
+ * Запасной путь: обычно возраст лежит в users.age — его считает и сохраняет
+ * регистрация. Дата рождения есть не у всех: ученику, которого завёл учитель,
+ * её никто не вводил, а у аккаунтов старше шага «когда у вас день рождения»
+ * она пустая. Поэтому сначала берётся age, и только если его нет — считаем
+ * из даты.
+ */
 function calcAge(dateOfBirth: string | null): number | null {
   if (!dateOfBirth) return null;
   const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return null;
   const today = new Date();
   let age = today.getFullYear() - dob.getFullYear();
   const m = today.getMonth() - dob.getMonth();
@@ -769,7 +779,10 @@ export default function ProfileScreen() {
     rowText: { flex: 1, fontSize: 15, fontWeight: "800", color: colors.foreground },
   });
 
-  const age = calcAge(user.dateOfBirth);
+  // Возраст: сначала готовое число из базы, дата рождения — запасной путь.
+  // Раньше считали только из даты, и у всех, кому её не вводили (ученики от
+  // учителя, старые аккаунты), метка возраста просто не появлялась.
+  const age = user.age ?? calcAge(user.dateOfBirth);
   const streak = gamStats?.loginStreak ?? 0;
 
   return (
