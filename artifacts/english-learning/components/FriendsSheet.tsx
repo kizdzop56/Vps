@@ -84,7 +84,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  View, Text, Modal, Pressable, ScrollView, TextInput, Platform,
+  View, Text, Modal, Pressable, ScrollView, TextInput, Platform, StyleSheet,
   ActivityIndicator, Animated, Easing, KeyboardAvoidingView, Clipboard,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -111,6 +111,9 @@ const STICKY_FADE = 28;
 const STEP_MS = 55;
 const RISE_MS = 420;
 const GROW_MS = 780;
+
+/** Длина кода приглашения. */
+const CODE_LEN = 6;
 
 /** Пол в базе не хранится, поэтому род не угадываем. */
 const NOT_STARTED = "Ещё не начинал(а) заниматься";
@@ -532,6 +535,104 @@ function Segmented<T extends string>({
   );
 }
 
+// ── Поле кода ───────────────────────────────────────────────────────────────
+
+/**
+ * Ввод шестизначного кода ячейками.
+ *
+ * Раньше это был обычный TextInput с подсказкой «_ _ _ _ _ _». Подсказка —
+ * это placeholder, поэтому от первой же буквы все шесть чёрточек исчезали, и
+ * на месте кода оставалась одинокая «F» по центру: сколько символов ещё
+ * вводить, поле больше не сообщало. Плюс между чёрточек мигала системная
+ * каретка — синяя полоска, которую видно на скриншоте и которую легко принять
+ * за ещё одну, седьмую метку.
+ *
+ * Теперь чёрточек всегда шесть. Введённый символ встаёт над своей чёрточкой, а
+ * она подсвечивается цветом бренда: остаток видно, не считая буквы.
+ *
+ * Каретки нет вовсе: настоящее поле лежит поверх ячеек невидимым слоем
+ * (прозрачный текст, caretHidden, прозрачное выделение), а рисуем мы своё.
+ * Позиция ввода и так читается по последней заполненной ячейке. Тап в любое
+ * место поля попадает в этот слой, поэтому клавиатура открывается как обычно.
+ */
+function CodeField({
+  value, onChange, invalid, ok,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  /** Код не нашёлся: рамка красная. */
+  invalid?: boolean;
+  /** Человек найден: рамка в цвете бренда. */
+  ok?: boolean;
+}) {
+  const colors = useColors();
+  const chars = value.split("");
+
+  return (
+    <View
+      style={{
+        backgroundColor: colors.muted,
+        borderRadius: radii.sm + 2,
+        borderWidth: 1.5,
+        borderColor: invalid ? colors.destructive : ok ? colors.primary : colors.border,
+        paddingVertical: 14,
+        paddingHorizontal: 12,
+      }}
+    >
+      <View style={{ flexDirection: "row", justifyContent: "center", gap: 10 }}>
+        {Array.from({ length: CODE_LEN }, (_, i) => {
+          const ch = chars[i];
+          return (
+            <View key={i} style={{ width: 34, alignItems: "center" }}>
+              {/* Символ-заполнитель под прозрачным цветом держит высоту строки
+                  постоянной: без него ряд подпрыгивал на первой букве. */}
+              <Text
+                style={{
+                  fontSize: 25, fontWeight: "900", lineHeight: 31, height: 31,
+                  color: ch ? colors.foreground : "transparent",
+                }}
+              >
+                {ch ?? "0"}
+              </Text>
+              <View style={{
+                height: 3, width: 22, borderRadius: 2, marginTop: 2,
+                backgroundColor: ch ? colors.primary : colors.mutedForeground + "4d",
+              }} />
+            </View>
+          );
+        })}
+      </View>
+
+      {/* Настоящее поле: невидимое, во всю площадь. */}
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        maxLength={CODE_LEN}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        autoComplete="off"
+        caretHidden
+        selectionColor="transparent"
+        accessibilityLabel="Код приглашения"
+        style={[
+          StyleSheet.absoluteFillObject,
+          {
+            color: "transparent",
+            backgroundColor: "transparent",
+            textAlign: "center",
+            fontSize: 25,
+          },
+          // В вебе у сфокусированного поля своя рамка и своя каретка: и то и
+          // другое здесь лишнее, рисуем всё сами.
+          Platform.OS === "web"
+            ? ({ outlineStyle: "none", caretColor: "transparent" } as any)
+            : null,
+        ]}
+      />
+    </View>
+  );
+}
+
 // ── Карточка своего кода ────────────────────────────────────────────────────
 
 /**
@@ -685,7 +786,7 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
     setCode(t);
     setFound(null);
     setAddError("");
-    if (t.length !== 6) return;
+    if (t.length !== CODE_LEN) return;
 
     setSearching(true);
     try {
@@ -1078,30 +1179,33 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                   {/* Подписи «поиск произойдёт автоматически» нет: он и так
                       идёт сам, а объяснять очевидное — шум. */}
                   <View style={{ position: "relative", marginBottom: 4 }}>
-                    <TextInput
-                      style={{
-                        backgroundColor: colors.muted,
-                        borderRadius: radii.sm + 2, borderWidth: 1.5,
-                        borderColor: addError
-                          ? colors.destructive
-                          : found ? colors.primary : colors.border,
-                        paddingHorizontal: 16, paddingVertical: addMode === "code" ? 16 : 14,
-                        color: colors.foreground,
-                        ...(addMode === "code"
-                          ? {
-                              fontSize: 26, fontWeight: "900", letterSpacing: 8,
-                              textAlign: "center", textTransform: "uppercase",
-                            }
-                          : { fontSize: 16, fontWeight: "700" }),
-                      }}
-                      placeholder={addMode === "code" ? "_ _ _ _ _ _" : "@псевдоним"}
-                      placeholderTextColor={colors.mutedForeground + "80"}
-                      value={addMode === "code" ? code : usernameInput}
-                      onChangeText={addMode === "code" ? handleCodeChange : handleUsernameSearch}
-                      maxLength={addMode === "code" ? 6 : undefined}
-                      autoCapitalize={addMode === "code" ? "characters" : "none"}
-                      autoCorrect={false}
-                    />
+                    {addMode === "code" ? (
+                      <CodeField
+                        value={code}
+                        onChange={handleCodeChange}
+                        invalid={!!addError}
+                        ok={!!found}
+                      />
+                    ) : (
+                      <TextInput
+                        style={{
+                          backgroundColor: colors.muted,
+                          borderRadius: radii.sm + 2, borderWidth: 1.5,
+                          borderColor: addError
+                            ? colors.destructive
+                            : found ? colors.primary : colors.border,
+                          paddingHorizontal: 16, paddingVertical: 14,
+                          color: colors.foreground,
+                          fontSize: 16, fontWeight: "700",
+                        }}
+                        placeholder="@псевдоним"
+                        placeholderTextColor={colors.mutedForeground + "80"}
+                        value={usernameInput}
+                        onChangeText={handleUsernameSearch}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                    )}
                     {searching && (
                       <View style={{ position: "absolute", right: 16, top: 0, bottom: 0, justifyContent: "center" }}>
                         <ActivityIndicator color={colors.primary} size="small" />
