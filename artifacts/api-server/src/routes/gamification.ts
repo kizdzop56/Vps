@@ -6,6 +6,8 @@ import {
   voiceChatSessionsTable,
   submissionsTable,
   timeSessionsTable,
+  reviewLogTable,
+  flashcardSettingsTable,
 } from "@workspace/db";
 import { eq, and, sql, gte, gt } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
@@ -16,6 +18,8 @@ import {
   sessionMinutes,
   startOfLocalDay,
 } from "../lib/timeStats";
+import { isLearned, startOfDay } from "../lib/srs";
+import { evaluateDailyPlan } from "../lib/dailyPlan";
 
 const router = Router();
 
@@ -61,6 +65,61 @@ async function computeTimeStats(userId: number, persistedMinutes: number) {
     totalTimeMinutes: persistedMinutes + openMinutes,
     earlyBirdDays: countEarlyBirdDays(sessions),
     todayStart,
+  };
+}
+
+/**
+ * Слова за сегодня: сколько разных слов повторено и сколько впервые доведено
+ * до «выучено». Те же правила, что в GET /flashcards/stats — иначе задача дня
+ * «повторить 10 слов» будет закрыта на экране и не закрыта при выдаче награды.
+ */
+async function computeWordProgress(userId: number) {
+  const logs = await db.select().from(reviewLogTable)
+    .where(eq(reviewLogTable.userId, userId));
+
+  const dayStart = startOfDay().getTime();
+
+  const wordsToday = new Set(
+    logs.filter((l) => l.reviewedAt.getTime() >= dayStart).map((l) => l.wordId)
+  ).size;
+
+  // Когда слово ВПЕРВЫЕ дошло до «выучено». Повторное подтверждение уже
+  // выученного слова новой галочки не даёт.
+  const firstLearnedAt = new Map<number, Date>();
+  for (const l of [...logs].sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime())) {
+    if (isLearned(l.memoryLevelAfter ?? 0) && !firstLearnedAt.has(l.wordId)) {
+      firstLearnedAt.set(l.wordId, l.reviewedAt);
+    }
+  }
+  const learnedToday = [...firstLearnedAt.values()]
+    .filter((at) => at.getTime() >= dayStart).length;
+
+  const [settings] = await db.select({ dailyWordGoal: flashcardSettingsTable.dailyWordGoal })
+    .from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, userId));
+
+  return { wordsToday, learnedToday, dailyWordGoal: settings?.dailyWordGoal ?? 10 };
+}
+
+/** Сдано заданий и состоявшихся разговоров с начала сегодняшнего дня. */
+async function computeTodayActivity(userId: number, todayStart: Date) {
+  const todaySubs = await db.select({ count: sql<number>`count(*)::int` })
+    .from(submissionsTable)
+    .where(and(
+      eq(submissionsTable.studentId, userId),
+      gte(submissionsTable.submittedAt, todayStart),
+    ));
+
+  const todayVoice = await db.select({ count: sql<number>`count(*)::int` })
+    .from(voiceChatSessionsTable)
+    .where(and(
+      eq(voiceChatSessionsTable.studentId, userId),
+      gte(voiceChatSessionsTable.createdAt, todayStart),
+      REAL_VOICE_SESSION,
+    ));
+
+  return {
+    todayCompletions: todaySubs[0]?.count ?? 0,
+    todayVoiceSessions: todayVoice[0]?.count ?? 0,
   };
 }
 
@@ -323,20 +382,9 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   let todayCompletions = 0;
   let todayVoiceSessions = 0;
   try {
-    const todaySubs = await db.select({ count: sql<number>`count(*)::int` })
-      .from(submissionsTable)
-      .where(and(eq(submissionsTable.studentId, userId), gte(submissionsTable.submittedAt, todayStart)));
-    todayCompletions = todaySubs[0]?.count ?? 0;
-
-    // В ежедневной цели тоже учитываем только состоявшиеся разговоры.
-    const todayVoice = await db.select({ count: sql<number>`count(*)::int` })
-      .from(voiceChatSessionsTable)
-      .where(and(
-        eq(voiceChatSessionsTable.studentId, userId),
-        gte(voiceChatSessionsTable.createdAt, todayStart),
-        REAL_VOICE_SESSION,
-      ));
-    todayVoiceSessions = todayVoice[0]?.count ?? 0;
+    const activity = await computeTodayActivity(userId, todayStart);
+    todayCompletions = activity.todayCompletions;
+    todayVoiceSessions = activity.todayVoiceSessions;
   } catch { /* silent */ }
 
   // Unlocked achievements from DB
@@ -348,6 +396,9 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     xpLevel,
     dailyGoalMinutes: goal.active,
     nextDailyGoalMinutes: goal.next,
+    // Награда за сегодняшний день уже получена? Клиент по этому полю показывает
+    // «получено» вместо «+40» и не дёргает claim повторно.
+    dailyGoalClaimedToday: (userData.dailyGoalClaimedDate ?? null) === todayKey(),
     loginStreak: userData.loginStreak,
     lastLoginDate: userData.lastLoginDate,
     todayMinutes,
@@ -360,6 +411,97 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     unlockedAchievementIds: dbAchievements.map(a => a.achievementId),
     totalTimeMinutes,
     mascotName: (userData.mascotName && userData.mascotName !== "Оливер") ? userData.mascotName : "Снежа",
+  });
+});
+
+// ── POST /gamification/daily-goal/claim ────────────────────────────────────
+//
+// Очки за цель дня. Выдаются ОДИН раз в сутки и только за полностью закрытый
+// день: время плюс все задачи. Раньше награда не начислялась вообще — и «+15»
+// у цели, и «+35» у отдельных задач были нарисованы на карточке, а в
+// total_points не попадали никогда.
+//
+// Клиент только просит выдать награду. Что именно закрыто, сервер считает сам
+// по своим данным (lib/dailyPlan.ts + те же счётчики, что в /gamification/stats
+// и /flashcards/stats): иначе очки начислялись бы одним поддельным запросом.
+router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const userId = user.userId;
+
+  const [userData] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  if (!userData) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const today = todayKey();
+
+  const goal = await resolveDailyGoal({
+    id: userId,
+    dailyGoalMinutes: userData.dailyGoalMinutes,
+    nextDailyGoalMinutes: userData.nextDailyGoalMinutes ?? null,
+    dailyGoalAppliedDate: userData.dailyGoalAppliedDate ?? null,
+  });
+
+  // Уже забрал сегодня — отвечаем спокойно, без ошибки: клиент вызывает claim
+  // при каждом обновлении экрана, пока день закрыт.
+  if ((userData.dailyGoalClaimedDate ?? null) === today) {
+    res.json({
+      alreadyClaimed: true,
+      awarded: 0,
+      totalPoints: userData.totalPoints,
+      xpLevel: computeLevel(userData.totalPoints),
+    });
+    return;
+  }
+
+  const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
+  const activity = await computeTodayActivity(userId, time.todayStart);
+  const words = await computeWordProgress(userId);
+
+  const plan = evaluateDailyPlan({
+    dateKey: today,
+    todayMinutes: time.todayMinutes,
+    activeGoalMinutes: goal.active,
+    todayCompletions: activity.todayCompletions,
+    todayVoiceSessions: activity.todayVoiceSessions,
+    wordsToday: words.wordsToday,
+    learnedToday: words.learnedToday,
+    dailyWordGoal: words.dailyWordGoal,
+  });
+
+  if (!plan.allDone) {
+    res.json({
+      alreadyClaimed: false,
+      awarded: 0,
+      reward: plan.reward,
+      pending: plan.pending,
+      totalPoints: userData.totalPoints,
+      xpLevel: computeLevel(userData.totalPoints),
+    });
+    return;
+  }
+
+  const newTotal = userData.totalPoints + plan.reward;
+  const newLevel = computeLevel(newTotal);
+
+  await db.update(usersTable)
+    .set({
+      totalPoints: newTotal,
+      xpLevel: newLevel,
+      dailyGoalClaimedDate: today,
+      updatedAt: new Date(),
+    })
+    .where(eq(usersTable.id, userId));
+
+  res.json({
+    alreadyClaimed: false,
+    awarded: plan.reward,
+    reward: plan.reward,
+    pending: [],
+    totalPoints: newTotal,
+    xpLevel: newLevel,
+    leveledUp: newLevel > (userData.xpLevel ?? 1),
   });
 });
 
