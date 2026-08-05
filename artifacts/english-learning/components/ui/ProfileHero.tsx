@@ -1,11 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Шапка профиля: аватар, имя, метки, счётчики и полоса опыта.
 //
-// Раньше блок был собран прямо в profile.tsx и выглядел иначе, чем задумано:
-// аватар рисовал AnimatedAvatar, а он резервирует под себя контейнер в 1.7
-// раза больше самого аватара (место под пульсирующие кольца). При size={96}
-// это 163 пикселя пустоты, из-за чего аватар уезжал вверх, обрезался краем
-// градиента и занимал пол-экрана, а имя с метками уходили под сгиб.
+// Используется на ДВУХ экранах: своём профиле (app/(main)/profile.tsx) и чужом
+// (app/(main)/friend/[id].tsx). Раньше чужой профиль рисовал свою шапку —
+// круглый аватар, три серые плитки, — и выглядел как другое приложение.
 //
 // Аватар — скруглённый квадрат в золотой оправе, как медальон: тот же приём,
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
@@ -13,13 +11,12 @@
 //
 // ── Про счётчики ────────────────────────────────────────────────────────────
 // Их два, а не три. Три узкие карточки не помещались рядом с аватаром, и
-// сетка съезжала вниз, оставляя над собой пустой тёмный прямоугольник —
-// именно ту «дырку», которая бросалась в глаза на скриншотах. Две карточки
-// шире, встают вровень с нижним краем аватара и закрывают пустоту целиком.
+// сетка съезжала вниз, оставляя пустой тёмный прямоугольник.
 //
-// Что осталось: «слов выучено» (знание языка) и «дней подряд» (привычка).
-// Что убрано: «очков» — это то же число, что на полосе опыта строкой ниже;
-// «заданий» — их разбивка целиком есть в блоке «Мои задания» ниже по экрану.
+// Набор счётчиков у экранов разный, поэтому он передаётся списком:
+//   свой профиль  — «слов выучено» и «дней подряд» (эти данные есть только
+//                   у себя: чужую статистику по словам сервер не отдаёт);
+//   чужой профиль — «очков» и «заданий» (их видно из GET /users/:id).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
@@ -38,8 +35,14 @@ function GlassPill({ text, icon }: { text: string; icon?: GlyphName }) {
   );
 }
 
-/** Счётчик в шапке: значок, крупное число и подпись в одну строку. */
-function MiniStat({ value, label, icon }: { value: number | string; label: string; icon: GlyphName }) {
+/** Один счётчик в шапке. */
+export interface HeroStat {
+  icon: GlyphName;
+  value: number | string;
+  label: string;
+}
+
+function MiniStat({ value, label, icon }: HeroStat) {
   return (
     <View style={s.mini}>
       <View style={s.miniIcon}>
@@ -61,15 +64,18 @@ export interface ProfileHeroProps {
   avatarUrl?: string | null;
   /** Идёт ли сохранение аватара — тогда на кнопке правки крутится спиннер. */
   saving?: boolean;
-  onEditAvatar: () => void;
+  /** Не передан — кнопки правки нет (чужой профиль). */
+  onEditAvatar?: () => void;
   /** Роль словом: «Ученик», «Учитель», «Родитель». */
   roleLabel: string;
   /** Возраст словом: «12 лет». Пусто — метки не будет. */
   ageLabel?: string | null;
+  /** Зелёная метка «В сети». Показывается только на чужом профиле. */
+  online?: boolean;
   /** Уровень: на шильде только номер, название — под полосой опыта. */
   level?: { number: number; title: string } | null;
-  /** Два счётчика под именем. null — блок не рисуется. */
-  stats?: { wordsLearned: number; streak: number } | null;
+  /** Счётчики под именем. Пусто — блок не рисуется. */
+  stats?: HeroStat[] | null;
   /** Полоса опыта. null — блок не рисуется. */
   xp?: {
     current: number;
@@ -81,21 +87,16 @@ export interface ProfileHeroProps {
   } | null;
   /** Верхний отступ под статус-бар. */
   paddingTop: number;
-}
-
-/** Русское склонение по числу. */
-function plural(n: number, forms: [string, string, string]): string {
-  const abs = Math.abs(n) % 100;
-  if (abs >= 11 && abs <= 14) return forms[2];
-  const last = abs % 10;
-  if (last === 1) return forms[0];
-  if (last >= 2 && last <= 4) return forms[1];
-  return forms[2];
+  /** Кнопка слева от имени: «назад» на чужом профиле. */
+  onBack?: () => void;
+  /** Кнопка справа сверху: например «Написать». */
+  action?: { icon: GlyphName; label: string; onPress: () => void } | null;
 }
 
 export function ProfileHero({
   name, username, avatarEmoji, avatarColor, avatarUrl, saving,
-  onEditAvatar, roleLabel, ageLabel, level, stats, xp, paddingTop,
+  onEditAvatar, roleLabel, ageLabel, online, level, stats, xp, paddingTop,
+  onBack, action,
 }: ProfileHeroProps) {
   const [imageFailed, setImageFailed] = React.useState(false);
   React.useEffect(() => { setImageFailed(false); }, [avatarUrl]);
@@ -109,6 +110,39 @@ export function ProfileHero({
       end={{ x: 0.5, y: 1 }}
       style={[s.hero, { paddingTop }]}
     >
+      {/* Верхняя строка: назад и действие. Рисуется только когда есть что
+          показать — на своём профиле её нет вовсе. */}
+      {(onBack || action) && (
+        <View style={s.topBar}>
+          {onBack ? (
+            <TouchableOpacity
+              onPress={onBack}
+              style={s.topBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Назад"
+              hitSlop={8}
+            >
+              <View style={{ transform: [{ rotate: "180deg" }] }}>
+                <Glyph name="chevron" size={18} color="#ffffff" />
+              </View>
+            </TouchableOpacity>
+          ) : <View />}
+
+          {action && (
+            <TouchableOpacity
+              onPress={action.onPress}
+              style={s.actionBtn}
+              accessibilityRole="button"
+              accessibilityLabel={action.label}
+              activeOpacity={0.85}
+            >
+              <Glyph name={action.icon} size={15} color="#ffffff" />
+              <Text style={s.actionText}>{action.label}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       <View style={s.row}>
         <View style={s.avatarWrap}>
           <LinearGradient
@@ -131,17 +165,19 @@ export function ProfileHero({
             </View>
           </LinearGradient>
 
-          <TouchableOpacity
-            style={s.editBtn}
-            onPress={onEditAvatar}
-            accessibilityRole="button"
-            accessibilityLabel="Сменить аватар"
-            activeOpacity={0.85}
-          >
-            {saving
-              ? <ActivityIndicator size={12} color="#fff" />
-              : <Glyph name="pen" size={13} color="#fff" />}
-          </TouchableOpacity>
+          {!!onEditAvatar && (
+            <TouchableOpacity
+              style={s.editBtn}
+              onPress={onEditAvatar}
+              accessibilityRole="button"
+              accessibilityLabel="Сменить аватар"
+              activeOpacity={0.85}
+            >
+              {saving
+                ? <ActivityIndicator size={12} color="#fff" />
+                : <Glyph name="pen" size={13} color="#fff" />}
+            </TouchableOpacity>
+          )}
 
           {level && (
             <LinearGradient
@@ -162,20 +198,19 @@ export function ProfileHero({
           <View style={s.badgeRow}>
             <GlassPill text={roleLabel} />
             {!!ageLabel && <GlassPill text={ageLabel} icon="calendar" />}
+            {online && (
+              <View style={s.onlinePill}>
+                <View style={s.onlineDot} />
+                <Text style={s.onlineText}>В сети</Text>
+              </View>
+            )}
           </View>
 
-          {stats && (
+          {!!stats?.length && (
             <View style={s.miniRow}>
-              <MiniStat
-                icon="cards"
-                value={stats.wordsLearned}
-                label={`${plural(stats.wordsLearned, ["слово", "слова", "слов"])} выучено`}
-              />
-              <MiniStat
-                icon="flame"
-                value={stats.streak}
-                label={`${plural(stats.streak, ["день", "дня", "дней"])} подряд`}
-              />
+              {stats.map((stat) => (
+                <MiniStat key={stat.label} {...stat} />
+              ))}
             </View>
           )}
         </View>
@@ -220,6 +255,24 @@ const s = StyleSheet.create({
     marginBottom: 14,
     overflow: "hidden",
   },
+
+  topBar: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  topBtn: {
+    width: 36, height: 36, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  actionBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 13, paddingVertical: 8, borderRadius: radii.pill,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.3)",
+  },
+  actionText: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
+
   row: { flexDirection: "row", alignItems: "flex-start", gap: 14 },
 
   avatarWrap: { width: AVATAR + 8, paddingBottom: 14 },
@@ -262,8 +315,17 @@ const s = StyleSheet.create({
   },
   glassPillText: { fontSize: 11.5, fontWeight: "800", color: "#ffffff" },
 
-  // Две карточки: значок слева, число и подпись справа — так строка
-  // заполняется по горизонтали и не оставляет воздуха над сеткой.
+  // «В сети» — единственная зелёная точка в интерфейсе: это статус связи,
+  // а не оценка, поэтому фирменный фиолетовый здесь не подходит.
+  onlinePill: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    backgroundColor: "rgba(34,197,94,0.22)",
+    borderWidth: 1, borderColor: "rgba(134,239,172,0.55)",
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
+  },
+  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#4ade80" },
+  onlineText: { fontSize: 11.5, fontWeight: "800", color: "#dcfce7" },
+
   miniRow: { flexDirection: "row", gap: 7, marginTop: 9 },
   mini: {
     flex: 1, flexDirection: "row", alignItems: "center", gap: 8,
