@@ -27,6 +27,14 @@
 // Полосы растут от нуля при открытии: заполнение показывает величину лучше,
 // чем готовая полоска, которую глаз считывает как статичную картинку.
 //
+// ── ЧУЖОЙ ПРОФИЛЬ ───────────────────────────────────────────────────────────
+// В чужом профиле список сдач недоступен: сервер отдаёт только сводку по
+// категориям. Поэтому итог (средний балл и число проверенных работ) считается
+// из категорий — среднее взвешивается по количеству работ в каждой. Блоки,
+// которым нужны сами сдачи («Как решаешь», «Последние работы»), в этом случае
+// просто не рисуются: раньше вместо них показывалась заглушка «Работ пока
+// нет», хотя работы у человека были.
+//
 // ── Закрытие ────────────────────────────────────────────────────────────────
 // Кнопка «Закрыть» стоит ВНУТРИ прокрутки, последним элементом. Раньше она
 // была закреплена в подвале окна, и белая полоса под ней перекрывала конец
@@ -187,11 +195,13 @@ export interface AssignmentsCardProps {
   canOpen?: boolean;
   /** Растёт при каждом входе на экран — кольца вычерчиваются заново. */
   replay?: number;
+  /** Заголовок плитки и окна: в чужом профиле это не «мои» задания. */
+  title?: string;
   style?: any;
 }
 
 export function AssignmentsCard({
-  stats, submissions = [], canOpen = true, replay = 0, style,
+  stats, submissions = [], canOpen = true, replay = 0, title = "Мои задания", style,
 }: AssignmentsCardProps) {
   const colors = useColors();
   const [open, setOpen] = useState(false);
@@ -224,7 +234,7 @@ export function AssignmentsCard({
           accessibilityLabel={canOpen ? "Открыть разбор заданий" : undefined}
           style={[s.body, { backgroundColor: colors.card, borderColor: colors.border }]}
         >
-          <SectionLabel>Мои задания</SectionLabel>
+          <SectionLabel>{title}</SectionLabel>
           <AssignmentRingsChart stats={stats} colors={colors} replay={replay} />
 
           {canOpen && (
@@ -243,7 +253,7 @@ export function AssignmentsCard({
             <View style={[s.handle, { backgroundColor: colors.border }]} />
 
             <View style={s.sheetHead}>
-              <Text style={[s.sheetTitle, { color: colors.foreground }]}>Мои задания</Text>
+              <Text style={[s.sheetTitle, { color: colors.foreground }]}>{title}</Text>
               <SheetClose onPress={() => setOpen(false)} colors={colors} />
             </View>
 
@@ -282,9 +292,6 @@ function AssignmentsBreakdown({
 }) {
   const data = useMemo(() => {
     const scored = submissions.filter((r) => typeof r.score === "number");
-    const average = scored.length > 0
-      ? Math.round(scored.reduce((sum, r) => sum + (r.score ?? 0), 0) / scored.length)
-      : null;
 
     // Разбивка по качеству. Пороги те же, что у цвета балла на карточках
     // заданий: 70 и 85, чтобы «зелёная зона» означала одно и то же везде.
@@ -306,13 +313,28 @@ function AssignmentsBreakdown({
       ? rated.reduce((min, s) => ((s.avgScore ?? 0) < (min.avgScore ?? 0) ? s : min))
       : null;
 
-    return { scored, average, great, good, weak, recent, points, pending, rated, weakest };
+    // Итог считаем из сдач, если они есть. В чужом профиле их не отдают —
+    // тогда берём сводку по категориям и взвешиваем среднее по количеству
+    // работ, иначе редкий тип с одной пятёркой перетянет весь итог.
+    const statCount = rated.reduce((sum, s) => sum + s.count, 0);
+    const statAverage = statCount > 0
+      ? Math.round(rated.reduce((sum, s) => sum + (s.avgScore ?? 0) * s.count, 0) / statCount)
+      : null;
+
+    const checked = scored.length > 0 ? scored.length : statCount;
+    const average = scored.length > 0
+      ? Math.round(scored.reduce((sum, r) => sum + (r.score ?? 0), 0) / scored.length)
+      : statAverage;
+
+    return { scored, checked, average, great, good, weak, recent, points, pending, rated, weakest };
   }, [stats, submissions]);
 
   const tint = (score: number) =>
     score >= 85 ? colors.success : score >= 70 ? accents.amber : colors.destructive;
 
-  if (submissions.length === 0 && data.pending === 0) {
+  // Пусто — только когда работ действительно нет. Раньше условие смотрело на
+  // список сдач, и чужой профиль всегда показывал заглушку.
+  if (data.checked === 0 && data.pending === 0) {
     return (
       <View style={{ alignItems: "center", paddingVertical: 34, gap: 12 }}>
         <View style={[s.emptyIcon, { backgroundColor: colors.primary + "14" }]}>
@@ -340,7 +362,7 @@ function AssignmentsBreakdown({
           {data.average === null ? "—" : `${data.average}%`}
         </Text>
         <Text style={[s.heroNote, { color: colors.mutedForeground }]}>
-          {data.scored.length} {plural(data.scored.length, ["проверенная работа", "проверенные работы", "проверенных работ"])}
+          {data.checked} {plural(data.checked, ["проверенная работа", "проверенные работы", "проверенных работ"])}
           {data.points > 0 ? ` · +${data.points} очков` : ""}
         </Text>
       </View>
@@ -395,7 +417,7 @@ function AssignmentsBreakdown({
         </View>
       )}
 
-      {/* Качество работ */}
+      {/* Качество работ. Нужны сами сдачи — в чужом профиле блока не будет. */}
       {data.scored.length > 0 && (
         <View>
           <Text style={[s.blockLabel, { color: colors.mutedForeground }]}>Как решаешь</Text>
