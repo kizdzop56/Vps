@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Шапка профиля: аватар, имя, метки и полоса опыта.
+// Шапка профиля: аватар, имя, метки, счётчики и полоса опыта.
 //
 // Раньше блок был собран прямо в profile.tsx и выглядел иначе, чем задумано:
 // аватар рисовал AnimatedAvatar, а он резервирует под себя контейнер в 1.7
@@ -14,6 +14,12 @@
 // Аватар — скруглённый квадрат в золотой оправе, как медальон: тот же приём,
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
 // профиля из соцсети», а не как награда.
+//
+// Справа от аватара под именем стоят три счётчика: очки, серия дней и
+// выполненные задания. Раньше там была пустая область в треть шапки — имя с
+// одной пилюлей не заполняли её ничем. Эти же цифры есть внизу экрана в блоке
+// «Всего за время учёбы», но внизу их надо искать прокруткой, а в шапке они
+// отвечают на вопрос «как у меня дела» сразу при открытии профиля.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
@@ -28,6 +34,16 @@ function GlassPill({ text, icon }: { text: string; icon?: GlyphName }) {
     <View style={s.glassPill}>
       {icon && <Glyph name={icon} size={12} color="#ffffff" />}
       <Text style={s.glassPillText}>{text}</Text>
+    </View>
+  );
+}
+
+/** Один счётчик в шапке: крупное число и подпись. */
+function MiniStat({ value, label }: { value: number | string; label: string }) {
+  return (
+    <View style={s.mini}>
+      <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
+      <Text style={s.miniLabel} numberOfLines={1}>{label}</Text>
     </View>
   );
 }
@@ -48,12 +64,16 @@ export interface ProfileHeroProps {
   /**
    * Уровень и его название. Показывается только ученику.
    * На шильде выводится один номер: названия уровней («Ученик», «Старатель»)
-   * повторяли роль в соседней метке — на скриншоте под аватаром стояло
-   * «4 · Ученик», а справа ещё раз «Ученик». Название уровня целиком видно
-   * в строке под полосой опыта.
+   * повторяли роль в соседней метке. Название уровня целиком видно в строке
+   * под полосой опыта.
    */
   level?: { number: number; title: string } | null;
-  /** Полоса опыта. null — блок не рисуется (учитель, родитель). */
+  /**
+   * Три счётчика под именем. null — блок не рисуется (учитель, родитель,
+   * или статистика ещё не загружена).
+   */
+  stats?: { points: number; streak: number; assignments: number } | null;
+  /** Полоса опыта. null — блок не рисуется. */
   xp?: {
     current: number;
     /** Порог следующего уровня. null — уровень максимальный. */
@@ -66,9 +86,19 @@ export interface ProfileHeroProps {
   paddingTop: number;
 }
 
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
 export function ProfileHero({
   name, username, avatarEmoji, avatarColor, avatarUrl, saving,
-  onEditAvatar, roleLabel, ageLabel, level, xp, paddingTop,
+  onEditAvatar, roleLabel, ageLabel, level, stats, xp, paddingTop,
 }: ProfileHeroProps) {
   // Ссылка на фото может вести в никуда: объектное хранилище не настроено, и
   // файлы лежат на диске контейнера, который на Render стирается при каждом
@@ -150,13 +180,22 @@ export function ProfileHero({
             <GlassPill text={roleLabel} />
             {!!ageLabel && <GlassPill text={ageLabel} icon="calendar" />}
           </View>
+
+          {/* Счётчики закрывают пустоту справа от аватара — см. шапку файла. */}
+          {stats && (
+            <View style={s.miniRow}>
+              <MiniStat value={stats.points} label="очков" />
+              <MiniStat
+                value={stats.streak}
+                label={`${plural(stats.streak, ["день", "дня", "дней"])} подряд`}
+              />
+              <MiniStat value={stats.assignments} label="заданий" />
+            </View>
+          )}
         </View>
       </View>
 
       {/* ── Полоса опыта ──
-          Уровень раньше был просто числом в пилюле: сколько до следующего и
-          что для этого сделать, ученик не знал.
-
           Дорожка тёмная, а не белая полупрозрачная: белый на 18% поверх
           фиолетового давал светло-сиреневый, почти неотличимый от самого
           фона — было не видно ни где полоса начинается, ни где кончается.
@@ -196,13 +235,13 @@ const AVATAR = 84;
 
 const s = StyleSheet.create({
   hero: {
-    paddingHorizontal: 20, paddingBottom: 22,
+    paddingHorizontal: 18, paddingBottom: 20,
     borderBottomLeftRadius: radii.xl,
     borderBottomRightRadius: radii.xl,
     marginBottom: 18,
     overflow: "hidden",
   },
-  row: { flexDirection: "row", alignItems: "flex-start", gap: 16 },
+  row: { flexDirection: "row", alignItems: "flex-start", gap: 15 },
 
   // Место под шильд уровня, который свисает ниже аватара.
   avatarWrap: { width: AVATAR + 8, paddingBottom: 14 },
@@ -224,7 +263,7 @@ const s = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
     borderWidth: 2.5, borderColor: "#ffffff",
   },
-  // Шильд узкий и по центру аватара: в нём теперь только «УР. N».
+  // Шильд узкий и по центру аватара: в нём только «УР. N».
   levelBadge: {
     position: "absolute", alignSelf: "center", bottom: 0,
     flexDirection: "row", alignItems: "baseline", gap: 4,
@@ -234,10 +273,10 @@ const s = StyleSheet.create({
   levelCap: { fontSize: 9, fontWeight: "900", color: "#7a4a06", letterSpacing: 0.6 },
   levelNum: { fontSize: 14, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] },
 
-  who: { flex: 1, paddingTop: 6 },
+  who: { flex: 1, minWidth: 0, paddingTop: 4 },
   name: { fontSize: 23, fontWeight: "900", letterSpacing: -0.6, color: "#ffffff" },
-  username: { fontSize: 13.5, color: "rgba(255,255,255,0.72)", marginTop: 3 },
-  badgeRow: { flexDirection: "row", gap: 7, flexWrap: "wrap", marginTop: 11 },
+  username: { fontSize: 13, color: "rgba(255,255,255,0.72)", marginTop: 4 },
+  badgeRow: { flexDirection: "row", gap: 7, flexWrap: "wrap", marginTop: 10 },
   glassPill: {
     flexDirection: "row", alignItems: "center", gap: 5,
     backgroundColor: "rgba(255,255,255,0.16)",
@@ -246,7 +285,24 @@ const s = StyleSheet.create({
   },
   glassPillText: { fontSize: 11.5, fontWeight: "800", color: "#ffffff" },
 
-  xpBlock: { marginTop: 20 },
+  // ── Счётчики ──
+  miniRow: { flexDirection: "row", gap: 7, marginTop: 11 },
+  mini: {
+    flex: 1, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 14,
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+  },
+  miniValue: {
+    fontSize: 17, fontWeight: "900", color: "#ffffff",
+    letterSpacing: -0.5, fontVariant: ["tabular-nums"],
+  },
+  miniLabel: {
+    fontSize: 9.5, fontWeight: "700", color: "rgba(255,255,255,0.72)",
+    marginTop: 5, letterSpacing: 0.1,
+  },
+
+  xpBlock: { marginTop: 18 },
   xpHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 },
   xpTitle: { fontSize: 13, fontWeight: "800", color: "#ffffff" },
   xpNum: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"] },
