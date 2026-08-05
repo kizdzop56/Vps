@@ -28,21 +28,19 @@
 // пятая медаль встаёт вровень с правым краем на любом экране, а не вылезает
 // за него на узких.
 //
-// Нажатие раскрывает веер, повторное — складывает обратно. Анимация идёт по
+// Первое нажатие раскрывает веер, нажатие по раскрытой медали открывает её
+// карточку. Складывается веер стрелкой-счётчиком рядом. Анимация идёт по
 // одному значению fan (0…1), позиции считаются трансформами: layout при этом
 // не пересчитывается и на слабых телефонах ничего не дёргается.
 //
-// ── Подписи веера ───────────────────────────────────────────────────────────
-// Подписи раньше лежали обычным рядом по flex: 1, то есть с шагом «ширина / 5»,
-// а медали раскладываются с шагом «(ширина − диаметр) / 4». Шаги разные, и
-// названия стояли не под своими медалями. Теперь каждая подпись позиционируется
-// абсолютно от ЦЕНТРА своей медали и прижимается к краям блока, чтобы крайние
-// не уезжали за границу.
+// ── БЕЗ ПОДПИСЕЙ ────────────────────────────────────────────────────────────
+// Названий под медалями нет ни в веере, ни в полном списке. На ширину
+// медали влезало 12–14 символов, поэтому «Бриллиантовый ученик» превращался в
+// «Бриллиантовы…», и ряд читался как строка мусора. При этом сами медали
+// приходилось держать мелкими, чтобы подписи не наезжали друг на друга.
 //
-// ── Переносы ────────────────────────────────────────────────────────────────
-// Все подписи — одна строка с многоточием. Двухстрочный вариант в
-// react-native-web рвал слово посередине («Бриллиантовы / й ученик»). Полное
-// название видно в карточке награды по тапу.
+// Теперь медали крупные (веер 64, список 76 вместо 52 и 60), а название и
+// описание показываются целиком в карточке по тапу — там для них есть место.
 //
 // ── Закрытие карточки ───────────────────────────────────────────────────────
 // Одна кнопка «Закрыть», прижатая к низу ЭКРАНА, а не к низу карточки. Она
@@ -188,8 +186,11 @@ function ProgressTrack({
 // ── Веер ────────────────────────────────────────────────────────────────────
 
 const FAN_COUNT = 5;      // сколько медалей показываем
-const FAN_SIZE = 52;      // диаметр медали
-const FAN_STACKED = 15;   // сдвиг соседней медали в сложенном виде
+const FAN_SIZE = 64;      // диаметр медали: подписей нет, места хватает
+const FAN_STACKED = 18;   // сдвиг соседней медали в сложенном виде
+
+/** Медаль в полном списке. Крупнее веера: там она главный объект. */
+const GRID_SIZE = 76;
 
 /** Сколько места занимает липкая кнопка внизу окна вместе с отступами. */
 const STICKY_SPACE = 84;
@@ -246,12 +247,16 @@ function FanMedal({
           },
         ]}
       >
-        <MedalFace achievement={achievement} size={FAN_SIZE} glyphSize={24} />
+        <MedalFace achievement={achievement} size={FAN_SIZE} glyphSize={30} />
       </Pressable>
     </Animated.View>
   );
 }
 
+/**
+ * Медаль в полном списке. Без подписи: название целиком показывает карточка по
+ * тапу, а обрезанное «Бриллиантовы…» под медалью не сообщало ничего.
+ */
 function BadgeCard({
   achievement,
   isLocked = false,
@@ -284,8 +289,8 @@ function BadgeCard({
         {/* Подставка видна только у полученной — закрытая ещё не «на полке». */}
         {!isLocked && (
           <View style={{
-            position: "absolute", left: 0, right: 0, top: 4, height: 60,
-            borderRadius: 30, backgroundColor: achievement.color, opacity: 0.55,
+            position: "absolute", left: 0, right: 0, top: 4, height: GRID_SIZE,
+            borderRadius: GRID_SIZE / 2, backgroundColor: achievement.color, opacity: 0.55,
           }} />
         )}
         <Animated.View style={{ transform: [{ translateY: press }] }}>
@@ -310,9 +315,9 @@ function BadgeCard({
             ]}
           >
             {isLocked ? (
-              <Glyph name="lock" size={22} color="rgba(91,79,142,0.5)" />
+              <Glyph name="lock" size={28} color="rgba(91,79,142,0.5)" />
             ) : (
-              <MedalFace achievement={achievement} size={60} glyphSize={28} />
+              <MedalFace achievement={achievement} size={GRID_SIZE} glyphSize={34} />
             )}
           </View>
         </Animated.View>
@@ -320,19 +325,10 @@ function BadgeCard({
       </View>
 
       {isLocked && percent !== undefined && (
-        <View style={{ alignSelf: "stretch", marginTop: 4 }}>
+        <View style={{ alignSelf: "stretch", marginTop: 5 }}>
           <ProgressTrack percent={percent} color={achievement.color} height={4} />
         </View>
       )}
-
-      {/* Одна строка с многоточием: перенос рвал слова посередине. */}
-      <Text
-        style={[styles.badgeTitle, { color: isLocked ? "#9b8ec4" : achievement.color }]}
-        numberOfLines={1}
-        ellipsizeMode="tail"
-      >
-        {achievement.title}
-      </Text>
     </Pressable>
   );
 }
@@ -523,19 +519,24 @@ export function AchievementsShowcase({
     ? Math.max(FAN_STACKED + 4, (boxWidth - FAN_SIZE) / (showcase.length - 1))
     : FAN_SIZE + 6;
 
-  // Ширина подписи под медалью. Больше шага её делать нельзя — соседние
-  // подписи начнут наезжать друг на друга.
-  const labelWidth = Math.max(FAN_SIZE, Math.min(openStep, 88));
-
-  const toggleFan = () => {
-    const to = fanOpen ? 0 : 1;
-    setFanOpen(!fanOpen);
+  const openFan = () => {
+    setFanOpen(true);
     Animated.timing(fan, {
-      toValue: to,
+      toValue: 1,
       duration: timing.panel,
       easing: Easing.out(Easing.cubic),
       // Позиции считаются трансформами, поэтому нативный драйвер уместен и на
       // вебе даёт плавность без пересчёта layout.
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeFan = () => {
+    setFanOpen(false);
+    Animated.timing(fan, {
+      toValue: 0,
+      duration: timing.panel,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
   };
@@ -566,17 +567,18 @@ export function AchievementsShowcase({
       <View style={styles.lead}>
         {showcase.length === 0 ? (
           <View style={styles.fanEmpty}>
-            <Glyph name="trophy" size={22} color="rgba(139,92,246,0.45)" />
+            <Glyph name="trophy" size={26} color="rgba(139,92,246,0.45)" />
           </View>
         ) : (
           <Pressable
-            onPress={toggleFan}
+            onPress={fanOpen ? undefined : openFan}
+            disabled={fanOpen}
             style={[
               styles.fanBox,
               fanOpen ? { flex: 1 } : { width: stackedWidth },
             ]}
-            accessibilityRole="button"
-            accessibilityLabel={fanOpen ? "Сложить лучшие награды" : "Раскрыть лучшие награды"}
+            accessibilityRole={fanOpen ? undefined : "button"}
+            accessibilityLabel={fanOpen ? undefined : "Раскрыть лучшие награды"}
           >
             {showcase.map((a, i) => (
               <FanMedal
@@ -585,10 +587,12 @@ export function AchievementsShowcase({
                 index={i}
                 fan={fan}
                 step={openStep}
-                // В сложенном виде тап по медали раскрывает веер, в раскрытом —
-                // складывает обратно. Карточка награды открывается из полного
-                // списка ниже: иначе одно и то же нажатие делало бы разное.
-                onPress={toggleFan}
+                // Сложенный веер: тап раскрывает. Раскрытый: тап по медали
+                // открывает её карточку — названия под медалями больше нет,
+                // и это единственный способ узнать, что за медаль.
+                onPress={fanOpen
+                  ? () => setSelected({ achievement: a, isLocked: false })
+                  : openFan}
               />
             ))}
           </Pressable>
@@ -605,7 +609,19 @@ export function AchievementsShowcase({
           </View>
         )}
 
-        {!fanOpen && (
+        {/* Раскрытый веер складывается своей кнопкой: тап по медали теперь
+            занят открытием карточки. */}
+        {fanOpen ? (
+          <TouchableOpacity
+            style={[styles.openBtn, { backgroundColor: colors.muted }]}
+            onPress={closeFan}
+            activeOpacity={0.75}
+            accessibilityRole="button"
+            accessibilityLabel="Сложить награды"
+          >
+            <Glyph name="close" size={15} color={colors.mutedForeground} />
+          </TouchableOpacity>
+        ) : (
           <TouchableOpacity
             style={[styles.openBtn, { backgroundColor: colors.primary + "14" }]}
             onPress={() => setExpanded((v) => !v)}
@@ -619,33 +635,6 @@ export function AchievementsShowcase({
           </TouchableOpacity>
         )}
       </View>
-
-      {/* Названия появляются только у раскрытого веера: в сложенном виде
-          подписывать нечего, медали перекрывают друг друга.
-
-          Каждая подпись стоит по центру СВОЕЙ медали: центр медали —
-          i * openStep + FAN_SIZE / 2, от него и пляшем. Крайние прижимаются к
-          границам блока, иначе первая уезжает влево, а последняя за экран. */}
-      {fanOpen && showcase.length > 0 && (
-        <View style={styles.fanLabels}>
-          {showcase.map((a, i) => {
-            const center = i * openStep + FAN_SIZE / 2;
-            const left = boxWidth > 0
-              ? Math.max(0, Math.min(center - labelWidth / 2, boxWidth - labelWidth))
-              : i * (FAN_SIZE + 6);
-            return (
-              <Text
-                key={a.id}
-                style={[styles.fanLabel, { left, width: labelWidth, color: a.color }]}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {a.title}
-              </Text>
-            );
-          })}
-        </View>
-      )}
 
       {/* ── Ближайшая награда ── */}
       {next && (
@@ -757,13 +746,6 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.35)",
     backgroundColor: "rgba(160,140,220,0.1)",
   },
-  // Высота фиксированная: подписи внутри позиционируются абсолютно, сам по
-  // себе контейнер их не померяет.
-  fanLabels: { height: 13, marginTop: 7 },
-  fanLabel: {
-    position: "absolute", top: 0,
-    fontSize: 8.5, fontWeight: "800", lineHeight: 12, textAlign: "center",
-  },
 
   leadText: { flex: 1, minWidth: 0 },
   countRow: { flexDirection: "row", alignItems: "baseline", gap: 5 },
@@ -796,19 +778,13 @@ const styles = StyleSheet.create({
     fontSize: 10, fontWeight: "900", letterSpacing: 1,
     textTransform: "uppercase", marginBottom: 10,
   },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  // Три колонки вместо четырёх: ячейка выросла с ~70 до ~100 px, и название
-  // в одну строку почти всегда влезает целиком.
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  // Подписей больше нет, поэтому ячейка — это ровно медаль: три в ряд с
+  // одинаковыми промежутками.
   badgeWrap: { width: "31%", alignItems: "center" },
   badgeRing: {
-    width: 60, height: 60, borderRadius: 30, borderWidth: 2,
+    width: GRID_SIZE, height: GRID_SIZE, borderRadius: GRID_SIZE / 2, borderWidth: 2,
     overflow: "hidden", justifyContent: "center", alignItems: "center",
-  },
-  // alignSelf: stretch обязателен. Без него подпись шире медали растёт вправо
-  // от неё и выглядит сдвинутой, а textAlign ничего не выравнивает.
-  badgeTitle: {
-    alignSelf: "stretch",
-    fontSize: 10, fontWeight: "800", textAlign: "center", marginTop: 5, lineHeight: 13,
   },
 
   // ── Карточка награды ──
