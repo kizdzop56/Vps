@@ -1,18 +1,23 @@
 // Чужой профиль: ученика или учителя.
 //
-// Оформление ученика ровно то же, что на своём профиле (app/(main)/profile.tsx):
-// та же шапка-герой (ProfileHero), тот же блок «О себе» с интересами
-// (AboutCard в режиме просмотра), те же карточки успеваемости и та же витрина
-// наград. Раньше здесь была своя вёрстка — круглый аватар по центру и три
-// серые плитки, — и переход из списка друзей выглядел как переход в другое
-// приложение.
+// Профиль ученика оформлен РОВНО так же, как свой (app/(main)/profile.tsx):
+// та же шапка-герой (ProfileHero) с теми же двумя счётчиками, тот же блок
+// «О себе» с интересами (AboutCard в режиме просмотра), та же «Успеваемость»
+// с переключателем периода, те же кольца заданий, та же плитка времени и та
+// же витрина наград. Расхождения в оформлении здесь считаются багом: переход
+// из друзей или рейтинга не должен выглядеть как переход в другое приложение.
+//
+// Откуда берутся цифры. GET /users/:id знает только про очки, время и средний
+// балл. Всё остальное — выученные слова, серия входов, срезы успеваемости по
+// периодам, условия наград — приходит из GET /students/:id/profile-stats
+// (artifacts/api-server/src/routes/studentProfile.ts). Раньше этих данных не
+// было, поэтому в шапке стояли «очки/задания», а витрина наград считалась по
+// нулям и показывала чужого ученика новичком.
 //
 // Что отличается от своего профиля, и почему:
 //   • нет цели дня — это личный план, чужой ученик им не управляет;
 //   • «О себе» и интересы только на просмотр;
-//   • в шапке счётчики «очков» и «заданий», а не «слов выучено» и «дней
-//     подряд»: статистику по словам и серию сервер отдаёт только自 владельцу,
-//     учителю и родителю (см. canViewStudent в routes/flashcards.ts);
+//   • нет кнопки «Мои друзья» — это раздел владельца;
 //   • сверху кнопки «назад» и «Написать».
 //
 // Профиль учителя оставлен как был: у него другие данные (слоты, часы с вами,
@@ -65,6 +70,14 @@ const ROLE_LABELS: Record<string, string> = {
   student: "Ученик", parent: "Родитель", teacher: "Учитель", admin: "Администратор",
 };
 
+// Периоды «Успеваемости» — тот же набор и те же подписи, что на своём профиле.
+type StatsPeriod = "week" | "month" | "all";
+const PERIODS: { key: StatsPeriod; label: string }[] = [
+  { key: "week", label: "Неделя" },
+  { key: "month", label: "Месяц" },
+  { key: "all", label: "Всё время" },
+];
+
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
@@ -102,6 +115,24 @@ type FriendProfile = {
   completedAssignments: number;
   isOnline?: boolean;
   lastSeenAt?: string | null;
+};
+
+/** Ответ GET /students/:id/profile-stats. */
+type PeriodStat = { count: number; average: number | null; points: number };
+
+type StudentProfileStats = {
+  studentId: number;
+  wordsLearned: number;
+  placementLevel: string | null;
+  loginStreak: number;
+  todayMinutes: number;
+  totalTimeMinutes: number;
+  gradedAssignments: number;
+  perfectScoreCount: number;
+  voiceChatSessions: number;
+  earlyBirdSessions: number;
+  unlockedAchievementIds: string[];
+  periodStats: Record<StatsPeriod, PeriodStat>;
 };
 
 type FriendshipStatus = "none" | "pending_sent" | "pending_received" | "friends" | "loading";
@@ -229,6 +260,8 @@ export default function FriendProfileScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
   const [interests, setInterests] = useState<string[]>([]);
+  const [gameStats, setGameStats] = useState<StudentProfileStats | null>(null);
+  const [period, setPeriod] = useState<StatsPeriod>("all");
   const onlinePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isStudent = user?.role === "student";
@@ -289,6 +322,19 @@ export default function FriendProfileScreen() {
     }
   }, [friendId]);
 
+  // Слова, серия, срезы успеваемости и условия наград. Без этого запроса
+  // профиль всё равно откроется — просто вместо «слов выучено / дней подряд»
+  // в шапке останутся очки и задания.
+  const loadGameStats = useCallback(async () => {
+    if (!friendId) return;
+    try {
+      const data = await apiFetch(`/api/students/${friendId}/profile-stats`);
+      setGameStats(data ?? null);
+    } catch {
+      setGameStats(null);
+    }
+  }, [friendId]);
+
   // Интересы открыты всем авторизованным (см. routes/interests.ts): по ним
   // видно, о чём с человеком можно поговорить.
   const loadInterests = useCallback(async () => {
@@ -326,12 +372,13 @@ export default function FriendProfileScreen() {
     loadFriendStatus();
     loadCategoryStats();
     loadInterests();
+    loadGameStats();
     // Poll online status every 30s so it stays up-to-date
     onlinePollerRef.current = setInterval(pollOnlineStatus, 30_000);
     return () => {
       if (onlinePollerRef.current) clearInterval(onlinePollerRef.current);
     };
-  }, [loadProfile, loadFriendStatus, loadCategoryStats, loadInterests, pollOnlineStatus]);
+  }, [loadProfile, loadFriendStatus, loadCategoryStats, loadInterests, loadGameStats, pollOnlineStatus]);
 
   const handleSendRequest = async () => {
     setActionLoading(true);
@@ -377,10 +424,24 @@ export default function FriendProfileScreen() {
     section: { paddingHorizontal: 20, marginBottom: 16 },
     center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 28 },
 
+    // Переключатель периода — копия своего профиля, вплоть до теней.
+    seg: {
+      flexDirection: "row", backgroundColor: colors.muted,
+      borderRadius: radii.sm + 2, padding: 3, marginBottom: 12,
+    },
+    segBtn: { flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
+    segBtnActive: {
+      backgroundColor: colors.card,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
+    },
+    segText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
+    segTextActive: { color: colors.foreground, fontWeight: "800" },
+
     scoreCard: {
       flexDirection: "row", alignItems: "center", gap: 14,
       backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
-      borderWidth: 1, borderColor: colors.border,
+      borderWidth: 1, borderColor: colors.border, marginBottom: 10,
       shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
       shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
     },
@@ -432,20 +493,6 @@ export default function FriendProfileScreen() {
     );
   }
 
-  const achievementStats: AchievementStats = {
-    completedAssignments: profile.completedAssignments,
-    totalPoints: profile.totalPoints,
-    knowledgeLevel: profile.knowledgeLevel,
-    totalTimeMinutes: profile.totalTimeMinutes ?? 0,
-    voiceChatSessions: 0,
-    loginStreak: 0,
-    perfectScoreCount: 0,
-    xpLevel: 0,
-    earlyBirdSessions: 0,
-  };
-  const unlocked = getUnlockedAchievements(achievementStats);
-  const locked = getLockedAchievements(achievementStats);
-
   const avatarColor = profile.avatarColor ?? "#6366f1";
   const avatarEmoji = profile.avatarEmoji ?? "🦁";
   const isSelf = user?.id === friendId;
@@ -455,10 +502,34 @@ export default function FriendProfileScreen() {
   // очки и XP в проекте одно и то же (см. constants/xpLevels.ts).
   const xpProgress = getXpProgress(profile.totalPoints);
 
-  const scoreTint = profile.averageScore === null || profile.averageScore === undefined
+  // Условия наград — по реальным цифрам ученика. Пока /profile-stats не
+  // ответил, берём то, что есть в профиле: витрина покажет меньше медалей, но
+  // не соврёт в другую сторону.
+  const achievementStats: AchievementStats = {
+    completedAssignments: gameStats?.gradedAssignments ?? profile.completedAssignments,
+    totalPoints: profile.totalPoints,
+    knowledgeLevel: profile.knowledgeLevel,
+    totalTimeMinutes: gameStats?.totalTimeMinutes ?? profile.totalTimeMinutes ?? 0,
+    voiceChatSessions: gameStats?.voiceChatSessions ?? 0,
+    loginStreak: gameStats?.loginStreak ?? 0,
+    perfectScoreCount: gameStats?.perfectScoreCount ?? 0,
+    xpLevel: xpProgress.current.level,
+    earlyBirdSessions: gameStats?.earlyBirdSessions ?? 0,
+  };
+  const unlocked = getUnlockedAchievements(achievementStats);
+  const locked = getLockedAchievements(achievementStats);
+
+  // Срез успеваемости за выбранный период. Нет ответа сервера — показываем
+  // общий средний балл из профиля, как было раньше.
+  const activePeriod = gameStats?.periodStats?.[period] ?? null;
+  const shownAverage = activePeriod ? activePeriod.average : (profile.averageScore ?? null);
+  const shownCount = activePeriod ? activePeriod.count : profile.completedAssignments;
+  const shownPoints = activePeriod ? activePeriod.points : profile.totalPoints;
+
+  const scoreTint = shownAverage === null || shownAverage === undefined
     ? colors.mutedForeground
-    : profile.averageScore >= 70 ? colors.success
-      : profile.averageScore >= 50 ? accents.amber
+    : shownAverage >= 70 ? colors.success
+      : shownAverage >= 50 ? accents.amber
         : colors.destructive;
 
   // ── Профиль учителя: прежняя вёрстка ──
@@ -547,6 +618,32 @@ export default function FriendProfileScreen() {
   }
 
   // ── Профиль ученика: то же оформление, что и свой ──
+  //
+  // Счётчики в шапке — «слов выучено» и «дней подряд», как у себя. Если
+  // /profile-stats не ответил, показываем очки и задания: пустая шапка хуже,
+  // чем другая пара цифр.
+  const heroStats = gameStats
+    ? [
+        {
+          icon: "cards" as const,
+          value: gameStats.wordsLearned,
+          label: `${plural(gameStats.wordsLearned, ["слово", "слова", "слов"])} выучено`,
+        },
+        {
+          icon: "flame" as const,
+          value: gameStats.loginStreak,
+          label: `${plural(gameStats.loginStreak, ["день", "дня", "дней"])} подряд`,
+        },
+      ]
+    : [
+        { icon: "star" as const, value: profile.totalPoints, label: "очков" },
+        {
+          icon: "check" as const,
+          value: profile.completedAssignments,
+          label: plural(profile.completedAssignments, ["задание", "задания", "заданий"]),
+        },
+      ];
+
   return (
     <View style={s.container}>
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
@@ -560,14 +657,7 @@ export default function FriendProfileScreen() {
           ageLabel={profile.age ? ageWord(profile.age) : null}
           online={profile.isOnline}
           level={{ number: xpProgress.current.level, title: xpProgress.current.title }}
-          stats={[
-            { icon: "star", value: profile.totalPoints, label: "очков" },
-            {
-              icon: "check",
-              value: profile.completedAssignments,
-              label: plural(profile.completedAssignments, ["задание", "задания", "заданий"]),
-            },
-          ]}
+          stats={heroStats}
           xp={{
             current: profile.totalPoints,
             nextAt: xpProgress.next?.xpRequired ?? null,
@@ -606,22 +696,36 @@ export default function FriendProfileScreen() {
           readOnly
         />
 
-        {/* ── Успеваемость: те же карточки, что на своём профиле ── */}
+        {/* ── Успеваемость: те же карточки и тот же переключатель периода ── */}
         <View style={s.section}>
           <SectionLabel>Успеваемость</SectionLabel>
+
+          {!!gameStats && (
+            <View style={s.seg}>
+              {PERIODS.map((p) => (
+                <TouchableOpacity
+                  key={p.key}
+                  style={[s.segBtn, period === p.key && s.segBtnActive]}
+                  onPress={() => setPeriod(p.key)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[s.segText, period === p.key && s.segTextActive]}>{p.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
           <View style={s.scoreCard}>
-            <ScoreRing score={profile.averageScore ?? null} color={scoreTint} />
+            <ScoreRing score={shownAverage} color={scoreTint} />
             <View style={{ flex: 1 }}>
               <Text style={s.scoreLabel}>Средний балл</Text>
               <Text style={[s.scoreValue, { color: scoreTint }]}>
-                {profile.averageScore === null || profile.averageScore === undefined
-                  ? "—"
-                  : `${profile.averageScore}%`}
+                {shownAverage === null || shownAverage === undefined ? "—" : `${shownAverage}%`}
               </Text>
               <Text style={s.scoreHint}>
-                {profile.completedAssignments === 0
-                  ? "Пока нет проверенных работ"
-                  : `${profile.completedAssignments} ${plural(profile.completedAssignments, ["работа", "работы", "работ"])} · ${profile.totalPoints} очков`}
+                {shownCount === 0
+                  ? (gameStats ? "За этот период работ нет" : "Пока нет проверенных работ")
+                  : `${shownCount} ${plural(shownCount, ["работа", "работы", "работ"])} · +${shownPoints} очков`}
               </Text>
             </View>
           </View>
@@ -659,9 +763,11 @@ export default function FriendProfileScreen() {
                   <Glyph name="clock" size={24} color="#ffffff" />
                 </View>
                 <Text style={[s.timerValue, { textAlign: "center" }]}>
-                  {formatTime(profile.totalTimeMinutes ?? 0)}
+                  {formatTime(gameStats?.totalTimeMinutes ?? profile.totalTimeMinutes ?? 0)}
                 </Text>
-                <Text style={[s.timerLabel, { textAlign: "center" }]}>За всё время</Text>
+                <Text style={[s.timerLabel, { textAlign: "center" }]}>
+                  {gameStats ? `Сегодня: ${formatTime(gameStats.todayMinutes)}` : "За всё время"}
+                </Text>
               </View>
             </LinearGradient>
           </View>
@@ -687,14 +793,14 @@ export default function FriendProfileScreen() {
                 <View style={{ flex: 1, backgroundColor: accents.magenta + "12", borderRadius: 12, padding: 12 }}>
                   <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 4 }}>CEFR (тест)</Text>
                   <Text style={{ fontSize: 15, fontWeight: "800", color: accents.magenta }}>
-                    {wordStats?.placementLevel ?? "не пройден"}
+                    {wordStats?.placementLevel ?? gameStats?.placementLevel ?? "не пройден"}
                   </Text>
                 </View>
               </View>
 
               <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
                 {[
-                  { value: wordStats?.totalLearned ?? 0, label: "Выучено" },
+                  { value: wordStats?.totalLearned ?? gameStats?.wordsLearned ?? 0, label: "Выучено" },
                   { value: wordStats?.totalWords ?? 0, label: "В изучении" },
                   { value: `${wordStats?.accuracy ?? 0}%`, label: "Точность" },
                 ].map((it) => (
