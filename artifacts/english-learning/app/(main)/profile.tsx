@@ -446,22 +446,53 @@ export default function ProfileScreen() {
   );
 
   /**
-   * Средний балл за выбранный период. Числа работ и очков здесь больше не
-   * считаются: карточка показывает только балл, а подробности — в разборе
-   * заданий.
+   * Успеваемость за выбранный период: сам балл, балл за предыдущий такой же
+   * отрезок и оценки последних работ.
+   *
+   * Зачем предыдущий отрезок: «29 %» не отвечает на вопрос «я стал лучше?».
+   * Сравнение с прошлой неделей отвечает. Для «всего времени» сравнивать не с
+   * чем календарно, поэтому там первая половина работ против второй — это
+   * честный ответ на тот же вопрос.
+   *
+   * Зачем список оценок: одинаковый средний балл бывает у ровного ученика
+   * (60-60-60) и у скачущего (30-90-60). Столбики показывают разницу, средний
+   * балл — нет.
    */
-  const periodAverage = React.useMemo(() => {
+  const periodScore = React.useMemo(() => {
     const days = PERIODS.find((p) => p.key === period)?.days ?? null;
-    const cutoff = days === null ? 0 : Date.now() - days * 86400000;
-    const inPeriod = days === null
-      ? submissionRows
-      : submissionRows.filter((r) => {
-          const t = new Date(r.submittedAt).getTime();
-          return Number.isFinite(t) && t >= cutoff;
-        });
-    const scored = inPeriod.filter((r) => typeof r.score === "number");
-    if (scored.length === 0) return null;
-    return Math.round(scored.reduce((sum, r) => sum + r.score, 0) / scored.length);
+
+    const withTime = submissionRows
+      .map((r) => ({ score: r.score as number | null, at: new Date(r.submittedAt).getTime() }))
+      .filter((r) => typeof r.score === "number" && Number.isFinite(r.at))
+      .sort((a, b) => a.at - b.at);
+
+    const avg = (list: { score: number | null }[]) =>
+      list.length === 0
+        ? null
+        : Math.round(list.reduce((sum, r) => sum + (r.score ?? 0), 0) / list.length);
+
+    if (days === null) {
+      // «Всё время»: делим историю пополам. Одна работа — сравнивать нечего.
+      const half = Math.floor(withTime.length / 2);
+      return {
+        average: avg(withTime),
+        previous: withTime.length >= 4 ? avg(withTime.slice(0, half)) : null,
+        recent: withTime.slice(-8).map((r) => r.score as number),
+      };
+    }
+
+    const now = Date.now();
+    const from = now - days * 86400000;
+    const prevFrom = from - days * 86400000;
+
+    const current = withTime.filter((r) => r.at >= from);
+    const previous = withTime.filter((r) => r.at >= prevFrom && r.at < from);
+
+    return {
+      average: avg(current),
+      previous: avg(previous),
+      recent: current.slice(-8).map((r) => r.score as number),
+    };
   }, [submissions, period]);
 
   const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
@@ -957,7 +988,9 @@ export default function ProfileScreen() {
         {isStudent && (
           <>
             <ScoreCard
-              average={periodAverage}
+              average={periodScore.average}
+              previousAverage={periodScore.previous}
+              recentScores={periodScore.recent}
               periods={PERIODS}
               period={period}
               onPeriodChange={setPeriod}
