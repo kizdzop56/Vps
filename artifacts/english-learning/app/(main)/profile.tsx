@@ -14,6 +14,11 @@
 //                    (components/StudyTimeCard.tsx). Форматирование времени
 //                    живёт там же: этому экрану оно больше не нужно.
 //
+// Очки за цель дня: карточка сама просит их выдать (onClaim), как только день
+// сходится, а признак «уже получено» приходит с сервера в
+// gamStats.dailyGoalClaimedToday. Начисляет сервер и только один раз в сутки —
+// см. POST /gamification/daily-goal/claim.
+//
 // Счётчики в шапке передаются списком: у своего профиля это «слов выучено» и
 // «дней подряд», у чужого — «очков» и «заданий» (чужую статистику по словам
 // сервер не отдаёт).
@@ -817,7 +822,7 @@ export default function ProfileScreen() {
 
   const {
     stats: gamStats, toastAchievement,
-    loadStats, claimDailyLogin, unlockAchievements, hideToast, updateDailyGoal,
+    loadStats, claimDailyLogin, claimDailyGoal, unlockAchievements, hideToast, updateDailyGoal,
   } = useGamification();
 
   const [mascotVisible, setMascotVisible] = useState(false);
@@ -1431,6 +1436,8 @@ export default function ProfileScreen() {
             <DailyQuests
               plan={dailyPlan}
               goalMinutes={gamStats?.nextDailyGoalMinutes ?? gamStats?.dailyGoalMinutes ?? 15}
+              claimed={gamStats?.dailyGoalClaimedToday ?? false}
+              onClaim={claimDailyGoal}
               onGoalChange={updateDailyGoal}
             />
           </View>
