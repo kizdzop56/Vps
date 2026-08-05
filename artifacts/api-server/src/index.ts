@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { db, usersTable, timeSessionsTable, submissionsTable, authTokensTable } from "@workspace/db";
 import { sql, eq, and, or, isNull } from "drizzle-orm";
 import { startOverdueWatcher } from "./lib/autoCloseOverdue";
+import { ensureSchema } from "./lib/ensureSchema";
 
 // One-time cleanup: earlier avatar uploads stored uncompressed base64 data
 // URIs (up to several MB) directly in avatar_url. Any user row that still has
@@ -122,25 +123,41 @@ async function deleteAnnaUser() {
   }
 }
 
-// Start listening immediately so healthchecks pass; run one-time cleanup in background.
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
-  logger.info({ port }, "Server listening");
+/**
+ * Старт сервера.
+ *
+ * ensureSchema() идёт ПЕРЕД app.listen и с await. Если убрать его в общую
+ * фоновую цепочку чисток, первые запросы придут на ещё не починенную базу и
+ * упадут — а на холодном старте Render это ровно те запросы, ради которых
+ * сервис и проснулся. Стоит это один ALTER ... IF NOT EXISTS на колонку.
+ */
+async function start() {
+  await ensureSchema();
 
-  // Background cleanup — must not block startup
-  cleanupOversizedAvatars()
-    .then(() => fixLizaOrphanedSession())
-    .then(() => deleteAnnaUser())
-    .then(() => verifyUsersWithoutEmail())
-    .catch((err) => logger.error({ err }, "Startup background cleanup failed"));
+  app.listen(port, (err) => {
+    if (err) {
+      logger.error({ err }, "Error listening on port");
+      process.exit(1);
+    }
+    logger.info({ port }, "Server listening");
 
-  // Сторож сроков сдачи: закрывает задания, которые ученик не сдал вовремя,
-  // и отправляет их учителю как «не сдано в срок». Идемпотентно, поэтому
-  // безопасно и при старте, и по таймеру. На бесплатном Render сервис засыпает
-  // после простоя — при следующем пробуждении задача догонит все пропущенные
-  // сроки за время сна.
-  startOverdueWatcher();
+    // Background cleanup — must not block startup
+    cleanupOversizedAvatars()
+      .then(() => fixLizaOrphanedSession())
+      .then(() => deleteAnnaUser())
+      .then(() => verifyUsersWithoutEmail())
+      .catch((err) => logger.error({ err }, "Startup background cleanup failed"));
+
+    // Сторож сроков сдачи: закрывает задания, которые ученик не сдал вовремя,
+    // и отправляет их учителю как «не сдано в срок». Идемпотентно, поэтому
+    // безопасно и при старте, и по таймеру. На бесплатном Render сервис засыпает
+    // после простоя — при следующем пробуждении задача догонит все пропущенные
+    // сроки за время сна.
+    startOverdueWatcher();
+  });
+}
+
+start().catch((err) => {
+  logger.error({ err }, "Failed to start server");
+  process.exit(1);
 });
