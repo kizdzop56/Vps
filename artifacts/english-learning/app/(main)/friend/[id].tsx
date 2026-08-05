@@ -21,6 +21,13 @@
 // материал, а не про действие, ровно как у ScoreCard на своём профиле.
 // Проседания при нажатии нет — оно обещало бы, что что-то откроется.
 //
+// ── НИЖНИЙ ОТСТУП ───────────────────────────────────────────────────────────
+// Панель вкладок плавающая: она лежит ПОВЕРХ содержимого, а не занимает место
+// в потоке. Прокрутка о ней не знает, поэтому последний блок уезжает под неё —
+// у витрины наград так пропадала нижняя половина, и докрутить было некуда.
+// Отступ снизу берётся из screenBottom(insets), где высота панели посчитана
+// один раз (constants/layout.ts).
+//
 // Откуда берутся цифры. GET /users/:id знает только про очки, время и средний
 // балл. Всё остальное — выученные слова, серия входов, срезы успеваемости по
 // периодам, условия наград — приходит из GET /students/:id/profile-stats
@@ -65,7 +72,7 @@ import { ProfileHero } from "@/components/ui/ProfileHero";
 import { Glyph } from "@/components/ui/Glyph";
 import { SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
-import { screenTop } from "@/constants/layout";
+import { screenBottom, screenTop } from "@/constants/layout";
 import { fc, type DeckWithAssign, type FlashcardStatsWithLevel } from "@/hooks/useFlashcards";
 
 // Подписи уровня знаний (возрастной, из профиля) на русском.
@@ -419,7 +426,9 @@ export default function FriendProfileScreen() {
 
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    scroll: { paddingBottom: insets.bottom + 40 },
+    // Панель вкладок плавает поверх содержимого: без этого отступа витрина
+    // наград оказывается под ней, и докрутить её нечем.
+    scroll: { paddingBottom: screenBottom(insets) },
     section: { paddingHorizontal: 20, marginBottom: 16 },
     center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 28 },
 
@@ -519,7 +528,10 @@ export default function FriendProfileScreen() {
           )}
         </View>
 
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: screenBottom(insets) }}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={{
             alignItems: "center", paddingVertical: 24,
             backgroundColor: colors.card, borderRadius: 20,
