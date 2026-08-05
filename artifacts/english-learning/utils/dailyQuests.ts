@@ -2,15 +2,20 @@
 // Задачи дня.
 //
 // Раньше цель дня была одна: «время в приложении». Её можно закрыть, просто не
-// закрывая вкладку, поэтому она ничего не требовала и ничему не учила. Здесь
-// цель собирается из 2–4 разных задач: время, задание, слова, разговор.
+// закрывая вкладку, поэтому она ничего не требовала и ничему не учила.
+//
+// Теперь у дня два слоя:
+//   • ВРЕМЯ — заголовок карточки и кольцо прогресса. Это по-прежнему главное
+//     число дня («2 из 15 минут»), но уже не единственная задача.
+//   • ЗАДАЧИ — чек-лист из 2–4 пунктов разного плана: зайти в приложение,
+//     выполнить задание, повторить слова, поговорить с тьютором.
 //
 // Набор задач НЕ случайный в привычном смысле: он детерминированно выводится из
 // даты. Это важно по трём причинам:
 //   1. Задачи не должны меняться при каждом обновлении экрана — иначе ученик
 //      выполнит одну, вернётся и увидит другую.
-//   2. Не нужна отдельная таблица в базе и запрос за ней: одна и та же дата у
-//      клиента и у сервера даёт один и тот же набор.
+//   2. Не нужна отдельная таблица в базе и запрос за ней: одна и та же дата
+//      всегда даёт один и тот же набор.
 //   3. День ото дня набор всё-таки меняется, иначе «цель дня» превратится в
 //      постоянный список.
 //
@@ -18,14 +23,12 @@
 // GET /flashcards/stats) — новых запросов эта логика не добавляет.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { GlyphName } from "@/components/ui/Glyph";
-
-/** Что именно требует задача. */
-export type QuestKind = "time" | "assignment" | "words" | "voice";
+/** Что именно требует задача. Время сюда не входит — оно в шапке карточки. */
+export type QuestKind = "login" | "assignment" | "words" | "voice";
 
 export interface Quest {
   kind: QuestKind;
-  /** Текст задачи: «Позаниматься 15 минут». */
+  /** Текст задачи: «Выполнить задание». */
   title: string;
   /** Сделано. */
   current: number;
@@ -35,14 +38,39 @@ export interface Quest {
   done: boolean;
   /** Очки за выполнение. */
   points: number;
-  icon: GlyphName;
-  /** Цвет задачи на оси бренда. */
-  color: string;
-  /** Короткая подпись справа: «12 / 15 мин». */
+  /**
+   * Подпись справа: «0 / 10». У выполненных и у задач без счёта пустая —
+   * галочки и зачёркнутого текста достаточно, цифра рядом только шумит.
+   */
   counter: string;
 }
 
-/** Данные, из которых собираются задачи. */
+/** Цель по времени: шапка карточки и кольцо. */
+export interface TimeGoal {
+  /** Минут сегодня. */
+  current: number;
+  /** Личная цель по минутам. */
+  target: number;
+  /** Сколько осталось. */
+  remaining: number;
+  /** Заполненность кольца, 0–100. */
+  percent: number;
+  done: boolean;
+  points: number;
+}
+
+export interface DailyPlan {
+  time: TimeGoal;
+  quests: Quest[];
+  /** Сколько задач закрыто (без учёта времени). */
+  doneCount: number;
+  /** Все задачи дня и время закрыты. */
+  allDone: boolean;
+  /** Очки за весь день: время + все задачи. */
+  totalPoints: number;
+}
+
+/** Данные, из которых собирается день. */
 export interface QuestInput {
   /** Минут в приложении сегодня. */
   todayMinutes: number;
@@ -59,7 +87,7 @@ export interface QuestInput {
 }
 
 /** Русское склонение по числу. */
-function plural(n: number, forms: [string, string, string]): string {
+export function plural(n: number, forms: [string, string, string]): string {
   const abs = Math.abs(n) % 100;
   if (abs >= 11 && abs <= 14) return forms[2];
   const last = abs % 10;
@@ -92,65 +120,54 @@ export function todayKey(d = new Date()): string {
 function buildQuest(kind: QuestKind, target: number, current: number): Quest {
   const done = current >= target;
   const shown = Math.min(current, target);
+  const counter = done ? "" : `${shown} / ${target}`;
 
   switch (kind) {
-    case "time":
-      return {
-        kind, target, current, done, points: 20,
-        title: `Позаниматься ${target} ${plural(target, ["минуту", "минуты", "минут"])}`,
-        counter: `${shown} / ${target} мин`,
-        icon: "clock", color: "#6366f1",
-      };
+    // Единственная задача, которая закрывается сама фактом захода. Она стоит
+    // первой намеренно: список, в котором уже есть галочка, ребёнок дочитывает
+    // до конца, а пустой чек-лист выглядит как список долгов.
+    case "login":
+      return { kind, target, current, done, points: 10, title: "Зайти в приложение", counter: "" };
     case "assignment":
       return {
-        kind, target, current, done, points: 30,
+        kind, target, current, done, points: 30, counter,
         title: target === 1
           ? "Выполнить задание"
           : `Выполнить ${target} ${plural(target, ["задание", "задания", "заданий"])}`,
-        counter: `${shown} / ${target}`,
-        icon: "check", color: "#8b5cf6",
       };
     case "words":
-      return {
-        kind, target, current, done, points: 25,
-        title: `Повторить ${target} ${plural(target, ["слово", "слова", "слов"])}`,
-        counter: `${shown} / ${target}`,
-        icon: "cards", color: "#d946ef",
-      };
+      return { kind, target, current, done, points: 25, counter, title: "Повторить слова" };
     case "voice":
-      return {
-        kind, target, current, done, points: 35,
-        title: target === 1
-          ? "Поговорить с тьютором"
-          : `${target} ${plural(target, ["разговор", "разговора", "разговоров"])} с тьютором`,
-        counter: `${shown} / ${target}`,
-        icon: "mic", color: "#ec4899",
-      };
+      return { kind, target, current, done, points: 35, counter, title: "Поговорить с тьютором" };
   }
 }
 
 /**
- * Задачи на сегодня: от двух до четырёх.
+ * План на сегодня: цель по времени и от двух до четырёх задач.
  *
- * «Время» есть всегда — это единственная задача, которую ученик закрывает
- * самим фактом занятия, и она задаёт нижнюю планку дня. Остальные добираются
- * из пула по дате.
- *
- * Порядок в наборе тоже зависит от даты, но «время» остаётся первым: список
- * не должен перетасовываться между заходами в один и тот же день.
+ * Первая задача всегда «Зайти в приложение», остальные добираются из пула по
+ * дате. Порядок перебора сдвигается по дате, поэтому в разные дни выпадают
+ * разные типы, но внутри одного дня список неизменен.
  */
-export function buildDailyQuests(input: QuestInput, dateKey = todayKey()): Quest[] {
+export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPlan {
   const seed = seedFromDate(dateKey);
 
-  // Сколько задач сегодня: 2, 3 или 4.
+  // ── Время ──
+  const target = Math.max(5, input.dailyGoalMinutes || 15);
+  const current = Math.max(0, input.todayMinutes);
+  const time: TimeGoal = {
+    current,
+    target,
+    remaining: Math.max(0, target - current),
+    percent: Math.min(100, Math.round((current / target) * 100)),
+    done: current >= target,
+    points: 20,
+  };
+
+  // ── Задачи: 2, 3 или 4 ──
   const count = 2 + (seed % 3);
+  const quests: Quest[] = [buildQuest("login", 1, 1)];
 
-  const quests: Quest[] = [
-    buildQuest("time", Math.max(5, input.dailyGoalMinutes), input.todayMinutes),
-  ];
-
-  // Пул дополнительных задач. Порядок перебора сдвигается по дате, поэтому в
-  // разные дни добираются разные типы.
   const pool: QuestKind[] = ["assignment", "words", "voice"];
   const offset = seed % pool.length;
 
@@ -160,42 +177,27 @@ export function buildDailyQuests(input: QuestInput, dateKey = todayKey()): Quest
     if (kind === "assignment") {
       // Два задания в день — уже много для ребёнка, поэтому не больше двух и
       // только когда день «тяжёлый» (четыре задачи).
-      const target = count >= 4 && seed % 2 === 0 ? 2 : 1;
-      quests.push(buildQuest("assignment", target, input.todayCompletions));
+      const n = count >= 4 && seed % 2 === 0 ? 2 : 1;
+      quests.push(buildQuest("assignment", n, input.todayCompletions));
       continue;
     }
 
     if (kind === "words") {
       // Опираемся на личную цель из настроек карточек: у новичка она меньше.
-      const base = Math.max(5, input.dailyWordGoal || 10);
-      quests.push(buildQuest("words", base, input.wordsToday));
+      quests.push(buildQuest("words", Math.max(5, input.dailyWordGoal || 10), input.wordsToday));
       continue;
     }
 
     quests.push(buildQuest("voice", 1, input.todayVoiceSessions));
   }
 
-  return quests;
-}
-
-/** Свод по дню: сколько закрыто, сколько очков светит. */
-export function questSummary(quests: Quest[]) {
-  const done = quests.filter((q) => q.done).length;
-  const totalPoints = quests.reduce((sum, q) => sum + q.points, 0);
-  const earnedPoints = quests.filter((q) => q.done).reduce((sum, q) => sum + q.points, 0);
-
-  // Общий процент считаем по долям задач, а не по сумме «сделано/нужно»:
-  // иначе задача с целью 15 минут перевешивала бы задачу с целью 1 разговор.
-  const ratio = quests.length === 0
-    ? 0
-    : quests.reduce((sum, q) => sum + Math.min(1, q.target > 0 ? q.current / q.target : 0), 0) / quests.length;
+  const doneCount = quests.filter((q) => q.done).length;
 
   return {
-    done,
-    total: quests.length,
-    allDone: quests.length > 0 && done === quests.length,
-    percent: Math.round(ratio * 100),
-    totalPoints,
-    earnedPoints,
+    time,
+    quests,
+    doneCount,
+    allDone: time.done && doneCount === quests.length,
+    totalPoints: time.points + quests.reduce((sum, q) => sum + q.points, 0),
   };
 }
