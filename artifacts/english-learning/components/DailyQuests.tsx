@@ -16,8 +16,9 @@
 //
 // Смена цели применяется со СЛЕДУЮЩЕГО дня (см. PATCH /gamification/daily-goal):
 // набор задач зависит от тяжести цели, и мгновенная смена позволяла бы
-// подбирать себе удобные задачи. Поэтому после выбора карточка показывает
-// строку «С завтра: N минут», а сегодняшняя цель остаётся прежней.
+// подбирать себе удобные задачи. В интерфейсе про это сказано одной строкой —
+// объяснять ребёнку причину («иначе можно подобрать задачи под себя») не нужно:
+// это подсказка, как обойти правило, а не полезная информация.
 //
 // Сами задачи собирает utils/dailyQuests.ts — там же объяснено, почему набор
 // детерминированный и почему в нём нет пункта «зайти в приложение».
@@ -161,11 +162,11 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
     },
     optPtsText: { fontSize: 10.5, fontWeight: "900", color: "#8a5a00", fontVariant: ["tabular-nums"] },
     note: {
-      flexDirection: "row", gap: 8, alignItems: "flex-start",
+      flexDirection: "row", gap: 8, alignItems: "center",
       backgroundColor: colors.muted, borderRadius: radii.sm,
       padding: 11, marginBottom: 16,
     },
-    noteText: { flex: 1, fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, lineHeight: 16 },
+    noteText: { flex: 1, fontSize: 12, fontWeight: "700", color: colors.mutedForeground, lineHeight: 16 },
   });
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
@@ -288,10 +289,7 @@ export function DailyQuests({ plan, goalMinutes, onGoalChange }: DailyQuestsProp
 
             <View style={s.note}>
               <Glyph name="alert" size={14} color={colors.mutedForeground} />
-              <Text style={s.noteText}>
-                Новая цель начнёт действовать завтра. Сегодняшний день уже собран, и менять его
-                на ходу нельзя — иначе задачи можно было бы подбирать под себя.
-              </Text>
+              <Text style={s.noteText}>Новая цель начнёт действовать завтра</Text>
             </View>
 
             <ChunkyButton label="Готово" icon="check" onPress={() => setEditing(false)} />
