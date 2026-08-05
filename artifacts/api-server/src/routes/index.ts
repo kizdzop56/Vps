@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import authRouter from "./auth";
 import usersRouter from "./users";
+import studentProfileRouter from "./studentProfile";
 import interestsRouter from "./interests";
 import assignmentsRouter from "./assignments";
 import submissionsRouter from "./submissions";
@@ -22,6 +23,10 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(authRouter);
 router.use(usersRouter);
+// Цифры для чужого профиля ученика: /students/:id/profile-stats.
+// Путь не пересекается с маршрутами usersRouter (/students/:id/submissions и
+// /students/:id/category-stats), порядок значения не имеет.
+router.use(studentProfileRouter);
 // Интересы живут отдельным маршрутом: /users/:id/interests не пересекается
 // с /users/:id, поэтому порядок здесь роли не играет.
 router.use(interestsRouter);
