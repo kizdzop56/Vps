@@ -57,22 +57,27 @@ export interface ChunkyButtonProps {
   label: string;
   /** Вторая строка мелким шрифтом: «12 к повторению · 6 новых». */
   sublabel?: string;
-  /** Глиф слева в круглой плашке. */
+  /** Глиф слева. У тонов primary/dark/warm — в круглой плашке. */
   icon?: GlyphName;
   /** Стрелка справа: для кнопок-переходов. */
   chevron?: boolean;
   onPress?: () => void;
   disabled?: boolean;
-  /** primary — градиент бренда, dark — глубокий индиго, warm — огонь. */
-  tone?: "primary" | "dark" | "warm";
+  /**
+   * primary — градиент бренда, dark — глубокий индиго, warm — огонь,
+   * danger — красный для выхода и удаления.
+   */
+  tone?: "primary" | "dark" | "warm" | "danger";
   /** Небольшой наклон: убирает ощущение строгой сетки. Градусы. */
   tilt?: number;
+  /** Текст по центру, без растяжки на всю ширину: для коротких действий. */
+  center?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 
 export function ChunkyButton({
   label, sublabel, icon, chevron, onPress, disabled,
-  tone = "primary", tilt = 0, style,
+  tone = "primary", tilt = 0, center, style,
 }: ChunkyButtonProps) {
   // Анимируем сдвиг корпуса вниз: 0 в покое, chunky.pressDepth при нажатии.
   const press = useRef(new Animated.Value(0)).current;
@@ -89,7 +94,15 @@ export function ChunkyButton({
     primary: { fill: gradients.action, edge: accents.indigoDeep },
     dark:    { fill: [accents.indigoDeep, accents.violetDeep] as const, edge: "#312e81" },
     warm:    { fill: gradients.fire, edge: "#b45309" },
+    // Красный не из палитры градиентов: он используется только здесь и в
+    // подтверждениях удаления, отдельного gradients.danger заводить незачем.
+    danger:  { fill: ["#f43f5e", "#e11d48"] as const, edge: "#9f1239" },
   }[tone];
+
+  // У danger значок стоит рядом с текстом, без белой плашки: квадрат на
+  // красном перетягивает внимание сильнее самого действия.
+  const plainIcon = tone === "danger";
+  const centered = center ?? tone === "danger";
 
   return (
     <View style={[{ transform: [{ rotate: `${tilt}deg` }] }, style]}>
@@ -126,23 +139,36 @@ export function ChunkyButton({
               paddingHorizontal: 16,
               flexDirection: "row",
               alignItems: "center",
-              gap: 13,
+              justifyContent: centered ? "center" : "flex-start",
+              gap: plainIcon ? 9 : 13,
               minHeight: 56,
             }}
           >
             {icon && (
-              <View style={{
-                width: 44, height: 44, borderRadius: radii.sm + 3,
-                backgroundColor: "rgba(255,255,255,0.2)",
-                alignItems: "center", justifyContent: "center",
-              }}>
-                <Glyph name={icon} size={21} color="#fff" />
-              </View>
+              plainIcon ? (
+                <Glyph name={icon} size={19} color="#fff" />
+              ) : (
+                <View style={{
+                  width: 44, height: 44, borderRadius: radii.sm + 3,
+                  backgroundColor: "rgba(255,255,255,0.2)",
+                  alignItems: "center", justifyContent: "center",
+                }}>
+                  <Glyph name={icon} size={21} color="#fff" />
+                </View>
+              )
             )}
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 17, fontWeight: "900", color: "#fff" }}>{label}</Text>
+            <View style={centered ? undefined : { flex: 1 }}>
+              <Text style={{
+                fontSize: 17, fontWeight: "900", color: "#fff",
+                textAlign: centered ? "center" : "left",
+              }}>
+                {label}
+              </Text>
               {!!sublabel && (
-                <Text style={{ fontSize: 12.5, fontWeight: "600", color: "#ffffffdd", marginTop: 2 }}>
+                <Text style={{
+                  fontSize: 12.5, fontWeight: "600", color: "#ffffffdd", marginTop: 2,
+                  textAlign: centered ? "center" : "left",
+                }}>
                   {sublabel}
                 </Text>
               )}
