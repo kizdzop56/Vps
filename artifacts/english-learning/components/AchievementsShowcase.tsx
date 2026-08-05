@@ -39,6 +39,10 @@
 // react-native-web рвал слово посередине («Бриллиантовы / й ученик»). Полное
 // название видно в карточке награды по тапу.
 //
+// ── Закрытие карточки ───────────────────────────────────────────────────────
+// Крестик в углу и тап по фону. Кнопки «Закрыть» во всю ширину внизу больше
+// нет: она была последней такой полосой в приложении и просто занимала место.
+//
 // ── ГРАБЛИ: вложенный Text ──────────────────────────────────────────────────
 // Счётчик сначала был сделан так:
 //
@@ -48,7 +52,7 @@
 // properties on this object». Три подряд белых экрана были из-за одной строки.
 // Правило: НЕ вкладывать Text в Text. Разные кегли — два отдельных Text в
 // строке с flexDirection: "row" и alignItems: "baseline".
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, Pressable, Modal, StyleSheet, Animated, Easing,
 } from "react-native";
@@ -57,7 +61,6 @@ import { useColors } from "@/hooks/useColors";
 import type { Achievement, AchievementDifficulty, AchievementStats } from "@/constants/achievements";
 import { achievementProgress, nextAchievement } from "@/utils/achievementProgress";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { ChunkyButton } from "@/components/ui/GameKit";
 import { accents, radii, chunky, timing } from "@/constants/theme";
 
 interface AchievementsShowcaseProps {
@@ -123,10 +126,29 @@ const DIFFICULTY_WEIGHT: Record<AchievementDifficulty, number> = {
   hard: 3, medium: 2, easy: 1,
 };
 
-/** Полоса прогресса в цвете награды. */
+/**
+ * Полоса прогресса в цвете награды. Заполняется от нуля при появлении: так
+ * видно величину, а не готовую картинку. Ширину нативный драйвер не
+ * анимирует — здесь всегда useNativeDriver: false.
+ */
 function ProgressTrack({
   percent, color, height = 8,
 }: { percent: number; color: string; height?: number }) {
+  const grow = useRef(new Animated.Value(0)).current;
+  const width = Math.max(percent, 3);
+
+  useEffect(() => {
+    grow.setValue(0);
+    const anim = Animated.timing(grow, {
+      toValue: 1,
+      duration: 700,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [width, grow]);
+
   return (
     <View style={{
       height,
@@ -134,12 +156,19 @@ function ProgressTrack({
       backgroundColor: color + "22",
       overflow: "hidden",
     }}>
-      <LinearGradient
-        colors={[color + "cc", color]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={{ height: "100%", width: `${Math.max(percent, 3)}%`, borderRadius: radii.pill }}
-      />
+      <Animated.View style={{
+        height: "100%",
+        borderRadius: radii.pill,
+        overflow: "hidden",
+        width: grow.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${width}%`] }),
+      }}>
+        <LinearGradient
+          colors={[color + "cc", color]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
     </View>
   );
 }
@@ -317,6 +346,22 @@ function BadgeDetailModal({
           style={[styles.modalCard, { backgroundColor: colors.card }]}
           onPress={() => {}}
         >
+          {/* Крестик в углу — единственная кнопка закрытия. Полосу «Закрыть»
+              внизу убрали: она занимала место и повторяла тап по фону. */}
+          <Pressable
+            onPress={onClose}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Закрыть"
+            style={({ pressed }) => [
+              styles.modalClose,
+              { backgroundColor: colors.muted },
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Glyph name="close" size={17} color={colors.mutedForeground} />
+          </Pressable>
+
           <View
             style={[
               styles.modalBadgeOuter,
@@ -408,13 +453,6 @@ function BadgeDetailModal({
               {isLocked ? achievement.requirement : achievement.description}
             </Text>
           </View>
-
-          <ChunkyButton
-            label="Закрыть"
-            icon="close"
-            onPress={onClose}
-            style={{ alignSelf: "stretch" }}
-          />
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
@@ -807,6 +845,11 @@ const styles = StyleSheet.create({
     alignItems: "center", shadowColor: "#6366f1", shadowOpacity: 0.2,
     shadowRadius: 26, shadowOffset: { width: 0, height: 10 }, elevation: 12,
   },
+  modalClose: {
+    position: "absolute", top: 12, right: 12, zIndex: 2,
+    width: 34, height: 34, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+  },
   modalBadgeOuter: {
     width: 104, height: 104, borderRadius: 52, borderWidth: 2.5,
     overflow: "hidden", justifyContent: "center", alignItems: "center",
@@ -825,7 +868,7 @@ const styles = StyleSheet.create({
   modalProgressPercent: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
   modalProgressCounter: { fontSize: 11.5, marginTop: 7, fontVariant: ["tabular-nums"] },
 
-  infoBlock: { width: "100%", borderRadius: radii.sm + 2, padding: 14, borderWidth: 1, marginBottom: 18, gap: 8 },
+  infoBlock: { width: "100%", borderRadius: radii.sm + 2, padding: 14, borderWidth: 1, gap: 8 },
   infoRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   infoLabel: { fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1 },
   infoText: { fontSize: 13, lineHeight: 19 },
