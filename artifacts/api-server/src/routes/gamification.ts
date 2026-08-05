@@ -12,6 +12,7 @@ import { requireAuth, getUser } from "../lib/auth";
 import {
   countEarlyBirdDays,
   liveSessionMinutes,
+  localDayKey,
   sessionMinutes,
   startOfLocalDay,
 } from "../lib/timeStats";
@@ -73,8 +74,11 @@ async function computeTimeStats(userId: number, persistedMinutes: number) {
 // выбор ученика; dailyGoalAppliedDate — день последнего переноса.
 const VALID_GOALS = [10, 15, 20, 30];
 
+// День считаем по часовому поясу приложения (APP_TIMEZONE), а не по UTC.
+// С UTC «следующий день» для Минска начинался в 3 часа ночи: ученик менял цель
+// вечером, а она вступала в силу не в полночь, как обещано, а под утро.
 function todayKey(): string {
-  return new Date().toISOString().split("T")[0]!;
+  return localDayKey(Date.now());
 }
 
 /**
