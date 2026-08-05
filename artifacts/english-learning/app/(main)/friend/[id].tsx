@@ -22,6 +22,10 @@
 //   ребёнком. Показывать ему «0 %» и «наград 0 / 50» — врать про человека,
 //   который в этой гонке вообще не участвует.
 //
+//   Пояснять это подписью в профиле не нужно: короткий экран не выглядит
+//   поломанным, а строка «у родителя нет заданий и наград» рассказывала о том,
+//   чего на экране и так нет.
+//
 // ── СМОТРИМ, НО НЕ ТРОГАЕМ ──────────────────────────────────────────────────
 // Плитки «Задания» и «Время» в профиле ученика объёмные, но НЕ нажимаются:
 // canOpen={false}. Разбор по типам работ и статистика времени по дням —
@@ -537,20 +541,6 @@ export default function FriendProfileScreen() {
             onSaveInterests={() => {}}
             readOnly
           />
-
-          {/* Одна поясняющая строка вместо пустого экрана: без неё профиль
-              выглядит недогруженным, хотя показывать больше нечего. */}
-          <View style={s.section}>
-            <View style={{
-              flexDirection: "row", alignItems: "center", gap: 10,
-              backgroundColor: colors.muted, borderRadius: radii.md, padding: 14,
-            }}>
-              <Glyph name="users" size={17} color={colors.mutedForeground} />
-              <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, lineHeight: 18 }}>
-                Родитель следит за занятиями своего ребёнка. Заданий, очков и наград у него нет.
-              </Text>
-            </View>
-          </View>
 
           {canWrite && (
             <View style={{ paddingHorizontal: 20 }}>
