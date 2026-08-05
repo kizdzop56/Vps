@@ -36,12 +36,18 @@
 // нет», хотя работы у человека были.
 //
 // ── Закрытие ────────────────────────────────────────────────────────────────
-// Кнопка «Закрыть» стоит ВНУТРИ прокрутки, последним элементом. Раньше она
-// была закреплена в подвале окна, и белая полоса под ней перекрывала конец
-// разбора. Теперь подвала нет: кнопка едет вместе с содержимым.
+// Одна кнопка «Закрыть», ЛИПКАЯ: она лежит поверх окна и прижата к низу
+// экрана, поэтому доступна на любой прокрутке и не требует долистывать разбор
+// до конца.
 //
-// Крестик в шапке тоже остался — до кнопки внизу длинного списка ещё нужно
-// долистать.
+// Полосы-подвала под ней нет — кнопка висит над содержимым, а под ней стоит
+// короткая растяжка от прозрачного к фону карточки. Именно закреплённый белый
+// прямоугольник раньше и мешал: он перекрывал последнюю строку разбора. Здесь
+// вместо него отступ снизу у прокрутки, поэтому содержимое всегда уезжает
+// выше кнопки и ничего не обрезается.
+//
+// Крестика в шапке больше нет: две кнопки для одного действия — лишний
+// элемент. Тап по затемнению тоже закрывает.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран
@@ -55,6 +61,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, Pressable, Modal, StyleSheet, Animated, Easing, Platform, ScrollView,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
@@ -65,6 +73,10 @@ const NATIVE_DRIVER = Platform.OS !== "web";
 
 /** Высота нижней грани и глубина нажатия. */
 const EDGE = 6;
+
+/** Липкая кнопка: её высота вместе с гранью и растяжка над ней. */
+const STICKY_H = 62;
+const STICKY_FADE = 28;
 
 /** Заполнение шкалы: достаточно, чтобы увидеть рост, и не успевает надоесть. */
 const FILL_MS = 700;
@@ -101,28 +113,6 @@ function shortDate(value: string): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
   return `${d.getDate()} ${MONTHS[d.getMonth()] ?? ""}`;
-}
-
-/** Крестик закрытия в шапке окна. */
-export function SheetClose({ onPress, colors }: { onPress: () => void; colors: any }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={10}
-      accessibilityRole="button"
-      accessibilityLabel="Закрыть"
-      style={({ pressed }) => [
-        {
-          width: 36, height: 36, borderRadius: 13,
-          alignItems: "center", justifyContent: "center",
-          backgroundColor: colors.muted,
-        },
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      <Glyph name="close" size={18} color={colors.mutedForeground} />
-    </Pressable>
-  );
 }
 
 /**
@@ -204,6 +194,7 @@ export function AssignmentsCard({
   stats, submissions = [], canOpen = true, replay = 0, title = "Мои задания", style,
 }: AssignmentsCardProps) {
   const colors = useColors();
+  const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
   // Растёт при каждом открытии: по нему шкалы внутри стартуют заново.
   const [run, setRun] = useState(0);
@@ -219,6 +210,10 @@ export function AssignmentsCard({
     setRun((n) => n + 1);
     setOpen(true);
   };
+
+  // Липкая кнопка стоит на этой высоте, а прокрутка получает её же отступом:
+  // так содержимое всегда можно докрутить выше кнопки.
+  const stickyBottom = 16 + insets.bottom;
 
   return (
     <View style={[{ flex: 1, paddingBottom: EDGE }, style]}>
@@ -254,25 +249,31 @@ export function AssignmentsCard({
 
             <View style={s.sheetHead}>
               <Text style={[s.sheetTitle, { color: colors.foreground }]}>{title}</Text>
-              <SheetClose onPress={() => setOpen(false)} colors={colors} />
             </View>
 
-            {/* Кнопка едет вместе с содержимым: закреплённый подвал перекрывал
-                конец разбора белой полосой. */}
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: stickyBottom + STICKY_H + STICKY_FADE }}
+            >
               <AssignmentsBreakdown
                 stats={stats}
                 submissions={submissions}
                 colors={colors}
                 run={run}
               />
-              <ChunkyButton
-                label="Закрыть"
-                icon="check"
-                onPress={() => setOpen(false)}
-                style={{ marginTop: 18 }}
-              />
             </ScrollView>
+
+            {/* Растяжка под кнопкой: содержимое уезжает под неё не обрывом, а
+                затуханием. Клики она не перехватывает. */}
+            <LinearGradient
+              pointerEvents="none"
+              colors={[colors.card + "00", colors.card]}
+              style={[s.fade, { bottom: stickyBottom + STICKY_H - 6 }]}
+            />
+
+            <View style={[s.sticky, { bottom: stickyBottom }]}>
+              <ChunkyButton label="Закрыть" tone="dark" center onPress={() => setOpen(false)} />
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -497,11 +498,15 @@ const s = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "#00000070", justifyContent: "flex-end" },
   sheet: {
     borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl,
-    paddingTop: 12, paddingHorizontal: 20, paddingBottom: 20, maxHeight: "88%",
+    paddingTop: 12, paddingHorizontal: 20, maxHeight: "88%",
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
   sheetHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 },
   sheetTitle: { flex: 1, fontSize: 19, fontWeight: "900", letterSpacing: -0.4 },
+
+  // Липкая кнопка и растяжка под ней.
+  sticky: { position: "absolute", left: 20, right: 20 },
+  fade: { position: "absolute", left: 0, right: 0, height: STICKY_FADE + 6 },
 
   hero: { borderRadius: radii.md, borderWidth: 1, padding: 16 },
   heroLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.2, textTransform: "uppercase" },
