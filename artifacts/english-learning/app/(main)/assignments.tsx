@@ -6,8 +6,26 @@
 // компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде.
 // Поле deck.emoji из базы при этом не меняется.
 //
-// Оформление собрано из GameKit и повторяет раздел «Слова»: главное действие —
-// физическая кнопка, карточки с цветной тенью. Логика экрана не менялась.
+// ── Оформление ───────────────────────────────────────────────────────────────
+// Экран приведён к общему языку приложения («объёмная» вёрстка, как в разделах
+// «Слова», «Рейтинг», «Календарь» и в профиле): у каждой карточки есть нижний
+// торец — тонкая плашка того же радиуса, выглядывающая из-под тела на EDGE
+// пикселей. Карточка перестаёт быть наклейкой на фоне и становится предметом.
+//
+// Правило одно и оно важное: торец без вдавливания читается как поломка рядом с
+// соседями, которые вдавливаются. Поэтому здесь два компонента:
+//   Chunky    — только торец, для блоков, которые ничего не открывают;
+//   ChunkyTap — торец плюс вдавливание на EDGE при нажатии, для всего, что
+//               ведёт куда-то дальше.
+// Карточка созданного задания — это Chunky: сама она не переход, переходы и
+// действия живут внутри неё отдельными кнопками (иначе вложенные нажатия в вебе
+// всплывают на внешнее и «Удалить» открывало бы задание).
+//
+// Тени под карточками ослаблены: с торцом прежняя мягкая тень превращалась в
+// грязь под чётким краем.
+//
+// Отступы сверху и снизу берутся из constants/layout.ts. Панель вкладок
+// плавающая, поэтому без screenBottom последняя карточка уезжала под неё.
 //
 // Значок типа задания рисует TypeArt (components/ui/TypeArt.tsx): не пиктограмма
 // в цветном квадрате, а маленькая сцена — лист с галочками и карандашом,
@@ -22,10 +40,10 @@
 // Карточка созданного задания показывает прогресс сдачи сегментами: «6 из 8
 // сдали». Счётчики приходят с сервера вместе со списком (assignedCount /
 // submittedCount / pendingCount), лишних запросов нет.
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, Platform,
-  ActivityIndicator, RefreshControl, Modal, ScrollView, TextInput, Alert,
+  ActivityIndicator, RefreshControl, Modal, ScrollView, TextInput, Alert, Animated,
 } from "react-native";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -44,6 +62,7 @@ import { DeckGlyph } from "@/components/ui/DeckGlyph";
 import { TypeArt } from "@/components/ui/TypeArt";
 import { ChunkyButton, GoalPips, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import { screenTop, screenBottom } from "@/constants/layout";
 import {
   DUE_PRESETS, dueDateFromPreset, formatDue, sortByDue, countUrgent,
   type DuePresetKey, type DueUrgency,
@@ -73,6 +92,79 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
         <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Попробовать снова</Text>
       </TouchableOpacity>
     </ScrollView>
+  );
+}
+
+// ─── Объём ───────────────────────────────────────────────────────────
+// Толщина торца и его цвета. Светлый — под белыми карточками, тёмный —
+// под всем, что залито основным цветом: под фиолетовой заливкой светлый
+// торец выглядит как щель, а не как толщина предмета.
+const EDGE = 5;
+const EDGE_SM = 4;
+const EDGE_LIGHT = "#c9bdf0";
+const EDGE_DARK = "#4c1d95";
+const EDGE_DANGER = "#f0bcc7";
+
+// В вебе трансформации через нативный драйвер не проходят — анимация просто
+// не запускается. Правило по всему проекту одно и то же.
+const NATIVE_DRIVER = Platform.OS !== "web";
+
+type ChunkyProps = {
+  children: React.ReactNode;
+  style?: any;
+  /** Цвет торца. */
+  edge?: string;
+  /** Толщина торца. */
+  lift?: number;
+  /** Радиус скругления торца — должен совпадать с радиусом тела. */
+  radius?: number;
+};
+
+/** Блок с торцом, который не нажимается. */
+function Chunky({ children, style, edge = EDGE_LIGHT, lift = EDGE, radius = radii.md }: ChunkyProps) {
+  return (
+    <View style={[{ paddingBottom: lift }, style]}>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute", left: 0, right: 0, top: lift, bottom: 0,
+          borderRadius: radius, backgroundColor: edge,
+        }}
+      />
+      {children}
+    </View>
+  );
+}
+
+/** Блок с торцом, который вдавливается при нажатии. Только для переходов. */
+function ChunkyTap({
+  children, style, edge = EDGE_LIGHT, lift = EDGE, radius = radii.md,
+  onPress, disabled, accessibilityLabel,
+}: ChunkyProps & { onPress?: () => void; disabled?: boolean; accessibilityLabel?: string }) {
+  const press = useRef(new Animated.Value(0)).current;
+  const to = (value: number) =>
+    Animated.timing(press, { toValue: value, duration: 90, useNativeDriver: NATIVE_DRIVER }).start();
+  const translateY = press.interpolate({ inputRange: [0, 1], outputRange: [0, lift] });
+  return (
+    <View style={[{ paddingBottom: lift }, style]}>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute", left: 0, right: 0, top: lift, bottom: 0,
+          borderRadius: radius, backgroundColor: disabled ? "transparent" : edge,
+        }}
+      />
+      <Pressable
+        onPress={onPress}
+        onPressIn={() => !disabled && to(1)}
+        onPressOut={() => to(0)}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+      >
+        <Animated.View style={{ transform: [{ translateY }] }}>{children}</Animated.View>
+      </Pressable>
+    </View>
   );
 }
 
@@ -352,26 +444,30 @@ function AssignModal({
                 {DUE_PRESETS.map((preset) => {
                   const active = duePreset === preset.key;
                   return (
-                    <TouchableOpacity
+                    <ChunkyTap
                       key={preset.key}
                       onPress={() => setDuePreset(preset.key)}
-                      activeOpacity={0.85}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                      style={{
-                        paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill,
-                        borderWidth: 1.5,
-                        borderColor: active ? colors.primary : colors.border,
-                        backgroundColor: active ? colors.secondary : colors.card,
-                      }}
+                      radius={radii.pill}
+                      lift={EDGE_SM}
+                      edge={active ? "#b9a7ee" : "#ded6f5"}
+                      accessibilityLabel={preset.label}
                     >
-                      <Text style={{
-                        fontSize: 13, fontWeight: "800",
-                        color: active ? colors.primary : colors.mutedForeground,
-                      }}>
-                        {preset.label}
-                      </Text>
-                    </TouchableOpacity>
+                      <View
+                        style={{
+                          paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill,
+                          borderWidth: 1.5,
+                          borderColor: active ? colors.primary : colors.border,
+                          backgroundColor: active ? colors.secondary : colors.card,
+                        }}
+                      >
+                        <Text style={{
+                          fontSize: 13, fontWeight: "800",
+                          color: active ? colors.primary : colors.mutedForeground,
+                        }}>
+                          {preset.label}
+                        </Text>
+                      </View>
+                    </ChunkyTap>
                   );
                 })}
               </View>
@@ -569,29 +665,30 @@ export default function AssignmentsScreen() {
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     header: {
-      paddingTop: insets.top + (Platform.OS === "web" ? 67 : 16),
+      // Единый отступ сверху для всех экранов: см. constants/layout.ts.
+      paddingTop: screenTop(insets),
       paddingHorizontal: 20, paddingBottom: 12,
       backgroundColor: colors.background,
     },
     headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-    title: { fontSize: 30, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground },
+    // Размер заголовка совпадает с разделом «Слова» — экраны читаются как один набор.
+    title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground },
     addBtn: {
       width: 42, height: 42, borderRadius: 21,
       backgroundColor: colors.primary, justifyContent: "center", alignItems: "center",
-      shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.35, shadowRadius: 10, elevation: 5,
     },
+    // Поле поиска тоже предмет, а не прорезь в фоне: тонкий торец снизу.
     searchBox: {
       flexDirection: "row", alignItems: "center", gap: 8,
-      backgroundColor: colors.muted, borderRadius: radii.sm, paddingHorizontal: 12,
-      paddingVertical: Platform.OS === "web" ? 9 : 8, marginTop: 10,
+      backgroundColor: colors.card, borderRadius: radii.sm, paddingHorizontal: 12,
+      paddingVertical: Platform.OS === "web" ? 10 : 9,
       borderWidth: 1, borderColor: colors.border,
     },
     searchInput: {
       flex: 1, fontSize: 14, color: colors.foreground,
       ...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {}),
     },
-    filterRow: { flexDirection: "row", gap: 8, paddingVertical: 12 },
+    filterRow: { flexDirection: "row", gap: 8, paddingTop: 12, paddingBottom: 8 },
     // Значок типа внутри чипа: тип узнаётся картинкой раньше, чем прочитан текст.
     filterBtn: {
       flexDirection: "row", alignItems: "center", gap: 6,
@@ -599,32 +696,33 @@ export default function AssignmentsScreen() {
       borderRadius: radii.pill, borderWidth: 1.5, borderColor: colors.border,
       backgroundColor: colors.card,
     },
-    // Активный фильтр приподнят: тот же приём, что у переключателей рейтинга.
+    // Активный фильтр светлее и с цветной рамкой; объём даёт торец, не тень.
     filterBtnActive: {
       borderColor: colors.primary, backgroundColor: colors.secondary,
-      shadowColor: colors.primary, shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.25, shadowRadius: 8, elevation: 3,
     },
     filterText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
     filterTextActive: { color: colors.primary },
     filterCount: { fontSize: 11, fontWeight: "800", color: colors.mutedForeground, opacity: 0.75, fontVariant: ["tabular-nums"] },
-    list: { paddingHorizontal: 20, paddingBottom: insets.bottom + 90 },
+    list: { paddingHorizontal: 20, paddingBottom: screenBottom(insets) },
+    // Обёртка держит внешний отступ, тело карточки — фон и рамку: торец рисуется
+    // между ними, поэтому marginBottom не может жить на теле.
+    cardWrap: { marginBottom: 12 },
     card: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
-      marginBottom: 12, borderWidth: 1, borderColor: colors.border,
-      shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.14, shadowRadius: 15, elevation: 4,
+      borderWidth: 1, borderColor: colors.border,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1, shadowRadius: 10, elevation: 3,
     },
     assignedCard: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 16,
-      marginBottom: 12, borderWidth: 1, borderColor: colors.border,
-      shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.16, shadowRadius: 16, elevation: 4,
+      borderWidth: 1, borderColor: colors.border,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.11, shadowRadius: 11, elevation: 3,
     },
     cardHeader: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 10 },
     cardTitle: { fontSize: 16, fontWeight: "800", color: colors.foreground, flex: 1 },
     cardFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 },
-    cardActions: { flexDirection: "row", gap: 8, marginTop: 10 },
+    cardActions: { flexDirection: "row", gap: 8, marginTop: 12 },
     typeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     typeBadgeText: { fontSize: 12, fontWeight: "700" },
     ageText: { fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
@@ -659,7 +757,8 @@ export default function AssignmentsScreen() {
     },
     modeToggle: {
       flexDirection: "row", backgroundColor: colors.muted,
-      borderRadius: radii.sm + 2, padding: 3, marginTop: 10,
+      borderRadius: radii.sm + 2, padding: 3,
+      borderWidth: 1, borderColor: colors.border,
     },
     modeBtn: {
       flex: 1, paddingVertical: 9, borderRadius: radii.sm,
@@ -668,15 +767,15 @@ export default function AssignmentsScreen() {
     modeBtnActive: {
       backgroundColor: colors.card,
       shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.2, shadowRadius: 8, elevation: 4,
+      shadowOpacity: 0.18, shadowRadius: 7, elevation: 4,
     },
     modeBtnText: { fontSize: 13, fontWeight: "700", color: colors.mutedForeground },
     modeBtnTextActive: { color: colors.foreground, fontWeight: "800" },
     subCard: {
       backgroundColor: colors.card, borderRadius: radii.md, padding: 14,
-      marginBottom: 12, borderWidth: 1, borderColor: colors.border,
-      shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
+      borderWidth: 1, borderColor: colors.border,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1, shadowRadius: 10, elevation: 3,
     },
     scoreBadge: {
       paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.sm - 2,
@@ -688,53 +787,58 @@ export default function AssignmentsScreen() {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const due = formatDue(item.dueAt);
     const dueColor = dueTint(due.urgency);
-    // Просроченное подсвечивается рамкой и тенью: в длинном списке одного
-    // текста мало, карточка должна отличаться до чтения.
+    // Просроченное подсвечивается рамкой, тенью и красноватым торцом: в длинном
+    // списке одного текста мало, карточка должна отличаться до чтения.
     const overdue = due.urgency === "overdue";
     return (
-      <TouchableOpacity
+      <ChunkyTap
         key={item.assignedTaskId}
-        style={[
-          styles.assignedCard,
-          { shadowColor: overdue ? colors.destructive : color },
-          overdue && { borderColor: colors.destructive + "55" },
-        ]}
+        style={styles.cardWrap}
+        edge={overdue ? EDGE_DANGER : EDGE_LIGHT}
         onPress={() => router.push(`/(main)/assignment/${item.assignmentId}` as any)}
-        activeOpacity={0.75}
+        accessibilityLabel={item.title}
       >
-        <View style={styles.teacherTag}>
-          <Glyph name="send" size={11} color={colors.primary} />
-          <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
-            от {item.teacherName ?? "учителя"}
-          </Text>
-        </View>
-        <View style={styles.cardHeader}>
-          <TypePlate type={item.type} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
-            {/* Срок показываем только когда он есть: строка «без срока» на
-                каждой карточке — шум, который ничего не сообщает. */}
-            {due.urgency !== "none" && (
-              <View style={styles.dueRow}>
-                <Glyph name={DUE_ICONS[due.urgency]} size={12} color={dueColor} />
-                <Text style={[styles.dueText, { color: dueColor }]}>{due.text}</Text>
-              </View>
-            )}
+        <View
+          style={[
+            styles.assignedCard,
+            { shadowColor: overdue ? colors.destructive : color },
+            overdue && { borderColor: colors.destructive + "55" },
+          ]}
+        >
+          <View style={styles.teacherTag}>
+            <Glyph name="send" size={11} color={colors.primary} />
+            <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
+              от {item.teacherName ?? "учителя"}
+            </Text>
           </View>
-          <Glyph name="chevron" size={18} color={colors.mutedForeground} />
-        </View>
-        <View style={styles.cardFooter}>
-          <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
-            <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
+          <View style={styles.cardHeader}>
+            <TypePlate type={item.type} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+              {/* Срок показываем только когда он есть: строка «без срока» на
+                  каждой карточке — шум, который ничего не сообщает. */}
+              {due.urgency !== "none" && (
+                <View style={styles.dueRow}>
+                  <Glyph name={DUE_ICONS[due.urgency]} size={12} color={dueColor} />
+                  <Text style={[styles.dueText, { color: dueColor }]}>{due.text}</Text>
+                </View>
+              )}
+            </View>
+            <Glyph name="chevron" size={18} color={colors.mutedForeground} />
           </View>
-          <Pill
-            text={item.points > 0 ? `${item.points} очков` : "по проверке"}
-            icon="star"
-            tone="soft"
-            color={accents.magenta}
-          />
+          <View style={styles.cardFooter}>
+            <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
+              <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
+            </View>
+            <Pill
+              text={item.points > 0 ? `${item.points} очков` : "по проверке"}
+              icon="star"
+              tone="soft"
+              color={accents.magenta}
+            />
+          </View>
         </View>
-      </TouchableOpacity>
+      </ChunkyTap>
     );
   };
 
@@ -749,106 +853,126 @@ export default function AssignmentsScreen() {
     const avg = typeof item.avgScore === "number" ? item.avgScore : null;
     const allDone = assigned > 0 && submitted >= assigned;
     return (
-      // Outer View — NOT a Touchable, so inner buttons get touches reliably
-      <View
-        key={item.id}
-        style={[
-          styles.card,
-          { shadowColor: color },
-          isDraft && { borderColor: colors.border, borderStyle: "dashed" },
-        ]}
-      >
-        {/* Title area tappable → navigate to detail */}
-        <TouchableOpacity
-          onPress={() => router.push(`/(main)/assignment/${item.id}` as any)}
-          activeOpacity={0.75}
+      // Обёртка Chunky, а не ChunkyTap: карточка сама никуда не ведёт, внутри
+      // неё три отдельные кнопки. В вебе нажатие на вложенную кнопку всплывает
+      // на внешнюю, и «Удалить» открывало бы задание.
+      <Chunky key={item.id} style={styles.cardWrap}>
+        <View
+          style={[
+            styles.card,
+            { shadowColor: color },
+            isDraft && { borderColor: colors.border, borderStyle: "dashed" },
+          ]}
         >
-          <View style={styles.cardHeader}>
-            <TypePlate type={item.type} />
-            <View style={{ flex: 1, gap: 5 }}>
-              <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
-              {/* Тип и средний балл строкой под названием: раньше по карточке
-                  нельзя было понять даже вид задания — только по картинке. */}
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-                <View style={[styles.typeBadge, { backgroundColor: color + "15", paddingVertical: 3 }]}>
-                  <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
-                </View>
-                {isDraft ? (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                    <Glyph name="pen" size={11} color={colors.mutedForeground} />
-                    <Text style={{ fontSize: 11.5, color: colors.mutedForeground, fontWeight: "700" }}>Черновик</Text>
+          {/* Title area tappable → navigate to detail */}
+          <TouchableOpacity
+            onPress={() => router.push(`/(main)/assignment/${item.id}` as any)}
+            activeOpacity={0.75}
+          >
+            <View style={styles.cardHeader}>
+              <TypePlate type={item.type} />
+              <View style={{ flex: 1, gap: 5 }}>
+                <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+                {/* Тип и средний балл строкой под названием: раньше по карточке
+                    нельзя было понять даже вид задания — только по картинке. */}
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                  <View style={[styles.typeBadge, { backgroundColor: color + "15", paddingVertical: 3 }]}>
+                    <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
                   </View>
-                ) : avg !== null ? (
-                  <Text style={{ fontSize: 12, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-                    средний <Text style={{ fontWeight: "900", color: scoreTint(avg) }}>{avg}%</Text>
-                  </Text>
-                ) : item.type === "free_form" ? (
-                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>оценивается вручную</Text>
-                ) : null}
+                  {isDraft ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                      <Glyph name="pen" size={11} color={colors.mutedForeground} />
+                      <Text style={{ fontSize: 11.5, color: colors.mutedForeground, fontWeight: "700" }}>Черновик</Text>
+                    </View>
+                  ) : avg !== null ? (
+                    // Два соседних Text вместо вложенного: вложенный Text ломает
+                    // react-native-web в Safari и гасит весь экран в белое.
+                    <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
+                      <Text style={{ fontSize: 12, color: colors.mutedForeground }}>средний</Text>
+                      <Text style={{ fontSize: 12, fontWeight: "900", color: scoreTint(avg), fontVariant: ["tabular-nums"] }}>{avg}%</Text>
+                    </View>
+                  ) : item.type === "free_form" ? (
+                    <Text style={{ fontSize: 12, color: colors.mutedForeground }}>оценивается вручную</Text>
+                  ) : null}
+                </View>
               </View>
+              {/* Работы, ждущие ручной проверки, — самое срочное на карточке. */}
+              {pending > 0 && <Pill text={`${pending}`} icon="clock" tone="warn" />}
             </View>
-            {/* Работы, ждущие ручной проверки, — самое срочное на карточке. */}
-            {pending > 0 && <Pill text={`${pending}`} icon="clock" tone="warn" />}
-          </View>
 
-          {/* Прогресс сдачи сегментами — тот же приём, что у цели дня в разделе
-              «Слова»: закрытый сегмент читается как «ещё один сдал», это
-              нагляднее процента и лучше работает на малых числах. */}
-          {assigned > 0 && (
-            <>
-              <GoalPips value={submitted} target={assigned} done={allDone} />
-              <View style={styles.progressNote}>
-                <Text style={styles.progressText}>
-                  <Text style={styles.progressStrong}>{submitted}</Text> из {assigned} сдали
-                </Text>
-                <Text style={styles.progressText}>
-                  {allDone ? "все ответили" : `ждём ${assigned - submitted}`}
+            {/* Прогресс сдачи сегментами — тот же приём, что у цели дня в разделе
+                «Слова»: закрытый сегмент читается как «ещё один сдал», это
+                нагляднее процента и лучше работает на малых числах. */}
+            {assigned > 0 && (
+              <>
+                <GoalPips value={submitted} target={assigned} done={allDone} />
+                <View style={styles.progressNote}>
+                  <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
+                    <Text style={[styles.progressText, styles.progressStrong]}>{submitted}</Text>
+                    <Text style={styles.progressText}>из {assigned} сдали</Text>
+                  </View>
+                  <Text style={styles.progressText}>
+                    {allDone ? "все ответили" : `ждём ${assigned - submitted}`}
+                  </Text>
+                </View>
+              </>
+            )}
+
+            {/* Ещё никому не отправлено — это не «ноль из нуля», а другое
+                состояние: задание готово, но лежит без дела. */}
+            {assigned === 0 && !isDraft && (
+              <Text style={[styles.progressText, { marginTop: 2 }]}>Ещё никому не назначено</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Кнопки действий. «Назначить» залита цветом и стоит на тёмном торце,
+              «Итоги» и удаление тихие и на светлом: раньше все три кнопки весили
+              одинаково и главное действие не читалось. */}
+          <View style={styles.cardActions}>
+            <ChunkyTap
+              style={{ flex: 1 }}
+              lift={EDGE_SM}
+              radius={radii.sm - 2}
+              edge={EDGE_DARK}
+              onPress={() => setAssignTarget(item)}
+              accessibilityLabel="Назначить задание"
+            >
+              <View style={[styles.actionBtn, { borderColor: "transparent", backgroundColor: colors.primary }]}>
+                <Glyph name="send" size={14} color="#fff" />
+                <Text style={[styles.actionBtnText, { color: "#fff" }]}>
+                  {assigned > 0 ? "Назначить ещё" : "Назначить"}
                 </Text>
               </View>
-            </>
-          )}
-
-          {/* Ещё никому не отправлено — это не «ноль из нуля», а другое
-              состояние: задание готово, но лежит без дела. */}
-          {assigned === 0 && !isDraft && (
-            <Text style={[styles.progressText, { marginTop: 2 }]}>Ещё никому не назначено</Text>
-          )}
-        </TouchableOpacity>
-
-        {/* Action buttons — independent from navigation area.
-            «Назначить» заполнена цветом, «Итоги» и удаление тихие: раньше все
-            три кнопки весили одинаково и главное действие не читалось. */}
-        <View style={styles.cardActions}>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            style={[styles.actionBtn, { flex: 1, borderColor: "transparent", backgroundColor: colors.primary }]}
-            onPress={() => setAssignTarget(item)}
-          >
-            <Glyph name="send" size={14} color="#fff" />
-            <Text style={[styles.actionBtnText, { color: "#fff" }]}>
-              {assigned > 0 ? "Назначить ещё" : "Назначить"}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            style={[styles.actionBtn, { borderColor: colors.border, backgroundColor: colors.card }]}
-            onPress={() => router.push(`/(main)/teacher-results/${item.id}` as any)}
-          >
-            <Glyph name="chart" size={14} color={colors.mutedForeground} />
-            <Text style={[styles.actionBtnText, { color: colors.mutedForeground }]}>Итоги</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            style={[styles.actionBtn, { borderColor: colors.destructive + "55", backgroundColor: colors.destructive + "10" }]}
-            onPress={() => setConfirmDelete({ id: item.id, title: item.title })}
-          >
-            {deletingId === item.id
-              ? <ActivityIndicator size="small" color={colors.destructive} />
-              : <Glyph name="trash" size={14} color={colors.destructive} />
-            }
-          </TouchableOpacity>
+            </ChunkyTap>
+            <ChunkyTap
+              lift={EDGE_SM}
+              radius={radii.sm - 2}
+              edge={EDGE_LIGHT}
+              onPress={() => router.push(`/(main)/teacher-results/${item.id}` as any)}
+              accessibilityLabel="Итоги"
+            >
+              <View style={[styles.actionBtn, { borderColor: colors.border, backgroundColor: colors.card }]}>
+                <Glyph name="chart" size={14} color={colors.mutedForeground} />
+                <Text style={[styles.actionBtnText, { color: colors.mutedForeground }]}>Итоги</Text>
+              </View>
+            </ChunkyTap>
+            <ChunkyTap
+              lift={EDGE_SM}
+              radius={radii.sm - 2}
+              edge={EDGE_DANGER}
+              onPress={() => setConfirmDelete({ id: item.id, title: item.title })}
+              accessibilityLabel="Удалить задание"
+            >
+              <View style={[styles.actionBtn, { borderColor: colors.destructive + "55", backgroundColor: colors.destructive + "10" }]}>
+                {deletingId === item.id
+                  ? <ActivityIndicator size="small" color={colors.destructive} />
+                  : <Glyph name="trash" size={14} color={colors.destructive} />
+                }
+              </View>
+            </ChunkyTap>
+          </View>
         </View>
-      </View>
+      </Chunky>
     );
   };
 
@@ -866,57 +990,62 @@ export default function AssignmentsScreen() {
     const late = !expired && !!item.dueAt &&
       new Date(sub.submittedAt).getTime() > new Date(item.dueAt).getTime();
     return (
-      <TouchableOpacity
+      <ChunkyTap
         key={`${item.assignedTaskId}`}
-        style={[
-          styles.subCard,
-          { shadowColor: tint },
-          expired && { borderColor: colors.destructive + "55" },
-        ]}
+        style={styles.cardWrap}
+        edge={expired ? EDGE_DANGER : EDGE_LIGHT}
         onPress={() => router.push(`/(main)/teacher-results/${item.assignmentId}` as any)}
-        activeOpacity={0.75}
+        accessibilityLabel={`${item.studentName}: ${item.assignmentTitle}`}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}>
-          <AnimatedAvatar
-            size={40}
-            avatarColor={item.studentAvatarColor ?? "#6366f1"}
-            avatarEmoji={item.studentAvatarEmoji}
-            avatarUrl={item.studentAvatarUrl}
-          />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{item.studentName}</Text>
-            <Text style={{ fontSize: 12, color: colors.mutedForeground }} numberOfLines={1}>{item.assignmentTitle}</Text>
+        <View
+          style={[
+            styles.subCard,
+            { shadowColor: tint },
+            expired && { borderColor: colors.destructive + "55" },
+          ]}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <AnimatedAvatar
+              size={40}
+              avatarColor={item.studentAvatarColor ?? "#6366f1"}
+              avatarEmoji={item.studentAvatarEmoji}
+              avatarUrl={item.studentAvatarUrl}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>{item.studentName}</Text>
+              <Text style={{ fontSize: 12, color: colors.mutedForeground }} numberOfLines={1}>{item.assignmentTitle}</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {expired ? (
+                <Glyph name="alert" size={20} color={colors.destructive} />
+              ) : (
+                <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
+                  <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{score}%</Text>
+                </View>
+              )}
+              <Glyph name="chevron" size={16} color={colors.mutedForeground} />
+            </View>
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* Значок типа и здесь: список ответов перестаёт быть одинаковым. */}
+            <TypePlate type={item.assignmentType} size={28} />
+            <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
+              <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.assignmentType] ?? item.assignmentType}</Text>
+            </View>
             {expired ? (
-              <Glyph name="alert" size={20} color={colors.destructive} />
+              <Pill text="не сдано в срок" icon="alert" tone="danger" />
             ) : (
-              <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
-                <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{score}%</Text>
-              </View>
+              <Text style={styles.ageText}>
+                {sub.correctCount}/{sub.totalQuestions} правильно
+              </Text>
             )}
-            <Glyph name="chevron" size={16} color={colors.mutedForeground} />
-          </View>
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {/* Значок типа и здесь: список ответов перестаёт быть одинаковым. */}
-          <TypePlate type={item.assignmentType} size={28} />
-          <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
-            <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.assignmentType] ?? item.assignmentType}</Text>
-          </View>
-          {expired ? (
-            <Pill text="не сдано в срок" icon="alert" tone="danger" />
-          ) : (
+            {late && <Pill text="с опозданием" icon="clock" tone="danger" />}
             <Text style={styles.ageText}>
-              {sub.correctCount}/{sub.totalQuestions} правильно
+              {new Date(sub.submittedAt).toLocaleDateString("ru-RU")}
             </Text>
-          )}
-          {late && <Pill text="с опозданием" icon="clock" tone="danger" />}
-          <Text style={styles.ageText}>
-            {new Date(sub.submittedAt).toLocaleDateString("ru-RU")}
-          </Text>
+          </View>
         </View>
-      </TouchableOpacity>
+      </ChunkyTap>
     );
   };
 
@@ -926,46 +1055,51 @@ export default function AssignmentsScreen() {
     const expired = item.status === EXPIRED;
     const tint = expired ? colors.destructive : scoreTint(Number(item.score ?? 0));
     return (
-      <TouchableOpacity
+      <ChunkyTap
         key={`${item.submissionId}`}
-        // Тень в цвете балла: сильные и слабые работы различимы сразу.
-        style={[
-          styles.subCard,
-          { shadowColor: tint },
-          expired && { borderColor: colors.destructive + "55" },
-        ]}
+        style={styles.cardWrap}
+        edge={expired ? EDGE_DANGER : EDGE_LIGHT}
         onPress={() => router.push(`/(main)/submission-review/${item.submissionId}` as any)}
-        activeOpacity={0.75}
+        accessibilityLabel={item.title}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
-          <TypePlate type={item.type} size={44} />
-          <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        {/* Тень в цвете балла: сильные и слабые работы различимы сразу. */}
+        <View
+          style={[
+            styles.subCard,
+            { shadowColor: tint },
+            expired && { borderColor: colors.destructive + "55" },
+          ]}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
+            <TypePlate type={item.type} size={44} />
+            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>{item.title}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {expired ? (
+                <Glyph name="alert" size={20} color={colors.destructive} />
+              ) : (
+                <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
+                  <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
+                </View>
+              )}
+              <Glyph name="chevron" size={16} color={colors.mutedForeground} />
+            </View>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
+              <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
+            </View>
             {expired ? (
-              <Glyph name="alert" size={20} color={colors.destructive} />
+              <Pill text="срок вышел, не сдано" icon="alert" tone="danger" />
             ) : (
-              <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
-                <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
-              </View>
+              <>
+                <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
+                <Pill text={`+${item.pointsEarned}`} icon="star" tone="soft" color={accents.magenta} />
+              </>
             )}
-            <Glyph name="chevron" size={16} color={colors.mutedForeground} />
+            <Text style={styles.ageText}>{new Date(item.submittedAt).toLocaleDateString("ru-RU")}</Text>
           </View>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <View style={[styles.typeBadge, { backgroundColor: color + "15" }]}>
-            <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABELS[item.type] ?? item.type}</Text>
-          </View>
-          {expired ? (
-            <Pill text="срок вышел, не сдано" icon="alert" tone="danger" />
-          ) : (
-            <>
-              <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
-              <Pill text={`+${item.pointsEarned}`} icon="star" tone="soft" color={accents.magenta} />
-            </>
-          )}
-          <Text style={styles.ageText}>{new Date(item.submittedAt).toLocaleDateString("ru-RU")}</Text>
-        </View>
-      </TouchableOpacity>
+      </ChunkyTap>
     );
   };
 
@@ -984,15 +1118,17 @@ export default function AssignmentsScreen() {
             {isTeacher ? "Задания" : "Мои задания"}
           </Text>
           {isTeacher && (
-            <TouchableOpacity
-              style={styles.addBtn}
-              activeOpacity={0.85}
+            <ChunkyTap
+              lift={EDGE_SM}
+              radius={21}
+              edge={EDGE_DARK}
               onPress={() => router.push("/(main)/create-assignment" as any)}
-              accessibilityRole="button"
               accessibilityLabel="Создать задание"
             >
-              <Glyph name="plus" size={20} color="#fff" />
-            </TouchableOpacity>
+              <View style={styles.addBtn}>
+                <Glyph name="plus" size={20} color="#fff" />
+              </View>
+            </ChunkyTap>
           )}
         </View>
 
@@ -1034,48 +1170,53 @@ export default function AssignmentsScreen() {
           />
         )}
 
-        {/* Mode toggle */}
-        <View style={styles.modeToggle}>
-          <TouchableOpacity
-            style={[styles.modeBtn, viewMode === "tasks" && styles.modeBtnActive]}
-            onPress={() => setViewMode("tasks")}
-            activeOpacity={0.85}
-          >
-            <Text style={[styles.modeBtnText, viewMode === "tasks" && styles.modeBtnTextActive]}>
-              {isTeacher ? "Мои задания" : "Назначенные"}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.modeBtn, viewMode === "results" && styles.modeBtnActive]}
-            onPress={() => setViewMode("results")}
-            activeOpacity={0.85}
-          >
-            <Text style={[styles.modeBtnText, viewMode === "results" && styles.modeBtnTextActive]}>
-              {isTeacher ? "Ответы учеников" : "Выполненные"}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        {/* Переключатель режимов. Объём даёт торец у всей плашки, а не тень у
+            активной половины: так он читается как один физический тумблер. */}
+        <Chunky style={{ marginTop: 10 }} radius={radii.sm + 2} lift={EDGE_SM} edge={EDGE_LIGHT}>
+          <View style={styles.modeToggle}>
+            <TouchableOpacity
+              style={[styles.modeBtn, viewMode === "tasks" && styles.modeBtnActive]}
+              onPress={() => setViewMode("tasks")}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.modeBtnText, viewMode === "tasks" && styles.modeBtnTextActive]}>
+                {isTeacher ? "Мои задания" : "Назначенные"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modeBtn, viewMode === "results" && styles.modeBtnActive]}
+              onPress={() => setViewMode("results")}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.modeBtnText, viewMode === "results" && styles.modeBtnTextActive]}>
+                {isTeacher ? "Ответы учеников" : "Выполненные"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Chunky>
 
         {/* Search bar + filters — only in tasks mode */}
         {viewMode === "tasks" && (
           <>
-            <View style={styles.searchBox}>
-              <Glyph name="search" size={16} color={colors.mutedForeground} />
-              <TextInput
-                style={styles.searchInput}
-                value={search}
-                onChangeText={setSearch}
-                placeholder="Поиск по названию..."
-                placeholderTextColor={colors.mutedForeground}
-                returnKeyType="search"
-                clearButtonMode="while-editing"
-              />
-              {search.length > 0 && (
-                <Pressable onPress={() => setSearch("")} hitSlop={8}>
-                  <Glyph name="close" size={16} color={colors.mutedForeground} />
-                </Pressable>
-              )}
-            </View>
+            <Chunky style={{ marginTop: 10 }} radius={radii.sm} lift={EDGE_SM} edge={EDGE_LIGHT}>
+              <View style={styles.searchBox}>
+                <Glyph name="search" size={16} color={colors.mutedForeground} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={search}
+                  onChangeText={setSearch}
+                  placeholder="Поиск по названию..."
+                  placeholderTextColor={colors.mutedForeground}
+                  returnKeyType="search"
+                  clearButtonMode="while-editing"
+                />
+                {search.length > 0 && (
+                  <Pressable onPress={() => setSearch("")} hitSlop={8}>
+                    <Glyph name="close" size={16} color={colors.mutedForeground} />
+                  </Pressable>
+                )}
+              </View>
+            </Chunky>
             <FlatList
               horizontal
               data={isTeacher ? TEACHER_FILTERS : FILTERS}
@@ -1084,24 +1225,25 @@ export default function AssignmentsScreen() {
               contentContainerStyle={styles.filterRow}
               renderItem={({ item: f }) => {
                 const isType = f !== "Все" && f !== DECKS_FILTER;
+                const active = filter === f;
                 return (
-                  <TouchableOpacity
-                    style={[
-                      styles.filterBtn,
-                      !isType && { paddingLeft: 14 },
-                      filter === f && styles.filterBtnActive,
-                    ]}
+                  <ChunkyTap
                     onPress={() => setFilter(f)}
-                    activeOpacity={0.85}
+                    radius={radii.pill}
+                    lift={EDGE_SM}
+                    edge={active ? "#b9a7ee" : "#ded6f5"}
+                    accessibilityLabel={f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
                   >
-                    {isType && <TypeArt type={f} size={22} />}
-                    <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-                      {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
-                    </Text>
-                    <Text style={[styles.filterCount, filter === f && { color: colors.primary }]}>
-                      {filterCount(f)}
-                    </Text>
-                  </TouchableOpacity>
+                    <View style={[styles.filterBtn, !isType && { paddingLeft: 14 }, active && styles.filterBtnActive]}>
+                      {isType && <TypeArt type={f} size={22} />}
+                      <Text style={[styles.filterText, active && styles.filterTextActive]}>
+                        {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
+                      </Text>
+                      <Text style={[styles.filterCount, active && { color: colors.primary }]}>
+                        {filterCount(f)}
+                      </Text>
+                    </View>
+                  </ChunkyTap>
                 );
               }}
             />
@@ -1315,31 +1457,36 @@ export default function AssignmentsScreen() {
 // ─── Строка колоды — общий внешний вид для вкладки «Колоды» и для колод,
 // подмешанных в общий список во вкладке «Все». Значок рисует DeckGlyph: тот же
 // компонент, что в разделе «Слова». Здесь он передаётся с tilt={0} — на этом
-// экране всё стоит ровно, а в «Словах» наклон остаётся как было. ──
+// экране всё стоит ровно, а в «Словах» наклон остаётся как было.
+// Строка ведёт на колоду, поэтому она вдавливается. ──
 function DeckRow({ colors, deck, onPress }: { colors: any; deck: any; onPress: () => void }) {
   return (
-    <TouchableOpacity
+    <ChunkyTap
       key={deck.id}
-      activeOpacity={0.8}
+      style={{ marginBottom: 12 }}
       onPress={onPress}
-      style={{
-        flexDirection: "row", alignItems: "center", gap: 12,
-        backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1,
-        borderColor: colors.border, padding: 14, marginBottom: 12,
-        shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-        shadowOpacity: 0.13, shadowRadius: 14, elevation: 3,
-      }}
+      accessibilityLabel={deck.title}
     >
-      <DeckGlyph title={deck.title} emoji={deck.emoji} size={44} tilt={0} />
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
-        <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
-          {deck.wordCount} слов
-          {deck.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : " · ещё никому не отправлена"}
-        </Text>
+      <View
+        style={{
+          flexDirection: "row", alignItems: "center", gap: 12,
+          backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1,
+          borderColor: colors.border, padding: 14,
+          shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.1, shadowRadius: 10, elevation: 3,
+        }}
+      >
+        <DeckGlyph title={deck.title} emoji={deck.emoji} size={44} tilt={0} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
+            {deck.wordCount} слов
+            {deck.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : " · ещё никому не отправлена"}
+          </Text>
+        </View>
+        <Glyph name="chevron" size={20} color={colors.mutedForeground} />
       </View>
-      <Glyph name="chevron" size={20} color={colors.mutedForeground} />
-    </TouchableOpacity>
+    </ChunkyTap>
   );
 }
 
@@ -1368,13 +1515,17 @@ function TeacherDecks({
           <Glyph name="alert" size={32} color={colors.destructive} />
         </View>
         <Text style={styles.emptyText}>Не удалось загрузить колоды.</Text>
-        <TouchableOpacity
+        <ChunkyTap
           onPress={() => decksQ.refetch()}
-          activeOpacity={0.85}
-          style={{ backgroundColor: colors.primary, borderRadius: radii.sm, paddingHorizontal: 20, paddingVertical: 11 }}
+          radius={radii.sm}
+          lift={EDGE_SM}
+          edge={EDGE_DARK}
+          accessibilityLabel="Повторить"
         >
-          <Text style={{ color: "#fff", fontWeight: "800" }}>Повторить</Text>
-        </TouchableOpacity>
+          <View style={{ backgroundColor: colors.primary, borderRadius: radii.sm, paddingHorizontal: 20, paddingVertical: 11 }}>
+            <Text style={{ color: "#fff", fontWeight: "800" }}>Повторить</Text>
+          </View>
+        </ChunkyTap>
       </View>
     );
   }
