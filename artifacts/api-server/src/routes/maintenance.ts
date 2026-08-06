@@ -1,27 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Служебные операции над данными: запуск из браузера.
+// Служебные операции над каталогом слов: запуск из браузера.
 //
-// Здесь ровно одна операция — заполнить пустые примеры употребления из Tatoeba
-// (см. lib/tatoeba.ts). Запуск из браузера нужен потому, что шелла с доступом к
-// базе на бесплатном хостинге нет, а владелец проекта работает с телефона.
+// Страницей, а не скриптом, потому что шелла с доступом к базе на бесплатном
+// хостинге нет, а владелец проекта работает с телефона.
 //
-// ── Что операция делает и чего НЕ делает ────────────────────────────────────
-// ДОБАВЛЯЕТ пример там, где его нет. Всё.
+// ── Две операции разного веса ───────────────────────────────────────────────
 //
-// Не заменяет существующие примеры. Не удаляет их. Не трогает переводы. Это не
-// осторожность ради осторожности: прошлая версия умела всё перечисленное и на
-// живых данных предлагала стереть нормальные карточки. Операция, которая только
-// заполняет пустоту, не может испортить данные в принципе — терять там нечего,
-// а значит и проверять результат руками не нужно.
+// 1. ПРИМЕРЫ — пишет в базу, но только туда, где примера НЕТ.
 //
-// Переводы автоматически не правятся вовсе: достоверного бесплатного источника
-// словарных значений EN→RU нет, а машинный перевод врёт на идиомах и
-// многозначных словах.
+//    Источник примера выбирается так, чтобы он был про ТО ЖЕ значение, что и
+//    перевод карточки. В Викисловаре переводы привязаны к конкретному значению
+//    (см. lib/wiktionary.ts), поэтому по карточке «tie = галстук» находится
+//    значение «necktie», и пример берётся из него, а не из «ничьей».
 //
-// ── Почему пакетами ─────────────────────────────────────────────────────────
-// Каждое слово — запрос в Tatoeba, тысячи слов идут минутами и в таймаут прокси
-// не уложатся. Страница берёт по 25 слов за раз и сама идёт до конца. Побочная
-// польза: частые запросы не дают бесплатному хостингу уснуть посреди прогона.
+//    Не нашлось — берём пару из Tatoeba, где и фраза, и перевод написаны
+//    людьми. Не нашлось и там — оставляем пусто.
+//
+//    Существующие примеры не трогаем. Цена ошибки — стёртый хороший пример,
+//    а проверять тысячи строк руками никто не будет.
+//
+// 2. ПЕРЕВОДЫ — только отчёт, в базу не пишет ничего.
+//
+//    Показывает карточки, где у слова в Викисловаре есть русские переводы, но
+//    перевода карточки среди них нет. Автоматических правок здесь не будет:
+//    словарь покрывает не всё, а выбор значения — человеческое решение.
 //
 // ── Доступ ──────────────────────────────────────────────────────────────────
 // Ключ MAINTENANCE_KEY из окружения. Не задан — маршрута нет вовсе (404, а не
@@ -33,16 +35,23 @@ import { timingSafeEqual } from "node:crypto";
 import { db } from "@workspace/db";
 import { decksTable, wordsTable } from "@workspace/db";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
-import { exampleFor } from "../lib/tatoeba";
-import { FILL_PAGE } from "./maintenancePage";
+import { googleTranslate } from "@workspace/translate";
+import { exampleFor as tatoebaExample } from "../lib/tatoeba";
+import {
+  allTranslations,
+  exampleFromSense,
+  fetchSenses,
+  findSense,
+  verdictFor,
+} from "../lib/wiktionary";
 
 const router = Router();
 
 /** Сколько слов за один запрос: больше — риск словить таймаут прокси. */
-const BATCH_DEFAULT = 25;
+const BATCH_DEFAULT = 20;
 const BATCH_MAX = 50;
 
-/** Сколько запросов в Tatoeba держим одновременно: чужой сервис, ведём себя прилично. */
+/** Сколько слов обрабатываем одновременно: сервисы чужие, ведём себя прилично. */
 const CONCURRENCY = 3;
 
 // ── Доступ по ключу ─────────────────────────────────────────────────────────
@@ -68,35 +77,51 @@ function requireMaintenanceKey(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-// ── Выборка ─────────────────────────────────────────────────────────────────
-// Только системные колоды (чужие данные не трогаем) и только слова без примера:
-// операция ничего не заменяет, поэтому остальные ей неинтересны.
-const emptyExample = or(isNull(wordsTable.exampleEn), eq(wordsTable.exampleEn, ""));
+// ── Выборки ─────────────────────────────────────────────────────────────────
+// Только системные колоды: колоды учителей и учеников — их данные.
+const noExample = or(isNull(wordsTable.exampleEn), eq(wordsTable.exampleEn, ""));
 
-async function countPending(): Promise<number> {
+type WordRow = {
+  id: number;
+  english: string;
+  translationsRu: string[];
+  deckTitle: string;
+};
+
+const wordColumns = {
+  id: wordsTable.id,
+  english: wordsTable.english,
+  translationsRu: wordsTable.translationsRu,
+  deckTitle: decksTable.title,
+};
+
+async function countWhere(extra?: ReturnType<typeof or>): Promise<number> {
+  const where = extra ? and(eq(decksTable.isSystem, true), extra) : eq(decksTable.isSystem, true);
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(wordsTable)
     .innerJoin(decksTable, eq(decksTable.id, wordsTable.deckId))
-    .where(and(eq(decksTable.isSystem, true), emptyExample));
+    .where(where);
   return Number(row?.n ?? 0);
 }
 
-type PendingWord = { id: number; english: string; deckTitle: string };
-
-async function loadPending(limit: number): Promise<PendingWord[]> {
+async function loadWords(
+  limit: number,
+  offset: number,
+  extra?: ReturnType<typeof or>,
+): Promise<WordRow[]> {
+  const where = extra ? and(eq(decksTable.isSystem, true), extra) : eq(decksTable.isSystem, true);
   const rows = await db
-    .select({
-      id: wordsTable.id,
-      english: wordsTable.english,
-      deckTitle: decksTable.title,
-    })
+    .select(wordColumns)
     .from(wordsTable)
     .innerJoin(decksTable, eq(decksTable.id, wordsTable.deckId))
-    .where(and(eq(decksTable.isSystem, true), emptyExample))
+    .where(where)
+    // Порядок обязан быть стабильным: страница ходит по offset, и без
+    // сортировки СУБД вольна вернуть строки как угодно.
     .orderBy(asc(wordsTable.id))
-    .limit(limit);
-  return rows as PendingWord[];
+    .limit(limit)
+    .offset(offset);
+  return rows as WordRow[];
 }
 
 function intParam(value: unknown, fallback: number): number {
@@ -104,46 +129,86 @@ function intParam(value: unknown, fallback: number): number {
   return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
 
+// ── Подбор примера ──────────────────────────────────────────────────────────
+type FoundExample = { en: string; ru: string; source: "wiktionary" | "tatoeba" };
+
+/**
+ * Найти пример, показывающий нужное значение слова.
+ *
+ * Сначала Викисловарь: там переводы привязаны к значениям, поэтому можно взять
+ * пример именно того значения, которому учит карточка. Русский перевод этой
+ * фразы получаем машинным переводом — и это безопасно: переводится ЦЕЛОЕ
+ * ПРЕДЛОЖЕНИЕ, где контекст сам снимает многозначность. Ломался машинный
+ * перевод именно на отдельных словах и идиомах.
+ *
+ * Не вышло — Tatoeba: там пара «фраза + перевод» целиком написана людьми.
+ */
+async function findExample(word: WordRow): Promise<FoundExample | null> {
+  const senses = await fetchSenses(word.english);
+  const sense = findSense(senses, word.translationsRu ?? []);
+
+  if (sense) {
+    const en = exampleFromSense(sense);
+    if (en) {
+      const ru = await googleTranslate(en, "en", "ru");
+      if (ru) return { en, ru, source: "wiktionary" };
+    }
+  }
+
+  const pair = await tatoebaExample(word.english);
+  if (pair) return { en: pair.en, ru: pair.ru, source: "tatoeba" };
+
+  return null;
+}
+
 // ── GET /maintenance/fill-examples/batch ────────────────────────────────────
-// Заполнить очередную порцию. dry=1 — только показать, что нашлось.
+// Заполнить очередную порцию пустых примеров. dry=1 — только показать.
 //
-// Смещения здесь нет намеренно: заполненные слова выпадают из выборки сами,
-// поэтому «следующая порция» — это просто следующий запрос. При dry=1 выборка
-// не меняется, и страница показывает одну порцию, не зацикливаясь.
+// Смещения нет намеренно: заполненные слова выпадают из выборки сами, поэтому
+// «следующая порция» — просто следующий запрос. Прогон можно прервать в любой
+// момент и продолжить позже с того же места.
 router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req, res) => {
   const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
   const dry = req.query["dry"] === "1";
 
-  const remaining = await countPending();
-  const words = await loadPending(limit);
+  const remaining = await countWhere(noExample);
+  const words = await loadWords(limit, 0, noExample);
 
   if (words.length === 0) {
     res.json({ remaining: 0, checked: 0, filled: 0, items: [], done: true });
     return;
   }
 
-  const items: Array<{ english: string; deck: string; en: string; ru: string; source: number }> = [];
+  const items: Array<{
+    english: string;
+    ru: string;
+    deck: string;
+    en: string;
+    exampleRu: string;
+    source: string;
+  }> = [];
   let filled = 0;
 
   for (let i = 0; i < words.length; i += CONCURRENCY) {
     const chunk = words.slice(i, i + CONCURRENCY);
     const found = await Promise.all(
-      chunk.map(async (w) => ({ word: w, pair: await exampleFor(w.english) })),
+      chunk.map(async (w) => ({ word: w, example: await findExample(w) })),
     );
 
-    for (const { word, pair } of found) {
-      if (!pair) continue;
+    for (const { word, example } of found) {
+      if (!example) continue;
       items.push({
         english: word.english,
+        ru: (word.translationsRu ?? []).join(", "),
         deck: word.deckTitle,
-        en: pair.en,
-        ru: pair.ru,
-        source: pair.sourceId,
+        en: example.en,
+        exampleRu: example.ru,
+        source: example.source,
       });
       if (dry) continue;
       await db
         .update(wordsTable)
-        .set({ exampleEn: pair.en, exampleRu: pair.ru })
+        .set({ exampleEn: example.en, exampleRu: example.ru })
         .where(eq(wordsTable.id, word.id));
       filled += 1;
     }
@@ -154,15 +219,66 @@ router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req
     checked: words.length,
     filled,
     items,
-    // В сухом прогоне выборка не сдвинется, поэтому останавливаемся сразу:
-    // иначе страница крутила бы одну и ту же порцию до бесконечности.
+    // В сухом прогоне выборка не сдвинется — останавливаемся сразу, иначе
+    // страница крутила бы одну и ту же порцию до бесконечности.
     done: dry || filled === 0,
   });
 });
 
-// ── GET /maintenance/fill-examples ──────────────────────────────────────────
+// ── GET /maintenance/check-translations/batch ───────────────────────────────
+// ТОЛЬКО ОТЧЁТ. В базу не пишет ничего и никогда.
+router.get("/maintenance/check-translations/batch", requireMaintenanceKey, async (req, res) => {
+  const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
+  const offset = intParam(req.query["offset"], 0);
+
+  const total = await countWhere();
+  const words = await loadWords(limit, offset);
+
+  if (words.length === 0) {
+    res.json({ total, offset, checked: 0, items: [], nextOffset: null });
+    return;
+  }
+
+  const items: Array<{ english: string; ru: string; deck: string; known: string }> = [];
+
+  for (let i = 0; i < words.length; i += CONCURRENCY) {
+    const chunk = words.slice(i, i + CONCURRENCY);
+    const checked = await Promise.all(
+      chunk.map(async (w) => ({ word: w, senses: await fetchSenses(w.english) })),
+    );
+
+    for (const { word, senses } of checked) {
+      // "unknown" (у словаря нет русских переводов) в отчёт не идёт: молчание
+      // словаря — это не претензия к карточке.
+      if (verdictFor(senses, word.translationsRu ?? []) !== "no") continue;
+      items.push({
+        english: word.english,
+        ru: (word.translationsRu ?? []).join(", "),
+        deck: word.deckTitle,
+        known: allTranslations(senses).slice(0, 8).join(", "),
+      });
+    }
+  }
+
+  const nextOffset = offset + words.length;
+  res.json({
+    total,
+    offset,
+    checked: words.length,
+    items,
+    nextOffset: nextOffset >= total ? null : nextOffset,
+  });
+});
+
+// ── Страницы ────────────────────────────────────────────────────────────────
+import { EXAMPLES_PAGE, TRANSLATIONS_PAGE } from "./maintenancePage";
+
 router.get("/maintenance/fill-examples", requireMaintenanceKey, (_req, res) => {
-  res.type("html").send(FILL_PAGE);
+  res.type("html").send(EXAMPLES_PAGE);
+});
+
+router.get("/maintenance/check-translations", requireMaintenanceKey, (_req, res) => {
+  res.type("html").send(TRANSLATIONS_PAGE);
 });
 
 export default router;
