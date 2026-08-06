@@ -3,8 +3,11 @@
 // и история проведённых уроков.
 //
 // Эмодзи в интерфейсе не используются: в пустых состояниях, предупреждениях и
-// на кнопках подтверждения стоят глифы из своего набора. Аватары учеников
-// приходят из профиля — там, где картинки нет, показываем первую букву имени.
+// на кнопках подтверждения стоят глифы из своего набора. АВАТАР — исключение:
+// эмодзи в нём выбирает сам человек, это его лицо в приложении, а не наша
+// иконка. Поэтому аватар рисуется так: загруженное фото, если оно есть; иначе
+// выбранный эмодзи; и только если нет ни того ни другого — первая буква имени
+// на цветной подложке.
 //
 // ── Единая порода поверхностей ──────────────────────────────────────────────
 // Экран приведён к тому же языку, что профиль и лист друзей: у каждой реальной
@@ -14,20 +17,27 @@
 // как недоделанная.
 //
 // Проседает при нажатии только то, что реально что-то открывает: день недели,
-// карточка ближайшего занятия, кнопки шапки, полоса недели. Просто карточка со
-// сведениями грань имеет, но не проседает — проседание обещает действие.
-// Технически это два разных компонента: Chunky (только грань) и ChunkyTap
-// (грань + проседание). Если у кнопки есть грань, но нет ChunkyTap, она
-// выглядит сломанной рядом с соседями — именно так и было со «Своим временем».
+// карточка ближайшего занятия, кнопки шапки, полоса недели, «Закрыть» в окнах.
+// Просто карточка со сведениями грань имеет, но не проседает — проседание
+// обещает действие. Технически это два разных компонента: Chunky (только
+// грань) и ChunkyTap (грань + проседание).
 //
 // Кнопка «Своё время» БЕЛАЯ, а не бледно-зелёная заливка: на светло-сером фоне
 // экрана полупрозрачная плашка почти сливалась с ним и не читалась как кнопка.
 // Белый корпус, цветная рамка, цветной текст и цветная грань — то же решение,
 // что у активного сегмента в переключателях.
 //
-// Свободный слот — исключение: он рисуется ПУНКТИРОМ и без грани. Это пустое
-// место, а не предмет; объём тут врал бы. Физическая кнопка внутри («Записаться»)
-// и есть то единственное, что можно потрогать.
+// ── Иерархия кнопок в окнах ─────────────────────────────────────────────────
+// В каждом окне действие — большая физическая кнопка во всю ширину, под ней
+// «Закрыть». «Закрыть» тоже клавиша с гранью, но НАМЕРЕННО мельче: узкая,
+// по содержимому, светлая и без иконки. Иначе два одинаковых по весу
+// прямоугольника подряд заставляют выбирать между ними, хотя выбор очевиден —
+// человек открыл окно, чтобы отправить запрос, а не чтобы его закрыть.
+// Крестиков в углу нет нигде: тап по затемнению закрывает.
+//
+// Свободный слот — исключение из объёма: он рисуется ПУНКТИРОМ и без грани.
+// Это пустое место, а не предмет; объём тут врал бы. Физическая кнопка внутри
+// («Записаться») и есть то единственное, что можно потрогать.
 //
 // ── Полоса недели ───────────────────────────────────────────────────────────
 // Месяц открывается нажатием на ЛЮБОЕ место полосы, кроме самих дней: отдельной
@@ -40,12 +50,6 @@
 // Переключатель собран как в листе друзей: подложка с гранью, активная вкладка
 // — белая плашка с цветной тенью. Раньше это были три полупрозрачные кнопки,
 // которые ни на что не были похожи.
-//
-// ── Окна ────────────────────────────────────────────────────────────────────
-// В каждом окне действие — физическая кнопка внизу, под ней текстовое
-// «Закрыть». Крестиков нет нигде: тап по затемнению закрывает, а два способа
-// закрыть одно окно — лишний элемент в углу. У месяца действие одно, поэтому
-// там только «Закрыть».
 //
 // ── Что переделали раньше и не стоит возвращать ─────────────────────────────
 //  • Месячная сетка занимала пол-экрана при каждом заходе, а сами занятия
@@ -74,7 +78,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
+  View, Text, Image, StyleSheet, ScrollView, TouchableOpacity, Pressable,
   ActivityIndicator, TextInput, RefreshControl, Modal, Alert,
   Animated, Easing, Platform,
   type ViewStyle, type StyleProp,
@@ -227,7 +231,20 @@ type CustomRequest = {
   note: string | null; status: string; createdAt: string;
   studentName?: string | null; teacherName?: string | null;
 };
-type TeacherBasic = { id: number; name: string | null; username: string };
+/**
+ * Учитель в списке выбора.
+ *
+ * Аватар здесь ОБЯЗАН быть: GET /connections/student/teachers отдаёт
+ * avatarEmoji, avatarColor и avatarUrl, но раньше тип их не описывал, и экран
+ * молча рисовал первую букву имени вместо настоящего лица. Данные приходили —
+ * их просто некому было прочитать.
+ */
+type TeacherBasic = {
+  id: number; name: string | null; username: string;
+  avatarEmoji?: string | null;
+  avatarColor?: string | null;
+  avatarUrl?: string | null;
+};
 type LessonHistoryItem = {
   id: number; teacherId: number; date: string; startTime: string; endTime: string;
   confirmedBookings: {
@@ -442,7 +459,7 @@ export default function CalendarScreen() {
   const [crError, setCrError] = useState<string | null>(null);
 
   const [assignSlot, setAssignSlot] = useState<TeacherSlot | null>(null);
-  const [assignStudents, setAssignStudents] = useState<{ id: number; name: string | null; surname: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null }[]>([]);
+  const [assignStudents, setAssignStudents] = useState<{ id: number; name: string | null; surname: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null }[]>([]);
   const [assignStudentId, setAssignStudentId] = useState<number | null>(null);
   const [assigning, setAssigning] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
@@ -838,7 +855,7 @@ export default function CalendarScreen() {
       fontSize: 12.5, color: colors.mutedForeground, fontStyle: "italic",
       marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border,
     },
-    avatar: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+    avatar: { alignItems: "center", justifyContent: "center", overflow: "hidden" },
     avatarText: { color: "#fff", fontWeight: "900", fontSize: 14 },
 
     acts: {
@@ -906,9 +923,21 @@ export default function CalendarScreen() {
     sheetHead: { marginBottom: 18 },
     sheetTitle: { fontSize: 20, fontWeight: "900", letterSpacing: -0.4, color: colors.foreground },
     sheetSub: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 4 },
-    // Текстовое «Закрыть» под действием: крестика в углу нет ни в одном окне.
-    sheetClose: { paddingVertical: 13, alignItems: "center" },
-    sheetCloseText: { fontSize: 14.5, fontWeight: "800", color: colors.mutedForeground },
+
+    /**
+     * «Закрыть» — тоже клавиша с гранью, но заметно мельче главного действия:
+     * узкая по содержимому, светлая, без иконки и подписи. Два одинаковых по
+     * весу прямоугольника подряд заставляли выбирать между ними, хотя выбор
+     * очевиден: окно открыли, чтобы отправить запрос.
+     */
+    sheetCloseWrap: { alignSelf: "center", marginTop: 12 },
+    sheetClose: {
+      paddingVertical: 10, paddingHorizontal: 26, borderRadius: radii.pill,
+      backgroundColor: colors.muted,
+      borderWidth: 1.5, borderColor: colors.border,
+      alignItems: "center", justifyContent: "center",
+    },
+    sheetCloseText: { fontSize: 14, fontWeight: "900", color: colors.mutedForeground },
 
     fieldLabel: {
       fontSize: 10.5, fontWeight: "800", color: colors.mutedForeground, marginBottom: 9,
@@ -1002,17 +1031,51 @@ export default function CalendarScreen() {
     </View>
   );
 
-  const renderLetterAvatar = (name: string | null | undefined, bg: string | null, size: number) => (
-    <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg ?? colors.primary }]}>
-      <Text style={[s.avatarText, { fontSize: Math.round(size * 0.44) }]}>{initialOf(name)}</Text>
+  /**
+   * Аватар человека: фото → эмодзи → первая буква имени.
+   *
+   * Эмодзи ученик или учитель выбирает сам, это его лицо в приложении. Раньше
+   * календарь всегда рисовал букву, и Мария с бабочкой в профиле здесь
+   * выглядела безликой «М».
+   */
+  const renderAvatar = (
+    person: { name?: string | null; username?: string; avatarEmoji?: string | null; avatarColor?: string | null; avatarUrl?: string | null },
+    size: number,
+  ) => (
+    <View style={[s.avatar, {
+      width: size, height: size, borderRadius: size / 2,
+      backgroundColor: person.avatarColor ?? colors.primary,
+    }]}>
+      {person.avatarUrl ? (
+        <Image source={{ uri: person.avatarUrl }} style={{ width: size, height: size }} />
+      ) : person.avatarEmoji ? (
+        <Text style={{ fontSize: Math.round(size * 0.5) }}>{person.avatarEmoji}</Text>
+      ) : (
+        <Text style={[s.avatarText, { fontSize: Math.round(size * 0.44) }]}>
+          {initialOf(person.name ?? person.username)}
+        </Text>
+      )}
     </View>
   );
 
-  /** Текстовое «Закрыть» под действием окна. */
+  /** Аватар там, где данных о лице нет вовсе: только имя и цвет. */
+  const renderLetterAvatar = (name: string | null | undefined, bg: string | null, size: number) =>
+    renderAvatar({ name, avatarColor: bg }, size);
+
+  /** Компактная клавиша «Закрыть» под главным действием окна. */
   const renderSheetClose = (onPress: () => void) => (
-    <Pressable style={s.sheetClose} onPress={onPress}>
-      <Text style={s.sheetCloseText}>Закрыть</Text>
-    </Pressable>
+    <ChunkyTap
+      color={colors.border}
+      edge={3}
+      radius={radii.pill}
+      onPress={onPress}
+      style={s.sheetCloseWrap}
+      accessibilityLabel="Закрыть"
+    >
+      <View style={s.sheetClose}>
+        <Text style={s.sheetCloseText}>Закрыть</Text>
+      </View>
+    </ChunkyTap>
   );
 
   const renderNextLesson = () => {
@@ -1302,11 +1365,19 @@ export default function CalendarScreen() {
     const meta = STATUS_CFG[slot.status];
     const until = untilLabel(slot.date, slot.startTime, slot.endTime);
     const isFree = !dimmed && slot.status === "available";
+    // У слота приходит только имя учителя. Если этот учитель есть в списке
+    // подключённых, берём оттуда настоящий аватар.
+    const teacherInfo = crTeachers.find((t) => t.id === slot.teacherId);
 
     const body = (
       <View style={[s.card, statusSkin(meta.color, dimmed), isFree && s.cardFree]}>
         <View style={s.cardRow}>
-          {!isFree && renderLetterAvatar(slot.teacherName, null, 34)}
+          {!isFree && renderAvatar({
+            name: slot.teacherName,
+            avatarEmoji: teacherInfo?.avatarEmoji,
+            avatarColor: teacherInfo?.avatarColor,
+            avatarUrl: teacherInfo?.avatarUrl,
+          }, 34)}
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.cardWho} numberOfLines={1}>
               {slot.teacherName ?? "Учитель"}
@@ -1702,7 +1773,11 @@ export default function CalendarScreen() {
                         : b.studentName ?? b.studentUsername ?? "Ученик";
                       return (
                         <View key={b.bookingId} style={[s.cardRow, { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border }]}>
-                          {renderLetterAvatar(displayName, b.studentColor, 32)}
+                          {renderAvatar({
+                            name: displayName,
+                            avatarEmoji: b.studentEmoji,
+                            avatarColor: b.studentColor,
+                          }, 32)}
                           <View style={{ flex: 1 }}>
                             <Text style={s.cardWho}>{displayName}</Text>
                             {b.studentUsername ? <Text style={s.cardMeta}>@{b.studentUsername}</Text> : null}
@@ -1887,8 +1962,8 @@ export default function CalendarScreen() {
               </View>
             ) : crTeachers.length === 1 ? (
               <View style={s.teacherRow}>
-                {renderLetterAvatar(crTeachers[0].name ?? crTeachers[0].username, null, 32)}
-                <Text style={s.teacherName}>{crTeachers[0].name ?? crTeachers[0].username}</Text>
+                {renderAvatar(crTeachers[0]!, 34)}
+                <Text style={s.teacherName}>{crTeachers[0]!.name ?? crTeachers[0]!.username}</Text>
                 <Glyph name="check" size={16} color={colors.success} />
               </View>
             ) : (
@@ -1903,8 +1978,13 @@ export default function CalendarScreen() {
                           key={t.id}
                           onPress={() => setCrTeacherId(t.id)}
                           activeOpacity={0.85}
-                          style={[s.filterChip, active && { backgroundColor: colors.success + "20", borderColor: colors.success }]}
+                          style={[
+                            s.filterChip,
+                            { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 8 },
+                            active && { backgroundColor: colors.success + "20", borderColor: colors.success },
+                          ]}
                         >
+                          {renderAvatar(t, 26)}
                           <Text style={[s.filterChipText, active && { color: colors.success }]}>
                             {t.name ?? t.username}
                           </Text>
@@ -1960,45 +2040,53 @@ export default function CalendarScreen() {
     </Modal>
   );
 
-  const renderBookModal = () => (
-    <Modal visible={!!bookSlot} transparent animationType="slide" onRequestClose={() => setBookSlot(null)}>
-      <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setBookSlot(null)}>
-        <TouchableOpacity style={s.sheet} activeOpacity={1}>
-          <View style={s.handle} />
-          <View style={s.sheetHead}>
-            <Text style={s.sheetTitle}>Записаться на занятие</Text>
-            <Text style={s.sheetSub}>
-              {formatDateWithDay(bookSlot?.date ?? null)} · {bookSlot?.startTime} – {bookSlot?.endTime}
-            </Text>
-          </View>
-
-          {!!bookSlot?.teacherName && (
-            <View style={s.teacherRow}>
-              {renderLetterAvatar(bookSlot.teacherName, null, 32)}
-              <Text style={s.teacherName}>{bookSlot.teacherName}</Text>
+  const renderBookModal = () => {
+    const teacherInfo = bookSlot ? crTeachers.find((t) => t.id === bookSlot.teacherId) : undefined;
+    return (
+      <Modal visible={!!bookSlot} transparent animationType="slide" onRequestClose={() => setBookSlot(null)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setBookSlot(null)}>
+          <TouchableOpacity style={s.sheet} activeOpacity={1}>
+            <View style={s.handle} />
+            <View style={s.sheetHead}>
+              <Text style={s.sheetTitle}>Записаться на занятие</Text>
+              <Text style={s.sheetSub}>
+                {formatDateWithDay(bookSlot?.date ?? null)} · {bookSlot?.startTime} – {bookSlot?.endTime}
+              </Text>
             </View>
-          )}
 
-          <Text style={s.fieldLabel}>Сообщение учителю (необязательно)</Text>
-          <TextInput
-            style={s.noteInput}
-            placeholder="Например: хочу разобрать Present Perfect…"
-            placeholderTextColor={colors.mutedForeground}
-            value={bookNote} onChangeText={setBookNote}
-            multiline returnKeyType="done"
-          />
-          {booking ? (
-            <View style={{ paddingVertical: 20, alignItems: "center" }}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          ) : (
-            <ChunkyButton label="Отправить запрос" icon="send" onPress={handleBookSlot} />
-          )}
-          {renderSheetClose(() => setBookSlot(null))}
+            {!!bookSlot?.teacherName && (
+              <View style={s.teacherRow}>
+                {renderAvatar({
+                  name: bookSlot.teacherName,
+                  avatarEmoji: teacherInfo?.avatarEmoji,
+                  avatarColor: teacherInfo?.avatarColor,
+                  avatarUrl: teacherInfo?.avatarUrl,
+                }, 34)}
+                <Text style={s.teacherName}>{bookSlot.teacherName}</Text>
+              </View>
+            )}
+
+            <Text style={s.fieldLabel}>Сообщение учителю (необязательно)</Text>
+            <TextInput
+              style={s.noteInput}
+              placeholder="Например: хочу разобрать Present Perfect…"
+              placeholderTextColor={colors.mutedForeground}
+              value={bookNote} onChangeText={setBookNote}
+              multiline returnKeyType="done"
+            />
+            {booking ? (
+              <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                <ActivityIndicator color={colors.primary} />
+              </View>
+            ) : (
+              <ChunkyButton label="Отправить запрос" icon="send" onPress={handleBookSlot} />
+            )}
+            {renderSheetClose(() => setBookSlot(null))}
+          </TouchableOpacity>
         </TouchableOpacity>
-      </TouchableOpacity>
-    </Modal>
-  );
+      </Modal>
+    );
+  };
 
   const renderAssignModal = () => (
     <Modal visible={!!assignSlot} transparent animationType="slide" onRequestClose={() => setAssignSlot(null)}>
@@ -2033,7 +2121,7 @@ export default function CalendarScreen() {
                     }}
                     onPress={() => setAssignStudentId(st.id)}
                   >
-                    {renderLetterAvatar(displayName, st.avatarColor, 38)}
+                    {renderAvatar({ ...st, name: displayName }, 38)}
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>{displayName}</Text>
                       <Text style={{ fontSize: 12, color: colors.mutedForeground }}>@{st.username}</Text>
