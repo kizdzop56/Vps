@@ -44,6 +44,7 @@ import {
   findSense,
   verdictFor,
 } from "../lib/wiktionary";
+import { EXAMPLES_PAGE, TRANSLATIONS_PAGE } from "./maintenancePage";
 
 const router = Router();
 
@@ -271,8 +272,6 @@ router.get("/maintenance/check-translations/batch", requireMaintenanceKey, async
 });
 
 // ── Страницы ────────────────────────────────────────────────────────────────
-import { EXAMPLES_PAGE, TRANSLATIONS_PAGE } from "./maintenancePage";
-
 router.get("/maintenance/fill-examples", requireMaintenanceKey, (_req, res) => {
   res.type("html").send(EXAMPLES_PAGE);
 });
