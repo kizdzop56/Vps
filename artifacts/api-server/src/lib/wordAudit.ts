@@ -6,14 +6,19 @@
 // показывает чужое значение. Для ученика это хуже пустоты: он читает фразу как
 // образец употребления и запоминает не то.
 //
+// ── Главное правило ─────────────────────────────────────────────────────────
+// Ошибка в сторону «no» стирает нормальные данные. Это дороже, чем пропустить
+// плохую карточку, поэтому во всех сомнительных случаях модуль обязан отвечать
+// "maybe". Проверено на живых данных: первая версия резала «кухня» из «на
+// кухне» и «дикий» из «дикие», потому что сравнивала обрезки слов по длине.
+//
 // ── Чего этот модуль НЕ делает ──────────────────────────────────────────────
 // Не считает машинный перевод истиной. Две вещи ломают такую логику начисто:
 //
 //   • ИДИОМЫ. «A piece of cake» — это «проще простого», а машина переводит
 //     «кусок торта». Сравнив человеческий перевод с машинным, проверка объявит
-//     ошибкой ПРАВИЛЬНЫЙ перевод и заменит его дословной чушью. Поэтому
-//     словосочетания (isPhrase) никогда не правятся автоматически — только
-//     помечаются на ручную проверку.
+//     ошибкой ПРАВИЛЬНЫЙ перевод. Поэтому словосочетания (isPhrase) никогда не
+//     правятся автоматически — только помечаются на ручную проверку.
 //
 //   • МНОГОЗНАЧНОСТЬ. У «tie» есть и галстук, и ничья, и «связывать». Сравнение
 //     с одним «главным» переводом объявляет ошибкой любое другое значение,
@@ -33,13 +38,14 @@
  *   "maybe" — судить нельзя (идиома, неправильная форма, короткое слово, нет
  *             данных): помечаем, но НЕ трогаем;
  *   "no"    — расхождение доказано.
- *
- * Различие между "maybe" и "no" — главное в модуле. Ошибка в сторону "no"
- * стирает нормальные данные, и это дороже, чем пропустить плохую карточку.
  */
 export type ExampleVerdict = "yes" | "maybe" | "no";
 
-/** Слова, которые в английском меняются не по правилам: форму не вывести суффиксом. */
+/**
+ * Слова, которые в английском меняются не по правилам: форму не вывести
+ * суффиксом. Список длинный намеренно — каждое пропущенное слово превращается
+ * в ложное «в примере нет слова» и стирает нормальный пример.
+ */
 const IRREGULAR = new Set([
   "be", "am", "is", "are", "was", "were", "been", "being",
   "have", "has", "had", "do", "does", "did", "done",
@@ -52,8 +58,28 @@ const IRREGULAR = new Set([
   "drink", "drank", "drunk", "run", "ran", "write", "wrote", "written",
   "read", "speak", "spoke", "spoken", "break", "broke", "broken",
   "choose", "chose", "chosen", "begin", "began", "begun",
+  "grow", "grew", "grown", "sit", "sat", "stand", "stood",
+  "lose", "lost", "meet", "met", "pay", "paid", "put",
+  "send", "sent", "spend", "spent", "win", "won",
+  "wear", "wore", "worn", "sleep", "slept", "hold", "held",
+  "understand", "understood", "fall", "fell", "fallen",
+  "feed", "fed", "fly", "flew", "flown", "forget", "forgot", "forgotten",
+  "hear", "heard", "hide", "hid", "hit", "hurt", "let",
+  "lie", "lay", "lend", "lent", "light", "lit", "mean", "meant",
+  "ride", "rode", "ring", "rang", "rise", "rose", "sell", "sold",
+  "shine", "shone", "shoot", "shot", "show", "shown", "shut",
+  "sing", "sang", "sink", "sank", "swim", "swam",
+  "throw", "threw", "thrown", "wake", "woke", "cut", "cost",
+  "build", "built", "burn", "burnt", "deal", "dealt", "dig", "dug",
+  "draw", "drew", "drive", "drove", "driven",
   "child", "children", "man", "men", "woman", "women", "person", "people",
   "foot", "feet", "tooth", "teeth", "mouse", "mice", "goose", "geese",
+]);
+
+/** Служебные слова фразы: их отсутствие в примере ничего не доказывает. */
+const STOP_WORDS = new Set([
+  "a", "an", "the", "to", "of", "in", "on", "at", "up", "out", "off",
+  "for", "with", "by", "from", "into", "over", "down", "away", "back",
 ]);
 
 /** Привести к сравнимому виду: нижний регистр, только буквы, одиночные пробелы. */
@@ -88,8 +114,7 @@ export function isPhrase(english: string): boolean {
  *
  * Список намеренно порождающий, а не словарный: нам нужен не морфологический
  * разбор, а защита от ложных срабатываний. Лишняя форма в списке в худшем
- * случае пропустит плохой пример, недостающая — удалит хороший. Из двух ошибок
- * вторая дороже.
+ * случае пропустит плохой пример, недостающая — удалит хороший.
  */
 export function wordForms(english: string): string[] {
   const base = stripInfinitive(english);
@@ -133,33 +158,55 @@ export function wordForms(english: string): string[] {
   return [...forms];
 }
 
+/** Нашлась ли хоть одна форма слова среди слов текста. */
+function hasAnyForm(word: string, tokens: Set<string>): boolean {
+  for (const form of wordForms(word)) {
+    if (tokens.has(form)) return true;
+  }
+  return false;
+}
+
 /**
  * Есть ли изучаемое слово в примере-предложении.
  *
- * Фразу («take care of») ищем целиком подстрокой: разбирать её по формам
- * бессмысленно. Одиночное слово ищем по токенам — подстрока дала бы ложное
- * «да» на art внутри start.
+ * Одиночное слово ищем по словам текста, а не подстрокой: подстрока дала бы
+ * ложное «да» на art внутри start.
  *
- * Когда совпадения нет, различаем два случая. Если слово неправильное (go, be,
- * child) или совсем короткое, форму мы вывести не могли — это "maybe", такой
- * пример нельзя удалять автоматом. Во всех остальных случаях — "no".
+ * Фразу сначала пробуем найти целиком, а если не вышло — по частям, каждую со
+ * своими формами. Целиком её искать недостаточно: «grow up» в примере
+ * «I grew up in a small village» стоит в прошедшем времени, и дословного
+ * совпадения нет. Служебные слова (up, of, the) при разборе игнорируем — их
+ * отсутствие ничего не доказывает.
+ *
+ * Неправильный глагол или слово из двух букв переводят вердикт в "maybe":
+ * форму мы вывести не могли, значит и обвинять не вправе.
  */
 export function exampleMentionsWord(english: string, example: string | null | undefined): ExampleVerdict {
   const base = stripInfinitive(english);
   const text = normalizeText(example ?? "");
   if (!base || !text) return "maybe"; // нечего проверять — не наш случай
 
-  if (base.includes(" ")) {
-    return text.includes(base) ? "yes" : "no";
-  }
-
   const tokens = new Set(text.split(" "));
-  for (const form of wordForms(base)) {
-    if (tokens.has(form)) return "yes";
+
+  if (!base.includes(" ")) {
+    if (hasAnyForm(base, tokens)) return "yes";
+    if (IRREGULAR.has(base) || base.length <= 2) return "maybe";
+    return "no";
   }
 
-  if (IRREGULAR.has(base) || base.length <= 2) return "maybe";
-  return "no";
+  // ── Фраза ─────────────────────────────────────────────────────────────────
+  if (text.includes(base)) return "yes";
+
+  const parts = base.split(" ").filter((p) => p && !STOP_WORDS.has(p));
+  if (parts.length === 0) return "maybe"; // фраза из одних служебных слов
+
+  let unsure = false;
+  for (const part of parts) {
+    if (hasAnyForm(part, tokens)) continue;
+    if (IRREGULAR.has(part) || part.length <= 2) { unsure = true; continue; }
+    return "no";
+  }
+  return unsure ? "maybe" : "yes";
 }
 
 /** Пример годен к показу: либо слово в нём есть, либо судить мы не беремся. */
@@ -185,27 +232,65 @@ export function normalizeRu(value: string): string {
 
 /** Разбить перевод на отдельные слова: «костюм, комплект» → [костюм, комплект]. */
 function ruWords(value: string): string[] {
-  return normalizeRu(value).split(/[\s,;/]+/).filter(Boolean);
-}
-
-/** Два русских слова — про одно и то же? Общий корень от 5 букв покрывает падежи. */
-function sameRuWord(a: string, b: string): boolean {
-  if (a === b) return true;
-  return a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5);
+  return normalizeRu(value).split(/[\s,;/-]+/).filter(Boolean);
 }
 
 /**
- * Совпадает ли хоть один из ЗНАЧЕНИЙ слова с хоть одним сохранённым переводом.
+ * Окончания русских слов, от длинных к коротким. Порядок обязателен: сначала
+ * пробуем отрезать «ами», иначе «а» съест только последнюю букву и основы
+ * «яблоками» и «яблоко» не сойдутся.
+ */
+const RU_ENDINGS = [
+  "иями", "ями", "ами", "ому", "ему", "ого", "его", "ыми", "ими",
+  "ей", "ой", "ый", "ий", "ая", "яя", "ое", "ее", "ые", "ие",
+  "ах", "ях", "ам", "ям", "ов", "ев", "ом", "ем", "ую", "юю",
+  "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й",
+];
+
+/** Минимальная длина основы: на огрызке короче доказать ничего нельзя. */
+const MIN_STEM = 4;
+
+/**
+ * Основа русского слова: отрезаем окончание, которое меняется в падежах,
+ * числах и роде.
  *
- * Ключевое здесь — «хоть один». У многозначного слова несколько верных
+ * Раньше здесь была обрезка по длине (первые пять букв), и она проваливалась
+ * ровно там, где нужна: «кухня» не находилась в «на кухне», «дикий» в «дикие»,
+ * «стена» в «на стене» — слова короткие, резать было нечего. Из-за этого
+ * нормальные примеры объявлялись негодными и стирались.
+ *
+ * Точность морфологии здесь не нужна, нужна устойчивость: одинаковые слова в
+ * разных формах должны давать одну основу, разные слова — разные.
+ */
+export function ruStem(word: string): string {
+  const clean = normalizeRu(word);
+  for (const ending of RU_ENDINGS) {
+    if (clean.length - ending.length >= MIN_STEM && clean.endsWith(ending)) {
+      return clean.slice(0, -ending.length);
+    }
+  }
+  return clean;
+}
+
+/** Два русских слова — про одно и то же? Сравниваем по основе. */
+function sameRuWord(a: string, b: string): boolean {
+  if (a === b) return true;
+  const sa = ruStem(a);
+  const sb = ruStem(b);
+  // Основа короче минимума ничего не доказывает: требуем точного совпадения.
+  if (sa.length < MIN_STEM || sb.length < MIN_STEM) return a === b;
+  return sa === sb;
+}
+
+/**
+ * Совпадает ли хоть одно ЗНАЧЕНИЕ слова с хоть одним сохранённым переводом.
+ *
+ * Ключевое здесь — «хоть одно». У многозначного слова несколько верных
  * переводов: «tie» это и галстук, и ничья, и «связывать». Если сравнивать
  * сохранённый перевод с одним лишь «главным» вариантом от Google, то любое
  * другое верное значение выглядит ошибкой. Поэтому на вход идёт весь список
  * значений (см. wordSenses в @workspace/translate), и расхождением считается
  * только полное непопадание.
- *
- * Точного равенства строк мало: «костюм» и «костюм, комплект» — один ответ,
- * а «иск» и «костюм» — разные. Сверяем по отдельным словам и общему корню.
  */
 export function translationMatches(fresh: string | string[], stored: string[]): boolean {
   const senses = (Array.isArray(fresh) ? fresh : [fresh]).flatMap(ruWords);
@@ -223,26 +308,12 @@ export function translationMatches(fresh: string | string[], stored: string[]): 
 
 // ── Значение примера ────────────────────────────────────────────────────────
 
-/** Минимальная длина основы для сравнения: короче — слишком много ложных совпадений. */
-const RU_STEM = 5;
-
 /**
  * Русский глагол в инфинитиве? У них при спряжении меняется сама основа
  * («бежать» → «бежит»), и вывести её правилом нельзя — такие случаи не судим.
  */
 function looksLikeVerb(word: string): boolean {
   return /(ться|тись|ть|ти|чь)$/.test(word);
-}
-
-/**
- * Основа русского слова для сравнения с текстом: отрезаем хвост, который
- * меняется в падежах и числах. Точность здесь не нужна, нужна устойчивость:
- * «яблоко» и «яблоки» должны сойтись, «галстук» и «счёт» — нет.
- */
-export function ruStem(word: string): string {
-  const clean = normalizeRu(word);
-  if (clean.length <= RU_STEM) return clean;
-  return clean.slice(0, Math.max(RU_STEM, clean.length - 3));
 }
 
 /**
@@ -253,10 +324,11 @@ export function ruStem(word: string): string {
  * формально содержит слово tie, но учит другому значению — именно это и надо
  * поймать, английская сторона тут бессильна.
  *
- * Сравниваем по основе, иначе падежи и числа пойдут за расхождение. Не судим
- * три случая: идиомы (в переводе примера дословного смысла может не быть
- * вовсе), глаголы (меняется основа) и короткие слова (основа слишком куцая,
- * чтобы что-то доказывать).
+ * Сравниваем по основам ОТДЕЛЬНЫХ СЛОВ текста, а не подстрокой: подстрока
+ * находила бы «дом» внутри «домкрата». Не судим четыре случая: идиомы (в
+ * переводе примера дословного смысла может не быть вовсе), глаголы (меняется
+ * основа), короткие слова и составные переводы вроде «приём пищи» — в живой
+ * фразе такое почти никогда не стоит целиком.
  */
 export function exampleSenseMatches(
   translationsRu: string[],
@@ -271,12 +343,15 @@ export function exampleSenseMatches(
   const words = translationsRu.flatMap(ruWords);
   if (words.length === 0) return "maybe";
 
+  const tokens = text.split(/[\s,;/-]+/).filter(Boolean);
   for (const word of words) {
-    if (text.includes(ruStem(word))) return "yes";
+    for (const token of tokens) {
+      if (sameRuWord(word, token)) return "yes";
+    }
   }
 
   // Ни одно значение не нашлось. Обвинять можно, только если хотя бы одно слово
   // перевода поддаётся сравнению: не глагол и достаточно длинное.
-  const judgeable = words.some((w) => !looksLikeVerb(w) && w.length >= RU_STEM);
+  const judgeable = words.some((w) => !looksLikeVerb(w) && ruStem(w).length >= MIN_STEM);
   return judgeable ? "no" : "maybe";
 }
