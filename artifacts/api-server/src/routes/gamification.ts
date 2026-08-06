@@ -350,8 +350,26 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   xp_50:        (s) => s.xpLevel >= 50,
 };
 
-const DAILY_LOGIN_POINTS = 30;
-const STREAK_BONUS_POINTS = [0, 0, 5, 10, 15, 20, 25, 50]; // bonus at streak day 3,4,5,6,7+
+// ── Награда за ежедневный вход ──────────────────────────────────────────────
+//
+// Было: 30 очков просто за факт входа плюс бонус до 50 сверху — на седьмой день
+// выходило 80 очков за нажатие на иконку приложения. Это больше, чем за
+// полностью закрытую цель дня, ради которой нужно реально заниматься. Вход не
+// работа, платить за него много нельзя: иначе выгоднее заходить и выходить.
+//
+// Стало: цена дня равна длине серии, шаг 5 очков. Первый день — 5, второй — 10,
+// и так далее. Ценность здесь не в самой сумме, а в том, что серию жалко
+// терять: пропустил день — начинаешь снова с пятёрки.
+//
+// Потолок: 50 очков (десятый день серии и дальше). Без него сотый день подряд
+// приносил бы 500 очков за вход, и вся остальная арифметика приложения
+// перестала бы что-либо значить.
+const LOGIN_POINTS_STEP = 5;
+const LOGIN_POINTS_CAP = 50;
+
+function loginPointsFor(streak: number): number {
+  return Math.min(Math.max(1, streak) * LOGIN_POINTS_STEP, LOGIN_POINTS_CAP);
+}
 
 // ── GET /gamification/stats ─────────────────────────────────────────────────
 router.get("/gamification/stats", requireAuth, async (req, res) => {
@@ -568,6 +586,12 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
 });
 
 // ── POST /gamification/daily-login ─────────────────────────────────────────
+//
+// Серия: считается по КАЛЕНДАРНЫМ дням в часовом поясе приложения. Заход
+// продлевает серию только если прошлый заход был ровно вчера. Пропустил хотя бы
+// один день — серия начинается заново с единицы, независимо от того, сколько
+// дней подряд было до этого. Никаких «заморозок» и прощений: в этом весь смысл
+// серии, иначе она перестаёт что-либо значить.
 router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   const user = getUser(req);
   const userId = user.userId;
@@ -587,7 +611,7 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   const today = todayKey();
   const lastLogin = userData.lastLoginDate;
 
-  // Already claimed today
+  // Уже заходил сегодня: серия не растёт и очки второй раз не выдаются.
   if (lastLogin === today) {
     const xpLevel = computeLevel(userData.totalPoints);
     res.json({
@@ -596,27 +620,32 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
       totalPoints: userData.totalPoints,
       xpLevel,
       pointsAwarded: 0,
+      nextPoints: loginPointsFor(userData.loginStreak + 1),
     });
     return;
   }
 
-  // Calculate streak
+  // Длина серии. Оба ключа — строки вида YYYY-MM-DD, поэтому Date разбирает их
+  // как полночь UTC, и разница всегда целое число суток: часовые пояса и
+  // переход на летнее время на счёт не влияют.
   let newStreak = 1;
+  let streakReset = false;
   if (lastLogin) {
     const lastDate = new Date(lastLogin);
     const todayDate = new Date(today);
-    const diffDays = Math.round((todayDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.round((todayDate.getTime() - lastDate.getTime()) / 86400000);
     if (diffDays === 1) {
+      // Ровно вчера — серия продолжается.
       newStreak = userData.loginStreak + 1;
     } else {
+      // Пропущен день (или больше) — начинаем заново.
       newStreak = 1;
+      streakReset = (userData.loginStreak ?? 0) > 1;
     }
   }
 
-  // Bonus points for streak milestones
-  const streakIndex = Math.min(newStreak, STREAK_BONUS_POINTS.length - 1);
-  const bonusPoints = STREAK_BONUS_POINTS[streakIndex] ?? 0;
-  const pointsAwarded = DAILY_LOGIN_POINTS + bonusPoints;
+  // Очки за вход: чем длиннее серия, тем дороже день. Шаг 5, потолок 50.
+  const pointsAwarded = loginPointsFor(newStreak);
 
   const newTotalPoints = userData.totalPoints + pointsAwarded;
   const newXpLevel = computeLevel(newTotalPoints);
@@ -637,7 +666,10 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
     totalPoints: newTotalPoints,
     xpLevel: newXpLevel,
     pointsAwarded,
-    bonusPoints,
+    // Сколько будет завтра, если прийти снова: это и есть повод вернуться.
+    nextPoints: loginPointsFor(newStreak + 1),
+    // Серия оборвалась из-за пропуска — маскот скажет об этом по-другому.
+    streakReset,
     leveledUp: newXpLevel > (userData.xpLevel ?? 1),
   });
 });
