@@ -17,6 +17,7 @@ import gamificationRouter from "./gamification";
 import flashcardsRouter from "./flashcards";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
+import maintenanceRouter from "./maintenance";
 
 const router: IRouter = Router();
 
@@ -43,5 +44,9 @@ router.use(gamificationRouter);
 router.use(flashcardsRouter);
 router.use(messagingRouter);
 router.use(ttsRouter);
+// Обслуживание данных — не часть приложения, поэтому последним: инструмент не
+// должен перехватывать пути у обычных маршрутов. Без MAINTENANCE_KEY в
+// окружении он отвечает 404 на всё, что бы ни спросили.
+router.use(maintenanceRouter);
 
 export default router;
