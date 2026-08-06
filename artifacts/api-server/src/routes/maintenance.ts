@@ -121,8 +121,8 @@ function intParam(value: unknown, fallback: number): number {
 
 // ── Находки для отчёта ──────────────────────────────────────────────────────
 // Каждый вид расхождения — отдельная строка: по общей формулировке нельзя
-// понять, что именно случится с карточкой при исправлении. Отдельно стоит
-// review: там сервер НЕ ТРОГАЕТ карточку, решение за человеком.
+// понять, что именно случится с карточкой. Отдельно стоят review и sense: там
+// сервер НЕ ТРОГАЕТ карточку, решение за человеком.
 type ReportItem = {
   id: number;
   english: string;
@@ -134,7 +134,7 @@ type ReportItem = {
   senses?: string;
 };
 
-function reportItems(finding: AuditFinding, deck: string): ReportItem[] {
+function reportItems(finding: AuditFinding, deck: string, scope: AuditScope): ReportItem[] {
   const items: ReportItem[] = [];
   const word = finding.word;
   const head = { id: word.id, english: word.english, deck };
@@ -169,12 +169,20 @@ function reportItems(finding: AuditFinding, deck: string): ReportItem[] {
     });
   }
 
-  // Пример: показываем ровно то, что произойдёт — замена или удаление.
-  const replacement = finding.newExample ? finding.newExample.en : "пример убран";
+  // Показываем ровно то, что произойдёт. Пример о другом значении по умолчанию
+  // не трогается вовсе — так и пишем, чтобы список не обещал лишнего.
   if (finding.senseMismatch) {
-    items.push({ ...head, kind: "sense", before: word.exampleEn ?? "", after: replacement });
+    const after = scope.replaceExamples
+      ? (finding.newExample ? finding.newExample.en : "пример убран")
+      : "останется как есть — проверь сам";
+    items.push({ ...head, kind: "sense", before: word.exampleEn ?? "", after });
   } else if (finding.badExample) {
-    items.push({ ...head, kind: "example", before: word.exampleEn ?? "", after: replacement });
+    items.push({
+      ...head,
+      kind: "example",
+      before: word.exampleEn ?? "",
+      after: finding.newExample ? finding.newExample.en : "пример убран",
+    });
   } else if (finding.missingExample && finding.newExample) {
     items.push({ ...head, kind: "missing", before: "примера нет", after: finding.newExample.en });
   }
@@ -194,6 +202,9 @@ router.get("/maintenance/audit-words/batch", requireMaintenanceKey, async (req, 
   const scope: AuditScope = {
     examplesOnly: req.query["scope"] === "examples",
     translationsOnly: req.query["scope"] === "translations",
+    // Замена существующих примеров — только по явной просьбе: проверка значения
+    // ошибается, а стереть хороший пример необратимо.
+    replaceExamples: req.query["replace"] === "1",
   };
 
   const total = await countCatalog(deckId);
@@ -213,10 +224,10 @@ router.get("/maintenance/audit-words/batch", requireMaintenanceKey, async (req, 
 
   for (const finding of findings) {
     if (finding.skipped) skipped += 1;
-    items.push(...reportItems(finding, titleById.get(finding.word.id) ?? ""));
+    items.push(...reportItems(finding, titleById.get(finding.word.id) ?? "", scope));
 
     if (!apply) continue;
-    const patch = patchFor(finding);
+    const patch = patchFor(finding, scope);
     if (!patch) continue;
     await db.update(wordsTable).set(patch).where(eq(wordsTable.id, finding.word.id));
     updated += 1;
