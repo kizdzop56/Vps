@@ -60,6 +60,14 @@ const MOOD_GLOW: Record<MascotMood, string> = {
   sleep:     "#7c8cf8",
 };
 
+/**
+ * Цена дня серии и её потолок. ДОЛЖНЫ совпадать с сервером
+ * (api-server/src/routes/gamification.ts): маскот называет завтрашнюю сумму, и
+ * обещать больше, чем начислят, нельзя.
+ */
+const LOGIN_POINTS_STEP = 5;
+const LOGIN_POINTS_CAP = 50;
+
 interface MascotProps {
   visible: boolean;
   mood?: MascotMood;
@@ -335,8 +343,12 @@ export function getMascotMessage(
     // не сегодняшняя сумма, а ЗАВТРАШНЯЯ: она и есть повод вернуться.
     case "daily_login": {
       const streak = Number(context?.streak ?? 1);
-      const points = Number(context?.points ?? 5);
-      const nextPoints = Number(context?.nextPoints ?? points + 5);
+      const points = Number(context?.points ?? LOGIN_POINTS_STEP);
+      // Сервер присылает точную сумму. Запасной расчёт повторяет его правило
+      // вместе с потолком: обещать «завтра +55» и выдать 50 нельзя.
+      const nextPoints = Number(
+        context?.nextPoints ?? Math.min(points + LOGIN_POINTS_STEP, LOGIN_POINTS_CAP),
+      );
       const days = plural(streak, ["день", "дня", "дней"]);
 
       if (context?.streakReset) {
@@ -346,9 +358,12 @@ export function getMascotMessage(
         };
       }
       if (streak > 1) {
+        const tail = nextPoints > points
+          ? ` Придёшь завтра — получишь +${nextPoints}.`
+          : " Пропустишь день — серия начнётся заново.";
         return {
           mood: "celebrate",
-          message: `С возвращением! 🔥 Серия уже ${streak} ${days} подряд, +${points} очков за вход. Придёшь завтра — получишь +${nextPoints}.`,
+          message: `С возвращением! 🔥 Серия уже ${streak} ${days} подряд, +${points} очков за вход.${tail}`,
         };
       }
       return {
