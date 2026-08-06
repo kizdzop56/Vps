@@ -1,23 +1,36 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Прогон аудита словаря: сеть (перевод + словарь) и решение по каждому слову.
+// Прогон аудита словаря: сеть (значения слова + словарь) и решение по каждому
+// слову.
 //
 // Модуль стоит между чистыми правилами (wordAudit.ts — ни сети, ни БД) и теми,
 // кто ходит в базу: скриптом maintenance/auditWords.ts и веб-ручкой
 // routes/maintenance.ts. Обоим нужна ОДНА логика: если правила разъедутся,
 // данные будет править то одна версия проверки, то другая.
 //
-// Здесь нет обращений к БД: на вход строка слова, на выход вердикт и готовый
-// патч. Читать и писать строки — забота вызывающего.
+// ── Чему здесь нельзя верить ────────────────────────────────────────────────
+// Машинному переводу как истине. Две ловушки, обе ведут к порче нормальных
+// данных:
+//
+//   • ИДИОМЫ. «A piece of cake» — «проще простого», а машина даёт «кусок
+//     торта». Проверка, сравнивающая человеческий перевод с машинным, объявит
+//     ошибкой ПРАВИЛЬНЫЙ перевод. Поэтому словосочетания автоматически не
+//     правятся никогда: только пометка needsReview для человека.
+//
+//   • МНОГОЗНАЧНОСТЬ. У «tie» есть галстук, ничья и «связывать». Сравнение с
+//     одним «главным» переводом объявляет ошибкой любое другое значение.
+//     Поэтому берём словарную статью целиком (wordSenses) и считаем перевод
+//     ошибочным, только если он не совпал НИ С ОДНИМ значением.
 //
 // ── Что чинится ─────────────────────────────────────────────────────────────
-//   • перевод — не то значение многозначного слова;
+//   • перевод — только у одиночных слов и только при полном непопадании;
 //   • пример — отсутствует, не содержит слова или показывает чужое значение;
 //   • часть речи — не совпадает со словарём.
 // ─────────────────────────────────────────────────────────────────────────────
-import { googleTranslate } from "@workspace/translate";
+import { googleTranslate, wordSenses } from "@workspace/translate";
 import {
   exampleMentionsWord,
   exampleSenseMatches,
+  isPhrase,
   stripInfinitive,
   translationMatches,
 } from "./wordAudit";
@@ -38,10 +51,14 @@ export type ExamplePair = { en: string; ru: string };
 
 export type AuditFinding = {
   word: AuditWordRow;
-  /** Перевод признан ошибочным: обратный перевод не вернул исходное слово. */
+  /** Перевод не совпал ни с одним значением слова. Только для одиночных слов. */
   wrongTranslation: boolean;
-  /** Свежий перевод, который должен встать первым. null — расхождений нет. */
+  /** Что предлагает словарь вместо сохранённого перевода. */
   freshRu: string | null;
+  /** Все известные значения слова — показываем в отчёте, чтобы было видно контекст. */
+  senses: string[];
+  /** Словосочетание с расхождением: решает человек, автоматически не трогаем. */
+  needsReview: boolean;
   /** Примера нет вовсе. */
   missingExample: boolean;
   /** Пример не содержит изучаемого слова. */
@@ -52,7 +69,7 @@ export type AuditFinding = {
   newExample: ExamplePair | null;
   /** Часть речи по словарю, если сохранённая ей противоречит. */
   freshPos: string | null;
-  /** Перевод не получен (сеть или лимит) — слово не трогаем. */
+  /** Данные не получены (сеть или лимит) — слово не трогаем. */
   skipped: boolean;
 };
 
@@ -147,28 +164,16 @@ export async function pickExample(
 /**
  * Проверить одно слово.
  *
- * Перевод проверяется В ДВЕ СТОРОНЫ. Односторонней проверки мало: у слова
- * бывает несколько честных переводов, и расхождение с автопереводом само по
- * себе ещё не ошибка — так можно вырезать нормальные синонимы.
- *
- *   1. EN→RU. Свежий перевод сверяется с сохранёнными (translationMatches —
- *      по отдельным словам и общему корню, чтобы «костюм» и «костюм, комплект»
- *      считались одним ответом). Совпало — карточка чистая, второй запрос не
- *      тратим.
- *   2. Не совпало → RU→EN на первом сохранённом переводе. Если обратный
- *      перевод даёт исходное английское слово, сохранённый вариант — законное
- *      второе значение, и трогать его нельзя.
- *   3. Обратный перевод увёл в сторону → перевод ошибочный.
- *
- * Пример проверяется после перевода и СВЕРЯЕТСЯ С НИМ: значение примера должно
- * совпадать со значением карточки. Если перевод только что признан ошибочным,
- * сверяем уже со свежим — иначе чинили бы пример под неверное значение.
+ * Порядок важен: сначала значения слова, потом пример — потому что пример
+ * сверяется именно со значением карточки.
  */
 export async function inspectWord(word: AuditWordRow, scope: AuditScope = {}): Promise<AuditFinding> {
   const finding: AuditFinding = {
     word,
     wrongTranslation: false,
     freshRu: null,
+    senses: [],
+    needsReview: false,
     missingExample: false,
     badExample: false,
     senseMismatch: false,
@@ -177,30 +182,30 @@ export async function inspectWord(word: AuditWordRow, scope: AuditScope = {}): P
     skipped: false,
   };
 
-  // ── Перевод ───────────────────────────────────────────────────────────────
+  const phrase = isPhrase(word.english);
   const lookup = stripInfinitive(word.english);
 
+  // ── Перевод ───────────────────────────────────────────────────────────────
   if (!scope.examplesOnly) {
-    const fresh = await googleTranslate(lookup, "en", "ru");
-    if (!fresh) {
+    const senses = await wordSenses(lookup, "en", "ru");
+    if (!senses) {
       finding.skipped = true;
-      return finding; // без перевода не судим и о примере: не с чем сверять
+      return finding; // без данных не судим и о примере: не с чем сверять
     }
 
+    finding.senses = senses.variants;
     const stored = word.translationsRu ?? [];
-    if (!translationMatches(fresh, stored)) {
-      finding.freshRu = fresh;
 
-      const primary = stored[0];
-      if (!primary) {
-        finding.wrongTranslation = true; // переводов нет вообще
+    if (!translationMatches(senses.variants, stored)) {
+      finding.freshRu = senses.main;
+
+      // Словосочетание — территория идиом. Машинный перевод здесь не судья:
+      // «a piece of cake» он переведёт «кусок торта» и объявит ошибкой верное
+      // «проще простого». Помечаем на ручную проверку и ничего не меняем.
+      if (phrase || senses.isPhrase) {
+        finding.needsReview = true;
       } else {
-        const back = await googleTranslate(primary, "ru", "en");
-        if (!back) {
-          finding.skipped = true;
-          return finding;
-        }
-        finding.wrongTranslation = stripInfinitive(back) !== lookup;
+        finding.wrongTranslation = true;
       }
     }
   }
@@ -219,7 +224,8 @@ export async function inspectWord(word: AuditWordRow, scope: AuditScope = {}): P
   } else {
     finding.badExample = exampleMentionsWord(word.english, word.exampleEn) === "no";
     if (!finding.badExample) {
-      finding.senseMismatch = exampleSenseMatches(sense, word.exampleRu) === "no";
+      finding.senseMismatch =
+        exampleSenseMatches(sense, word.exampleRu, { phrase }) === "no";
     }
   }
 
@@ -227,11 +233,13 @@ export async function inspectWord(word: AuditWordRow, scope: AuditScope = {}): P
 
   // ── Словарь: примеры и часть речи ─────────────────────────────────────────
   // Ходим в словарь только когда есть за чем: либо чинить пример, либо нечем
-  // проверить часть речи.
-  if (needsExample || word.partOfSpeech) {
+  // проверить часть речи. У идиом пример не подбираем — проверить его значение
+  // всё равно нечем, а подставить дословный смысл хуже, чем оставить пусто.
+  const wantExample = needsExample && !phrase;
+  if (wantExample || word.partOfSpeech) {
     const dict = await fetchDictionary(word.english);
     if (dict) {
-      if (needsExample) {
+      if (wantExample) {
         finding.newExample = await pickExample(word.english, sense, dict.examples);
       }
       // Часть речи: сверяем без регистра. Словарь молчит — не выдумываем.
@@ -257,24 +265,20 @@ export type WordPatch = {
 /**
  * Собрать патч по вердикту.
  *
- * Свежий перевод всегда встаёт ПЕРВЫМ: первый элемент показывается на карточке
- * и уходит в варианты ответа тренажёра. Прежние значения сохраняются следом —
- * но только если перевод не признан ошибочным: у заведомо чужого перевода
- * хранить нечего.
+ * Перевод правим ТОЛЬКО при wrongTranslation, то есть у одиночного слова, не
+ * совпавшего ни с одним значением. needsReview (словосочетания и идиомы) в
+ * патч не попадает никогда — там решает человек.
  *
  * Пример либо заменяется найденным, либо стирается вместе с русским переводом:
- * без английского он бессмыслен. Отсутствующий пример, которому не нашлось
- * замены, ничего не меняет — стирать там нечего.
+ * без английского он бессмыслен. Отсутствующий пример без замены ничего не
+ * меняет — стирать там нечего.
  */
 export function patchFor(finding: AuditFinding): WordPatch | null {
   const patch: WordPatch = {};
 
-  if (finding.freshRu) {
-    const fresh = finding.freshRu;
-    const rest = finding.word.translationsRu.filter(
-      (t) => t.trim().toLowerCase() !== fresh.trim().toLowerCase(),
-    );
-    patch.translationsRu = finding.wrongTranslation ? [fresh] : [fresh, ...rest];
+  if (finding.wrongTranslation && finding.freshRu) {
+    // Прежнее значение не сохраняем: оно не второе значение слова, а чужое.
+    patch.translationsRu = [finding.freshRu];
   }
 
   if (finding.freshPos) patch.partOfSpeech = finding.freshPos;
