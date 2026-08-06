@@ -8,6 +8,8 @@ import { eq, and, isNull, sql } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import { canViewStudent } from "../lib/studentAccess";
 import {
+  ACTIVE_DAY_MINUTES,
+  activityStreakDays,
   liveSessionMinutes,
   localDayKey,
   orphanSessionMinutes,
@@ -131,8 +133,6 @@ router.get("/students/:id/time", requireAuth, async (req, res) => {
 const DAILY_WINDOW_DAYS = 14;
 /** Окно, по которому считаем «в среднем за день». */
 const AVERAGE_WINDOW_DAYS = 30;
-/** Минут за день, начиная с которых день считается учебным. */
-const ACTIVE_DAY_MINUTES = 1;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -148,8 +148,10 @@ router.get("/students/:id/time/summary", requireAuth, async (req, res) => {
     return;
   }
 
-  const [user] = await db.select({ totalTimeMinutes: usersTable.totalTimeMinutes })
-    .from(usersTable).where(eq(usersTable.id, studentId));
+  const [user] = await db.select({
+    totalTimeMinutes: usersTable.totalTimeMinutes,
+    lastLoginDate: usersTable.lastLoginDate,
+  }).from(usersTable).where(eq(usersTable.id, studentId));
   if (!user) {
     res.status(404).json({ error: "Ученик не найден" });
     return;
@@ -215,13 +217,15 @@ router.get("/students/:id/time/summary", requireAuth, async (req, res) => {
     if (!bestDay || rounded > bestDay.minutes) bestDay = { date, minutes: rounded };
   }
 
-  // Дней подряд с занятиями. Сегодняшний ноль серию не обрывает: день ещё
-  // не кончился, и обнулять счётчик в полночь было бы просто обидно.
-  let streakDays = 0;
-  for (let i = todayMinutes >= ACTIVE_DAY_MINUTES ? 0 : 1; i < 400; i++) {
-    if (minutesOn(i) < ACTIVE_DAY_MINUTES) break;
-    streakDays += 1;
-  }
+  // Дней подряд. Считается ОБЩЕЙ функцией (lib/timeStats), той же самой, что
+  // отдаёт серию в профиль: раньше здесь был свой цикл, и одна и та же серия
+  // показывалась как 6 дней в этой карточке и как 8 в шапке профиля.
+  // День входа засчитывается наравне с днём занятий: сессия при заходе только
+  // создаётся, минут в ней ещё нет, а день уже начался.
+  const streakDays = activityStreakDays(sessions, {
+    now,
+    alsoActiveDays: [user.lastLoginDate],
+  });
 
   const openSession = sessions.find((s) => s.endedAt === null);
   const openMinutes = openSession ? Math.floor(liveSessionMinutes(openSession, now)) : 0;
