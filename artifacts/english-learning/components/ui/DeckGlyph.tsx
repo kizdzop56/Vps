@@ -23,6 +23,15 @@
 //
 // Цвет плашки выводится из названия детерминированно: одна и та же колода
 // всегда одного цвета, но соседние в списке различаются.
+//
+// ── Без наклона ─────────────────────────────────────────────────────────────
+// Плашка стоит РОВНО. Раньше у неё был наклон в −4°, и в списке из десяти
+// колод это читалось не как приём, а как брак вёрстки: значки шли лесенкой,
+// левый край каждого гулял на пару пикселей, и колонка выглядела кривой.
+// Наклон уместен на одиночном элементе, а не в столбце одинаковых строк.
+//
+// Проп tilt остался для тех мест, где значок стоит один. Если его задать,
+// содержимое поворачивается обратно — иначе кренится и сам глиф.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from "react";
@@ -167,11 +176,14 @@ export interface DeckGlyphProps {
   /** Значение deck.emoji из базы. Может быть пустым или неизвестным. */
   emoji?: string | null;
   size?: number;
-  /** Наклон плашки. Лёгкий поворот убирает ощущение строгой сетки. */
+  /**
+   * Наклон плашки в градусах. По умолчанию 0: в списке значки должны стоять
+   * ровной колонкой. Задавать имеет смысл только для одиночного значка.
+   */
   tilt?: number;
 }
 
-export function DeckGlyph({ title, emoji, size = 46, tilt = -4 }: DeckGlyphProps) {
+export function DeckGlyph({ title, emoji, size = 46, tilt = 0 }: DeckGlyphProps) {
   // Название важнее эмодзи: его пишет человек и оно есть всегда.
   const glyph = glyphByTitle(title) ?? (emoji ? EMOJI_TO_GLYPH[emoji.trim()] : undefined);
   const colors = PALETTES[hash(title) % PALETTES.length]!;
@@ -187,7 +199,7 @@ export function DeckGlyph({ title, emoji, size = 46, tilt = -4 }: DeckGlyphProps
         borderRadius: radii.sm + 3,
         alignItems: "center",
         justifyContent: "center",
-        transform: [{ rotate: `${tilt}deg` }],
+        ...(tilt ? { transform: [{ rotate: `${tilt}deg` }] } : null),
         shadowColor: colors[0],
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.28,
@@ -195,12 +207,13 @@ export function DeckGlyph({ title, emoji, size = 46, tilt = -4 }: DeckGlyphProps
         elevation: 4,
       }}
     >
-      {glyph ? (
-        <Glyph name={glyph} size={Math.round(size * 0.5)} color="#ffffff" />
-      ) : (
-        // Фолбэк: буква названия. Срабатывает только на совсем непонятных
-        // названиях вроде «Колода 1».
-        <View style={{ transform: [{ rotate: `${-tilt}deg` }] }}>
+      {/* Содержимое компенсирует наклон плашки: иначе кренится и сам значок. */}
+      <View style={tilt ? { transform: [{ rotate: `${-tilt}deg` }] } : undefined}>
+        {glyph ? (
+          <Glyph name={glyph} size={Math.round(size * 0.5)} color="#ffffff" />
+        ) : (
+          // Фолбэк: буква названия. Срабатывает только на совсем непонятных
+          // названиях вроде «Колода 1».
           <Text
             style={{
               color: "#ffffff",
@@ -211,8 +224,8 @@ export function DeckGlyph({ title, emoji, size = 46, tilt = -4 }: DeckGlyphProps
           >
             {initial(title)}
           </Text>
-        </View>
-      )}
+        )}
+      </View>
     </LinearGradient>
   );
 }
