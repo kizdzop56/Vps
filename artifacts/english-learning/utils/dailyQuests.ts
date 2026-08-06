@@ -36,6 +36,11 @@
 // Правки должны идти в оба файла одновременно, иначе клиент покажет закрытый
 // день, а сервер откажется выдавать награду.
 //
+// ИСКЛЮЧЕНИЕ — поле percent: оно нужно только кольцу на экране, сервер его не
+// считает и не проверяет. Признак выполнения (done) по-прежнему считается по
+// ЦЕЛЫМ минутам, ровно как на сервере, поэтому расхождения в награде быть не
+// может.
+//
 // Прогресс берётся из уже загруженных счётчиков (см. GET /gamification/stats и
 // GET /flashcards/stats) — новых запросов эта логика не добавляет.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,7 +72,7 @@ export interface TimeGoal {
   nextTarget: number;
   /** Сколько осталось. */
   remaining: number;
-  /** Заполненность кольца, 0–100. */
+  /** Заполненность кольца, 0–100. Считается по секундам, см. ниже. */
   percent: number;
   done: boolean;
 }
@@ -89,6 +94,16 @@ export interface DailyPlan {
 export interface QuestInput {
   /** Минут в приложении сегодня. */
   todayMinutes: number;
+  /**
+   * Секунд в приложении сегодня. Нужны ТОЛЬКО кольцу прогресса.
+   *
+   * Без них процент считался из целых минут, и при цели в 20 минут кольцо
+   * прыгало сразу на 5 %: минуту стоит на месте, потом скачок. Смотреть на
+   * такой «прогресс» бессмысленно — он не сообщает, что время идёт.
+   *
+   * Не передали — считаем по минутам, как раньше.
+   */
+  todaySeconds?: number;
   /** Цель, которая действует сегодня. */
   activeGoalMinutes: number;
   /** Цель, выбранная пользователем на следующий день. */
@@ -211,13 +226,31 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
   const activeTarget = Math.max(5, input.activeGoalMinutes || 15);
   const selectedTarget = Math.max(5, input.selectedGoalMinutes || activeTarget);
   const current = Math.max(0, input.todayMinutes);
+  const done = current >= activeTarget;
+
+  /**
+   * Процент кольца — по СЕКУНДАМ.
+   *
+   * Минута при цели в 20 минут это ровно 5 %, поэтому раньше кольцо стояло
+   * неподвижно, а потом дёргалось скачком. По секундам оно прибавляет по
+   * проценту и видно, что время действительно идёт.
+   *
+   * floor, а не round: при 19 мин 59 с округление дало бы 100 % на кольце,
+   * хотя цель ещё не закрыта. Ровные 100 % показываем только когда day.done —
+   * так цифра и галочка никогда не расходятся.
+   */
+  const seconds = Math.max(0, input.todaySeconds ?? current * 60);
+  const percent = done
+    ? 100
+    : Math.min(99, Math.max(0, Math.floor((seconds / (activeTarget * 60)) * 100)));
+
   const time: TimeGoal = {
     current,
     target: activeTarget,
     nextTarget: selectedTarget,
     remaining: Math.max(0, activeTarget - current),
-    percent: Math.min(100, Math.round((current / activeTarget) * 100)),
-    done: current >= activeTarget,
+    percent,
+    done,
   };
 
   // ── Задачи: 2, 3 или 4. Базовое число зависит и от даты, и от тяжести цели ──
