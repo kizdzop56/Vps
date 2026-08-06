@@ -1,48 +1,49 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Служебные операции над данными: запуск из браузера.
 //
-// Зачем маршрут существует. Аудит словаря живёт скриптом
-// (maintenance/auditWords.ts), но запустить его можно только там, где есть шелл
-// и доступ к базе. На бесплатном хостинге шелла нет, а с телефона тем более —
-// то есть проверка, написанная ради исправления боевых данных, недоступна тому,
-// кому она нужна. Здесь то же самое отдаётся страницей.
+// Здесь ровно одна операция — заполнить пустые примеры употребления из Tatoeba
+// (см. lib/tatoeba.ts). Запуск из браузера нужен потому, что шелла с доступом к
+// базе на бесплатном хостинге нет, а владелец проекта работает с телефона.
 //
-// ── Почему пакетами, а не одним запросом ────────────────────────────────────
-// Проверка одного слова — это несколько обращений в сеть (значения слова,
-// словарь, перевод примеров), поэтому каталог обходится минутами и в таймаут
-// прокси не уложится. Страница берёт по 40 слов за запрос и сама идёт до конца,
-// показывая прогресс. Побочная польза: частые запросы не дают бесплатному
-// хостингу уснуть посреди прогона.
+// ── Что операция делает и чего НЕ делает ────────────────────────────────────
+// ДОБАВЛЯЕТ пример там, где его нет. Всё.
+//
+// Не заменяет существующие примеры. Не удаляет их. Не трогает переводы. Это не
+// осторожность ради осторожности: прошлая версия умела всё перечисленное и на
+// живых данных предлагала стереть нормальные карточки. Операция, которая только
+// заполняет пустоту, не может испортить данные в принципе — терять там нечего,
+// а значит и проверять результат руками не нужно.
+//
+// Переводы автоматически не правятся вовсе: достоверного бесплатного источника
+// словарных значений EN→RU нет, а машинный перевод врёт на идиомах и
+// многозначных словах.
+//
+// ── Почему пакетами ─────────────────────────────────────────────────────────
+// Каждое слово — запрос в Tatoeba, тысячи слов идут минутами и в таймаут прокси
+// не уложатся. Страница берёт по 25 слов за раз и сама идёт до конца. Побочная
+// польза: частые запросы не дают бесплатному хостингу уснуть посреди прогона.
 //
 // ── Доступ ──────────────────────────────────────────────────────────────────
-// Ключ MAINTENANCE_KEY из окружения. Если он не задан, маршрута НЕТ вовсе —
-// отвечаем 404, а не 403: наружу не должно торчать даже упоминание, что по
-// этому адресу что-то есть. Сравнение ключа timingSafeEqual, чтобы его нельзя
-// было подобрать по времени ответа.
-//
-// Роль admin здесь не подошла бы: страницу открывают из адресной строки, а
-// заголовок Authorization туда не подставить.
+// Ключ MAINTENANCE_KEY из окружения. Не задан — маршрута нет вовсе (404, а не
+// 403): наружу не должно торчать даже упоминание, что тут что-то есть.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { db } from "@workspace/db";
 import { decksTable, wordsTable } from "@workspace/db";
-import { and, asc, eq, sql } from "drizzle-orm";
-import {
-  inspectBatch,
-  patchFor,
-  type AuditFinding,
-  type AuditScope,
-  type AuditWordRow,
-} from "../lib/wordAuditRun";
-import { AUDIT_PAGE } from "./maintenancePage";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { exampleFor } from "../lib/tatoeba";
+import { FILL_PAGE } from "./maintenancePage";
 
 const router = Router();
 
-/** Сколько слов проверяем за один запрос: больше — риск словить таймаут прокси. */
-const BATCH_DEFAULT = 40;
-const BATCH_MAX = 100;
+/** Сколько слов за один запрос: больше — риск словить таймаут прокси. */
+const BATCH_DEFAULT = 25;
+const BATCH_MAX = 50;
+
+/** Сколько запросов в Tatoeba держим одновременно: чужой сервис, ведём себя прилично. */
+const CONCURRENCY = 3;
 
 // ── Доступ по ключу ─────────────────────────────────────────────────────────
 function keyMatches(provided: string, expected: string): boolean {
@@ -55,7 +56,6 @@ function keyMatches(provided: string, expected: string): boolean {
 
 function requireMaintenanceKey(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env["MAINTENANCE_KEY"]?.trim();
-  // Ключ не настроен — считаем, что раздела не существует.
   if (!expected) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -68,50 +68,35 @@ function requireMaintenanceKey(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-// ── Выборка каталога ────────────────────────────────────────────────────────
-// Проверяем только СИСТЕМНЫЕ колоды: переводы в колодах учителей и учеников —
-// их данные, переписывать их мы не вправе.
-function catalogFilter(deckId: number | null) {
-  return deckId === null
-    ? eq(decksTable.isSystem, true)
-    : and(eq(decksTable.isSystem, true), eq(wordsTable.deckId, deckId));
-}
+// ── Выборка ─────────────────────────────────────────────────────────────────
+// Только системные колоды (чужие данные не трогаем) и только слова без примера:
+// операция ничего не заменяет, поэтому остальные ей неинтересны.
+const emptyExample = or(isNull(wordsTable.exampleEn), eq(wordsTable.exampleEn, ""));
 
-async function countCatalog(deckId: number | null): Promise<number> {
+async function countPending(): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(wordsTable)
     .innerJoin(decksTable, eq(decksTable.id, wordsTable.deckId))
-    .where(catalogFilter(deckId));
+    .where(and(eq(decksTable.isSystem, true), emptyExample));
   return Number(row?.n ?? 0);
 }
 
-async function loadCatalogPage(
-  deckId: number | null,
-  offset: number,
-  limit: number,
-): Promise<Array<AuditWordRow & { deckTitle: string }>> {
+type PendingWord = { id: number; english: string; deckTitle: string };
+
+async function loadPending(limit: number): Promise<PendingWord[]> {
   const rows = await db
     .select({
       id: wordsTable.id,
-      deckId: wordsTable.deckId,
       english: wordsTable.english,
-      translationsRu: wordsTable.translationsRu,
-      partOfSpeech: wordsTable.partOfSpeech,
-      exampleEn: wordsTable.exampleEn,
-      exampleRu: wordsTable.exampleRu,
       deckTitle: decksTable.title,
     })
     .from(wordsTable)
     .innerJoin(decksTable, eq(decksTable.id, wordsTable.deckId))
-    .where(catalogFilter(deckId))
-    // Порядок обязан быть стабильным: страница ходит по offset, и без
-    // сортировки СУБД вольна вернуть строки как угодно — часть слов проверялась
-    // бы дважды, часть не проверялась бы вовсе.
+    .where(and(eq(decksTable.isSystem, true), emptyExample))
     .orderBy(asc(wordsTable.id))
-    .limit(limit)
-    .offset(offset);
-  return rows as Array<AuditWordRow & { deckTitle: string }>;
+    .limit(limit);
+  return rows as PendingWord[];
 }
 
 function intParam(value: unknown, fallback: number): number {
@@ -119,136 +104,65 @@ function intParam(value: unknown, fallback: number): number {
   return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
 
-// ── Находки для отчёта ──────────────────────────────────────────────────────
-// Каждый вид расхождения — отдельная строка: по общей формулировке нельзя
-// понять, что именно случится с карточкой. Отдельно стоят review и sense: там
-// сервер НЕ ТРОГАЕТ карточку, решение за человеком.
-type ReportItem = {
-  id: number;
-  english: string;
-  deck: string;
-  kind: "wrong" | "review" | "example" | "sense" | "missing" | "pos";
-  before: string;
-  after: string;
-  /** Все известные значения слова: без них не понять, ошибка это или синоним. */
-  senses?: string;
-};
-
-function reportItems(finding: AuditFinding, deck: string, scope: AuditScope): ReportItem[] {
-  const items: ReportItem[] = [];
-  const word = finding.word;
-  const head = { id: word.id, english: word.english, deck };
-  const senses = finding.senses.slice(0, 6).join(", ");
-
-  if (finding.wrongTranslation) {
-    items.push({
-      ...head,
-      kind: "wrong",
-      before: word.translationsRu.join(", "),
-      after: finding.freshRu ?? "",
-      senses,
-    });
-  } else if (finding.needsReview) {
-    // Словосочетание: машинный перевод здесь не судья (идиомы), поэтому в
-    // «после» показываем не замену, а машинный вариант — просто как справку.
-    items.push({
-      ...head,
-      kind: "review",
-      before: word.translationsRu.join(", "),
-      after: `машина переводит: ${finding.freshRu ?? ""}`,
-      senses,
-    });
-  }
-
-  if (finding.freshPos) {
-    items.push({
-      ...head,
-      kind: "pos",
-      before: word.partOfSpeech ?? "",
-      after: finding.freshPos,
-    });
-  }
-
-  // Показываем ровно то, что произойдёт. Пример о другом значении по умолчанию
-  // не трогается вовсе — так и пишем, чтобы список не обещал лишнего.
-  if (finding.senseMismatch) {
-    const after = scope.replaceExamples
-      ? (finding.newExample ? finding.newExample.en : "пример убран")
-      : "останется как есть — проверь сам";
-    items.push({ ...head, kind: "sense", before: word.exampleEn ?? "", after });
-  } else if (finding.badExample) {
-    items.push({
-      ...head,
-      kind: "example",
-      before: word.exampleEn ?? "",
-      after: finding.newExample ? finding.newExample.en : "пример убран",
-    });
-  } else if (finding.missingExample && finding.newExample) {
-    items.push({ ...head, kind: "missing", before: "примера нет", after: finding.newExample.en });
-  }
-
-  return items;
-}
-
-// ── GET /maintenance/audit-words/batch ──────────────────────────────────────
-// Проверить очередную пачку слов. apply=1 — записать исправления.
-router.get("/maintenance/audit-words/batch", requireMaintenanceKey, async (req, res) => {
-  const offset = intParam(req.query["offset"], 0);
+// ── GET /maintenance/fill-examples/batch ────────────────────────────────────
+// Заполнить очередную порцию. dry=1 — только показать, что нашлось.
+//
+// Смещения здесь нет намеренно: заполненные слова выпадают из выборки сами,
+// поэтому «следующая порция» — это просто следующий запрос. При dry=1 выборка
+// не меняется, и страница показывает одну порцию, не зацикливаясь.
+router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req, res) => {
   const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
-  const apply = req.query["apply"] === "1";
-  const deckRaw = req.query["deck"];
-  const deckId = deckRaw === undefined || deckRaw === "" ? null : intParam(deckRaw, 0);
+  const dry = req.query["dry"] === "1";
 
-  const scope: AuditScope = {
-    examplesOnly: req.query["scope"] === "examples",
-    translationsOnly: req.query["scope"] === "translations",
-    // Замена существующих примеров — только по явной просьбе: проверка значения
-    // ошибается, а стереть хороший пример необратимо.
-    replaceExamples: req.query["replace"] === "1",
-  };
-
-  const total = await countCatalog(deckId);
-  const words = await loadCatalogPage(deckId, offset, limit);
+  const remaining = await countPending();
+  const words = await loadPending(limit);
 
   if (words.length === 0) {
-    res.json({ total, offset, checked: 0, updated: 0, skipped: 0, items: [], nextOffset: null });
+    res.json({ remaining: 0, checked: 0, filled: 0, items: [], done: true });
     return;
   }
 
-  const titleById = new Map(words.map((w) => [w.id, w.deckTitle]));
-  const findings = await inspectBatch(words, scope);
+  const items: Array<{ english: string; deck: string; en: string; ru: string; source: number }> = [];
+  let filled = 0;
 
-  const items: ReportItem[] = [];
-  let updated = 0;
-  let skipped = 0;
+  for (let i = 0; i < words.length; i += CONCURRENCY) {
+    const chunk = words.slice(i, i + CONCURRENCY);
+    const found = await Promise.all(
+      chunk.map(async (w) => ({ word: w, pair: await exampleFor(w.english) })),
+    );
 
-  for (const finding of findings) {
-    if (finding.skipped) skipped += 1;
-    items.push(...reportItems(finding, titleById.get(finding.word.id) ?? "", scope));
-
-    if (!apply) continue;
-    const patch = patchFor(finding, scope);
-    if (!patch) continue;
-    await db.update(wordsTable).set(patch).where(eq(wordsTable.id, finding.word.id));
-    updated += 1;
+    for (const { word, pair } of found) {
+      if (!pair) continue;
+      items.push({
+        english: word.english,
+        deck: word.deckTitle,
+        en: pair.en,
+        ru: pair.ru,
+        source: pair.sourceId,
+      });
+      if (dry) continue;
+      await db
+        .update(wordsTable)
+        .set({ exampleEn: pair.en, exampleRu: pair.ru })
+        .where(eq(wordsTable.id, word.id));
+      filled += 1;
+    }
   }
 
-  const nextOffset = offset + words.length;
   res.json({
-    total,
-    offset,
+    remaining,
     checked: words.length,
-    updated,
-    skipped,
+    filled,
     items,
-    nextOffset: nextOffset >= total ? null : nextOffset,
+    // В сухом прогоне выборка не сдвинется, поэтому останавливаемся сразу:
+    // иначе страница крутила бы одну и ту же порцию до бесконечности.
+    done: dry || filled === 0,
   });
 });
 
-// ── GET /maintenance/audit-words ────────────────────────────────────────────
-// Страница-обёртка: сама ходит по пачкам и показывает, что нашлось.
-router.get("/maintenance/audit-words", requireMaintenanceKey, (_req, res) => {
-  res.type("html").send(AUDIT_PAGE);
+// ── GET /maintenance/fill-examples ──────────────────────────────────────────
+router.get("/maintenance/fill-examples", requireMaintenanceKey, (_req, res) => {
+  res.type("html").send(FILL_PAGE);
 });
 
 export default router;
