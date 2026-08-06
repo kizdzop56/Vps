@@ -1,14 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Главный экран раздела «Слова»: одна кнопка «Учить слова» (сквозная сессия по
-// всем колодам), отработка сложных слов, библиотека готовых колод, собственные
+// всем колодам), отработка сложных слов, 15 тематических колод, собственные
 // колоды и переходы к статистике / созданию колоды / марафону.
 //
 // ── Единая порода поверхностей ──────────────────────────────────────────────
 // Экран говорит на том же языке, что профиль, календарь и рейтинг: у каждой
 // карточки НИЖНЯЯ ГРАНЬ — отдельный слой под корпусом, сдвинутый вниз на свою
-// толщину. Здесь ВСЁ, что нажимается, ещё и проседает: колода, группа уровня,
-// плитки действий, «сложные слова», кнопка повтора после ошибки. Кнопки без
-// отдачи рядом с проседающими читаются как неработающие.
+// толщину. Здесь ВСЁ, что нажимается, ещё и проседает: колода, плитки
+// действий, «сложные слова», кнопка повтора после ошибки. Кнопки без отдачи
+// рядом с проседающими читаются как неработающие.
 //
 // У колод грань толще остальных карточек (EDGE_DECK): это главные объекты
 // экрана, ради них сюда и заходят, и они должны выступать вперёд.
@@ -17,12 +17,30 @@
 // screenBottom: панель вкладок плавает ПОВЕРХ содержимого, и без отступа
 // последняя колода уезжает под неё.
 //
+// ── Ровно 15 тем, и ни одной колодой больше ─────────────────────────────────
+// В базе одна и та же тема разложена по уровням CEFR: «Еда» есть отдельной
+// колодой на A1, на A2, на B1 и так далее. Раньше экран показывал это как
+// есть — группу «Колоды по уровням», которая разворачивалась в десяток строк,
+// а следом ещё блок тематических. Получалась каша, и она росла вместе с
+// каталогом.
+//
+// Теперь показываем ОДНУ строку на тему (pickThemeDecks): ту колоду темы,
+// которая подходит текущему уровню ученика — самый высокий уровень из
+// доступных, но не выше своего; если тема начинается выше уровня, берём её
+// самую первую колоду. Ученик растёт — строка темы сама подтягивает колоду
+// следующего уровня, то есть слова в теме появляются по мере изучения.
+// Список ограничен THEME_LIMIT: тем в каталоге может стать больше, экран от
+// этого длиннее стать не должен.
+//
+// Слова, не попавшие ни в одну показанную колоду, НЕ теряются: сквозная сессия
+// («Учить слова») и «Марафон слов» читают все доступные колоды, включая
+// скрытые misc_{level} — visibleDeckIds() на сервере их не фильтрует.
+//
 // ── Одна колонка значков ────────────────────────────────────────────────────
-// Все ведущие значки строк — ровно ICON пикселей и без наклона: значок колоды,
-// плашка «сложных слов», шильд уровня. Раньше размеры гуляли (48, 42, шильд по
-// содержимому), а плашки были повёрнуты на несколько градусов — в списке из
-// десятка строк левый край шёл лесенкой и выглядел как брак вёрстки, а не как
-// приём.
+// Все ведущие значки строк — ровно ICON пикселей и без наклона. Раньше размеры
+// гуляли (48, 42, шильд по содержимому), а плашки были повёрнуты на несколько
+// градусов — в списке из десятка строк левый край шёл лесенкой и выглядел как
+// брак вёрстки, а не как приём.
 //
 // ── Чего здесь нет ──────────────────────────────────────────────────────────
 // Цели дня по словам. Она жила отдельной карточкой «Повторить N слов» и
@@ -67,6 +85,46 @@ const EDGE_LIGHT = "#c9bdf0";
 
 /** Размер ведущего значка строки. Один на весь экран: колонка должна быть ровной. */
 const ICON = 46;
+
+/** Сколько тем показываем на экране. Больше — снова каша, ради которой всё и затевалось. */
+const THEME_LIMIT = 15;
+
+const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
+
+/**
+ * Одна колода на тему — та, что подходит уровню ученика.
+ *
+ * Ранг подбирает колоду так: сначала свой уровень и всё, что ниже (берём самый
+ * высокий из них — там слова свежее), затем колоды выше уровня (берём самую
+ * низкую — до остального ученик ещё дорастёт). Колода без уровня подходит
+ * всегда и выигрывает у любой уровневой.
+ *
+ * Тем в каталоге может оказаться больше пятнадцати: оставляем самые наполненные
+ * (в пустой теме учить нечего), а показываем по алфавиту — порядок списка не
+ * должен прыгать при каждом выученном слове.
+ */
+function pickThemeDecks(systemDecks: DeckWithAssign[], myLevel: string): DeckWithAssign[] {
+  const myIdx = Math.max(0, CEFR_ORDER.indexOf(myLevel));
+  const rank = (d: DeckWithAssign) => {
+    const i = d.cefrLevel ? CEFR_ORDER.indexOf(d.cefrLevel) : -1;
+    if (i < 0) return 1000;         // колода без уровня — общая для всех
+    if (i <= myIdx) return 100 + i; // свой уровень и ниже: чем выше, тем лучше
+    return 50 - i;                  // выше своего уровня: чем ниже, тем лучше
+  };
+
+  const best = new Map<string, DeckWithAssign>();
+  for (const d of systemDecks) {
+    const key = (d.theme ?? d.title).trim().toLowerCase();
+    if (!key) continue;
+    const cur = best.get(key);
+    if (!cur || rank(d) > rank(cur)) best.set(key, d);
+  }
+
+  return [...best.values()]
+    .sort((a, b) => b.wordCount - a.wordCount || a.title.localeCompare(b.title, "ru"))
+    .slice(0, THEME_LIMIT)
+    .sort((a, b) => a.title.localeCompare(b.title, "ru"));
+}
 
 /**
  * Экран падал молча: при ошибке рендера React разворачивал дерево и вкладка
@@ -208,21 +266,15 @@ export default function FlashcardsHome() {
   const myDecks = decks.filter((d) => !d.isSystem && !d.assigned);
   const level = settingsQ.data?.placementLevel;
 
-  // Уровневые колоды vs тематические (без cefrLevel) — см. комментарий к файлу.
-  const levelDecks = systemDecks.filter((d) => d.cefrLevel);
-  const themeDecks = systemDecks.filter((d) => !d.cefrLevel);
-
-  // Пока тест уровня не пройден, считаем ученика начинающим и раскрываем A1.
+  // Пока тест уровня не пройден, считаем ученика начинающим.
   const myLevel = level ?? "A1";
-  // Показываем только колоды уровня ученика — одна группа, без «следующего».
-  // Тематические колоды (без cefrLevel) идут отдельным блоком ниже.
-  const levelsWithDecks = [myLevel].filter((l) => levelDecks.some((d) => d.cefrLevel === l));
 
-  // Раскрытие: null → уровень ученика раскрыт по умолчанию, остальные свёрнуты.
-  const [openLevels, setOpenLevels] = React.useState<Record<string, boolean>>({});
-  const isLevelOpen = (l: string) => openLevels[l] ?? l === myLevel;
-  const toggleLevel = (l: string) =>
-    setOpenLevels((s) => ({ ...s, [l]: !(s[l] ?? l === myLevel) }));
+  // Ровно 15 тем: по одной колоде на тему, подобранной под уровень ученика.
+  const themeDecks = React.useMemo(
+    () => pickThemeDecks(systemDecks, myLevel),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [decksQ.data, myLevel],
+  );
 
   const totalDue = decks.reduce((s, d) => s + d.dueCount, 0);
   const totalNew = decks.reduce((s, d) => s + d.newCount, 0);
@@ -348,7 +400,7 @@ export default function FlashcardsHome() {
       ) : (
         <>
           {/* Назначенные учителем колоды — самый верх списка, ученик должен
-              увидеть их сразу, не долистывая до колод по уровням. */}
+              увидеть их сразу, не долистывая до тематических. */}
           {assignedDecks.length > 0 && (
             <>
               <SectionLabel>От учителя</SectionLabel>
@@ -363,24 +415,17 @@ export default function FlashcardsHome() {
               <View style={{ height: 8 }} />
             </>
           )}
-          <SectionLabel>Колоды по уровням</SectionLabel>
-          {levelsWithDecks.map((l) => (
-            <LevelGroup
-              key={l}
-              colors={colors}
-              level={l}
-              isMyLevel={l === myLevel}
-              open={isLevelOpen(l)}
-              onToggle={() => toggleLevel(l)}
-              decks={levelDecks.filter((d) => d.cefrLevel === l)}
-              onOpenDeck={(id) => router.push(`/flashcards/deck/${id}`)}
-            />
-          ))}
 
           {themeDecks.length > 0 && (
             <>
-              <View style={{ height: 8 }} />
               <SectionLabel>Тематические колоды</SectionLabel>
+              {/* Одна строка объяснения вместо десятка лишних колод: ученик
+                  должен понимать, куда делись все остальные слова. */}
+              <Text style={{ fontSize: 12, lineHeight: 18, color: colors.mutedForeground, marginBottom: 10 }}>
+                Темы наполняются по мере изучения — уровень растёт, слов в теме
+                становится больше. Всё, что не попало в тему, ждёт в «Учить слова»
+                и «Марафоне слов».
+              </Text>
               {themeDecks.map((d) => <DeckCard key={d.id} deck={d} colors={colors} onPress={() => router.push(`/flashcards/deck/${d.id}`)} />)}
             </>
           )}
@@ -417,82 +462,6 @@ function pluralRu(n: number, one: string, few: string, many: string) {
   if (mod10 === 1 && mod100 !== 11) return one;
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
   return many;
-}
-
-function LevelGroup({
-  colors, level, isMyLevel, open, onToggle, decks, onOpenDeck,
-}: {
-  colors: any;
-  level: string;
-  isMyLevel: boolean;
-  open: boolean;
-  onToggle: () => void;
-  decks: DeckWithAssign[];
-  onOpenDeck: (id: number) => void;
-}) {
-  const words = decks.reduce((s, d) => s + d.wordCount, 0);
-  const learned = decks.reduce((s, d) => s + d.learnedCount, 0);
-  const due = decks.reduce((s, d) => s + d.dueCount, 0);
-
-  /** Шильд уровня — такой же квадрат ICON×ICON, как значки колод. */
-  const shield: ViewStyle = {
-    width: ICON, height: ICON, borderRadius: radii.sm + 3,
-    alignItems: "center", justifyContent: "center",
-  };
-
-  return (
-    <View style={{ marginBottom: 10 }}>
-      <ChunkyTap
-        color={isMyLevel ? colors.primary + "4d" : EDGE_LIGHT}
-        onPress={onToggle}
-        accessibilityLabel={open ? `Свернуть уровень ${level}` : `Раскрыть уровень ${level}`}
-      >
-        <View style={cardBody(colors, {
-          flexDirection: "row", alignItems: "center", gap: 13,
-          borderColor: isMyLevel ? colors.primary + "44" : colors.border,
-        })}>
-          {/* Шильд уровня: у своего уровня — заливка градиентом, у остальных
-              спокойная плашка, чтобы «мой уровень» читался с одного взгляда. */}
-          {isMyLevel ? (
-            <LinearGradient
-              colors={gradients.action as unknown as string[]}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={shield}
-            >
-              <Text style={{ color: "#fff", fontWeight: "900", fontSize: 15 }}>{level}</Text>
-            </LinearGradient>
-          ) : (
-            <View style={[shield, { backgroundColor: colors.primary + "1f" }]}>
-              <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 15 }}>{level}</Text>
-            </View>
-          )}
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
-              {decks.length} {pluralRu(decks.length, "колода", "колоды", "колод")}
-              {isMyLevel ? " · ваш уровень" : ""}
-            </Text>
-            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
-              {words} слов и фраз · выучено {learned}
-            </Text>
-          </View>
-          {due > 0 && <Pill text={`${due}`} tone="solid" />}
-          {/* Chevron из своего набора: вниз — раскрыто, вправо — свёрнуто. */}
-          <View style={{ transform: [{ rotate: open ? "90deg" : "0deg" }] }}>
-            <Glyph name="chevron" size={20} color={colors.mutedForeground} />
-          </View>
-        </View>
-      </ChunkyTap>
-
-      {open && (
-        <View style={{ marginTop: 8 }}>
-          {decks.map((d) => (
-            <DeckCard key={d.id} deck={d} colors={colors} onPress={() => onOpenDeck(d.id)} />
-          ))}
-        </View>
-      )}
-    </View>
-  );
 }
 
 function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any; onPress: () => void }) {
