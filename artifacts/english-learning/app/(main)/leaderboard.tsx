@@ -16,11 +16,18 @@
 // строка чужого участника, место на подиуме, кнопка «показать всех». Своя
 // строка грань имеет, но не проседает: открывать в ней нечего.
 //
-// Раньше строки были на Tile из GameKit — плоские карточки с тенью. Рядом с
-// объёмными блоками остального приложения они читались как незаконченные.
-//
 // Переключатели собраны как в листе друзей: подложка с гранью, активный
 // сегмент — светлая плашка с цветной тенью.
+//
+// ── Пьедестал ───────────────────────────────────────────────────────────────
+// Ступень — не полупрозрачный прямоугольник, а настоящая тумба из четырёх
+// частей: верхняя площадка (на неё «стоит» участник), передняя грань в металле
+// места, скошенные боковые фаски и утопленная табличка с номером. Раньше это
+// были три одинаковых стеклянных плашки, и пьедестал читался как заглушка.
+//
+// Металл ступени тот же, что у оправы аватара: золото у первого, серебро у
+// второго, бронза у третьего. Из-за этого место видно даже боковым зрением,
+// не читая цифру.
 //
 // ── Живой фон подиума ───────────────────────────────────────────────────────
 // За тройкой лидеров работает PodiumGlow: медленно вращающийся веер лучей,
@@ -34,12 +41,9 @@
 // ── Рейтинг перестал быть просто списком ────────────────────────────────────
 //  • Рядом с каждым участником видно отставание от того, кто выше — «отстаёт на
 //    40 очков» превращает таблицу в дистанцию, которую можно сократить.
-//  • Своё место вынесено в шапку отдельным чипом. Это первое, что ищут на
-//    экране, а раньше приходилось прокручивать список и искать подсветку.
-//  • У подиума настоящие ступени: первое место физически выше, и все три
-//    стоят на одной линии — на нижней кромке шапки.
-//  • Блок «Моё место» заменён на «догоняешь»: он повторял номер, который уже
-//    виден строкой ниже, вместо того чтобы назвать соперника и дистанцию.
+//  • Своё место вынесено в шапку отдельным чипом: там же написано, сколько
+//    осталось до следующей строчки. Отдельного блока «догоняешь» под подиумом
+//    больше нет — он повторял ту же дистанцию второй раз на одном экране.
 //  • Длинный список сворачивается: первая десятка, разрыв «ещё N участников»
 //    и своя строка с соседями.
 //
@@ -142,16 +146,40 @@ const SCOPE_OPTIONS: { key: Scope; label: string }[] = [
 /** Сколько участников показываем до сворачивания списка. */
 const VISIBLE_HEAD = 10;
 
-// Металл мест: золото, серебро, бронза.
+/**
+ * Металл мест: золото, серебро, бронза.
+ *
+ * gradient — оправа аватара и передняя грань тумбы;
+ * plate    — верхняя площадка, она светлее: на неё падает свет сверху;
+ * solid    — свечение вокруг аватара и цвет таблички;
+ * dark     — тень под площадкой и боковая фаска.
+ */
 const PLACE_METALS = [
-  { gradient: ["#fff6d0", "#f3cf6a", "#c9971f", "#8a6511"] as const, solid: "#d4af37" },
-  { gradient: ["#fbfbfc", "#d8dce1", "#a3aab3", "#6f7680"] as const, solid: "#b0b8bf" },
-  { gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const, solid: "#c17a3e" },
+  {
+    gradient: ["#fff6d0", "#f3cf6a", "#c9971f", "#8a6511"] as const,
+    plate: ["#fff8dd", "#f6d97e"] as const,
+    solid: "#d4af37", dark: "#7a5a0f",
+  },
+  {
+    gradient: ["#fbfbfc", "#d8dce1", "#a3aab3", "#6f7680"] as const,
+    plate: ["#ffffff", "#dde1e6"] as const,
+    solid: "#b0b8bf", dark: "#5f666e",
+  },
+  {
+    gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const,
+    plate: ["#f6d3ae", "#cf8a49"] as const,
+    solid: "#c17a3e", dark: "#53300f",
+  },
 ];
 const PLACE_COLORS = PLACE_METALS.map(m => m.solid);
 
-/** Высота ступени под каждым местом: 1-е выше 2-го, 2-е выше 3-го. */
-const STEP_HEIGHT = [54, 36, 24];
+/**
+ * Высота тумбы под каждым местом. Разница между ступенями стала заметнее:
+ * пьедестал должен читаться как лестница, а не как три почти равные плашки.
+ */
+const STEP_HEIGHT = [78, 54, 38];
+/** Толщина верхней площадки тумбы. */
+const PLATE_H = 9;
 
 function pluralRu(n: number, one: string, few: string, many: string): string {
   const mod10 = n % 10;
@@ -229,7 +257,7 @@ function ChunkyTap({
 }
 
 // ── Корона победителя ─────────────────────────────────────────────────
-function Crown({ size = 34 }: { size?: number }) {
+function Crown({ size = 40 }: { size?: number }) {
   return (
     <Svg width={size} height={size * (18 / 24)} viewBox="0 0 24 18">
       <Defs>
@@ -274,35 +302,123 @@ function Avatar({ entry, size }: { entry: CategoryEntry; size: number }) {
 }
 
 /**
- * Ступень подиума.
+ * Тумба пьедестала.
  *
- * Ступени стоят на нижней кромке шапки — на «полу». Раньше под ними была
- * волна, которая срезала им низ: пьедестал выглядел висящим и обрубленным.
- * Кромка ровная, и ступени упираются в неё, как настоящие.
+ * Собрана из четырёх слоёв, как настоящая:
+ *   • верхняя ПЛОЩАДКА — светлая полоса, на которую «встаёт» участник. Именно
+ *     она даёт ощущение горизонтальной поверхности, а не плоской наклейки;
+ *   • тень под площадкой — тонкая тёмная линия, отделяющая верх от передней
+ *     грани;
+ *   • передняя ГРАНЬ в металле места, с бликом слева и затемнением справа:
+ *     свет на экране падает сверху-слева, и фаски это повторяют;
+ *   • ТАБЛИЧКА с номером — утопленная плашка со светлым верхним контуром,
+ *     будто выгравирована в камне.
+ *
+ * Ступени стоят на нижней кромке шапки — на «полу»: paddingBottom у контейнера
+ * подиума нет намеренно, иначе тумбы висели бы в воздухе.
  */
 function Step({ rank, dim }: { rank: number; dim?: boolean }) {
+  const metal = PLACE_METALS[rank - 1]!;
+  const height = STEP_HEIGHT[rank - 1]!;
+
+  // Свободное место: тумба есть, но она «нежилая» — приглушённое стекло.
+  if (dim) {
+    return (
+      <View style={{ width: "100%", height }}>
+        <View style={{
+          height: PLATE_H,
+          borderTopLeftRadius: 12, borderTopRightRadius: 12,
+          backgroundColor: "rgba(255,255,255,0.12)",
+          borderWidth: 1, borderBottomWidth: 0, borderColor: "rgba(255,255,255,0.16)",
+        }} />
+        <View style={{
+          flex: 1,
+          backgroundColor: "rgba(255,255,255,0.05)",
+          borderWidth: 1, borderTopWidth: 0, borderBottomWidth: 0,
+          borderColor: "rgba(255,255,255,0.12)",
+          alignItems: "center", justifyContent: "center",
+        }}>
+          <Text style={{ fontSize: 15, fontWeight: "900", color: "rgba(255,255,255,0.26)" }}>
+            {rank}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <LinearGradient
-      colors={dim
-        ? ["rgba(255,255,255,0.10)", "rgba(255,255,255,0.04)"]
-        : ["rgba(255,255,255,0.30)", "rgba(255,255,255,0.12)"]}
-      start={{ x: 0.5, y: 0 }}
-      end={{ x: 0.5, y: 1 }}
-      style={{
-        width: "100%", height: STEP_HEIGHT[rank - 1],
-        borderTopLeftRadius: 14, borderTopRightRadius: 14,
-        borderWidth: 1, borderBottomWidth: 0,
-        borderColor: dim ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.34)",
-        alignItems: "center", justifyContent: "center",
-      }}
-    >
-      <Text style={{
-        fontSize: 16, fontWeight: "900",
-        color: dim ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.75)",
-      }}>
-        {rank}
-      </Text>
-    </LinearGradient>
+    <View style={{ width: "100%", height }}>
+      {/* ── Верхняя площадка ── */}
+      <LinearGradient
+        colors={metal.plate as unknown as string[]}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
+        style={{
+          height: PLATE_H,
+          borderTopLeftRadius: 12, borderTopRightRadius: 12,
+        }}
+      />
+      {/* Тень под площадкой: отделяет горизонталь от вертикали. */}
+      <View style={{ height: 2, backgroundColor: metal.dark, opacity: 0.55 }} />
+
+      {/* ── Передняя грань ── */}
+      <LinearGradient
+        colors={metal.gradient as unknown as string[]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={{ flex: 1, overflow: "hidden" }}
+      >
+        {/* Фаска слева: свет падает сверху-слева. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.42)", "rgba(255,255,255,0)"]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 14 }}
+        />
+        {/* Фаска справа: там тень. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.3)"]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 16 }}
+        />
+        {/* Блик по верхней трети грани: полированный камень. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.28)", "rgba(255,255,255,0)"]}
+          style={{ position: "absolute", left: 0, right: 0, top: 0, height: "38%" }}
+        />
+
+        {/* ── Табличка с номером ──
+            Утоплена в грань: тёмная подложка, светлая линия сверху и цифра с
+            тенью. Ровно так выглядит гравировка на настоящем постаменте. */}
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <View style={{
+            minWidth: rank === 1 ? 40 : 32,
+            paddingHorizontal: 9,
+            paddingVertical: rank === 1 ? 5 : 3,
+            borderRadius: 9,
+            backgroundColor: "rgba(0,0,0,0.22)",
+            borderTopWidth: 1.5, borderTopColor: "rgba(255,255,255,0.4)",
+            alignItems: "center", justifyContent: "center",
+          }}>
+            <Text style={{
+              fontSize: rank === 1 ? 21 : 17,
+              fontWeight: "900",
+              color: "#ffffff",
+              fontVariant: ["tabular-nums"],
+              textShadowColor: "rgba(0,0,0,0.45)",
+              textShadowOffset: { width: 0, height: 1 },
+              textShadowRadius: 2,
+            }}>
+              {rank}
+            </Text>
+          </View>
+        </View>
+      </LinearGradient>
+    </View>
   );
 }
 
@@ -317,9 +433,10 @@ function PodiumCard({
   isMe: boolean;
   onPress: () => void;
 }) {
-  const avatarSize = isCenter ? 76 : 60;
+  // Крупнее прежнего: тройка лидеров — главное на экране, а не подпись к нему.
+  const avatarSize = isCenter ? 94 : 74;
   const placeColor = PLACE_COLORS[rank - 1];
-  const placeMetal = PLACE_METALS[rank - 1];
+  const placeMetal = PLACE_METALS[rank - 1]!;
 
   // Победитель слегка покачивается: он на сцене, и это видно.
   const float = useRef(new Animated.Value(0)).current;
@@ -382,26 +499,26 @@ function PodiumCard({
         {/* Корона рисуется в потоке над аватаром, а не absolute сверху:
             абсолютная позиция вылезала за край шапки и наезжала на
             переключатель категорий. */}
-        <View style={{ height: rank === 1 ? 26 : 0, justifyContent: "flex-end" }}>
-          {rank === 1 && <Crown size={34} />}
+        <View style={{ height: rank === 1 ? 30 : 0, justifyContent: "flex-end" }}>
+          {rank === 1 && <Crown size={40} />}
         </View>
 
         <View style={{
           marginTop: rank === 1 ? -2 : 0,
-          borderRadius: (avatarSize + 6) / 2,
+          borderRadius: (avatarSize + 8) / 2,
           shadowColor: placeColor, shadowOffset: { width: 0, height: 0 },
-          shadowOpacity: 0.85, shadowRadius: 16, elevation: 12,
+          shadowOpacity: 0.85, shadowRadius: 18, elevation: 12,
           ...(Platform.OS === "web"
-            ? { boxShadow: `0 0 20px 3px ${placeColor}a0` } as any
+            ? { boxShadow: `0 0 24px 4px ${placeColor}a0` } as any
             : {}),
         }}>
           <LinearGradient
-            colors={placeMetal.gradient}
+            colors={placeMetal.gradient as unknown as string[]}
             start={{ x: 0.15, y: 0 }}
             end={{ x: 0.9, y: 1 }}
             style={{
-              width: avatarSize + 6, height: avatarSize + 6, borderRadius: (avatarSize + 6) / 2,
-              padding: 3, justifyContent: "center", alignItems: "center",
+              width: avatarSize + 8, height: avatarSize + 8, borderRadius: (avatarSize + 8) / 2,
+              padding: 4, justifyContent: "center", alignItems: "center",
             }}
           >
             <Avatar entry={entry} size={avatarSize} />
@@ -410,18 +527,18 @@ function PodiumCard({
 
         {/* Номер места шильдом на стыке аватара и подписи. */}
         <LinearGradient
-          colors={placeMetal.gradient}
+          colors={placeMetal.gradient as unknown as string[]}
           start={{ x: 0.1, y: 0 }}
           end={{ x: 0.9, y: 1 }}
           style={{
-            marginTop: -13,
-            width: 26, height: 26, borderRadius: 13,
-            borderWidth: 2, borderColor: "#fff",
+            marginTop: -15,
+            width: 30, height: 30, borderRadius: 15,
+            borderWidth: 2.5, borderColor: "#fff",
             justifyContent: "center", alignItems: "center",
           }}
         >
           <Text style={{
-            fontSize: 12, fontWeight: "900", color: "#fff",
+            fontSize: 13.5, fontWeight: "900", color: "#fff",
             textShadowColor: "rgba(0,0,0,0.4)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 1,
           }}>
             {rank}
@@ -431,16 +548,16 @@ function PodiumCard({
         <Text
           numberOfLines={1}
           style={{
-            marginTop: 8, fontSize: isCenter ? 14.5 : 13.5,
+            marginTop: 8, fontSize: isCenter ? 15.5 : 14,
             fontWeight: "800", color: "#fff",
-            maxWidth: isCenter ? 108 : 92, textAlign: "center",
+            maxWidth: isCenter ? 120 : 100, textAlign: "center",
           }}
         >
           {entry.username}{isMe ? " (Я)" : ""}
         </Text>
         <Text style={{
-          marginTop: 2, fontSize: 12.5, fontWeight: "800",
-          color: "rgba(255,255,255,0.82)", fontVariant: ["tabular-nums"],
+          marginTop: 2, fontSize: isCenter ? 13.5 : 12.5, fontWeight: "800",
+          color: "rgba(255,255,255,0.85)", fontVariant: ["tabular-nums"],
         }}>
           {activeCat.formatValue(entry.value)}
         </Text>
@@ -581,8 +698,6 @@ export default function LeaderboardScreen() {
   };
 
   const myGap = myEntry ? gapToAbove(myEntry) : null;
-  /** Кого именно догоняем: сосед на одну строку выше. */
-  const rival = myEntry ? entries.find(e => e.rank === myEntry.rank - 1) : undefined;
   /** Первое место имеет смысл праздновать, только если есть с кем соревноваться. */
   const isLonely = entries.length <= 1;
 
@@ -753,9 +868,12 @@ export default function LeaderboardScreen() {
         }}
       >
         {/* Живой свет сцены: лучи, ореол и искры. Нажатия не ловит. */}
-        <PodiumGlow width={screenW} height={420} />
+        <PodiumGlow width={screenW} height={440} />
 
-        {/* ── Заголовок и своё место ── */}
+        {/* ── Заголовок и своё место ──
+            Чип справа — единственное место, где написана своя дистанция.
+            Отдельный блок «догоняешь» под подиумом убран: он повторял то же
+            самое числом ниже на том же экране. */}
         <View style={{ paddingHorizontal: 18, paddingBottom: 14, flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text style={{ fontSize: 24, fontWeight: "900", letterSpacing: -0.6, color: "#fff" }}>Рейтинг</Text>
 
@@ -818,17 +936,16 @@ export default function LeaderboardScreen() {
         />
 
         {/* ── Подиум ──
-            Ступени упираются в нижнюю кромку шапки: paddingBottom здесь нет
-            намеренно. Раньше низ подиума срезала декоративная волна, и
-            пьедестал выглядел обрубленным. */}
+            Тумбы упираются в нижнюю кромку шапки: paddingBottom здесь нет
+            намеренно, иначе пьедестал висел бы в воздухе. */}
         {loading ? (
-          <View style={{ height: 210, justifyContent: "center", alignItems: "center" }}>
+          <View style={{ height: 240, justifyContent: "center", alignItems: "center" }}>
             <ActivityIndicator color="rgba(255,255,255,0.7)" size="large" />
           </View>
         ) : entries.length > 0 ? (
           <View style={{
-            flexDirection: "row", alignItems: "flex-end", gap: 8,
-            paddingHorizontal: 14, paddingTop: 22,
+            flexDirection: "row", alignItems: "flex-end", gap: 6,
+            paddingHorizontal: 12, paddingTop: 22,
           }}>
             <PodiumCard
               entry={top3[1]}
@@ -861,45 +978,6 @@ export default function LeaderboardScreen() {
           <View style={{ height: 20 }} />
         )}
       </LinearGradient>
-
-      {/* ── Кого догоняешь ──
-          Заменил блок «Моё место»: тот показывал номер, который уже виден в
-          подсвеченной строке, вместо того чтобы назвать соперника и дистанцию. */}
-      {!loading && myEntry && rival && myGap !== null && (
-        <Chunky
-          color={activeCat.color + "40"}
-          style={{ marginHorizontal: 20, marginTop: 16, marginBottom: 2 }}
-        >
-          <View style={{
-            flexDirection: "row", alignItems: "center", gap: 11,
-            paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
-            backgroundColor: activeCat.color + "14",
-            borderWidth: 1.5, borderColor: activeCat.color + "3d",
-          }}>
-            <LinearGradient
-              colors={[accents.magenta, "#a855f7"]}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={{
-                width: 34, height: 34, borderRadius: 12,
-                alignItems: "center", justifyContent: "center",
-                shadowColor: accents.magenta, shadowOffset: { width: 0, height: 4 },
-                shadowOpacity: 0.4, shadowRadius: 11, elevation: 4,
-              }}
-            >
-              <Glyph name="trendUp" size={17} color="#fff" />
-            </LinearGradient>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
-                Догоняешь {rival.username}
-              </Text>
-              <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
-                {activeCat.formatGap(myGap)} до {myEntry.rank - 1}-го места
-              </Text>
-            </View>
-          </View>
-        </Chunky>
-      )}
 
       {/* Первый в рейтинге. Если участник вообще один — это не победа, а
          пустой класс: честнее позвать других, чем поздравлять с отрывом
