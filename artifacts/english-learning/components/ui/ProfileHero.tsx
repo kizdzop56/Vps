@@ -27,6 +27,11 @@
 //                   у себя: чужую статистику по словам сервер не отдаёт);
 //   чужой профиль — «очков» и «заданий» (их видно из GET /users/:id).
 //
+// Огонёк у серии — единственная ЖИВАЯ иконка в шапке (components/ui/LiveFlame).
+// Так и задумано: серия — единственный счётчик, который может погаснуть, если
+// пропустить день. Остальные значки статичны, иначе шапка превратилась бы в
+// ярмарку.
+//
 // ── Про полосу опыта ────────────────────────────────────────────────────────
 // Полоса наливается от нуля при появлении и по ней бесконечно бежит блик.
 // Опыт — единственная величина в профиле, которая только растёт и никогда не
@@ -45,6 +50,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Glyph, type GlyphName } from "./Glyph";
+import { LiveFlame } from "./LiveFlame";
 import { accents, gradients, radii } from "@/constants/theme";
 
 /** Метка на «стекле»: на градиенте цветная плашка не читается. */
@@ -68,7 +74,11 @@ function MiniStat({ value, label, icon }: HeroStat) {
   return (
     <View style={s.mini}>
       <View style={s.miniIcon}>
-        <Glyph name={icon} size={15} color="#ffffff" />
+        {/* Серия горит по-настоящему: это единственный счётчик, который
+            гаснет при пропуске дня. */}
+        {icon === "flame"
+          ? <LiveFlame size={17} color="#ffffff" />
+          : <Glyph name={icon} size={15} color="#ffffff" />}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={s.miniValue} numberOfLines={1}>{value}</Text>
