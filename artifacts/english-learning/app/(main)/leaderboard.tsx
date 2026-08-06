@@ -35,9 +35,16 @@
 // анимируются только трансформы и прозрачность, а гамма остаётся фиолетовой.
 //
 // ── Пьедестал ───────────────────────────────────────────────────────────────
-// Ступень — не полупрозрачный прямоугольник, а настоящая тумба из четырёх
-// частей: верхняя площадка (на неё «стоит» участник), передняя грань в металле
-// места, скошенные боковые фаски и утопленная табличка с номером.
+// Тумбы БЕЗ ЦВЕТА: светлое стекло на фиолетовом фоне, все три одинаковые.
+// Золото, серебро и бронза были и на оправе аватара, и на самой тумбе — экран
+// получал шесть металлических пятен на четверть площади, и подиум спорил за
+// внимание с лицами победителей. Металл остался там, где он и означает медаль:
+// на оправе аватара и шильде с номером.
+//
+// Объём тумбы при этом никуда не делся, он держится на форме, а не на цвете:
+// светлая верхняя площадка, тонкая тень под ней, фаска-блик слева, затемнение
+// справа и утопленная табличка с номером. Разница высот (78/54/38) читает
+// пьедестал как лестницу.
 //
 // ── Рейтинг перестал быть просто списком ────────────────────────────────────
 //  • Рядом с каждым участником видно отставание от того, кто выше — «отстаёт на
@@ -152,33 +159,20 @@ const VISIBLE_HEAD = 10;
 /**
  * Металл мест: золото, серебро, бронза.
  *
- * gradient — оправа аватара и передняя грань тумбы;
- * plate    — верхняя площадка, она светлее: на неё падает свет сверху;
- * solid    — свечение вокруг аватара и цвет таблички;
- * dark     — тень под площадкой и боковая фаска.
+ * Используется ТОЛЬКО на оправе аватара и шильде с номером — там, где он
+ * означает медаль. Сам пьедестал бесцветный, см. Step.
  */
 const PLACE_METALS = [
-  {
-    gradient: ["#fff6d0", "#f3cf6a", "#c9971f", "#8a6511"] as const,
-    plate: ["#fff8dd", "#f6d97e"] as const,
-    solid: "#d4af37", dark: "#7a5a0f",
-  },
-  {
-    gradient: ["#fbfbfc", "#d8dce1", "#a3aab3", "#6f7680"] as const,
-    plate: ["#ffffff", "#dde1e6"] as const,
-    solid: "#b0b8bf", dark: "#5f666e",
-  },
-  {
-    gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const,
-    plate: ["#f6d3ae", "#cf8a49"] as const,
-    solid: "#c17a3e", dark: "#53300f",
-  },
+  { gradient: ["#fff6d0", "#f3cf6a", "#c9971f", "#8a6511"] as const, solid: "#d4af37" },
+  { gradient: ["#fbfbfc", "#d8dce1", "#a3aab3", "#6f7680"] as const, solid: "#b0b8bf" },
+  { gradient: ["#f0c497", "#c9803f", "#9a5a24", "#5e3612"] as const, solid: "#c17a3e" },
 ];
 const PLACE_COLORS = PLACE_METALS.map(m => m.solid);
 
 /**
  * Высота тумбы под каждым местом. Разница между ступенями заметная:
  * пьедестал должен читаться как лестница, а не как три почти равные плашки.
+ * Раз цвета у тумб нет, высота — единственное, что их различает.
  */
 const STEP_HEIGHT = [78, 54, 38];
 /** Толщина верхней площадки тумбы. */
@@ -305,76 +299,59 @@ function Avatar({ entry, size }: { entry: CategoryEntry; size: number }) {
 }
 
 /**
- * Тумба пьедестала.
+ * Тумба пьедестала. Бесцветная: светлое стекло, одинаковое у всех трёх мест.
  *
- * Собрана из четырёх слоёв, как настоящая:
+ * Объём держится на форме, а не на цвете:
  *   • верхняя ПЛОЩАДКА — светлая полоса, на которую «встаёт» участник. Именно
  *     она даёт ощущение горизонтальной поверхности, а не плоской наклейки;
  *   • тень под площадкой — тонкая тёмная линия, отделяющая верх от передней
  *     грани;
- *   • передняя ГРАНЬ в металле места, с бликом слева и затемнением справа:
- *     свет на экране падает сверху-слева, и фаски это повторяют;
+ *   • передняя ГРАНЬ с бликом слева и затемнением справа: свет на экране
+ *     падает сверху-слева, и фаски это повторяют;
  *   • ТАБЛИЧКА с номером — утопленная плашка со светлым верхним контуром,
- *     будто выгравирована в камне.
+ *     будто выгравирована.
  *
  * Ступени стоят на нижней кромке шапки — на «полу»: paddingBottom у контейнера
  * подиума нет намеренно, иначе тумбы висели бы в воздухе.
  */
 function Step({ rank, dim }: { rank: number; dim?: boolean }) {
-  const metal = PLACE_METALS[rank - 1]!;
   const height = STEP_HEIGHT[rank - 1]!;
 
-  // Свободное место: тумба есть, но она «нежилая» — приглушённое стекло.
-  if (dim) {
-    return (
-      <View style={{ width: "100%", height }}>
-        <View style={{
-          height: PLATE_H,
-          borderTopLeftRadius: 12, borderTopRightRadius: 12,
-          backgroundColor: "rgba(255,255,255,0.12)",
-          borderWidth: 1, borderBottomWidth: 0, borderColor: "rgba(255,255,255,0.16)",
-        }} />
-        <View style={{
-          flex: 1,
-          backgroundColor: "rgba(255,255,255,0.05)",
-          borderWidth: 1, borderTopWidth: 0, borderBottomWidth: 0,
-          borderColor: "rgba(255,255,255,0.12)",
-          alignItems: "center", justifyContent: "center",
-        }}>
-          <Text style={{ fontSize: 15, fontWeight: "900", color: "rgba(255,255,255,0.26)" }}>
-            {rank}
-          </Text>
-        </View>
-      </View>
-    );
-  }
+  // Свободное место: тумба есть, но она «нежилая» — глуше и без таблички.
+  const plate = dim
+    ? ["rgba(255,255,255,0.16)", "rgba(255,255,255,0.08)"] as const
+    : ["rgba(255,255,255,0.5)", "rgba(255,255,255,0.26)"] as const;
+  const face = dim
+    ? ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.03)"] as const
+    : ["rgba(255,255,255,0.24)", "rgba(255,255,255,0.1)"] as const;
 
   return (
     <View style={{ width: "100%", height }}>
       {/* ── Верхняя площадка ── */}
       <LinearGradient
-        colors={metal.plate as unknown as string[]}
+        colors={plate as unknown as string[]}
         start={{ x: 0.15, y: 0 }}
         end={{ x: 0.85, y: 1 }}
-        style={{
-          height: PLATE_H,
-          borderTopLeftRadius: 12, borderTopRightRadius: 12,
-        }}
+        style={{ height: PLATE_H, borderTopLeftRadius: 12, borderTopRightRadius: 12 }}
       />
       {/* Тень под площадкой: отделяет горизонталь от вертикали. */}
-      <View style={{ height: 2, backgroundColor: metal.dark, opacity: 0.55 }} />
+      <View style={{ height: 2, backgroundColor: "rgba(23,8,56,0.35)" }} />
 
       {/* ── Передняя грань ── */}
       <LinearGradient
-        colors={metal.gradient as unknown as string[]}
+        colors={face as unknown as string[]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
-        style={{ flex: 1, overflow: "hidden" }}
+        style={{
+          flex: 1, overflow: "hidden",
+          borderLeftWidth: 1, borderRightWidth: 1,
+          borderColor: dim ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.22)",
+        }}
       >
         {/* Фаска слева: свет падает сверху-слева. */}
         <LinearGradient
           pointerEvents="none"
-          colors={["rgba(255,255,255,0.42)", "rgba(255,255,255,0)"]}
+          colors={["rgba(255,255,255,0.26)", "rgba(255,255,255,0)"]}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
           style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 14 }}
@@ -382,37 +359,30 @@ function Step({ rank, dim }: { rank: number; dim?: boolean }) {
         {/* Фаска справа: там тень. */}
         <LinearGradient
           pointerEvents="none"
-          colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.3)"]}
+          colors={["rgba(0,0,0,0)", "rgba(23,8,56,0.28)"]}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
           style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 16 }}
         />
-        {/* Блик по верхней трети грани: полированный камень. */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={["rgba(255,255,255,0.28)", "rgba(255,255,255,0)"]}
-          style={{ position: "absolute", left: 0, right: 0, top: 0, height: "38%" }}
-        />
 
-        {/* ── Табличка с номером ──
-            Утоплена в грань: тёмная подложка, светлая линия сверху и цифра с
-            тенью. Ровно так выглядит гравировка на настоящем постаменте. */}
+        {/* ── Табличка с номером ── */}
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
           <View style={{
             minWidth: rank === 1 ? 40 : 32,
             paddingHorizontal: 9,
             paddingVertical: rank === 1 ? 5 : 3,
             borderRadius: 9,
-            backgroundColor: "rgba(0,0,0,0.22)",
-            borderTopWidth: 1.5, borderTopColor: "rgba(255,255,255,0.4)",
+            backgroundColor: "rgba(23,8,56,0.28)",
+            borderTopWidth: 1.5, borderTopColor: "rgba(255,255,255,0.32)",
             alignItems: "center", justifyContent: "center",
+            opacity: dim ? 0.5 : 1,
           }}>
             <Text style={{
               fontSize: rank === 1 ? 21 : 17,
               fontWeight: "900",
               color: "#ffffff",
               fontVariant: ["tabular-nums"],
-              textShadowColor: "rgba(0,0,0,0.45)",
+              textShadowColor: "rgba(0,0,0,0.4)",
               textShadowOffset: { width: 0, height: 1 },
               textShadowRadius: 2,
             }}>
@@ -506,6 +476,8 @@ function PodiumCard({
           {rank === 1 && <Crown size={40} />}
         </View>
 
+        {/* Оправа аватара — единственное место, где остался металл: здесь он
+            означает медаль, а не декор. */}
         <View style={{
           marginTop: rank === 1 ? -2 : 0,
           borderRadius: (avatarSize + 8) / 2,
