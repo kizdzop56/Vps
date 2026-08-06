@@ -5,6 +5,10 @@
 //
 // Эмодзи на экране не используются: значки — глифы из своего набора.
 // Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью.
+//
+// ГРАБЛИ: значок рядом с абзацем нельзя ставить на marginTop «на глаз» —
+// высота глифа не равна размеру шрифта, и подгонка разъезжается при смене
+// кегля. Значок кладём в коробку высотой в строку (HINT_LINE) и центрируем.
 import React from "react";
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -18,6 +22,11 @@ import { WordTrainer } from "@/components/WordTrainer";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile, XpBar } from "@/components/ui/GameKit";
 import { accents, gradients, radii } from "@/constants/theme";
+
+/** Подсказка под кнопкой: кегль, высота строки и размер значка-маркера. */
+const HINT_SIZE = 12;
+const HINT_LINE = 18;
+const HINT_ICON = 14;
 
 export default function MarathonScreen() {
   const colors = useColors();
@@ -189,10 +198,12 @@ export default function MarathonScreen() {
                 onPress={() => setStarted(true)}
               />
               <View style={{ flexDirection: "row", gap: 9, alignItems: "flex-start", marginTop: 14 }}>
-                <View style={{ marginTop: 1 }}>
-                  <Glyph name="compass" size={15} color={colors.mutedForeground} />
+                {/* Коробка ровно в высоту строки: центр значка совпадает с
+                    центром первой строки абзаца при любом кегле. */}
+                <View style={{ width: HINT_LINE, height: HINT_LINE, alignItems: "center", justifyContent: "center" }}>
+                  <Glyph name="compass" size={HINT_ICON} color={colors.mutedForeground} />
                 </View>
-                <Text style={{ flex: 1, fontSize: 12, lineHeight: 18, color: colors.mutedForeground }}>
+                <Text style={{ flex: 1, fontSize: HINT_SIZE, lineHeight: HINT_LINE, color: colors.mutedForeground }}>
                   В марафоне встречаются все слова твоего уровня. Когда ты пройдёшь их все с точностью не ниже {data.threshold}%, откроется переход на следующий уровень.
                 </Text>
               </View>
