@@ -29,9 +29,14 @@ const STYLE = [
   '.stat{font-size:13px;color:#6b628f;margin-bottom:14px}',
   '.item{background:#fff;border:1px solid #e6e0f8;border-left-width:4px;',
   'border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}',
+  // Цвет полосы слева = вид расхождения. Красное — то, что учит неверному:
+  // чужой перевод и пример не в том значении.
   '.wrong{border-left-color:#e11d48}',
+  '.sense{border-left-color:#e11d48}',
   '.reordered{border-left-color:#f59e0b}',
   '.example{border-left-color:#6366f1}',
+  '.missing{border-left-color:#10b981}',
+  '.pos{border-left-color:#8b7fb0}',
   '.w{font-weight:800;font-size:15px}',
   '.deck{color:#8b7fb0;font-size:11px;text-transform:uppercase;letter-spacing:.6px}',
   '.was{color:#8b7fb0;text-decoration:line-through}',
@@ -51,14 +56,20 @@ const SCRIPT = [
   "var stat=document.getElementById('stat');",
   "var list=document.getElementById('list');",
   "var busy=false,halt=false;",
-  "var LABEL={wrong:'неверный перевод',reordered:'значение не первое',example:'пример без слова'};",
+  "var LABEL={",
+  "wrong:'неверный перевод',",
+  "reordered:'значение не первое',",
+  "example:'в примере нет слова',",
+  "sense:'пример о другом значении',",
+  "missing:'примера не было',",
+  "pos:'часть речи'};",
   // Данные приходят из базы и попадают в разметку: без экранирования слово с
   // угловой скобкой сломало бы страницу.
   "function esc(s){return String(s==null?'':s).split('&').join('&amp;').split('<').join('&lt;');}",
   "function add(it){",
   "var d=document.createElement('div');",
   "d.className='item '+it.kind;",
-  "d.innerHTML='<div class=deck>'+esc(it.deck)+' - '+LABEL[it.kind]+'</div>'",
+  "d.innerHTML='<div class=deck>'+esc(it.deck)+' - '+(LABEL[it.kind]||it.kind)+'</div>'",
   "+'<div class=w>'+esc(it.english)+'</div>'",
   "+'<div class=was>'+esc(it.before)+'</div>'",
   "+'<div class=now>'+esc(it.after)+'</div>';",
@@ -100,7 +111,8 @@ const SCRIPT = [
 
 const BODY = [
   '<h1>Аудит словаря</h1>',
-  '<div class=sub>Переводы и примеры в готовых колодах. Сначала отчёт, потом исправление.</div>',
+  '<div class=sub>Переводы, примеры и части речи в готовых колодах.',
+  ' Сначала отчёт, потом исправление.</div>',
   '<div class=row><button id=check>Проверить</button>',
   '<button id=fix class=warn>Исправить</button></div>',
   '<div class=row><button id=stop class=ghost disabled>Остановить</button></div>',
