@@ -15,9 +15,14 @@
  * поэтому проверку делает скрипт.
  *
  * ── Чего скрипт НЕ делает ───────────────────────────────────────────────────
+ * Не трогает существующие примеры из-за расхождения значения. Проверено на
+ * живых данных: аудит заменил хороший «The soup was absolutely delicious» на
+ * «The irony is delicious!». Любая проверка значения иногда ошибается, а цена
+ * ошибки — уничтоженный пример, которого не вернуть. Такие находки только
+ * показываются; согласен с заменой — запускай с --replace-examples.
+ *
  * Не правит устойчивые выражения. «A piece of cake» — это «проще простого», а
- * машина переводит «кусок торта»: доверившись ей, скрипт заменил бы верный
- * перевод дословной чушью. Словосочетания только помечаются — решает человек.
+ * машина переводит «кусок торта».
  *
  * Не считает ошибкой другое значение многозначного слова: сверка идёт со всей
  * словарной статьёй, а не с одним «главным» переводом.
@@ -36,6 +41,7 @@
  *
  * Опции:
  *   --apply              записать изменения (без него — сухой прогон, отчёт)
+ *   --replace-examples   разрешить замену примеров о другом значении
  *   --limit=<n>          сколько слов взять за прогон (по умолчанию все)
  *   --offset=<n>         с какого слова начать — для прогона частями
  *   --deck=<id>          только одна колода
@@ -80,6 +86,7 @@ const apply = args.includes("--apply");
 const scope: AuditScope = {
   examplesOnly: args.includes("--examples-only"),
   translationsOnly: args.includes("--translations-only"),
+  replaceExamples: args.includes("--replace-examples"),
 };
 
 function optionValue(name: string): string | null {
@@ -122,6 +129,11 @@ async function main(): Promise<void> {
       : "переводы, примеры и части речи";
   console.log(`\n🔍 Аудит слов (${mode}, ${what})`);
   console.log(`   слов параллельно: ${concurrency}`);
+  console.log(
+    scope.replaceExamples
+      ? "   существующие примеры: РАЗРЕШЕНА замена при расхождении значения"
+      : "   существующие примеры: не трогаем (только отчёт)",
+  );
   console.log(
     process.env["GOOGLE_TRANSLATE_API_KEY"]?.trim()
       ? "   перевод: официальный Cloud Translation API"
@@ -192,10 +204,17 @@ async function main(): Promise<void> {
   );
 
   printGroup(
-    "🎭 Пример о другом значении",
+    scope.replaceExamples
+      ? "🎭 Пример о другом значении (будет заменён)"
+      : "🎭 Пример о другом значении — посмотри сам (НЕ трогаем)",
     findings
       .filter((f) => f.senseMismatch)
-      .map((f) => `${f.word.english} [${deckTitle(f)}]: «${f.word.exampleEn}» → ${f.newExample ? `«${f.newExample.en}»` : "убрать"}`),
+      .map((f) => {
+        const tail = scope.replaceExamples
+          ? ` → ${f.newExample ? `«${f.newExample.en}»` : "убрать"}`
+          : "";
+        return `${f.word.english} = «${f.word.translationsRu.join(", ")}» [${deckTitle(f)}]: «${f.word.exampleEn}»${tail}`;
+      }),
   );
 
   printGroup(
@@ -233,7 +252,9 @@ async function main(): Promise<void> {
     console.log("   Прогоните эти слова ещё раз позже — скорее всего, сработал лимит.");
   }
 
-  const patches = findings.map((f) => ({ f, patch: patchFor(f) })).filter((p) => p.patch !== null);
+  const patches = findings
+    .map((f) => ({ f, patch: patchFor(f, scope) }))
+    .filter((p) => p.patch !== null);
 
   if (patches.length === 0) {
     console.log("\n✅ Исправлять нечего.\n");
