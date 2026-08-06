@@ -76,3 +76,86 @@ export function translateWithGoogle(english: string): Promise<string | null> {
 export function translateRussianToEnglish(russian: string): Promise<string | null> {
   return googleTranslate(russian, "ru", "en");
 }
+
+// ── Все значения слова ──────────────────────────────────────────────────────
+
+/**
+ * Словарная статья: все переводы слова, а не одно «главное» значение.
+ *
+ * `main`     — обычный перевод строки (то же, что вернул бы googleTranslate);
+ * `variants` — все значения из словарной статьи, включая main;
+ * `isPhrase` — словарной статьи нет вовсе.
+ *
+ * Последнее поле важнее, чем кажется. У словосочетаний и идиом словарной
+ * статьи не бывает: Google просто переводит их как текст. Поэтому пустой
+ * `variants` — это НЕ «слово неизвестно», а «разбирать по значениям нечего»,
+ * и относиться к такому ответу нужно совсем иначе.
+ */
+export type WordSenses = {
+  main: string;
+  variants: string[];
+  isPhrase: boolean;
+};
+
+/**
+ * Получить все значения слова.
+ *
+ * Зачем нужен отдельный вызов. Перевод одной строкой врёт на многозначных
+ * словах: «tie» это и галстук, и ничья, и связывать, но на выходе всегда одно
+ * значение — то, которое Google счёл вероятнее. Проверка, построенная на таком
+ * ответе, объявит верный перевод ошибкой просто потому, что выбрано другое
+ * значение.
+ *
+ * Бесплатный endpoint умеет отдавать словарную статью целиком: параметр dt=bd
+ * возвращает переводы, сгруппированные по частям речи. Официальный API v2
+ * такого не умеет вовсе, поэтому за вариантами мы ВСЕГДА идём бесплатным путём
+ * — это не про деньги и квоты, а про другой набор данных.
+ */
+export async function wordSenses(
+  text: string,
+  source: TranslateLang = "en",
+  target: TranslateLang = "ru",
+): Promise<WordSenses | null> {
+  try {
+    const url = new URL("https://translate.googleapis.com/translate_a/single");
+    url.searchParams.set("client", "gtx");
+    url.searchParams.set("sl", source);
+    url.searchParams.set("tl", target);
+    url.searchParams.append("dt", "t");   // обычный перевод
+    url.searchParams.append("dt", "bd");  // словарная статья
+    url.searchParams.set("q", text);
+
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json() as unknown[];
+
+    // [0] — куски обычного перевода
+    const segments = Array.isArray(data[0]) ? (data[0] as unknown[]) : [];
+    const main = segments
+      .map((s) => (Array.isArray(s) && typeof s[0] === "string" ? s[0] : ""))
+      .join("")
+      .trim();
+    if (!main) return null;
+
+    // [1] — словарная статья: [[частьРечи, [переводы...], ...], ...]
+    const dictionary = Array.isArray(data[1]) ? (data[1] as unknown[]) : [];
+    const variants: string[] = [decodeHtmlEntities(main)];
+
+    for (const group of dictionary) {
+      const terms = Array.isArray(group) && Array.isArray(group[1]) ? (group[1] as unknown[]) : [];
+      for (const term of terms) {
+        if (typeof term !== "string") continue;
+        const clean = decodeHtmlEntities(term).trim();
+        if (clean && !variants.includes(clean)) variants.push(clean);
+      }
+    }
+
+    return {
+      main: decodeHtmlEntities(main),
+      variants,
+      isPhrase: dictionary.length === 0,
+    };
+  } catch {
+    return null;
+  }
+}
