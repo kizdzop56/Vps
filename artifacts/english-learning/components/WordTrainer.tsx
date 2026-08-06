@@ -14,8 +14,18 @@
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
 //
-// Оформление: варианты ответа и буквы — физические клавиши с нижней гранью,
-// «верно» окрашено фирменным фиолетовым (зелёного в палитре нет намеренно).
+// ── Цвет состояния не трогает текст ─────────────────────────────────────────
+// Клавиша ответа НИКОГДА не заливается цветом состояния целиком. Раньше
+// заливка шла на всю площадь, и под красным или фиолетовым терялся сам текст
+// ответа — то единственное, что ученик должен прочитать в этот момент. Особенно
+// это било по верному ответу после ошибки: его надо запомнить, а он лежал под
+// пятном.
+//
+// Состояние показывают три вещи по краям: рамка, нижняя грань и круглый значок
+// справа. Корпус остаётся светлым, текст — всегда colors.foreground. Контраст
+// не зависит от того, верно ответил ученик или нет.
+//
+// «Верно» окрашено фирменным фиолетовым (зелёного в палитре нет намеренно).
 // Эмодзи в интерфейсе не используются; card.emoji приходит из данных слова
 // и остаётся как иллюстрация к слову, это не иконка интерфейса.
 import React from "react";
@@ -524,6 +534,7 @@ export function WordTrainer({
                   colors={colors}
                   okColor={okColor}
                   state={showCorrect ? "correct" : showWrong ? "wrong" : "idle"}
+                  dimmed={Boolean(feedback) && !showCorrect && !showWrong}
                   disabled={Boolean(feedback)}
                   onPress={() => pickOption(index)}
                 />
@@ -595,14 +606,24 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
  * Вариант ответа как клавиша: у неё есть нижняя грань, и при нажатии корпус
  * проседает. Тот же приём, что у ChunkyButton, но плоский и светлый — вариантов
  * на экране четыре, и все они не могут кричать цветом бренда.
+ *
+ * ЦВЕТ СОСТОЯНИЯ НЕ ЗАЛИВАЕТ КОРПУС. Раньше клавиша красилась целиком (accent +
+ * "1f" по всей площади плюс жирная рамка), и текст ответа читался сквозь пятно.
+ * Теперь состояние живёт по краям: рамка, нижняя грань и круглый значок справа.
+ * Корпус остаётся colors.card, текст — colors.foreground, контраст одинаковый
+ * в любом состоянии.
+ *
+ * Остальные варианты после ответа притушены (dimmed): внимание должно уйти на
+ * верный ответ, а не делиться поровну между четырьмя строками.
  */
 function OptionKey({
-  label, colors, okColor, state, disabled, onPress,
+  label, colors, okColor, state, dimmed, disabled, onPress,
 }: {
   label: string;
   colors: any;
   okColor: string;
   state: "idle" | "correct" | "wrong";
+  dimmed?: boolean;
   disabled: boolean;
   onPress: () => void;
 }) {
@@ -616,7 +637,7 @@ function OptionKey({
   const edge = accent ?? "rgba(160,140,220,0.35)";
 
   return (
-    <View>
+    <View style={{ opacity: dimmed ? 0.45 : 1 }}>
       {/* Нижняя грань клавиши: отдельный слой под корпусом. */}
       <View style={{
         position: "absolute", left: 0, right: 0, top: 5, bottom: 0,
@@ -630,7 +651,8 @@ function OptionKey({
           accessibilityRole="button"
           accessibilityLabel={label}
           style={{
-            backgroundColor: accent ? accent + "1f" : colors.card,
+            // Корпус всегда светлый: цвет состояния не должен лежать под текстом.
+            backgroundColor: colors.card,
             borderColor: accent ?? colors.border,
             borderWidth: accent ? 2 : 1,
             borderRadius: radii.md, paddingVertical: 16, paddingHorizontal: 16,
@@ -638,8 +660,17 @@ function OptionKey({
           }}
         >
           <Text style={{ flex: 1, fontSize: 17, fontWeight: "800", color: colors.foreground }}>{label}</Text>
-          {state === "correct" && <Glyph name="check" size={20} color={okColor} />}
-          {state === "wrong" && <Glyph name="close" size={20} color={colors.destructive} />}
+          {/* Значок состояния — единственное цветное пятно, и оно стоит рядом с
+              текстом, а не под ним. */}
+          {!!accent && (
+            <View style={{
+              width: 26, height: 26, borderRadius: 13,
+              alignItems: "center", justifyContent: "center",
+              backgroundColor: accent,
+            }}>
+              <Glyph name={state === "correct" ? "check" : "close"} size={16} color="#ffffff" />
+            </View>
+          )}
         </Pressable>
       </Animated.View>
       <View style={{ height: 5 }} />
