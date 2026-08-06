@@ -46,13 +46,23 @@ export interface GamificationStats {
   mascotName: string;
 }
 
+/**
+ * Ответ POST /gamification/daily-login.
+ *
+ * Очки за вход зависят от длины серии: 5 за каждый её день, потолок 50.
+ * nextPoints — сколько дадут завтра, если прийти снова; это единственный
+ * честный повод вернуться, поэтому маскот его и называет.
+ */
 export interface DailyLoginResult {
   alreadyClaimed: boolean;
   loginStreak: number;
   totalPoints: number;
   xpLevel: number;
   pointsAwarded: number;
-  bonusPoints?: number;
+  /** Награда за завтрашний день при непрерывной серии. */
+  nextPoints?: number;
+  /** Серия оборвалась из-за пропуска и началась заново. */
+  streakReset?: boolean;
   leveledUp?: boolean;
 }
 
