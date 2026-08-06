@@ -19,15 +19,11 @@
 // Переключатели собраны как в листе друзей: подложка с гранью, активный
 // сегмент — светлая плашка с цветной тенью.
 //
-// ── Пьедестал ───────────────────────────────────────────────────────────────
-// Ступень — не полупрозрачный прямоугольник, а настоящая тумба из четырёх
-// частей: верхняя площадка (на неё «стоит» участник), передняя грань в металле
-// места, скошенные боковые фаски и утопленная табличка с номером. Раньше это
-// были три одинаковых стеклянных плашки, и пьедестал читался как заглушка.
-//
-// Металл ступени тот же, что у оправы аватара: золото у первого, серебро у
-// второго, бронза у третьего. Из-за этого место видно даже боковым зрением,
-// не читая цифру.
+// ── Чип «Твоё место» ────────────────────────────────────────────────────────
+// Он светлый и объёмный, а не полупрозрачный. Раньше это была стеклянная
+// плашка на градиенте: на фиолетовом фоне она почти не отличалась от него, и
+// самое нужное число экрана — своё место — приходилось выискивать. Теперь это
+// белая табличка с гранью, единственное светлое пятно в шапке.
 //
 // ── Живой фон подиума ───────────────────────────────────────────────────────
 // За тройкой лидеров работает PodiumGlow: медленно вращающийся веер лучей,
@@ -37,6 +33,11 @@
 // Важно: это НЕ возврат к DarkVeil. Та плёнка рисовала шейдер во весь экран
 // каждый кадр и красила всё в почти чёрный; здесь несколько слоёв, у которых
 // анимируются только трансформы и прозрачность, а гамма остаётся фиолетовой.
+//
+// ── Пьедестал ───────────────────────────────────────────────────────────────
+// Ступень — не полупрозрачный прямоугольник, а настоящая тумба из четырёх
+// частей: верхняя площадка (на неё «стоит» участник), передняя грань в металле
+// места, скошенные боковые фаски и утопленная табличка с номером.
 //
 // ── Рейтинг перестал быть просто списком ────────────────────────────────────
 //  • Рядом с каждым участником видно отставание от того, кто выше — «отстаёт на
@@ -84,6 +85,8 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
 const EDGE = 5;
 /** Цвет грани под светлой карточкой. Тот же, что в профиле и календаре. */
 const EDGE_LIGHT = "#c9bdf0";
+/** Грань под светлой табличкой НА ФИОЛЕТОВОМ: она должна быть темнее фона. */
+const EDGE_ON_HERO = "#3b1a7a";
 
 type CategoryKey = "points" | "time" | "assignments";
 type Scope = "all" | "friends";
@@ -174,7 +177,7 @@ const PLACE_METALS = [
 const PLACE_COLORS = PLACE_METALS.map(m => m.solid);
 
 /**
- * Высота тумбы под каждым местом. Разница между ступенями стала заметнее:
+ * Высота тумбы под каждым местом. Разница между ступенями заметная:
  * пьедестал должен читаться как лестница, а не как три почти равные плашки.
  */
 const STEP_HEIGHT = [78, 54, 38];
@@ -871,48 +874,57 @@ export default function LeaderboardScreen() {
         <PodiumGlow width={screenW} height={440} />
 
         {/* ── Заголовок и своё место ──
-            Чип справа — единственное место, где написана своя дистанция.
-            Отдельный блок «догоняешь» под подиумом убран: он повторял то же
-            самое числом ниже на том же экране. */}
+            Чип справа — единственное место, где написана своя дистанция, и
+            единственное светлое пятно в шапке: на градиенте стеклянная плашка
+            почти сливалась с фоном. */}
         <View style={{ paddingHorizontal: 18, paddingBottom: 14, flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text style={{ fontSize: 24, fontWeight: "900", letterSpacing: -0.6, color: "#fff" }}>Рейтинг</Text>
 
           {myEntry && !isLonely ? (
-            <View style={{
-              marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8,
-              paddingVertical: 7, paddingLeft: 7, paddingRight: 13, borderRadius: radii.pill,
-              backgroundColor: "rgba(255,255,255,0.16)",
-              borderWidth: 1, borderColor: "rgba(255,255,255,0.28)",
-            }}>
-              {myEntry.rank <= 3 ? (
-                <LinearGradient
-                  colors={[accents.gold, accents.amber]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" }}
-                >
-                  <Text style={{ fontSize: 12, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] }}>
-                    {myEntry.rank}
-                  </Text>
-                </LinearGradient>
-              ) : (
-                <View style={{
-                  width: 26, height: 26, borderRadius: 13,
-                  backgroundColor: "rgba(255,255,255,0.24)",
-                  alignItems: "center", justifyContent: "center",
-                }}>
-                  <Text style={{ fontSize: 12, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>
-                    {myEntry.rank}
+            <Chunky
+              color={EDGE_ON_HERO}
+              edge={4}
+              radius={radii.pill}
+              style={{ marginLeft: "auto" }}
+            >
+              <View style={{
+                flexDirection: "row", alignItems: "center", gap: 8,
+                paddingVertical: 7, paddingLeft: 7, paddingRight: 14, borderRadius: radii.pill,
+                backgroundColor: "#ffffff",
+                borderWidth: 1, borderColor: "rgba(255,255,255,0.9)",
+                shadowColor: "#2e1065", shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.3, shadowRadius: 10, elevation: 5,
+              }}>
+                {myEntry.rank <= 3 ? (
+                  <LinearGradient
+                    colors={[accents.gold, accents.amber]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] }}>
+                      {myEntry.rank}
+                    </Text>
+                  </LinearGradient>
+                ) : (
+                  <View style={{
+                    width: 26, height: 26, borderRadius: 13,
+                    backgroundColor: accents.violetDeep,
+                    alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Text style={{ fontSize: 12, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] }}>
+                      {myEntry.rank}
+                    </Text>
+                  </View>
+                )}
+                <View>
+                  <Text style={{ fontSize: 11.5, fontWeight: "900", color: accents.violetDeep }}>Твоё место</Text>
+                  <Text style={{ fontSize: 10, fontWeight: "700", color: "#7c6db8", marginTop: 2 }}>
+                    {myGap !== null ? `до ${myEntry.rank - 1}-го ${activeCat.formatGap(myGap)}` : "выше никого нет"}
                   </Text>
                 </View>
-              )}
-              <View>
-                <Text style={{ fontSize: 11.5, fontWeight: "800", color: "#fff" }}>Твоё место</Text>
-                <Text style={{ fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.72)", marginTop: 2 }}>
-                  {myGap !== null ? `до ${myEntry.rank - 1}-го ${activeCat.formatGap(myGap)}` : "выше никого нет"}
-                </Text>
               </View>
-            </View>
+            </Chunky>
           ) : (
             <Text style={{
               marginLeft: "auto", fontSize: 11.5, fontWeight: "600",
