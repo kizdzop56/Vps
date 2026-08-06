@@ -145,7 +145,7 @@ export function patchFor(finding: AuditFinding): WordPatch | null {
  * Проверить пачку слов с ограничением параллельности.
  *
  * Бесплатный путь Google Translate отвечает пустотой, если долбить его без
- * остановки, поэтому запросы идут小 партиями с паузой между ними.
+ * остановки, поэтому запросы идут небольшими партиями с паузой между ними.
  */
 export async function inspectBatch(
   words: AuditWordRow[],
