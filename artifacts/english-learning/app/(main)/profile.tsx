@@ -435,15 +435,21 @@ export default function ProfileScreen() {
     : sessionSeconds;
 
   /**
-   * Минуты за сегодня для цели дня: максимум из серверного значения и живого
-   * счётчика. Сервер знает о времени в других вкладках, таймер — о минутах,
-   * которые сервер ещё не успел учесть. Значение целое, поэтому план
-   * пересчитывается раз в минуту, а не на каждый тик.
+   * Секунды за сегодня для цели дня: максимум из серверного значения и живого
+   * счётчика. Сервер знает о времени в других вкладках, таймер — о секундах,
+   * которые сервер ещё не успел учесть.
+   *
+   * Именно СЕКУНДЫ, а не минуты: кольцо цели считает процент из них и растёт
+   * по проценту. По целым минутам при цели в 20 минут оно стояло на месте, а
+   * потом прыгало сразу на 5 %.
    */
-  const liveTodayMinutes = React.useMemo(
-    () => Math.max(gamStats?.todayMinutes ?? 0, Math.floor(todaySeconds / 60)),
+  const liveTodaySeconds = React.useMemo(
+    () => Math.max((gamStats?.todayMinutes ?? 0) * 60, Math.max(0, Math.floor(todaySeconds))),
     [gamStats?.todayMinutes, todaySeconds],
   );
+
+  /** Целые минуты: их показывает заголовок «19 из 20 минут». */
+  const liveTodayMinutes = Math.floor(liveTodaySeconds / 60);
 
   /**
    * Успеваемость за выбранный период: сам балл, балл за предыдущий такой же
@@ -553,7 +559,12 @@ export default function ProfileScreen() {
       if (!result) return;
       setDailyLoginShown(true);
       if (!result.alreadyClaimed) {
-        const msg = getMascotMessage("daily_login", { streak: result.loginStreak, points: result.pointsAwarded });
+        const msg = getMascotMessage("daily_login", {
+          streak: result.loginStreak,
+          points: result.pointsAwarded,
+          nextPoints: result.nextPoints,
+          streakReset: result.streakReset,
+        });
         setMascotMsg(msg);
         setMascotVisible(true);
       }
@@ -600,6 +611,8 @@ export default function ProfileScreen() {
     if (!gamStats) return null;
     return buildDailyPlan({
       todayMinutes: liveTodayMinutes,
+      // Секунды нужны кольцу: по ним оно растёт по проценту, а не рывками.
+      todaySeconds: liveTodaySeconds,
       activeGoalMinutes: gamStats.dailyGoalMinutes,
       selectedGoalMinutes: gamStats.nextDailyGoalMinutes ?? gamStats.dailyGoalMinutes,
       todayCompletions: gamStats.todayCompletions ?? 0,
@@ -608,7 +621,7 @@ export default function ProfileScreen() {
       learnedToday: wordStats.learnedToday,
       dailyWordGoal: wordStats.dailyWordGoal,
     });
-  }, [gamStats, wordStats, liveTodayMinutes]);
+  }, [gamStats, wordStats, liveTodayMinutes, liveTodaySeconds]);
 
   const xp = gamStats?.totalPoints ?? 0;
   const xpProgress = getXpProgress(xp);
