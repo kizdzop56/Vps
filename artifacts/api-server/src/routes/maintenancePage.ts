@@ -29,11 +29,11 @@ const STYLE = [
   '.stat{font-size:13px;color:#6b628f;margin-bottom:14px}',
   '.item{background:#fff;border:1px solid #e6e0f8;border-left-width:4px;',
   'border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}',
-  // Цвет полосы слева = вид расхождения. Красное — то, что учит неверному:
-  // чужой перевод и пример не в том значении.
+  // Цвет полосы слева = вид расхождения. Красное — то, что учит неверному.
+  // Жёлтое — то, что сервер НЕ трогает и оставляет человеку.
   '.wrong{border-left-color:#e11d48}',
   '.sense{border-left-color:#e11d48}',
-  '.reordered{border-left-color:#f59e0b}',
+  '.review{border-left-color:#f59e0b}',
   '.example{border-left-color:#6366f1}',
   '.missing{border-left-color:#10b981}',
   '.pos{border-left-color:#8b7fb0}',
@@ -41,6 +41,7 @@ const STYLE = [
   '.deck{color:#8b7fb0;font-size:11px;text-transform:uppercase;letter-spacing:.6px}',
   '.was{color:#8b7fb0;text-decoration:line-through}',
   '.now{color:#4c1d95;font-weight:700}',
+  '.senses{color:#6b628f;font-size:12px;margin-top:4px}',
   '.empty{color:#8b7fb0;text-align:center;padding:24px 0}',
 ].join("");
 
@@ -58,7 +59,7 @@ const SCRIPT = [
   "var busy=false,halt=false;",
   "var LABEL={",
   "wrong:'неверный перевод',",
-  "reordered:'значение не первое',",
+  "review:'проверить руками (выражение)',",
   "example:'в примере нет слова',",
   "sense:'пример о другом значении',",
   "missing:'примера не было',",
@@ -69,15 +70,18 @@ const SCRIPT = [
   "function add(it){",
   "var d=document.createElement('div');",
   "d.className='item '+it.kind;",
-  "d.innerHTML='<div class=deck>'+esc(it.deck)+' - '+(LABEL[it.kind]||it.kind)+'</div>'",
+  "var html='<div class=deck>'+esc(it.deck)+' - '+(LABEL[it.kind]||it.kind)+'</div>'",
   "+'<div class=w>'+esc(it.english)+'</div>'",
   "+'<div class=was>'+esc(it.before)+'</div>'",
   "+'<div class=now>'+esc(it.after)+'</div>';",
-  "list.appendChild(d);}",
+  // Все значения слова: по одной строке «галстук → ничья» не решить, ошибка
+  // это или второе значение.
+  "if(it.senses)html+='<div class=senses>значения: '+esc(it.senses)+'</div>';",
+  "d.innerHTML=html;list.appendChild(d);}",
   "function setBusy(on){busy=on;bCheck.disabled=on;bFix.disabled=on;bStop.disabled=!on;}",
   "function run(apply){",
   "if(busy)return;",
-  "if(apply&&!confirm('Записать исправления в базу? Отменить будет нельзя.'))return;",
+  "if(apply&&!confirm('Записать исправления? Выражения останутся нетронутыми.'))return;",
   "list.innerHTML='';halt=false;setBusy(true);",
   "var offset=0,found=0,fixed=0,missed=0;",
   "function step(){",
@@ -112,7 +116,8 @@ const SCRIPT = [
 const BODY = [
   '<h1>Аудит словаря</h1>',
   '<div class=sub>Переводы, примеры и части речи в готовых колодах.',
-  ' Сначала отчёт, потом исправление.</div>',
+  ' Устойчивые выражения помечаются жёлтым и не правятся автоматически:',
+  ' машинный перевод идиом дословный и доверять ему нельзя.</div>',
   '<div class=row><button id=check>Проверить</button>',
   '<button id=fix class=warn>Исправить</button></div>',
   '<div class=row><button id=stop class=ghost disabled>Остановить</button></div>',
