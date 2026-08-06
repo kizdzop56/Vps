@@ -20,6 +20,11 @@
 // (грань + проседание). Если у кнопки есть грань, но нет ChunkyTap, она
 // выглядит сломанной рядом с соседями — именно так и было со «Своим временем».
 //
+// Кнопка «Своё время» БЕЛАЯ, а не бледно-зелёная заливка: на светло-сером фоне
+// экрана полупрозрачная плашка почти сливалась с ним и не читалась как кнопка.
+// Белый корпус, цветная рамка, цветной текст и цветная грань — то же решение,
+// что у активного сегмента в переключателях.
+//
 // Свободный слот — исключение: он рисуется ПУНКТИРОМ и без грани. Это пустое
 // место, а не предмет; объём тут врал бы. Физическая кнопка внутри («Записаться»)
 // и есть то единственное, что можно потрогать.
@@ -717,14 +722,23 @@ export default function CalendarScreen() {
     headDate: { fontSize: 26, fontWeight: "900", letterSpacing: -0.8, color: colors.foreground },
     headCaption: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
 
-    // Кнопка в шапке — маленькая физическая клавиша: грань снизу и проседание
-    // при нажатии (ChunkyTap). У ученика она спокойнее: «Своё время» — запасной
-    // путь, а не главное действие.
+    /**
+     * Кнопка в шапке — маленькая физическая клавиша: белый корпус, цветная
+     * рамка, грань снизу и проседание при нажатии (ChunkyTap).
+     *
+     * Белый, а не бледная заливка цветом: фон экрана сам светло-серый, и
+     * полупрозрачная плашка на нём читалась как выключенная подпись, а не как
+     * кнопка. Тот же приём, что у активного сегмента переключателя.
+     */
     headBtn: {
       flexDirection: "row", alignItems: "center", gap: 7,
-      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.pill,
+      paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.pill,
+      backgroundColor: colors.card,
+      borderWidth: 1.5,
+      shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.18, shadowRadius: 10, elevation: 4,
     },
-    headBtnText: { fontSize: 12.5, fontWeight: "800" },
+    headBtnText: { fontSize: 12.5, fontWeight: "900" },
 
     // ── Вкладки: подложка с гранью, активная — белая плашка ──
     tabsWrap: { paddingHorizontal: 16, paddingTop: 12 },
@@ -2088,18 +2102,16 @@ export default function CalendarScreen() {
         </View>
 
         {/* Главное действие роли — сразу в шапке, а не в конце прокрутки.
-            Обе кнопки на ChunkyTap: они проседают, как и всё остальное. */}
+            Обе кнопки на ChunkyTap: белый корпус, цветная рамка, грань и
+            проседание при нажатии. */}
         {activeTab === "schedule" && !isTeacherRole && (
           <ChunkyTap
-            color={colors.success + "55"}
+            color={colors.success + "77"}
             radius={radii.pill}
             onPress={handleOpenCustomReq}
             accessibilityLabel="Предложить своё время"
           >
-            <View style={[s.headBtn, {
-              backgroundColor: colors.success + "18",
-              borderWidth: 1.5, borderColor: colors.success + "40",
-            }]}>
+            <View style={[s.headBtn, { borderColor: colors.success + "55" }]}>
               <Glyph name="plus" size={14} color={colors.success} />
               <Text style={[s.headBtnText, { color: colors.success }]}>Своё время</Text>
             </View>
@@ -2107,20 +2119,15 @@ export default function CalendarScreen() {
         )}
         {activeTab === "schedule" && isTeacherRole && (
           <ChunkyTap
-            color={accents.indigoDeep}
+            color={colors.primary + "77"}
             radius={radii.pill}
             onPress={openAddSlot}
             accessibilityLabel="Добавить слот"
           >
-            <LinearGradient
-              colors={gradients.action as unknown as string[]}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={s.headBtn}
-            >
-              <Glyph name="plus" size={14} color="#fff" />
-              <Text style={[s.headBtnText, { color: "#fff" }]}>Слот</Text>
-            </LinearGradient>
+            <View style={[s.headBtn, { borderColor: colors.primary + "55" }]}>
+              <Glyph name="plus" size={14} color={colors.primary} />
+              <Text style={[s.headBtnText, { color: colors.primary }]}>Слот</Text>
+            </View>
           </ChunkyTap>
         )}
       </View>
