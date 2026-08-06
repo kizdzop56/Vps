@@ -7,6 +7,13 @@
 // Ключ доступа страницы берут из своего адреса и нигде не хранят: подставлять
 // его в разметку на сервере нельзя, иначе он утечёт в кеш и историю браузера.
 //
+// ── Две вещи, без которых страница выглядит зависшей ────────────────────────
+// 1. Обрыв запроса. Одна порция - это десятки обращений в сеть, до минуты.
+//    Флаг «остановить», который проверяется только между порциями, для
+//    человека равносилен неработающей кнопке. Поэтому AbortController.
+// 2. Отчёт о том, что идёт прямо сейчас. Пока запрос в полёте, экран обязан
+//    говорить об этом: иначе минута тишины читается как поломка.
+//
 // Скрипты написаны без шаблонных строк: файл сам лежит внутри шаблонной
 // строки, и вложенные обратные кавычки её бы закрыли.
 
@@ -21,6 +28,7 @@ const STYLE = [
   'border:0;border-radius:14px;padding:14px 12px;box-shadow:0 4px 0 #4c1d95}',
   'button:active{transform:translateY(3px);box-shadow:0 1px 0 #4c1d95}',
   'button.ghost{background:#fff;color:#4c1d95;box-shadow:0 4px 0 #c9bdf0}',
+  'button.stop{background:#e11d48;box-shadow:0 4px 0 #881337}',
   'button[disabled]{opacity:.45}',
   '.bar{height:10px;border-radius:6px;background:#ddd6fe;overflow:hidden;margin:14px 0 6px}',
   '.bar i{display:block;height:100%;width:0;background:#7c3aed;transition:width .3s}',
@@ -35,17 +43,25 @@ const STYLE = [
   '.ru{color:#6b628f}',
   '.src{color:#8b7fb0;font-size:11px;margin-top:4px}',
   '.empty{color:#8b7fb0;text-align:center;padding:24px 0}',
-  'a{color:#7c3aed}',
 ].join("");
 
-/** Общая часть скриптов: экранирование и переключение кнопок. */
+/**
+ * Общая часть скриптов: экранирование, состояние и запрос с возможностью
+ * обрыва. Здесь же живёт единственный источник правды о том, идёт ли работа.
+ */
 const COMMON = [
   "var key=new URLSearchParams(location.search).get('key')||'';",
   // Данные приходят из базы и попадают в разметку: без экранирования фраза с
   // угловой скобкой сломала бы страницу.
   "function esc(s){return String(s==null?'':s).split('&').join('&amp;').split('<').join('&lt;');}",
-  "var busy=false,halt=false;",
-  "function setBusy(on,a,b,c){busy=on;a.disabled=on;b.disabled=on;c.disabled=!on;}",
+  "var busy=false,halt=false,ctrl=null;",
+  "function stopNow(){halt=true;if(ctrl)ctrl.abort();}",
+  // Запрос с обрывом: без AbortController кнопка «Остановить» ничего не делает
+  // до конца текущей порции, а это до минуты.
+  "function ask(url){",
+  "ctrl=new AbortController();",
+  "return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(function(r){",
+  "if(!r.ok)throw new Error('сервер ответил '+r.status);return r.json();});}",
 ].join("");
 
 // ── Страница «Примеры» ──────────────────────────────────────────────────────
@@ -59,6 +75,7 @@ const EXAMPLES_SCRIPT = [
   "var stat=document.getElementById('stat');",
   "var list=document.getElementById('list');",
   "var SRC={wiktionary:'Викисловарь, нужное значение',tatoeba:'Tatoeba, перевод человека'};",
+  "function setBusy(on){busy=on;bTest.disabled=on;bRun.disabled=on;bStop.disabled=!on;}",
   "function add(it){",
   "var d=document.createElement('div');d.className='item';",
   "d.innerHTML='<div class=deck>'+esc(it.deck)+'</div>'",
@@ -69,37 +86,39 @@ const EXAMPLES_SCRIPT = [
   "list.insertBefore(d,list.firstChild);}",
   "function run(dry){",
   "if(busy)return;",
-  "list.innerHTML='';halt=false;setBusy(true,bTest,bRun,bStop);",
-  "var total=0,done=0,found=0;",
+  "list.innerHTML='';halt=false;setBusy(true);",
+  "var after=0,seen=0,found=0,total=0;",
   "function step(){",
-  "if(halt){stat.textContent='Остановлено. Добавлено: '+found+'.';setBusy(false,bTest,bRun,bStop);return;}",
+  "if(halt){stat.textContent='Остановлено. Просмотрено '+seen+', добавлено '+found+'.';",
+  "setBusy(false);return;}",
+  // Пока запрос в полёте, экран обязан говорить, что он делает.
+  "stat.textContent='Проверяю слова '+(seen+1)+'\\u2013'+(seen+10)",
+  "+(total?' из '+total:'')+'\\u2026 добавлено '+found;",
   "var url='/api/maintenance/fill-examples/batch?key='+encodeURIComponent(key)",
-  "+'&limit=20'+(dry?'&dry=1':'');",
-  "fetch(url,{cache:'no-store'}).then(function(r){",
-  "if(!r.ok)throw new Error('сервер ответил '+r.status);return r.json();",
-  "}).then(function(d){",
+  "+'&after='+after+'&limit=10'+(dry?'&dry=1':'');",
+  "ask(url).then(function(d){",
   "if(!total)total=d.remaining;",
   "for(var i=0;i<d.items.length;i++){add(d.items[i]);}",
-  "found+=dry?d.items.length:d.filled;done+=d.checked;",
-  "fill.style.width=(total?Math.round(Math.min(done,total)*100/total):100)+'%';",
+  "found+=dry?d.items.length:d.filled;seen+=d.checked;",
+  "fill.style.width=(total?Math.round(Math.min(seen,total)*100/total):100)+'%';",
   "if(dry){stat.textContent='Без примера сейчас: '+d.remaining",
-  "+'. Для первых '+d.checked+' нашлось '+d.items.length+'.';",
-  "setBusy(false,bTest,bRun,bStop);return;}",
-  "stat.textContent='Осталось: '+Math.max(0,d.remaining-d.filled)+', добавлено: '+found;",
-  "if(d.done){setBusy(false,bTest,bRun,bStop);",
-  "stat.textContent='Готово. Добавлено примеров: '+found",
+  "+'. Для первых '+d.checked+' нашлось '+d.items.length+'.';setBusy(false);return;}",
+  "if(d.nextAfter===null){setBusy(false);",
+  "stat.textContent='Готово. Просмотрено '+seen+', добавлено примеров: '+found",
   "+'. Для остальных подходящей фразы не нашлось.';",
   "if(!found&&!list.firstChild)list.innerHTML='<div class=empty>Добавлять нечего.</div>';",
   "return;}",
-  "setTimeout(step,200);",
+  "after=d.nextAfter;setTimeout(step,150);",
   "}).catch(function(e){",
-  "stat.textContent='Ошибка: '+e.message+'. Добавлено: '+found+'.';",
-  "setBusy(false,bTest,bRun,bStop);});",
+  "if(e&&e.name==='AbortError'){",
+  "stat.textContent='Остановлено. Просмотрено '+seen+', добавлено '+found+'.';}",
+  "else{stat.textContent='Ошибка: '+e.message+'. Добавлено: '+found+'.';}",
+  "setBusy(false);});",
   "}",
   "step();}",
   "bTest.addEventListener('click',function(){run(true);});",
   "bRun.addEventListener('click',function(){run(false);});",
-  "bStop.addEventListener('click',function(){halt=true;});",
+  "bStop.addEventListener('click',stopNow);",
   "})();",
 ].join("");
 
@@ -112,7 +131,7 @@ const EXAMPLES_BODY = [
   ' <b>Существующие примеры и переводы не меняются.</b></div>',
   '<div class=row><button id=test class=ghost>Посмотреть</button>',
   '<button id=run>Заполнить</button></div>',
-  '<div class=row><button id=stop class=ghost disabled>Остановить</button></div>',
+  '<div class=row><button id=stop class=stop disabled>Остановить</button></div>',
   '<div class=bar><i id=fill></i></div>',
   '<div class=stat id=stat>Готов к запуску.</div>',
   '<div id=list></div>',
@@ -127,6 +146,7 @@ const TRANSLATIONS_SCRIPT = [
   "var fill=document.getElementById('fill');",
   "var stat=document.getElementById('stat');",
   "var list=document.getElementById('list');",
+  "function setBusy(on){busy=on;bRun.disabled=on;bStop.disabled=!on;}",
   "function add(it){",
   "var d=document.createElement('div');d.className='item warn';",
   "d.innerHTML='<div class=deck>'+esc(it.deck)+'</div>'",
@@ -136,32 +156,34 @@ const TRANSLATIONS_SCRIPT = [
   "list.appendChild(d);}",
   "function run(){",
   "if(busy)return;",
-  "list.innerHTML='';halt=false;setBusy(true,bRun,bRun,bStop);",
-  "var offset=0,found=0;",
+  "list.innerHTML='';halt=false;setBusy(true);",
+  "var after=0,seen=0,found=0,total=0;",
   "function step(){",
-  "if(halt){stat.textContent='Остановлено на '+offset+'. Найдено: '+found+'.';",
-  "setBusy(false,bRun,bRun,bStop);return;}",
+  "if(halt){stat.textContent='Остановлено. Проверено '+seen+', спорных '+found+'.';",
+  "setBusy(false);return;}",
+  "stat.textContent='Проверяю слова '+(seen+1)+'\\u2013'+(seen+10)",
+  "+(total?' из '+total:'')+'\\u2026 спорных '+found;",
   "var url='/api/maintenance/check-translations/batch?key='+encodeURIComponent(key)",
-  "+'&offset='+offset+'&limit=20';",
-  "fetch(url,{cache:'no-store'}).then(function(r){",
-  "if(!r.ok)throw new Error('сервер ответил '+r.status);return r.json();",
-  "}).then(function(d){",
+  "+'&after='+after+'&limit=10';",
+  "ask(url).then(function(d){",
+  "if(!total)total=d.total;",
   "for(var i=0;i<d.items.length;i++){add(d.items[i]);found++;}",
-  "var done=d.nextOffset===null?d.total:d.nextOffset;",
-  "fill.style.width=(d.total?Math.round(done*100/d.total):100)+'%';",
-  "stat.textContent='Проверено '+done+' из '+d.total+', спорных: '+found;",
-  "if(d.nextOffset===null){setBusy(false,bRun,bRun,bStop);",
-  "stat.textContent='Готово. Спорных переводов: '+found+'.';",
+  "seen+=d.checked;",
+  "fill.style.width=(total?Math.round(Math.min(seen,total)*100/total):100)+'%';",
+  "if(d.nextAfter===null){setBusy(false);",
+  "stat.textContent='Готово. Проверено '+seen+', спорных переводов: '+found+'.';",
   "if(!found)list.innerHTML='<div class=empty>Расхождений не найдено.</div>';",
   "return;}",
-  "offset=d.nextOffset;setTimeout(step,200);",
+  "after=d.nextAfter;setTimeout(step,150);",
   "}).catch(function(e){",
-  "stat.textContent='Ошибка: '+e.message+'. Остановились на '+offset+'.';",
-  "setBusy(false,bRun,bRun,bStop);});",
+  "if(e&&e.name==='AbortError'){",
+  "stat.textContent='Остановлено. Проверено '+seen+', спорных '+found+'.';}",
+  "else{stat.textContent='Ошибка: '+e.message+'. Проверено: '+seen+'.';}",
+  "setBusy(false);});",
   "}",
   "step();}",
   "bRun.addEventListener('click',run);",
-  "bStop.addEventListener('click',function(){halt=true;});",
+  "bStop.addEventListener('click',stopNow);",
   "})();",
 ].join("");
 
@@ -173,7 +195,7 @@ const TRANSLATIONS_BODY = [
   ' везде, а у слова бывает значение, которого там не записали. Правильный',
   ' вариант выбирает человек.</div>',
   '<div class=row><button id=run>Проверить</button></div>',
-  '<div class=row><button id=stop class=ghost disabled>Остановить</button></div>',
+  '<div class=row><button id=stop class=stop disabled>Остановить</button></div>',
   '<div class=bar><i id=fill></i></div>',
   '<div class=stat id=stat>Готов к запуску.</div>',
   '<div id=list></div>',

@@ -25,6 +25,14 @@
 //    перевода карточки среди них нет. Автоматических правок здесь не будет:
 //    словарь покрывает не всё, а выбор значения — человеческое решение.
 //
+// ── Курсор по id, а не смещение ─────────────────────────────────────────────
+// Обе операции ходят по каталогу через `after` — id последнего просмотренного
+// слова. Со смещением заполнение вставало намертво: выборка каждый раз брала
+// первые N слов без примера, заполненные из неё уходили, а те, для которых
+// пример не нашёлся, оставались в начале — и следующий запрос упирался в них
+// же. Экран показывал работу, новых находок не появлялось, а когда в порцию
+// попадали одни «безнадёжные» слова, прогон объявлял себя законченным.
+//
 // ── Доступ ──────────────────────────────────────────────────────────────────
 // Ключ MAINTENANCE_KEY из окружения. Не задан — маршрута нет вовсе (404, а не
 // 403): наружу не должно торчать даже упоминание, что тут что-то есть.
@@ -34,7 +42,7 @@ import type { Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { db } from "@workspace/db";
 import { decksTable, wordsTable } from "@workspace/db";
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { googleTranslate } from "@workspace/translate";
 import { exampleFor as tatoebaExample } from "../lib/tatoeba";
 import {
@@ -48,9 +56,15 @@ import { EXAMPLES_PAGE, TRANSLATIONS_PAGE } from "./maintenancePage";
 
 const router = Router();
 
-/** Сколько слов за один запрос: больше — риск словить таймаут прокси. */
-const BATCH_DEFAULT = 20;
-const BATCH_MAX = 50;
+/**
+ * Сколько слов за один запрос.
+ *
+ * Каждое слово — это несколько обращений в сеть (словарь, иногда Tatoeba и
+ * перевод фразы), поэтому порция маленькая: она должна укладываться в таймаут
+ * прокси и не заставлять человека смотреть в неподвижный экран минуту.
+ */
+const BATCH_DEFAULT = 10;
+const BATCH_MAX = 30;
 
 /** Сколько слов обрабатываем одновременно: сервисы чужие, ведём себя прилично. */
 const CONCURRENCY = 3;
@@ -89,13 +103,6 @@ type WordRow = {
   deckTitle: string;
 };
 
-const wordColumns = {
-  id: wordsTable.id,
-  english: wordsTable.english,
-  translationsRu: wordsTable.translationsRu,
-  deckTitle: decksTable.title,
-};
-
 async function countWhere(extra?: ReturnType<typeof or>): Promise<number> {
   const where = extra ? and(eq(decksTable.isSystem, true), extra) : eq(decksTable.isSystem, true);
   const [row] = await db
@@ -106,22 +113,31 @@ async function countWhere(extra?: ReturnType<typeof or>): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-async function loadWords(
+/**
+ * Слова после курсора.
+ *
+ * Курсор — id последнего просмотренного слова. Порядок по id обязателен:
+ * без него СУБД вольна вернуть строки как угодно, и курсор потеряет смысл.
+ */
+async function loadAfter(
+  after: number,
   limit: number,
-  offset: number,
   extra?: ReturnType<typeof or>,
 ): Promise<WordRow[]> {
-  const where = extra ? and(eq(decksTable.isSystem, true), extra) : eq(decksTable.isSystem, true);
+  const base = [eq(decksTable.isSystem, true), gt(wordsTable.id, after)];
+  const where = extra ? and(...base, extra) : and(...base);
   const rows = await db
-    .select(wordColumns)
+    .select({
+      id: wordsTable.id,
+      english: wordsTable.english,
+      translationsRu: wordsTable.translationsRu,
+      deckTitle: decksTable.title,
+    })
     .from(wordsTable)
     .innerJoin(decksTable, eq(decksTable.id, wordsTable.deckId))
     .where(where)
-    // Порядок обязан быть стабильным: страница ходит по offset, и без
-    // сортировки СУБД вольна вернуть строки как угодно.
     .orderBy(asc(wordsTable.id))
-    .limit(limit)
-    .offset(offset);
+    .limit(limit);
   return rows as WordRow[];
 }
 
@@ -164,19 +180,16 @@ async function findExample(word: WordRow): Promise<FoundExample | null> {
 
 // ── GET /maintenance/fill-examples/batch ────────────────────────────────────
 // Заполнить очередную порцию пустых примеров. dry=1 — только показать.
-//
-// Смещения нет намеренно: заполненные слова выпадают из выборки сами, поэтому
-// «следующая порция» — просто следующий запрос. Прогон можно прервать в любой
-// момент и продолжить позже с того же места.
 router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req, res) => {
   const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
+  const after = intParam(req.query["after"], 0);
   const dry = req.query["dry"] === "1";
 
   const remaining = await countWhere(noExample);
-  const words = await loadWords(limit, 0, noExample);
+  const words = await loadAfter(after, limit, noExample);
 
   if (words.length === 0) {
-    res.json({ remaining: 0, checked: 0, filled: 0, items: [], done: true });
+    res.json({ remaining, checked: 0, filled: 0, items: [], nextAfter: null });
     return;
   }
 
@@ -215,14 +228,17 @@ router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req
     }
   }
 
+  // Курсор двигаем ВСЕГДА, даже когда ничего не нашли: слова без примера
+  // никуда не денутся, и без сдвига мы упёрлись бы в них навсегда.
+  const lastId = words[words.length - 1]!.id;
+
   res.json({
     remaining,
     checked: words.length,
     filled,
     items,
-    // В сухом прогоне выборка не сдвинется — останавливаемся сразу, иначе
-    // страница крутила бы одну и ту же порцию до бесконечности.
-    done: dry || filled === 0,
+    // Порция пришла неполной — значит каталог кончился.
+    nextAfter: words.length < limit ? null : lastId,
   });
 });
 
@@ -230,13 +246,13 @@ router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req
 // ТОЛЬКО ОТЧЁТ. В базу не пишет ничего и никогда.
 router.get("/maintenance/check-translations/batch", requireMaintenanceKey, async (req, res) => {
   const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
-  const offset = intParam(req.query["offset"], 0);
+  const after = intParam(req.query["after"], 0);
 
   const total = await countWhere();
-  const words = await loadWords(limit, offset);
+  const words = await loadAfter(after, limit);
 
   if (words.length === 0) {
-    res.json({ total, offset, checked: 0, items: [], nextOffset: null });
+    res.json({ total, checked: 0, items: [], nextAfter: null });
     return;
   }
 
@@ -261,13 +277,13 @@ router.get("/maintenance/check-translations/batch", requireMaintenanceKey, async
     }
   }
 
-  const nextOffset = offset + words.length;
+  const lastId = words[words.length - 1]!.id;
+
   res.json({
     total,
-    offset,
     checked: words.length,
     items,
-    nextOffset: nextOffset >= total ? null : nextOffset,
+    nextAfter: words.length < limit ? null : lastId,
   });
 });
 
