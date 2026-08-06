@@ -1,5 +1,5 @@
 /**
- * Единая логика подсчёта учебного времени и «утренних» дней.
+ * Единая логика подсчёта учебного времени, «утренних» дней и серии.
  *
  * Зачем нужен этот модуль:
  * Раньше брошенная сессия (пользователь закрыл вкладку или свернул браузер, а
@@ -67,6 +67,7 @@ export const EARLY_BIRD_MIN_MINUTES = 5;
 export const APP_TIMEZONE = process.env["APP_TIMEZONE"] || "Europe/Minsk";
 
 const MS_PER_MINUTE = 60_000;
+const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
 
 function toMs(value: Date | number): number {
   return value instanceof Date ? value.getTime() : value;
@@ -238,6 +239,81 @@ export function startOfLocalWeek(
   const weekday = new Date(dayStart.getTime() + timeZoneOffsetMs(dayStart, timeZone)).getUTCDay();
   const back = (weekday - weekStartsOn + 7) % 7;
   return startOfLocalDay(dayStart.getTime() - back * 24 * 60 * MS_PER_MINUTE, timeZone);
+}
+
+// ── Серия дней подряд ───────────────────────────────────────────────────────
+//
+// ОДНА функция на всё приложение. Раньше серию считали в двух местах по разным
+// правилам, и цифры расходились прямо на одном экране: карточка «Время в
+// приложении» показывала 6 дней подряд (дни с реальными занятиями), а шапка
+// профиля — 8 (счётчик users.login_streak, который просто увеличивался на
+// единицу при каждом входе). Счётчик врал: он засчитывал дни, когда приложение
+// открыли и сразу закрыли, и никогда не сверялся с фактическими данными.
+//
+// Теперь серия ВЫЧИСЛЯЕТСЯ из сессий, а не хранится: день считается в серию,
+// если в нём есть хотя бы минута занятий. Хранимое поле остаётся только как
+// кэш для наград и рейтинга и переписывается этим же значением.
+
+/** Минут за день, начиная с которых день считается учебным. */
+export const ACTIVE_DAY_MINUTES = 1;
+
+/** Дальше в прошлое серию не ищем: год с лишним — заведомо достаточно. */
+const STREAK_MAX_LOOKBACK_DAYS = 400;
+
+/** Минуты занятий, разложенные по локальным суткам. */
+export function minutesByLocalDay(
+  sessions: SessionLike[],
+  now: Date | number = Date.now(),
+  timeZone: string = APP_TIMEZONE,
+): Map<string, number> {
+  const byDay = new Map<string, number>();
+  for (const session of sessions) {
+    const key = localDayKey(session.startedAt, timeZone);
+    byDay.set(key, (byDay.get(key) ?? 0) + sessionMinutes(session, now));
+  }
+  return byDay;
+}
+
+/**
+ * Сколько дней подряд ученик занимался, считая от сегодняшнего дня назад.
+ *
+ * Сегодняшний ноль серию НЕ обрывает: день ещё не кончился, и обнулять счётчик
+ * в полночь было бы просто обидно. А вот пропущенный вчерашний день обрывает —
+ * в этом весь смысл серии.
+ *
+ * @param alsoActiveDays дни (ключи YYYY-MM-DD), которые нужно считать активными
+ *   независимо от минут. Сюда передаётся день входа: при заходе в приложение
+ *   сессия только создаётся и минут в ней ещё нет, а день уже начался.
+ */
+export function activityStreakDays(
+  sessions: SessionLike[],
+  options: {
+    now?: Date | number;
+    timeZone?: string;
+    alsoActiveDays?: (string | null | undefined)[];
+  } = {},
+): number {
+  const now = options.now ?? Date.now();
+  const timeZone = options.timeZone ?? APP_TIMEZONE;
+  const byDay = minutesByLocalDay(sessions, now, timeZone);
+  const extra = new Set(
+    (options.alsoActiveDays ?? []).filter((d): d is string => typeof d === "string" && d.length > 0),
+  );
+
+  const midnight = startOfLocalDay(now, timeZone).getTime();
+  const keyBack = (back: number) => localDayKey(midnight - back * MS_PER_DAY, timeZone);
+  const isActive = (back: number) => {
+    const key = keyBack(back);
+    if (extra.has(key)) return true;
+    return Math.round(byDay.get(key) ?? 0) >= ACTIVE_DAY_MINUTES;
+  };
+
+  let streak = 0;
+  for (let back = isActive(0) ? 0 : 1; back < STREAK_MAX_LOOKBACK_DAYS; back++) {
+    if (!isActive(back)) break;
+    streak += 1;
+  }
+  return streak;
 }
 
 // ── Награда «Жаворонок» ─────────────────────────────────────────────────────
