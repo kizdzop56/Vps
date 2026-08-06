@@ -8,10 +8,11 @@
 // кому она нужна. Здесь то же самое отдаётся страницей.
 //
 // ── Почему пакетами, а не одним запросом ────────────────────────────────────
-// Перевод тысяч слов идёт минутами и не уложится в таймаут прокси. Поэтому
-// страница берёт по 40 слов за запрос и сама идёт до конца, показывая прогресс.
-// Побочная польза: частые запросы не дают бесплатному сервису уснуть посреди
-// прогона.
+// Проверка одного слова — это несколько обращений в сеть (перевод, словарь,
+// перевод примеров), поэтому каталог обходится минутами и в таймаут прокси не
+// уложится. Страница берёт по 40 слов за запрос и сама идёт до конца, показывая
+// прогресс. Побочная польза: частые запросы не дают бесплатному хостингу уснуть
+// посреди прогона.
 //
 // ── Доступ ──────────────────────────────────────────────────────────────────
 // Ключ MAINTENANCE_KEY из окружения. Если он не задан, маршрута НЕТ вовсе —
@@ -31,6 +32,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import {
   inspectBatch,
   patchFor,
+  type AuditFinding,
   type AuditScope,
   type AuditWordRow,
 } from "../lib/wordAuditRun";
@@ -95,6 +97,7 @@ async function loadCatalogPage(
       deckId: wordsTable.deckId,
       english: wordsTable.english,
       translationsRu: wordsTable.translationsRu,
+      partOfSpeech: wordsTable.partOfSpeech,
       exampleEn: wordsTable.exampleEn,
       exampleRu: wordsTable.exampleRu,
       deckTitle: decksTable.title,
@@ -114,6 +117,54 @@ async function loadCatalogPage(
 function intParam(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+// ── Находки для отчёта ──────────────────────────────────────────────────────
+// Каждый вид расхождения — отдельная строка в списке: по общей формулировке
+// нельзя понять, что именно случится с карточкой при исправлении.
+type ReportItem = {
+  id: number;
+  english: string;
+  deck: string;
+  kind: "wrong" | "reordered" | "example" | "sense" | "missing" | "pos";
+  before: string;
+  after: string;
+};
+
+function reportItems(finding: AuditFinding, deck: string): ReportItem[] {
+  const items: ReportItem[] = [];
+  const word = finding.word;
+  const head = { id: word.id, english: word.english, deck };
+
+  if (finding.freshRu) {
+    items.push({
+      ...head,
+      kind: finding.wrongTranslation ? "wrong" : "reordered",
+      before: word.translationsRu.join(", "),
+      after: finding.freshRu,
+    });
+  }
+
+  if (finding.freshPos) {
+    items.push({
+      ...head,
+      kind: "pos",
+      before: word.partOfSpeech ?? "",
+      after: finding.freshPos,
+    });
+  }
+
+  // Пример: показываем ровно то, что произойдёт — замена или удаление.
+  const replacement = finding.newExample ? finding.newExample.en : "пример убран";
+  if (finding.senseMismatch) {
+    items.push({ ...head, kind: "sense", before: word.exampleEn ?? "", after: replacement });
+  } else if (finding.badExample) {
+    items.push({ ...head, kind: "example", before: word.exampleEn ?? "", after: replacement });
+  } else if (finding.missingExample && finding.newExample) {
+    items.push({ ...head, kind: "missing", before: "примера нет", after: finding.newExample.en });
+  }
+
+  return items;
 }
 
 // ── GET /maintenance/audit-words/batch ──────────────────────────────────────
@@ -141,43 +192,13 @@ router.get("/maintenance/audit-words/batch", requireMaintenanceKey, async (req, 
   const titleById = new Map(words.map((w) => [w.id, w.deckTitle]));
   const findings = await inspectBatch(words, scope);
 
-  const items: Array<{
-    id: number;
-    english: string;
-    deck: string;
-    kind: "wrong" | "reordered" | "example";
-    before: string;
-    after: string;
-  }> = [];
+  const items: ReportItem[] = [];
   let updated = 0;
   let skipped = 0;
 
   for (const finding of findings) {
     if (finding.skipped) skipped += 1;
-
-    const deck = titleById.get(finding.word.id) ?? "";
-    const stored = finding.word.translationsRu.join(", ");
-
-    if (finding.freshRu) {
-      items.push({
-        id: finding.word.id,
-        english: finding.word.english,
-        deck,
-        kind: finding.wrongTranslation ? "wrong" : "reordered",
-        before: stored,
-        after: finding.freshRu,
-      });
-    }
-    if (finding.badExample) {
-      items.push({
-        id: finding.word.id,
-        english: finding.word.english,
-        deck,
-        kind: "example",
-        before: finding.word.exampleEn ?? "",
-        after: "пример убран",
-      });
-    }
+    items.push(...reportItems(finding, titleById.get(finding.word.id) ?? ""));
 
     if (!apply) continue;
     const patch = patchFor(finding);
