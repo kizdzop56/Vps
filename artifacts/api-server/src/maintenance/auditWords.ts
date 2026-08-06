@@ -197,11 +197,7 @@ async function main(): Promise<void> {
     .from(decksTable);
   const deckById = new Map(deckRows.map((d) => [d.id, d]));
 
-  // Проверяем только готовый каталог: колоды учителей и учеников — их данные,
-  // мы не вправе переписывать чужие переводы.
-  const systemDeckIds = new Set(deckRows.filter((d) => d.isSystem).map((d) => d.id));
-
-  let query = db
+  const words = (await db
     .select({
       id: wordsTable.id,
       deckId: wordsTable.deckId,
@@ -211,13 +207,15 @@ async function main(): Promise<void> {
       exampleRu: wordsTable.exampleRu,
     })
     .from(wordsTable)
-    .orderBy(asc(wordsTable.id))
-    .$dynamic();
+    .orderBy(asc(wordsTable.id))) as WordRow[];
 
-  if (deckFilter !== null) query = query.where(eq(wordsTable.deckId, deckFilter));
-
-  const all = (await query) as WordRow[];
-  const catalog = all.filter((w) => systemDeckIds.has(w.deckId));
+  // Отбор в одном месте: только готовый каталог (колоды учителей и учеников —
+  // их данные, чужие переводы мы переписывать не вправе) и, если задано,
+  // одна колода из --deck.
+  const catalog = words.filter((w) => {
+    if (deckFilter !== null && w.deckId !== deckFilter) return false;
+    return deckById.get(w.deckId)?.isSystem === true;
+  });
   const slice = catalog.slice(offset, limit === null ? undefined : offset + limit);
 
   console.log(`   слов в каталоге: ${catalog.length}, проверяем: ${slice.length} (с ${offset})\n`);
