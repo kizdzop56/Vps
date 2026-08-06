@@ -1,9 +1,33 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Маскот: окно с сообщением, плавающая кнопка и выбор имени.
+//
+// ── Окно как гайд ───────────────────────────────────────────────────────────
+// Раньше это была белая карточка посреди экрана: маскот в ней помещался ростом
+// 210 пикселей, то есть меньше, чем кнопка «Понял!», и «привет от Снежи»
+// выглядел системным диалогом, а не персонажем.
+//
+// Теперь окно устроено как подсказки по вкладкам (components/TabGuide.tsx):
+// весь экран затемняется, карточки нет вовсе, а маскот занимает почти всю
+// ширину. Персонаж должен быть главным на экране, ради него всё и затевалось.
+// Ниже — имя градиентом, реплика в неоновом пузыре и одна большая кнопка.
+//
+// Размер маскота считается от окна: ширина почти во весь экран, но высота
+// ограничена долей экрана, иначе на низких телефонах пузырь с текстом уезжает
+// под кнопку. Пропорция берётся из WavingMascot (MASCOT_RATIO), чтобы
+// картинка не растягивалась.
+//
+// Поза зависит от настроения: радость, грусть, раздумье — это разные картинки
+// из AnimatedMascotImage, а не одна и та же с разным смайликом.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import React, { useEffect, useRef, useState } from "react";
 import {
-  View, Text, TouchableOpacity, Animated, StyleSheet, Modal, TextInput, Image,
+  View, Text, TouchableOpacity, Animated, StyleSheet, Modal, TextInput,
+  useWindowDimensions,
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { AnimatedMascotImage, type MascotPose } from "@/components/AnimatedMascotImage";
+import { MASCOT_RATIO } from "@/components/WavingMascot";
 
 export type MascotMood = "happy" | "celebrate" | "sad" | "thinking" | "wave" | "sleep";
 
@@ -26,8 +50,15 @@ const MOOD_TO_POSE: Record<MascotMood, MascotPose> = {
   sleep:     "lie",       // lying down = sleep/rest
 };
 
-// Keep the static image for the name-picker mini preview
-const MASCOT_IMAGE = require("../assets/images/mascot_full.png");
+/** Цвет свечения пузыря по настроению: праздник ярче, грусть теплее. */
+const MOOD_GLOW: Record<MascotMood, string> = {
+  happy:     "#a855f7",
+  celebrate: "#c084fc",
+  sad:       "#fb7185",
+  thinking:  "#818cf8",
+  wave:      "#a855f7",
+  sleep:     "#7c8cf8",
+};
 
 interface MascotProps {
   visible: boolean;
@@ -48,99 +79,103 @@ export function MascotModal({
   actionLabel,
   onAction,
 }: MascotProps) {
-  const colors   = useColors();
-  const scaleAnim = useRef(new Animated.Value(0)).current;
-  const glowAnim  = useRef(new Animated.Value(0)).current;
+  const { width: W, height: H } = useWindowDimensions();
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const riseAnim = useRef(new Animated.Value(30)).current;
 
   useEffect(() => {
-    if (visible) {
-      scaleAnim.setValue(0);
-      Animated.spring(scaleAnim, {
-        toValue: 1,
-        tension: 80,
-        friction: 8,
-        useNativeDriver: true,
-      }).start();
-
-      if (mood === "celebrate") {
-        Animated.loop(
-          Animated.sequence([
-            Animated.timing(glowAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
-            Animated.timing(glowAnim, { toValue: 0, duration: 700, useNativeDriver: true }),
-          ])
-        ).start();
-      }
-    } else {
-      glowAnim.stopAnimation();
-    }
-  }, [visible, mood]);
+    if (!visible) return;
+    fadeAnim.setValue(0);
+    riseAnim.setValue(30);
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 320, useNativeDriver: true }),
+      Animated.spring(riseAnim, { toValue: 0, tension: 90, friction: 10, useNativeDriver: true }),
+    ]).start();
+  }, [visible, mood, message]);
 
   if (!visible) return null;
 
-  const bgColor     = mood === "celebrate" ? "#f3e8ff" : mood === "sad" ? "#ffe4e6" : "#ede9fe";
-  const borderColor = mood === "celebrate" ? "#a855f7" : mood === "sad" ? "#e11d48" : "#8b5cf6";
-  const pose        = MOOD_TO_POSE[mood];
+  const pose = MOOD_TO_POSE[mood];
+  const glow = MOOD_GLOW[mood];
+  const cardW = Math.min(W - 40, 380);
+
+  // Маскот почти во всю ширину, но по высоте не больше 44 % экрана: ниже
+  // должны поместиться имя, реплика и кнопка.
+  let mascotW = Math.min(W - 24, 420);
+  let mascotH = pose === "lie"
+    ? Math.round(mascotW * 0.56)
+    : Math.round(mascotW / MASCOT_RATIO);
+  const maxH = H * 0.44;
+  if (mascotH > maxH) {
+    mascotH = Math.round(maxH);
+    mascotW = pose === "lie"
+      ? Math.round(mascotH / 0.56)
+      : Math.round(mascotH * MASCOT_RATIO);
+  }
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      {/* Тап по затемнению закрывает окно — как и в подсказках по вкладкам. */}
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
         <Animated.View
           style={[
-            styles.container,
-            { backgroundColor: colors.card, transform: [{ scale: scaleAnim }] },
+            styles.content,
+            { opacity: fadeAnim, transform: [{ translateY: riseAnim }] },
           ]}
         >
-          <TouchableOpacity activeOpacity={1}>
-            {/* ── Mascot — static, parts animate on their own ── */}
-            <View style={styles.mascotArea}>
-              <AnimatedMascotImage
-                pose={pose}
-                width={pose === "lie" ? 240 : 150}
-                height={pose === "lie" ? 135 : 210}
-              />
-              <View style={[styles.moodBadge, { backgroundColor: bgColor, borderColor }]}>
-                <Text style={styles.moodEmoji}>{MOOD_EMOJIS[mood]}</Text>
-                <Text
-                  style={[
-                    styles.mascotName,
-                    {
-                      color: "#8b5cf6",
-                      // @ts-ignore web gradient text
-                      backgroundImage: "linear-gradient(90deg, #7c3aed, #a78bfa, #c084fc)",
-                      WebkitBackgroundClip: "text",
-                      WebkitTextFillColor: "transparent",
-                      backgroundClip: "text",
-                    },
-                  ]}
-                >
-                  {mascotName}
-                </Text>
-              </View>
-            </View>
+          {/* Сам маскот. Нажатие на него окно не закрывает: по нему хочется
+              просто потыкать, и захлопывать за это несправедливо. */}
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={{ marginBottom: -6 }}>
+            <AnimatedMascotImage pose={pose} width={mascotW} height={mascotH} />
+          </TouchableOpacity>
 
-            <View style={[styles.bubble, { backgroundColor: bgColor, borderColor }]}>
-              <Text style={[styles.messageText, { color: "#1e293b" }]}>{message}</Text>
-            </View>
+          <Text
+            style={[
+              styles.nameLabel,
+              {
+                // @ts-ignore web gradient text
+                backgroundImage: "linear-gradient(90deg, #a78bfa, #c084fc, #e879f9)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                backgroundClip: "text",
+              },
+            ]}
+          >
+            {MOOD_EMOJIS[mood]}{"  "}{mascotName}
+          </Text>
 
-            <View style={styles.actions}>
-              {actionLabel && onAction && (
-                <TouchableOpacity
-                  style={[styles.actionBtn, { backgroundColor: borderColor }]}
-                  onPress={() => { onAction(); onClose(); }}
-                >
-                  <Text style={styles.actionBtnText}>{actionLabel}</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                style={[
-                  styles.closeBtn,
-                  { borderColor: colors.border, backgroundColor: colors.muted },
-                ]}
-                onPress={onClose}
-              >
-                <Text style={[styles.closeBtnText, { color: colors.mutedForeground }]}>Понял!</Text>
-              </TouchableOpacity>
-            </View>
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => {}}
+            style={[
+              styles.bubble,
+              {
+                width: cardW,
+                borderColor: glow,
+                // @ts-ignore web
+                boxShadow: `0 0 16px ${glow}b3, 0 0 5px ${glow}66`,
+              },
+            ]}
+          >
+            <Text style={styles.messageText}>{message}</Text>
+          </TouchableOpacity>
+
+          {actionLabel && onAction && (
+            <TouchableOpacity
+              style={[styles.btn, styles.btnGhost, { width: cardW, borderColor: glow }]}
+              onPress={() => { onAction(); onClose(); }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.btnGhostText}>{actionLabel}</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={[styles.btn, { width: cardW }]}
+            onPress={onClose}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.btnText}>Понятно! 👍</Text>
           </TouchableOpacity>
         </Animated.View>
       </TouchableOpacity>
@@ -223,7 +258,7 @@ export function MascotNamePicker({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.overlay}>
+      <View style={styles.pickerOverlay}>
         <View style={[styles.namePickerContainer, { backgroundColor: colors.card }]}>
           <Text style={[styles.namePickerTitle, { color: colors.foreground }]}>
             Имя маскота
@@ -273,6 +308,17 @@ export function MascotNamePicker({
 }
 
 // ── Mascot messages library ───────────────────────────────────────────────
+
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2]!;
+  const last = abs % 10;
+  if (last === 1) return forms[0]!;
+  if (last >= 2 && last <= 4) return forms[1]!;
+  return forms[2]!;
+}
+
 export function getMascotMessage(
   event:
     | "daily_login"
@@ -285,14 +331,31 @@ export function getMascotMessage(
   context?: Record<string, any>
 ): { message: string; mood: MascotMood } {
   switch (event) {
-    case "daily_login":
+    // Очки за вход маленькие и растут вместе с серией. Поэтому в реплике важна
+    // не сегодняшняя сумма, а ЗАВТРАШНЯЯ: она и есть повод вернуться.
+    case "daily_login": {
+      const streak = Number(context?.streak ?? 1);
+      const points = Number(context?.points ?? 5);
+      const nextPoints = Number(context?.nextPoints ?? points + 5);
+      const days = plural(streak, ["день", "дня", "дней"]);
+
+      if (context?.streakReset) {
+        return {
+          mood: "sad",
+          message: `Ты пропустил день, и серия обнулилась. Начинаем заново: сегодня +${points} очков. Завтра будет +${nextPoints} — только не пропускай!`,
+        };
+      }
+      if (streak > 1) {
+        return {
+          mood: "celebrate",
+          message: `С возвращением! 🔥 Серия уже ${streak} ${days} подряд, +${points} очков за вход. Придёшь завтра — получишь +${nextPoints}.`,
+        };
+      }
       return {
         mood: "wave",
-        message:
-          context?.streak && context.streak > 1
-            ? `С возвращением! 🔥 Твой стрик уже ${context.streak} дней! Так держать! +${context.points ?? 30} очков за вход.`
-            : `Привет! Рад тебя видеть! Ты получаешь +${context?.points ?? 30} очков за ежедневный вход. Начнём учиться?`,
+        message: `Привет! Первый день серии: +${points} очков за вход. Каждый следующий день дороже — завтра будет +${nextPoints}.`,
       };
+    }
     case "level_up":
       return {
         mood: "celebrate",
@@ -337,66 +400,52 @@ export function getMascotMessage(
 }
 
 const styles = StyleSheet.create({
+  // Затемнение во весь экран, без карточки: как в подсказках по вкладкам.
   overlay: {
     flex: 1,
-    backgroundColor: "#00000066",
+    backgroundColor: "#000000b8",
     justifyContent: "center",
     alignItems: "center",
-    padding: 24,
+    paddingHorizontal: 20,
   },
-  container: {
-    width: "100%",
-    borderRadius: 24,
-    padding: 24,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
-    elevation: 8,
+  content: { alignItems: "center" },
+  nameLabel: {
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+    color: "#c084fc",
+    marginTop: 12,
+    marginBottom: 12,
+    letterSpacing: 0.5,
   },
-  mascotArea: { alignItems: "center", marginBottom: 4 },
-  moodBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 20,
-    borderWidth: 1.5,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginTop: 6,
-    marginBottom: 4,
-  },
-  moodEmoji:   { fontSize: 16 },
-  mascotName:  { fontSize: 13, fontWeight: "700" },
   bubble: {
-    borderRadius: 16,
-    borderWidth: 1.5,
-    padding: 16,
-    marginTop: 8,
+    borderRadius: 18,
+    borderWidth: 2,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 18,
   },
   messageText: {
     fontSize: 15,
-    lineHeight: 22,
+    lineHeight: 24,
     fontWeight: "500",
     textAlign: "center",
+    color: "#ede9ff",
   },
-  actions: { flexDirection: "row", gap: 12, marginTop: 20 },
-  actionBtn: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
+  btn: {
+    borderRadius: 16,
+    paddingVertical: 15,
     alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: "#8b5cf6",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.35)",
   },
-  actionBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  closeBtn: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  closeBtnText: { fontWeight: "600", fontSize: 15 },
+  btnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  // Второстепенное действие: прозрачная кнопка, чтобы не спорить с главной.
+  btnGhost: { backgroundColor: "transparent", marginBottom: 10 },
+  btnGhostText: { color: "#ede9ff", fontSize: 16, fontWeight: "700" },
+
   floatingBtn: {
     position: "absolute",
     bottom: 90,
@@ -418,6 +467,15 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
+
+  // ── Выбор имени: обычное окно, персонаж здесь не главный ──
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: "#00000066",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
   namePickerContainer: { width: "100%", borderRadius: 24, padding: 24 },
   namePickerTitle: { fontSize: 18, fontWeight: "800", textAlign: "center" },
   nameInput: {
@@ -427,4 +485,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
+  actionBtn: {
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  closeBtn: {
+    borderRadius: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeBtnText: { fontWeight: "600", fontSize: 15 },
 });
