@@ -1,10 +1,10 @@
-// Разметка служебных страниц (см. routes/maintenance.ts).
+// Разметка служебной страницы «примеры употребления» (см. routes/maintenance.ts).
 //
 // Одним куском, без сборки и внешних файлов: служебный инструмент не должен
 // тянуть за собой ни фронтенд, ни его деплой. Держать разметку в файле с
 // маршрутами тоже нельзя - сотня строк утопит в себе логику.
 //
-// Ключ доступа страницы берут из своего адреса и нигде не хранят: подставлять
+// Ключ доступа страница берёт из своего адреса и нигде не хранит: подставлять
 // его в разметку на сервере нельзя, иначе он утечёт в кеш и историю браузера.
 //
 // ── Две вещи, без которых страница выглядит зависшей ────────────────────────
@@ -14,8 +14,8 @@
 // 2. Отчёт о том, что идёт прямо сейчас. Пока запрос в полёте, экран обязан
 //    говорить об этом: иначе минута тишины читается как поломка.
 //
-// Скрипты написаны без шаблонных строк: файл сам лежит внутри шаблонной
-// строки, и вложенные обратные кавычки её бы закрыли.
+// Скрипт написан без шаблонных строк: файл сам лежит внутри шаблонной строки,
+// и вложенные обратные кавычки её бы закрыли.
 
 const STYLE = [
   '*{box-sizing:border-box}',
@@ -35,7 +35,6 @@ const STYLE = [
   '.stat{font-size:13px;color:#6b628f;margin-bottom:14px}',
   '.item{background:#fff;border:1px solid #e6e0f8;border-left:4px solid #10b981;',
   'border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}',
-  '.item.warn{border-left-color:#f59e0b}',
   '.deck{color:#8b7fb0;font-size:11px;text-transform:uppercase;letter-spacing:.6px}',
   '.w{font-weight:800;font-size:15px}',
   '.tr{color:#4c1d95;font-weight:700}',
@@ -45,29 +44,19 @@ const STYLE = [
   '.empty{color:#8b7fb0;text-align:center;padding:24px 0}',
 ].join("");
 
-/**
- * Общая часть скриптов: экранирование, состояние и запрос с возможностью
- * обрыва. Здесь же живёт единственный источник правды о том, идёт ли работа.
- */
-const COMMON = [
+const SCRIPT = [
+  "(function(){",
   "var key=new URLSearchParams(location.search).get('key')||'';",
   // Данные приходят из базы и попадают в разметку: без экранирования фраза с
   // угловой скобкой сломала бы страницу.
   "function esc(s){return String(s==null?'':s).split('&').join('&amp;').split('<').join('&lt;');}",
   "var busy=false,halt=false,ctrl=null;",
-  "function stopNow(){halt=true;if(ctrl)ctrl.abort();}",
   // Запрос с обрывом: без AbortController кнопка «Остановить» ничего не делает
   // до конца текущей порции, а это до минуты.
   "function ask(url){",
   "ctrl=new AbortController();",
   "return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(function(r){",
   "if(!r.ok)throw new Error('сервер ответил '+r.status);return r.json();});}",
-].join("");
-
-// ── Страница «Примеры» ──────────────────────────────────────────────────────
-const EXAMPLES_SCRIPT = [
-  "(function(){",
-  COMMON,
   "var bTest=document.getElementById('test');",
   "var bRun=document.getElementById('run');",
   "var bStop=document.getElementById('stop');",
@@ -118,11 +107,11 @@ const EXAMPLES_SCRIPT = [
   "step();}",
   "bTest.addEventListener('click',function(){run(true);});",
   "bRun.addEventListener('click',function(){run(false);});",
-  "bStop.addEventListener('click',stopNow);",
+  "bStop.addEventListener('click',function(){halt=true;if(ctrl)ctrl.abort();});",
   "})();",
 ].join("");
 
-const EXAMPLES_BODY = [
+const BODY = [
   '<h1>Примеры употребления</h1>',
   '<div class=sub>Заполняет пустые примеры. Значение определяется по',
   ' Викисловарю: у него переводы привязаны к конкретному значению, поэтому для',
@@ -137,83 +126,13 @@ const EXAMPLES_BODY = [
   '<div id=list></div>',
 ].join("");
 
-// ── Страница «Переводы» ─────────────────────────────────────────────────────
-const TRANSLATIONS_SCRIPT = [
-  "(function(){",
-  COMMON,
-  "var bRun=document.getElementById('run');",
-  "var bStop=document.getElementById('stop');",
-  "var fill=document.getElementById('fill');",
-  "var stat=document.getElementById('stat');",
-  "var list=document.getElementById('list');",
-  "function setBusy(on){busy=on;bRun.disabled=on;bStop.disabled=!on;}",
-  "function add(it){",
-  "var d=document.createElement('div');d.className='item warn';",
-  "d.innerHTML='<div class=deck>'+esc(it.deck)+'</div>'",
-  "+'<div class=w>'+esc(it.english)+'</div>'",
-  "+'<div>в карточке: <span class=tr>'+esc(it.ru)+'</span></div>'",
-  "+'<div class=ru>в словаре: '+esc(it.known)+'</div>';",
-  "list.appendChild(d);}",
-  "function run(){",
-  "if(busy)return;",
-  "list.innerHTML='';halt=false;setBusy(true);",
-  "var after=0,seen=0,found=0,total=0;",
-  "function step(){",
-  "if(halt){stat.textContent='Остановлено. Проверено '+seen+', спорных '+found+'.';",
-  "setBusy(false);return;}",
-  "stat.textContent='Проверяю слова '+(seen+1)+'\\u2013'+(seen+10)",
-  "+(total?' из '+total:'')+'\\u2026 спорных '+found;",
-  "var url='/api/maintenance/check-translations/batch?key='+encodeURIComponent(key)",
-  "+'&after='+after+'&limit=10';",
-  "ask(url).then(function(d){",
-  "if(!total)total=d.total;",
-  "for(var i=0;i<d.items.length;i++){add(d.items[i]);found++;}",
-  "seen+=d.checked;",
-  "fill.style.width=(total?Math.round(Math.min(seen,total)*100/total):100)+'%';",
-  "if(d.nextAfter===null){setBusy(false);",
-  "stat.textContent='Готово. Проверено '+seen+', спорных переводов: '+found+'.';",
-  "if(!found)list.innerHTML='<div class=empty>Расхождений не найдено.</div>';",
-  "return;}",
-  "after=d.nextAfter;setTimeout(step,150);",
-  "}).catch(function(e){",
-  "if(e&&e.name==='AbortError'){",
-  "stat.textContent='Остановлено. Проверено '+seen+', спорных '+found+'.';}",
-  "else{stat.textContent='Ошибка: '+e.message+'. Проверено: '+seen+'.';}",
-  "setBusy(false);});",
-  "}",
-  "step();}",
-  "bRun.addEventListener('click',run);",
-  "bStop.addEventListener('click',stopNow);",
-  "})();",
+export const EXAMPLES_PAGE = [
+  '<!doctype html><html lang=ru><head><meta charset=utf-8>',
+  '<meta name=viewport content="width=device-width, initial-scale=1">',
+  '<meta name=robots content="noindex, nofollow">',
+  '<title>Примеры употребления</title>',
+  '<style>', STYLE, '</style></head><body>',
+  BODY,
+  '<script>', SCRIPT, '</scr' + 'ipt>',
+  '</body></html>',
 ].join("");
-
-const TRANSLATIONS_BODY = [
-  '<h1>Спорные переводы</h1>',
-  '<div class=sub><b>Только список, в базу ничего не пишется.</b>',
-  ' Показаны карточки, где у слова в Викисловаре есть русские переводы, но',
-  ' перевода карточки среди них нет. Это не приговор: словарь заполнен не',
-  ' везде, а у слова бывает значение, которого там не записали. Правильный',
-  ' вариант выбирает человек.</div>',
-  '<div class=row><button id=run>Проверить</button></div>',
-  '<div class=row><button id=stop class=stop disabled>Остановить</button></div>',
-  '<div class=bar><i id=fill></i></div>',
-  '<div class=stat id=stat>Готов к запуску.</div>',
-  '<div id=list></div>',
-].join("");
-
-// ── Сборка ──────────────────────────────────────────────────────────────────
-function page(title: string, body: string, script: string): string {
-  return [
-    '<!doctype html><html lang=ru><head><meta charset=utf-8>',
-    '<meta name=viewport content="width=device-width, initial-scale=1">',
-    '<meta name=robots content="noindex, nofollow">',
-    '<title>', title, '</title>',
-    '<style>', STYLE, '</style></head><body>',
-    body,
-    '<script>', script, '</scr' + 'ipt>',
-    '</body></html>',
-  ].join("");
-}
-
-export const EXAMPLES_PAGE = page("Примеры употребления", EXAMPLES_BODY, EXAMPLES_SCRIPT);
-export const TRANSLATIONS_PAGE = page("Спорные переводы", TRANSLATIONS_BODY, TRANSLATIONS_SCRIPT);
