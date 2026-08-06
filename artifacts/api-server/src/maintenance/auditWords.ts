@@ -14,6 +14,14 @@
  * строятся варианты ответа в тренажёре. Просмотреть тысячи слов руками нельзя,
  * поэтому проверку делает скрипт.
  *
+ * ── Чего скрипт НЕ делает ───────────────────────────────────────────────────
+ * Не правит устойчивые выражения. «A piece of cake» — это «проще простого», а
+ * машина переводит «кусок торта»: доверившись ей, скрипт заменил бы верный
+ * перевод дословной чушью. Словосочетания только помечаются — решает человек.
+ *
+ * Не считает ошибкой другое значение многозначного слова: сверка идёт со всей
+ * словарной статьёй, а не с одним «главным» переводом.
+ *
  * Правила отбора живут в ../lib/wordAudit.ts (чистые функции, покрыты тестами),
  * сам прогон — в ../lib/wordAuditRun.ts. Тот же модуль использует веб-страница
  * /api/maintenance/audit-words: логика обязана быть общей, иначе данные будет
@@ -164,20 +172,23 @@ async function main(): Promise<void> {
   process.stdout.write("\n");
 
   const deckTitle = (f: AuditFinding) => deckById.get(f.word.deckId)?.title ?? `колода #${f.word.deckId}`;
+  const senses = (f: AuditFinding) => (f.senses.length > 0 ? ` [значения: ${f.senses.slice(0, 6).join(", ")}]` : "");
 
   printGroup(
     "❌ Неверный перевод",
     findings
       .filter((f) => f.wrongTranslation)
-      .map((f) => `${f.word.english} [${deckTitle(f)}]: «${f.word.translationsRu.join(", ")}» → «${f.freshRu}»`),
+      .map((f) => `${f.word.english} [${deckTitle(f)}]: «${f.word.translationsRu.join(", ")}» → «${f.freshRu}»${senses(f)}`),
   );
 
+  // Выражения сервер не трогает: машинный перевод идиом дословный, решать
+  // человеку. Без этого раздела находка просто не дошла бы до того, ради кого
+  // она сделана.
   printGroup(
-    "🔀 Основное значение не первое",
+    "🖐 Выражения — проверить руками (НЕ исправляются)",
     findings
-      .filter((f) => !f.wrongTranslation && f.freshRu)
-      .map((f) => `${f.word.english} [${deckTitle(f)}]: вперёд «${f.freshRu}»`),
-    30,
+      .filter((f) => f.needsReview)
+      .map((f) => `${f.word.english} [${deckTitle(f)}]: в базе «${f.word.translationsRu.join(", ")}», машина даёт «${f.freshRu}»`),
   );
 
   printGroup(
@@ -218,14 +229,14 @@ async function main(): Promise<void> {
 
   const skipped = findings.filter((f) => f.skipped).length;
   if (skipped > 0) {
-    console.log(`\n⏭  Пропущено (перевод не получен): ${skipped}`);
+    console.log(`\n⏭  Пропущено (данные не получены): ${skipped}`);
     console.log("   Прогоните эти слова ещё раз позже — скорее всего, сработал лимит.");
   }
 
   const patches = findings.map((f) => ({ f, patch: patchFor(f) })).filter((p) => p.patch !== null);
 
   if (patches.length === 0) {
-    console.log("\n✅ Расхождений не найдено.\n");
+    console.log("\n✅ Исправлять нечего.\n");
     return;
   }
 
