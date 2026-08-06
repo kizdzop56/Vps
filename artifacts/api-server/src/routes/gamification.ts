@@ -12,6 +12,7 @@ import {
 import { eq, and, sql, gte, gt } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import {
+  activityStreakDays,
   countEarlyBirdDays,
   liveSessionMinutes,
   localDayKey,
@@ -110,6 +111,35 @@ async function computeTimeStats(userId: number, persistedMinutes: number) {
     earlyBirdDays: countEarlyBirdDays(sessions),
     todayStart,
   };
+}
+
+// ── Серия дней подряд ───────────────────────────────────────────────────────
+//
+// Серия НЕ хранится как счётчик, а вычисляется из сессий (lib/timeStats).
+// Раньше users.login_streak просто увеличивался на единицу при каждом входе и
+// ни с чем не сверялся, поэтому в шапке профиля стояло 8 дней подряд, а
+// карточка «Время в приложении», считавшая дни с реальными занятиями, честно
+// показывала 6. Теперь обе цифры берутся из одной функции.
+//
+// Столбец остаётся кэшем: по нему работают награды streak_* и рейтинг, и его
+// достаточно переписывать вычисленным значением.
+
+/** Серия ученика: дни подряд с занятиями, день входа тоже считается. */
+async function computeLoginStreak(
+  sessions: Parameters<typeof activityStreakDays>[0],
+  lastLoginDate: string | null,
+): Promise<number> {
+  return activityStreakDays(sessions, { alsoActiveDays: [lastLoginDate] });
+}
+
+/** Обновляет кэш серии, если он разошёлся с реальностью. */
+async function syncLoginStreak(userId: number, stored: number, actual: number) {
+  if (stored === actual) return;
+  try {
+    await db.update(usersTable)
+      .set({ loginStreak: actual, updatedAt: new Date() })
+      .where(eq(usersTable.id, userId));
+  } catch { /* кэш не критичен: показываем вычисленное значение в любом случае */ }
 }
 
 /**
@@ -270,10 +300,12 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
   // награду открытой, а сервер её отклоняет (и она не выдаётся никогда).
   let totalTimeMinutes = userData.totalTimeMinutes ?? 0;
   let earlyBirdSessions = 0;
+  let loginStreak = userData.loginStreak ?? 0;
   try {
     const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
     totalTimeMinutes = time.totalTimeMinutes;
     earlyBirdSessions = time.earlyBirdDays;
+    loginStreak = await computeLoginStreak(time.sessions, userData.lastLoginDate ?? null);
   } catch {
     earlyBirdSessions = 0;
   }
@@ -283,7 +315,7 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
     totalPoints: userData.totalPoints,
     totalTimeMinutes,
     voiceChatSessions,
-    loginStreak: userData.loginStreak,
+    loginStreak,
     perfectScoreCount,
     xpLevel: computeLevel(userData.totalPoints),
     earlyBirdSessions,
@@ -428,12 +460,20 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   let totalTimeMinutes = userData.totalTimeMinutes ?? 0;
   let earlyBirdSessions = 0;
   let todayStart = startOfLocalDay();
+  // Серия по умолчанию — сохранённая: если сессии вдруг не прочитались,
+  // лучше показать старое значение, чем ноль.
+  let loginStreak = userData.loginStreak ?? 0;
   try {
     const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
     todayMinutes = time.todayMinutes;
     totalTimeMinutes = time.totalTimeMinutes;
     earlyBirdSessions = time.earlyBirdDays;
     todayStart = time.todayStart;
+
+    // Та же функция, что и в карточке «Время в приложении»: цифры на одном
+    // экране обязаны совпадать.
+    loginStreak = await computeLoginStreak(time.sessions, userData.lastLoginDate ?? null);
+    await syncLoginStreak(userId, userData.loginStreak ?? 0, loginStreak);
   } catch {
     todayMinutes = 0;
     totalTimeMinutes = userData.totalTimeMinutes ?? 0;
@@ -463,7 +503,7 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     // Награда за сегодняшний день уже получена? Клиент по этому полю показывает
     // «получено» вместо «+40» и не дёргает claim повторно.
     dailyGoalClaimedToday: claimedDate === todayKey(),
-    loginStreak: userData.loginStreak,
+    loginStreak,
     lastLoginDate: userData.lastLoginDate,
     todayMinutes,
     todayCompletions,
@@ -587,11 +627,14 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
 
 // ── POST /gamification/daily-login ─────────────────────────────────────────
 //
-// Серия: считается по КАЛЕНДАРНЫМ дням в часовом поясе приложения. Заход
-// продлевает серию только если прошлый заход был ровно вчера. Пропустил хотя бы
-// один день — серия начинается заново с единицы, независимо от того, сколько
-// дней подряд было до этого. Никаких «заморозок» и прощений: в этом весь смысл
-// серии, иначе она перестаёт что-либо значить.
+// Серия: КАЛЕНДАРНЫЕ дни подряд в часовом поясе приложения. Считает её
+// activityStreakDays по реальным сессиям (lib/timeStats), а не «плюс один к
+// счётчику»: старый счётчик ни с чем не сверялся и разъезжался с фактами —
+// профиль показывал 8 дней подряд там, где занятий было 6.
+//
+// Пропустил хотя бы один день — серия начинается заново с единицы. Никаких
+// «заморозок» и прощений: в этом весь смысл серии, иначе она перестаёт
+// что-либо значить.
 router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   const user = getUser(req);
   const userId = user.userId;
@@ -611,41 +654,33 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   const today = todayKey();
   const lastLogin = userData.lastLoginDate;
 
+  const sessions = await db.select().from(timeSessionsTable)
+    .where(eq(timeSessionsTable.studentId, userId));
+
+  // Сегодняшний день засчитывается по факту входа: сессия только что создана и
+  // минут в ней ещё нет. Прошлый день входа — тоже: заход, в котором не успело
+  // накопиться ни минуты, всё равно был заходом.
+  const streak = activityStreakDays(sessions, { alsoActiveDays: [today, lastLogin] });
+
   // Уже заходил сегодня: серия не растёт и очки второй раз не выдаются.
   if (lastLogin === today) {
-    const xpLevel = computeLevel(userData.totalPoints);
+    await syncLoginStreak(userId, userData.loginStreak ?? 0, streak);
     res.json({
       alreadyClaimed: true,
-      loginStreak: userData.loginStreak,
+      loginStreak: streak,
       totalPoints: userData.totalPoints,
-      xpLevel,
+      xpLevel: computeLevel(userData.totalPoints),
       pointsAwarded: 0,
-      nextPoints: loginPointsFor(userData.loginStreak + 1),
+      nextPoints: loginPointsFor(streak + 1),
     });
     return;
   }
 
-  // Длина серии. Оба ключа — строки вида YYYY-MM-DD, поэтому Date разбирает их
-  // как полночь UTC, и разница всегда целое число суток: часовые пояса и
-  // переход на летнее время на счёт не влияют.
-  let newStreak = 1;
-  let streakReset = false;
-  if (lastLogin) {
-    const lastDate = new Date(lastLogin);
-    const todayDate = new Date(today);
-    const diffDays = Math.round((todayDate.getTime() - lastDate.getTime()) / 86400000);
-    if (diffDays === 1) {
-      // Ровно вчера — серия продолжается.
-      newStreak = userData.loginStreak + 1;
-    } else {
-      // Пропущен день (или больше) — начинаем заново.
-      newStreak = 1;
-      streakReset = (userData.loginStreak ?? 0) > 1;
-    }
-  }
+  // Серия оборвалась: вчера человека не было, счётчик начался заново.
+  const streakReset = streak <= 1 && (userData.loginStreak ?? 0) > 1;
 
   // Очки за вход: чем длиннее серия, тем дороже день. Шаг 5, потолок 50.
-  const pointsAwarded = loginPointsFor(newStreak);
+  const pointsAwarded = loginPointsFor(streak);
 
   const newTotalPoints = userData.totalPoints + pointsAwarded;
   const newXpLevel = computeLevel(newTotalPoints);
@@ -653,7 +688,7 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   await db.update(usersTable)
     .set({
       totalPoints: newTotalPoints,
-      loginStreak: newStreak,
+      loginStreak: streak,
       lastLoginDate: today,
       xpLevel: newXpLevel,
       updatedAt: new Date(),
@@ -662,13 +697,12 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
 
   res.json({
     alreadyClaimed: false,
-    loginStreak: newStreak,
+    loginStreak: streak,
     totalPoints: newTotalPoints,
     xpLevel: newXpLevel,
     pointsAwarded,
     // Сколько будет завтра, если прийти снова: это и есть повод вернуться.
-    nextPoints: loginPointsFor(newStreak + 1),
-    // Серия оборвалась из-за пропуска — маскот скажет об этом по-другому.
+    nextPoints: loginPointsFor(streak + 1),
     streakReset,
     leveledUp: newXpLevel > (userData.xpLevel ?? 1),
   });
