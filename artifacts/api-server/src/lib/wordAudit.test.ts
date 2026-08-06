@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import {
   exampleIsUsable,
   exampleMentionsWord,
+  exampleSenseMatches,
   normalizeRu,
   normalizeText,
+  ruStem,
   stripInfinitive,
   translationMatches,
   wordForms,
@@ -109,4 +111,45 @@ test("короткие разные слова не склеиваются по 
 
 test("пустой свежий перевод никого не обвиняет", () => {
   assert.equal(translationMatches("", ["что угодно"]), true);
+});
+
+// ── Значение примера ────────────────────────────────────────────────────────
+test("ruStem отрезает изменяемый хвост", () => {
+  assert.equal(ruStem("яблоко"), "яблок");
+  assert.equal(ruStem("дом"), "дом"); // короткое не режем
+});
+
+test("перевод примера содержит перевод слова", () => {
+  assert.equal(exampleSenseMatches(["яблоко"], "Я ем яблоко каждый день."), "yes");
+});
+
+test("падеж и число в примере не мешают", () => {
+  assert.equal(exampleSenseMatches(["яблоко"], "Он купил зелёные яблоки."), "yes");
+  assert.equal(exampleSenseMatches(["галстук"], "Он поправил галстука узел."), "yes");
+});
+
+test("пример о другом значении ловится", () => {
+  // Дословно с карточки: tie переведено как «галстук», а пример про ничью
+  assert.equal(
+    exampleSenseMatches(["галстук"], "Два аута в конце девятого раунда, ничейный счет."),
+    "no",
+  );
+});
+
+test("любое из значений подходит", () => {
+  assert.equal(exampleSenseMatches(["галстук", "ничья"], "Матч закончился ничьей."), "yes");
+});
+
+test("глагол не судим: основа меняется при спряжении", () => {
+  // «бежать» → «бежит»: правилом такую форму не вывести, обвинять нельзя
+  assert.equal(exampleSenseMatches(["бежать"], "Он бежит каждое утро."), "maybe");
+});
+
+test("короткое слово не судим", () => {
+  assert.equal(exampleSenseMatches(["дом"], "Совсем другая фраза."), "maybe");
+});
+
+test("без перевода примера сравнивать нечего", () => {
+  assert.equal(exampleSenseMatches(["яблоко"], null), "maybe");
+  assert.equal(exampleSenseMatches([], "Любая фраза."), "maybe");
 });
