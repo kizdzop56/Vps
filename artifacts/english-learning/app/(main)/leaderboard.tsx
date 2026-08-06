@@ -1,4 +1,6 @@
+// ─────────────────────────────────────────────────────────────────────────────
 // Экран «Рейтинг»: подиум с тройкой лидеров и список остальных участников.
+//
 // Три категории (очки, время, задания) и два среза (все ученики / друзья)
 // приходят одним запросом /api/leaderboard/categories и обновляются раз в минуту.
 //
@@ -7,9 +9,29 @@
 // avatarEmoji остаётся пользовательским выбором и показывается как есть, но
 // дефолтного эмодзи больше нет — вместо него первая буква ника.
 //
-// Оформление собрано из GameKit: плитки с цветной тенью, пилюли, метки секций.
+// ── Единая порода поверхностей ──────────────────────────────────────────────
+// Экран говорит на том же языке, что профиль, друзья и календарь: у каждой
+// карточки есть НИЖНЯЯ ГРАНЬ — отдельный слой под корпусом, сдвинутый вниз на
+// свою толщину. Проседает при нажатии только то, что реально открывается:
+// строка чужого участника, место на подиуме, кнопка «показать всех». Своя
+// строка грань имеет, но не проседает: открывать в ней нечего.
 //
-// Рейтинг перестал быть просто списком:
+// Раньше строки были на Tile из GameKit — плоские карточки с тенью. Рядом с
+// объёмными блоками остального приложения они читались как незаконченные.
+//
+// Переключатели собраны как в листе друзей: подложка с гранью, активный
+// сегмент — светлая плашка с цветной тенью.
+//
+// ── Живой фон подиума ───────────────────────────────────────────────────────
+// За тройкой лидеров работает PodiumGlow: медленно вращающийся веер лучей,
+// дышащий ореол и редкие искры. Подиум — парадное место приложения, и
+// неподвижная заливка делала его похожим на скриншот.
+//
+// Важно: это НЕ возврат к DarkVeil. Та плёнка рисовала шейдер во весь экран
+// каждый кадр и красила всё в почти чёрный; здесь несколько слоёв, у которых
+// анимируются только трансформы и прозрачность, а гамма остаётся фиолетовой.
+//
+// ── Рейтинг перестал быть просто списком ────────────────────────────────────
 //  • Рядом с каждым участником видно отставание от того, кто выше — «отстаёт на
 //    40 очков» превращает таблицу в дистанцию, которую можно сократить.
 //  • Своё место вынесено в шапку отдельным чипом. Это первое, что ищут на
@@ -21,15 +43,18 @@
 //  • Длинный список сворачивается: первая десятка, разрыв «ещё N участников»
 //    и своя строка с соседями.
 //
-// Про фон: анимированная плёнка DarkVeil убрана. Она рисовала почти чёрное
-// полотно поверх градиента — экран выпадал из фиолетовой гаммы остального
-// приложения и выглядел «выключенным», а на слабых телефонах ещё и грузила
-// GPU постоянной анимацией. Вместо неё статичный градиент бренда и мягкое
-// световое пятно за подиумом.
+// ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
+// 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком.
+// 2. useNativeDriver только не в вебе.
+// 3. Нижний отступ берётся из screenBottom: панель вкладок плавает поверх
+//    содержимого, и без него последняя строка уезжает под неё.
+// ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, FlatList, ActivityIndicator, Platform,
   TouchableOpacity, Pressable, Image, RefreshControl,
+  Animated, Easing, useWindowDimensions,
+  type ViewStyle, type StyleProp,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path, Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from "react-native-svg";
@@ -39,12 +64,22 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "expo-router";
 import authStorage from "@/utils/authStorage";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { Tile, ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
-import { accents, gradients, radii } from "@/constants/theme";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
+import { PodiumGlow } from "@/components/ui/PodiumGlow";
+import { accents, gradients, radii, timing } from "@/constants/theme";
+import { screenBottom } from "@/constants/layout";
+
+const NATIVE_DRIVER = Platform.OS !== "web";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
+
+// ── Толщина граней ──────────────────────────────────────────────────────────
+/** Строки участников и переключатели. */
+const EDGE = 5;
+/** Цвет грани под светлой карточкой. Тот же, что в профиле и календаре. */
+const EDGE_LIGHT = "#c9bdf0";
 
 type CategoryKey = "points" | "time" | "assignments";
 type Scope = "all" | "friends";
@@ -132,6 +167,67 @@ function initial(nick: string): string {
   return (m?.[0] ?? "?").toUpperCase();
 }
 
+// ── Объёмные оболочки ───────────────────────────────────────────────────────
+
+/** Грань без проседания: для того, что не нажимается. */
+function Chunky({
+  color, edge = EDGE, radius = radii.md, style, children,
+}: {
+  color: string; edge?: number; radius?: number;
+  style?: StyleProp<ViewStyle>; children: React.ReactNode;
+}) {
+  return (
+    <View style={[{ paddingBottom: edge }, style]}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: edge, bottom: 0,
+        borderRadius: radius, backgroundColor: color,
+      }} />
+      {children}
+    </View>
+  );
+}
+
+/**
+ * Грань + проседание на её высоту при нажатии.
+ *
+ * Только там, где нажатие что-то делает: кнопка с гранью, которая не
+ * проседает, рядом с проседающими соседями читается как неработающая.
+ */
+function ChunkyTap({
+  color, edge = EDGE, radius = radii.md, onPress, style, accessibilityLabel, children,
+}: {
+  color: string; edge?: number; radius?: number;
+  onPress?: () => void; style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string; children: React.ReactNode;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: timing.press,
+      easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+    }).start();
+
+  return (
+    <View style={[{ paddingBottom: edge }, style]}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: edge, bottom: 0,
+        borderRadius: radius, backgroundColor: color,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={onPress}
+          onPressIn={() => set(edge)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          {children}
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
+}
+
 // ── Корона победителя ─────────────────────────────────────────────────
 function Crown({ size = 34 }: { size?: number }) {
   return (
@@ -189,20 +285,20 @@ function Step({ rank, dim }: { rank: number; dim?: boolean }) {
     <LinearGradient
       colors={dim
         ? ["rgba(255,255,255,0.10)", "rgba(255,255,255,0.04)"]
-        : ["rgba(255,255,255,0.28)", "rgba(255,255,255,0.11)"]}
+        : ["rgba(255,255,255,0.30)", "rgba(255,255,255,0.12)"]}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 1 }}
       style={{
         width: "100%", height: STEP_HEIGHT[rank - 1],
         borderTopLeftRadius: 14, borderTopRightRadius: 14,
         borderWidth: 1, borderBottomWidth: 0,
-        borderColor: dim ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.3)",
+        borderColor: dim ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.34)",
         alignItems: "center", justifyContent: "center",
       }}
     >
       <Text style={{
         fontSize: 16, fontWeight: "900",
-        color: dim ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.72)",
+        color: dim ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.75)",
       }}>
         {rank}
       </Text>
@@ -224,6 +320,24 @@ function PodiumCard({
   const avatarSize = isCenter ? 76 : 60;
   const placeColor = PLACE_COLORS[rank - 1];
   const placeMetal = PLACE_METALS[rank - 1];
+
+  // Победитель слегка покачивается: он на сцене, и это видно.
+  const float = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (rank !== 1 || !entry) return;
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(float, {
+        toValue: 1, duration: 1900,
+        easing: Easing.inOut(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+      }),
+      Animated.timing(float, {
+        toValue: 0, duration: 1700,
+        easing: Easing.inOut(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+      }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [rank, entry, float]);
 
   // ── Свободное место ──
   // Раньше это был пунктирный круг с замком и подпись «свободно» — рядом с
@@ -259,7 +373,12 @@ function PodiumCard({
       onPress={isMe ? undefined : onPress}
       style={{ flex: isCenter ? 1.16 : 1, alignItems: "center" }}
     >
-      <View style={{ alignItems: "center", marginBottom: 10 }}>
+      <Animated.View style={{
+        alignItems: "center", marginBottom: 10,
+        transform: rank === 1
+          ? [{ translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) }]
+          : [],
+      }}>
         {/* Корона рисуется в потоке над аватаром, а не absolute сверху:
             абсолютная позиция вылезала за край шапки и наезжала на
             переключатель категорий. */}
@@ -325,7 +444,7 @@ function PodiumCard({
         }}>
           {activeCat.formatValue(entry.value)}
         </Text>
-      </View>
+      </Animated.View>
 
       <Step rank={rank} />
     </TouchableOpacity>
@@ -333,8 +452,8 @@ function PodiumCard({
 }
 
 /**
- * Переключатель-сегменты. Активный сегмент приподнят и отбрасывает тень —
- * это тот же физический приём, что у кнопок: понятно, что именно нажато,
+ * Переключатель-сегменты с гранью — тот же, что в листе друзей и календаре.
+ * Активный сегмент светлый и отбрасывает тень: понятно, что именно нажато,
  * даже боковым зрением.
  */
 function Segments<T extends string>({
@@ -345,41 +464,47 @@ function Segments<T extends string>({
   onChange: (key: T) => void;
 }) {
   return (
-    <View style={{
-      marginHorizontal: 18,
-      flexDirection: "row",
-      backgroundColor: "rgba(255,255,255,0.14)",
-      borderRadius: radii.lg,
-      padding: 4,
-      gap: 4,
-    }}>
-      {options.map((opt) => {
-        const active = opt.key === value;
-        return (
-          <TouchableOpacity
-            key={opt.key}
-            onPress={() => onChange(opt.key)}
-            activeOpacity={0.8}
-            style={{
-              flex: 1, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6,
-              paddingVertical: 9, borderRadius: radii.md,
-              backgroundColor: active ? "#fff" : "transparent",
-              ...(active ? {
-                shadowColor: "#2e1065",
-                shadowOffset: { width: 0, height: 3 },
-                shadowOpacity: 0.35,
-                shadowRadius: 8,
-                elevation: 4,
-              } : {}),
-            }}
-          >
-            {opt.icon && <Glyph name={opt.icon} size={13} color={active ? "#6d28d9" : "rgba(255,255,255,0.78)"} />}
-            <Text style={{ fontSize: 12.5, fontWeight: active ? "800" : "700", color: active ? "#6d28d9" : "rgba(255,255,255,0.78)" }}>
-              {opt.label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+    <View style={{ marginHorizontal: 18, paddingBottom: 4 }}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 4, bottom: 0,
+        borderRadius: radii.lg, backgroundColor: "rgba(23,8,56,0.42)",
+      }} />
+      <View style={{
+        flexDirection: "row",
+        backgroundColor: "rgba(255,255,255,0.14)",
+        borderWidth: 1, borderColor: "rgba(255,255,255,0.22)",
+        borderRadius: radii.lg,
+        padding: 4,
+        gap: 4,
+      }}>
+        {options.map((opt) => {
+          const active = opt.key === value;
+          return (
+            <TouchableOpacity
+              key={opt.key}
+              onPress={() => onChange(opt.key)}
+              activeOpacity={0.8}
+              style={{
+                flex: 1, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6,
+                paddingVertical: 9, borderRadius: radii.md,
+                backgroundColor: active ? "#fff" : "transparent",
+                ...(active ? {
+                  shadowColor: "#2e1065",
+                  shadowOffset: { width: 0, height: 3 },
+                  shadowOpacity: 0.35,
+                  shadowRadius: 8,
+                  elevation: 4,
+                } : {}),
+              }}
+            >
+              {opt.icon && <Glyph name={opt.icon} size={13} color={active ? "#6d28d9" : "rgba(255,255,255,0.78)"} />}
+              <Text style={{ fontSize: 12.5, fontWeight: active ? "800" : "700", color: active ? "#6d28d9" : "rgba(255,255,255,0.78)" }}>
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -389,6 +514,7 @@ export default function LeaderboardScreen() {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { width: screenW } = useWindowDimensions();
 
   const [scope, setScope] = useState<Scope>("all");
   const [activeKey, setActiveKey] = useState<CategoryKey>("points");
@@ -508,27 +634,30 @@ export default function LeaderboardScreen() {
       );
     }
 
-    // ── Кнопка «показать всех» ──
+    // ── Кнопка «показать всех»: тоже клавиша с гранью ──
     if (item.kind === "more") {
       return (
-        <Pressable
+        <ChunkyTap
+          color={colors.primary + "33"}
+          edge={4}
           onPress={() => setShowAll(true)}
-          style={({ pressed }) => ({
-            marginHorizontal: 20, marginTop: 2, marginBottom: 10,
+          style={{ marginHorizontal: 20, marginTop: 2, marginBottom: 10 }}
+          accessibilityLabel="Показать всех участников"
+        >
+          <View style={{
             paddingVertical: 12, borderRadius: radii.md,
             backgroundColor: colors.primary + "12",
             borderWidth: 1, borderColor: colors.primary + "2e",
             flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
-            opacity: pressed ? 0.85 : 1,
-          })}
-        >
-          <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary }}>
-            Показать всех · ещё {item.count}
-          </Text>
-          <View style={{ transform: [{ rotate: "90deg" }] }}>
-            <Glyph name="chevron" size={14} color={colors.primary} />
+          }}>
+            <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary }}>
+              Показать всех · ещё {item.count}
+            </Text>
+            <View style={{ transform: [{ rotate: "90deg" }] }}>
+              <Glyph name="chevron" size={14} color={colors.primary} />
+            </View>
           </View>
-        </Pressable>
+        </ChunkyTap>
       );
     }
 
@@ -536,17 +665,15 @@ export default function LeaderboardScreen() {
     const isMe = entry.userId === user?.id;
     const gap = gapToAbove(entry);
 
-    return (
-      <Tile
-        onPress={isMe ? undefined : () => router.push(`/(main)/friend/${entry.userId}` as any)}
-        glow={isMe ? activeCat.color : accents.violetDeep}
-        style={{
-          flexDirection: "row", alignItems: "center", gap: 12,
-          paddingVertical: 11, paddingHorizontal: 12,
-          marginBottom: 8, marginHorizontal: 20,
-          ...(isMe ? { borderWidth: 1.5, borderColor: activeCat.color + "55", backgroundColor: activeCat.color + "10" } : {}),
-        }}
-      >
+    const body = (
+      <View style={{
+        flexDirection: "row", alignItems: "center", gap: 12,
+        paddingVertical: 11, paddingHorizontal: 12,
+        borderRadius: radii.md,
+        backgroundColor: isMe ? activeCat.color + "10" : colors.card,
+        borderWidth: isMe ? 1.5 : 1,
+        borderColor: isMe ? activeCat.color + "55" : colors.border,
+      }}>
         {/* Место в круглом шильде: цифра как объект, а не текст в строке. */}
         <View style={{
           width: 30, height: 30, borderRadius: 15,
@@ -563,7 +690,7 @@ export default function LeaderboardScreen() {
 
         <Avatar entry={entry} size={40} />
 
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             style={{ fontSize: 15, fontWeight: isMe ? "800" : "700", color: isMe ? activeCat.color : colors.foreground }}
             numberOfLines={1}
@@ -586,15 +713,34 @@ export default function LeaderboardScreen() {
         }}>
           {activeCat.formatValue(entry.value)}
         </Text>
-      </Tile>
+      </View>
+    );
+
+    const edgeColor = isMe ? activeCat.color + "4d" : EDGE_LIGHT;
+
+    // Своя строка не проседает: открывать в ней нечего. Грань при этом есть —
+    // иначе она выглядела бы вдавленной среди соседей.
+    return isMe ? (
+      <Chunky color={edgeColor} style={{ marginBottom: 8, marginHorizontal: 20 }}>
+        {body}
+      </Chunky>
+    ) : (
+      <ChunkyTap
+        color={edgeColor}
+        style={{ marginBottom: 8, marginHorizontal: 20 }}
+        onPress={() => router.push(`/(main)/friend/${entry.userId}` as any)}
+        accessibilityLabel={`Открыть профиль: ${entry.username}`}
+      >
+        {body}
+      </ChunkyTap>
     );
   };
 
   const ListHeader = (
     <>
       {/* ── Шапка-герой ──
-          Градиент бренда без анимированной плёнки: экран должен читаться как
-          часть приложения, а не как отдельная тёмная заставка. */}
+          Градиент бренда, поверх него живой фон подиума: экран должен читаться
+          как часть приложения, а не как отдельная тёмная заставка. */}
       <LinearGradient
         colors={["#2e1065", "#5b21b6", "#7c3aed"]}
         start={{ x: 0.5, y: 0 }}
@@ -606,12 +752,8 @@ export default function LeaderboardScreen() {
           overflow: "hidden",
         }}
       >
-        {/* Световое пятно за подиумом: даёт объём вместо шумной анимации. */}
-        <View pointerEvents="none" style={{
-          position: "absolute", alignSelf: "center", bottom: -110,
-          width: 300, height: 300, borderRadius: 150,
-          backgroundColor: "rgba(216,180,254,0.16)",
-        }} />
+        {/* Живой свет сцены: лучи, ореол и искры. Нажатия не ловит. */}
+        <PodiumGlow width={screenW} height={420} />
 
         {/* ── Заголовок и своё место ── */}
         <View style={{ paddingHorizontal: 18, paddingBottom: 14, flexDirection: "row", alignItems: "center", gap: 12 }}>
@@ -724,76 +866,84 @@ export default function LeaderboardScreen() {
           Заменил блок «Моё место»: тот показывал номер, который уже виден в
           подсвеченной строке, вместо того чтобы назвать соперника и дистанцию. */}
       {!loading && myEntry && rival && myGap !== null && (
-        <View style={{
-          marginHorizontal: 20, marginTop: 16, marginBottom: 2,
-          flexDirection: "row", alignItems: "center", gap: 11,
-          paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
-          backgroundColor: activeCat.color + "14",
-          borderWidth: 1.5, borderColor: activeCat.color + "3d",
-        }}>
-          <LinearGradient
-            colors={[accents.magenta, "#a855f7"]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={{
-              width: 34, height: 34, borderRadius: 12,
-              alignItems: "center", justifyContent: "center",
-              shadowColor: accents.magenta, shadowOffset: { width: 0, height: 4 },
-              shadowOpacity: 0.4, shadowRadius: 11, elevation: 4,
-            }}
-          >
-            <Glyph name="trendUp" size={17} color="#fff" />
-          </LinearGradient>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
-              Догоняешь {rival.username}
-            </Text>
-            <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
-              {activeCat.formatGap(myGap)} до {myEntry.rank - 1}-го места
-            </Text>
+        <Chunky
+          color={activeCat.color + "40"}
+          style={{ marginHorizontal: 20, marginTop: 16, marginBottom: 2 }}
+        >
+          <View style={{
+            flexDirection: "row", alignItems: "center", gap: 11,
+            paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
+            backgroundColor: activeCat.color + "14",
+            borderWidth: 1.5, borderColor: activeCat.color + "3d",
+          }}>
+            <LinearGradient
+              colors={[accents.magenta, "#a855f7"]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={{
+                width: 34, height: 34, borderRadius: 12,
+                alignItems: "center", justifyContent: "center",
+                shadowColor: accents.magenta, shadowOffset: { width: 0, height: 4 },
+                shadowOpacity: 0.4, shadowRadius: 11, elevation: 4,
+              }}
+            >
+              <Glyph name="trendUp" size={17} color="#fff" />
+            </LinearGradient>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
+                Догоняешь {rival.username}
+              </Text>
+              <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2, fontVariant: ["tabular-nums"] }}>
+                {activeCat.formatGap(myGap)} до {myEntry.rank - 1}-го места
+              </Text>
+            </View>
           </View>
-        </View>
+        </Chunky>
       )}
 
       {/* Первый в рейтинге. Если участник вообще один — это не победа, а
          пустой класс: честнее позвать других, чем поздравлять с отрывом
          от никого. */}
       {!loading && myEntry && myEntry.rank === 1 && (
-        <View style={{
-          marginHorizontal: 20, marginTop: 16, marginBottom: 2,
-          flexDirection: "row", alignItems: "center", gap: 11,
-          paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
-          backgroundColor: isLonely ? colors.primary + "12" : accents.gold + "1f",
-          borderWidth: 1.5, borderColor: isLonely ? colors.primary + "33" : accents.gold + "55",
-        }}>
-          <LinearGradient
-            colors={isLonely ? (gradients.action as unknown as string[]) : [accents.gold, accents.amber]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={{ width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center" }}
-          >
-            <Glyph name={isLonely ? "users" : "crown"} size={17} color="#fff" />
-          </LinearGradient>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }}>
-              {isLonely ? "Пока ты один в рейтинге" : "Ты на первом месте"}
-            </Text>
-            <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2 }}>
-              {isLonely ? "Добавь друзей — будет с кем соревноваться" : "Держи отрыв: тебя догоняют"}
-            </Text>
-          </View>
-          {isLonely && (
-            <Pressable
-              onPress={() => router.push("/(main)/profile" as any)}
-              style={({ pressed }) => ({
-                paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.sm,
-                backgroundColor: colors.primary, opacity: pressed ? 0.85 : 1,
-              })}
+        <Chunky
+          color={isLonely ? colors.primary + "3d" : accents.gold + "66"}
+          style={{ marginHorizontal: 20, marginTop: 16, marginBottom: 2 }}
+        >
+          <View style={{
+            flexDirection: "row", alignItems: "center", gap: 11,
+            paddingVertical: 12, paddingHorizontal: 13, borderRadius: radii.md,
+            backgroundColor: isLonely ? colors.primary + "12" : accents.gold + "1f",
+            borderWidth: 1.5, borderColor: isLonely ? colors.primary + "33" : accents.gold + "55",
+          }}>
+            <LinearGradient
+              colors={isLonely ? (gradients.action as unknown as string[]) : [accents.gold, accents.amber]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={{ width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center" }}
             >
-              <Text style={{ fontSize: 12, fontWeight: "800", color: "#fff" }}>Добавить</Text>
-            </Pressable>
-          )}
-        </View>
+              <Glyph name={isLonely ? "users" : "crown"} size={17} color="#fff" />
+            </LinearGradient>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground }}>
+                {isLonely ? "Пока ты один в рейтинге" : "Ты на первом месте"}
+              </Text>
+              <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.mutedForeground, marginTop: 2 }}>
+                {isLonely ? "Добавь друзей — будет с кем соревноваться" : "Держи отрыв: тебя догоняют"}
+              </Text>
+            </View>
+            {isLonely && (
+              <Pressable
+                onPress={() => router.push("/(main)/profile" as any)}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.sm,
+                  backgroundColor: colors.primary, opacity: pressed ? 0.85 : 1,
+                })}
+              >
+                <Text style={{ fontSize: 12, fontWeight: "800", color: "#fff" }}>Добавить</Text>
+              </Pressable>
+            )}
+          </View>
+        </Chunky>
       )}
 
       {/* Метка секции */}
@@ -853,7 +1003,7 @@ export default function LeaderboardScreen() {
         keyExtractor={(r, i) => r.kind === "entry" ? `u${r.entry.userId}` : `${r.kind}-${i}`}
         renderItem={renderRow}
         ListHeaderComponent={ListHeader}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
+        contentContainerStyle={{ paddingBottom: screenBottom(insets) }}
         showsVerticalScrollIndicator={false}
         // Ручное обновление: раньше экран умел только ждать минуту до
         // автообновления, и после сданного задания рейтинг выглядел застывшим.
