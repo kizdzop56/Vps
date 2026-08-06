@@ -252,6 +252,10 @@ function stateForHard(st: StateRow) {
  *
  * Раньше учить можно было лишь внутри одной колоды, а дневная норма считалась
  * по каждой колоде отдельно — ребёнку приходилось самому решать, куда зайти.
+ *
+ * Новые слова ограничены уровнем подготовки (levelsUpTo): слова колод выше
+ * своего уровня впервые не показываем. Повторения фильтру не подчиняются —
+ * однажды введённое слово обязано возвращаться, каким бы ни стал уровень.
  */
 async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Date) {
   const settings = await ensureSettings(userId);
@@ -263,6 +267,12 @@ async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Dat
   const stateByWord = new Map(states.map((s) => [s.wordId, s]));
 
   const all = words.map(toWordLike);
+
+  // Уровни, слова которых ученику можно давать впервые. Слово без уровня
+  // (своя колода, колода учителя, ручной ввод) проходит всегда: уровень ему
+  // никто не проставлял, и прятать его не за что.
+  const allowedLevels = new Set(levelsUpTo(settings.placementLevel));
+  const fitsLevel = (w: WordRow) => !w.cefrLevel || allowedLevels.has(w.cefrLevel);
 
   let picked: WordRow[];
   let newCount = 0;
@@ -284,7 +294,7 @@ async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Dat
     const fresh: WordRow[] = [];
     for (const w of ordered) {
       const st = stateByWord.get(w.id);
-      if (!st) fresh.push(w);
+      if (!st) { if (fitsLevel(w)) fresh.push(w); }
       else if (st.dueAt.getTime() <= now.getTime()) due.push(w);
     }
     due.sort((a, b) => (stateByWord.get(a.id)!.dueAt.getTime() - stateByWord.get(b.id)!.dueAt.getTime()));
@@ -462,12 +472,24 @@ function scoreToCefr(score: number): { level: string; message: string } {
   return { level: "C2", message: "Уровень, близкий к носителю." };
 }
 
-// порядок уровней для подбора слов по уровню пользователя (и чуть выше)
+// Порядок уровней CEFR — от начального к продвинутому.
 const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
+
+/**
+ * Уровни, слова которых ученику можно показывать ВПЕРВЫЕ: его собственный и
+ * все, что ниже.
+ *
+ * Раньше функция возвращала уровень и два сверху и нигде не использовалась.
+ * В роли фильтра сессии такой запас пропускал ровно то, от чего фильтр и нужен:
+ * в сквозной сессии слова всех колод сортируются по sortOrder, а он нумеруется
+ * ВНУТРИ колоды — значит новичку первым же словом прилетало слово номер ноль
+ * колоды верхнего уровня.
+ *
+ * Уровень не пройден — считаем ученика начинающим (A1), как и марафон.
+ */
 function levelsUpTo(level: string | null | undefined): string[] {
-  const idx = level ? CEFR_ORDER.indexOf(level) : 1; // по умолчанию до A2
-  const top = Math.max(1, idx) + 1; // уровень пользователя и на один выше
-  return CEFR_ORDER.slice(0, Math.min(CEFR_ORDER.length, top + 1));
+  const idx = level ? CEFR_ORDER.indexOf(level) : 0;
+  return CEFR_ORDER.slice(0, Math.max(0, idx) + 1);
 }
 
 // ── Настройки (создаём строку при первом обращении) ─────────────────────
@@ -1308,7 +1330,7 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
 
 // ── GET /flashcards/session ──────────────────────────────────────────
 // Сквозная сессия по всем колодам: одна кнопка «Учить слова» вместо обхода
-// колод вручную.
+// колод вручную. Новые слова — по уровню подготовки (см. buildTrainerQueue).
 router.get("/flashcards/session", requireAuth, async (req, res) => {
   const user = getUser(req);
   res.json(await buildTrainerQueue(user.userId, "all", new Date()));
