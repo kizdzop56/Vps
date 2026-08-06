@@ -34,6 +34,7 @@ import {
   type AuditScope,
   type AuditWordRow,
 } from "../lib/wordAuditRun";
+import { AUDIT_PAGE } from "./maintenancePage";
 
 const router = Router();
 
@@ -200,7 +201,7 @@ router.get("/maintenance/audit-words/batch", requireMaintenanceKey, async (req, 
 // ── GET /maintenance/audit-words ────────────────────────────────────────────
 // Страница-обёртка: сама ходит по пачкам и показывает, что нашлось.
 router.get("/maintenance/audit-words", requireMaintenanceKey, (_req, res) => {
-  res.type("html").send(PAGE);
+  res.type("html").send(AUDIT_PAGE);
 });
 
 export default router;
