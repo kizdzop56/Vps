@@ -1,28 +1,34 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Главный экран раздела «Слова»: одна кнопка «Учить слова» (сквозная сессия по
-// всем колодам), цель дня в словах, отработка сложных слов, библиотека готовых
-// колод, собственные колоды и переходы к статистике / созданию колоды / тесту.
+// всем колодам), отработка сложных слов, библиотека готовых колод, собственные
+// колоды и переходы к статистике / созданию колоды / марафону.
 //
 // ── Единая порода поверхностей ──────────────────────────────────────────────
 // Экран говорит на том же языке, что профиль, календарь и рейтинг: у каждой
 // карточки НИЖНЯЯ ГРАНЬ — отдельный слой под корпусом, сдвинутый вниз на свою
-// толщину. Проседает при нажатии только то, что открывается: колода, группа
-// уровня, плитки действий, «сложные слова». Цель дня грань имеет, но не
-// проседает — там нечего открывать.
+// толщину. Здесь ВСЁ, что нажимается, ещё и проседает: колода, группа уровня,
+// плитки действий, «сложные слова», кнопка повтора после ошибки. Кнопки без
+// отдачи рядом с проседающими читаются как неработающие.
 //
-// Раньше всё было на Tile из GameKit: плоские карточки с цветной тенью. Рядом
-// с объёмными блоками остального приложения они читались как незаконченные.
+// У колод грань толще остальных карточек (EDGE_DECK): это главные объекты
+// экрана, ради них сюда и заходят, и они должны выступать вперёд.
 //
 // Шапка экрана прижата к safe area через screenTop, а снизу стоит
 // screenBottom: панель вкладок плавает ПОВЕРХ содержимого, и без отступа
 // последняя колода уезжает под неё.
 //
-// ── Колоды ──────────────────────────────────────────────────────────────────
-// Готовые колоды показываются двумя блоками:
-//   • «Колоды по уровням» — колоды с заданным cefrLevel. Показывается уровень
-//     ученика; он раскрыт по умолчанию.
-//   • «Тематические колоды» — колоды без уровня: они охватывают сразу несколько
-//     уровней (еда, животные, …), поэтому в уровневые группы не помещаются.
+// ── Одна колонка значков ────────────────────────────────────────────────────
+// Все ведущие значки строк — ровно ICON пикселей и без наклона: значок колоды,
+// плашка «сложных слов», шильд уровня. Раньше размеры гуляли (48, 42, шильд по
+// содержимому), а плашки были повёрнуты на несколько градусов — в списке из
+// десятка строк левый край шёл лесенкой и выглядел как брак вёрстки, а не как
+// приём.
+//
+// ── Чего здесь нет ──────────────────────────────────────────────────────────
+// Цели дня по словам. Она жила отдельной карточкой «Повторить N слов» и
+// дублировала задачу из «Цели дня» в профиле: тот же счётчик, те же данные,
+// только показанные второй раз в другом месте. Место в разделе «Слова» стоит
+// дорого — его занимают колоды.
 //
 // Эмодзи на этом экране не используются: значок колоды рисует DeckGlyph — он
 // подбирает иконку по ТЕМЕ из названия («Еда» → вилка, «Животные» → лапа), а
@@ -35,7 +41,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, TouchableOpacity, ScrollView, ActivityIndicator,
+  View, Text, Pressable, ScrollView, ActivityIndicator,
   RefreshControl, Animated, Easing, Platform,
   type ViewStyle, type StyleProp,
 } from "react-native";
@@ -47,7 +53,7 @@ import { useColors } from "@/hooks/useColors";
 import { fc, type DeckWithAssign } from "@/hooks/useFlashcards";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
-import { ChunkyButton, GoalPips, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii, timing } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 
@@ -55,7 +61,12 @@ const NATIVE_DRIVER = Platform.OS !== "web";
 
 /** Толщина нижней грани и цвет под светлой карточкой — как в профиле. */
 const EDGE = 5;
+/** Колоды — главный объект экрана, у них грань толще. */
+const EDGE_DECK = 7;
 const EDGE_LIGHT = "#c9bdf0";
+
+/** Размер ведущего значка строки. Один на весь экран: колонка должна быть ровной. */
+const ICON = 46;
 
 /**
  * Экран падал молча: при ошибке рендера React разворачивал дерево и вкладка
@@ -74,12 +85,13 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
       {!!error?.stack && (
         <Text style={{ fontSize: 10, lineHeight: 15, color: "#8b7fb0" }}>{error.stack}</Text>
       )}
-      <TouchableOpacity
+      <ChunkyButton
+        label="Попробовать снова"
+        icon="repeat"
+        center
         onPress={() => { void retry(); }}
-        style={{ alignSelf: "flex-start", backgroundColor: "#6366f1", borderRadius: 12, paddingHorizontal: 18, paddingVertical: 11 }}
-      >
-        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Попробовать снова</Text>
-      </TouchableOpacity>
+        style={{ alignSelf: "flex-start", minWidth: 220 }}
+      />
     </ScrollView>
   );
 }
@@ -164,7 +176,7 @@ export default function FlashcardsHome() {
 
   const decksQ = useQuery({ queryKey: ["fc-decks"], queryFn: fc.getDecks });
   const settingsQ = useQuery({ queryKey: ["fc-settings"], queryFn: fc.getSettings });
-  // Статистика нужна на главной для цели дня и числа сложных слов.
+  // Статистика нужна на главной ради числа сложных слов.
   const statsQ = useQuery({ queryKey: ["fc-stats"], queryFn: () => fc.getStats() });
 
   // Рефетч при фокусе: только когда данные реально устарели (isStale).
@@ -215,12 +227,7 @@ export default function FlashcardsHome() {
   const totalDue = decks.reduce((s, d) => s + d.dueCount, 0);
   const totalNew = decks.reduce((s, d) => s + d.newCount, 0);
 
-  // Цель дня по словам и «сложные слова» приходят из статистики.
-  const stats = statsQ.data;
-  const wordsToday = stats?.wordsToday ?? 0;
-  const dailyWordGoal = stats?.dailyWordGoal ?? settingsQ.data?.dailyWordGoal ?? 10;
-  const goalReached = wordsToday >= dailyWordGoal;
-  const hardCount = stats?.hardCount ?? 0;
+  const hardCount = statsQ.data?.hardCount ?? 0;
 
   // Подпись главной кнопки: что именно ждёт в сессии. Цифры уже есть в данных,
   // раньше они просто не показывались — на кнопке они полезнее всего.
@@ -252,7 +259,6 @@ export default function FlashcardsHome() {
             icon="rank"
             tone={level ? "gold" : "soft"}
             color={level ? undefined : colors.primary}
-            tilt={-2}
           />
         </Pressable>
       </View>
@@ -267,29 +273,6 @@ export default function FlashcardsHome() {
         style={{ marginBottom: 12 }}
       />
 
-      {/* Цель дня: сегментами, а не полосой — закрытый сегмент виден сразу.
-          Грань есть, проседания нет: блок ничего не открывает. */}
-      <Chunky
-        color={goalReached ? accents.gold + "66" : EDGE_LIGHT}
-        style={{ marginBottom: 12 }}
-      >
-        <View style={cardBody(colors, goalReached
-          ? { backgroundColor: accents.gold + "14", borderColor: accents.gold + "55" }
-          : undefined)}
-        >
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Glyph name={goalReached ? "check" : "target"} size={16} color={goalReached ? accents.amber : colors.primary} />
-              <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
-            </View>
-            <Text style={{ fontSize: 14, fontWeight: "900", color: goalReached ? accents.amber : colors.primary, fontVariant: ["tabular-nums"] }}>
-              {wordsToday} / {dailyWordGoal}
-            </Text>
-          </View>
-          <GoalPips value={wordsToday} target={dailyWordGoal} done={goalReached} />
-        </View>
-      </Chunky>
-
       {/* Сложные слова */}
       {hardCount > 0 && (
         <ChunkyTap
@@ -302,14 +285,15 @@ export default function FlashcardsHome() {
             flexDirection: "row", alignItems: "center", gap: 13,
             borderColor: colors.warning + "44",
           })}>
-            {/* Плашка с глифом вместо эмодзи: цвет управляется темой, а не шрифтом ОС. */}
+            {/* Плашка ровно того же размера, что значок колоды: значки всех
+                строк экрана стоят одной колонкой. */}
             <LinearGradient
               colors={gradients.fire as unknown as string[]}
               start={{ x: 0.1, y: 0 }}
               end={{ x: 0.9, y: 1 }}
-              style={{ width: 42, height: 42, borderRadius: radii.sm + 2, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-5deg" }] }}
+              style={{ width: ICON, height: ICON, borderRadius: radii.sm + 3, alignItems: "center", justifyContent: "center" }}
             >
-              <Glyph name="repeat" size={20} color="#fff" />
+              <Glyph name="repeat" size={Math.round(ICON * 0.5)} color="#fff" />
             </LinearGradient>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Сложные слова</Text>
@@ -347,18 +331,18 @@ export default function FlashcardsHome() {
           <View style={cardBody(colors, {
             backgroundColor: colors.destructive + "12",
             borderColor: colors.destructive + "40",
-            gap: 10,
+            gap: 12,
           })}>
             <Text style={{ fontSize: 15, fontWeight: "800", color: colors.destructive }}>Колоды не загрузились</Text>
             <Text style={{ fontSize: 13, lineHeight: 19, color: colors.destructive }}>
               {(decksQ.error as any)?.message ?? "Проверьте соединение и попробуйте ещё раз."}
             </Text>
-            <TouchableOpacity
+            <ChunkyButton
+              label="Повторить"
+              icon="repeat"
+              center
               onPress={() => { decksQ.refetch(); settingsQ.refetch(); statsQ.refetch(); }}
-              style={{ alignSelf: "flex-start", backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 11 }}
-            >
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Повторить</Text>
-            </TouchableOpacity>
+            />
           </View>
         </Chunky>
       ) : (
@@ -406,7 +390,7 @@ export default function FlashcardsHome() {
   );
 }
 
-/** Пара второстепенных действий под целью дня. */
+/** Пара второстепенных действий под главной кнопкой. */
 function ActionTile({
   colors, icon, label, onPress,
 }: { colors: any; icon: GlyphName; label: string; onPress: () => void }) {
@@ -450,6 +434,12 @@ function LevelGroup({
   const learned = decks.reduce((s, d) => s + d.learnedCount, 0);
   const due = decks.reduce((s, d) => s + d.dueCount, 0);
 
+  /** Шильд уровня — такой же квадрат ICON×ICON, как значки колод. */
+  const shield: ViewStyle = {
+    width: ICON, height: ICON, borderRadius: radii.sm + 3,
+    alignItems: "center", justifyContent: "center",
+  };
+
   return (
     <View style={{ marginBottom: 10 }}>
       <ChunkyTap
@@ -458,7 +448,7 @@ function LevelGroup({
         accessibilityLabel={open ? `Свернуть уровень ${level}` : `Раскрыть уровень ${level}`}
       >
         <View style={cardBody(colors, {
-          flexDirection: "row", alignItems: "center", gap: 12,
+          flexDirection: "row", alignItems: "center", gap: 13,
           borderColor: isMyLevel ? colors.primary + "44" : colors.border,
         })}>
           {/* Шильд уровня: у своего уровня — заливка градиентом, у остальных
@@ -468,13 +458,13 @@ function LevelGroup({
               colors={gradients.action as unknown as string[]}
               start={{ x: 0.1, y: 0 }}
               end={{ x: 0.9, y: 1 }}
-              style={{ borderRadius: radii.sm, paddingHorizontal: 11, paddingVertical: 7, minWidth: 48, alignItems: "center" }}
+              style={shield}
             >
-              <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14 }}>{level}</Text>
+              <Text style={{ color: "#fff", fontWeight: "900", fontSize: 15 }}>{level}</Text>
             </LinearGradient>
           ) : (
-            <View style={{ backgroundColor: colors.primary + "1f", borderRadius: radii.sm, paddingHorizontal: 11, paddingVertical: 7, minWidth: 48, alignItems: "center" }}>
-              <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 14 }}>{level}</Text>
+            <View style={[shield, { backgroundColor: colors.primary + "1f" }]}>
+              <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 15 }}>{level}</Text>
             </View>
           )}
           <View style={{ flex: 1, minWidth: 0 }}>
@@ -511,15 +501,17 @@ function DeckCard({ deck, colors, onPress }: { deck: DeckWithAssign; colors: any
   const startedPct = deck.wordCount > 0 ? Math.round((introduced / deck.wordCount) * 100) : 0;
   return (
     <ChunkyTap
+      edge={EDGE_DECK}
       onPress={onPress}
       style={{ marginBottom: 10 }}
       accessibilityLabel={`Открыть колоду: ${deck.title}`}
     >
       <View style={cardBody(colors, {
-        padding: 15, flexDirection: "row", alignItems: "center", gap: 14,
+        padding: 15, flexDirection: "row", alignItems: "center", gap: 13,
       })}>
-        {/* Значок колоды: иконка по теме из названия, буква — крайний случай. */}
-        <DeckGlyph title={deck.title} emoji={deck.emoji} size={48} />
+        {/* Значок колоды: иконка по теме из названия, буква — крайний случай.
+            Размер общий для всех строк экрана — колонка значков ровная. */}
+        <DeckGlyph title={deck.title} emoji={deck.emoji} size={ICON} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{deck.title}</Text>
