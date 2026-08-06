@@ -27,6 +27,11 @@
 // Столбики недели вырастают от нуля при открытии: высота читается как
 // величина, а не как готовая картинка.
 //
+// В плитке «Подряд» горит настоящее пламя (components/ui/LiveFlame): серия —
+// единственная величина здесь, которая может ПОГАСНУТЬ, если пропустить день.
+// Остальные три плитки со статичными значками, иначе разбор превратился бы в
+// новогоднюю гирлянду.
+//
 // ── Закрытие ────────────────────────────────────────────────────────────────
 // Одна кнопка «Закрыть», ЛИПКАЯ: она лежит поверх окна и прижата к низу
 // экрана, поэтому доступна на любой прокрутке. Раньше кнопка ехала вместе с
@@ -61,6 +66,7 @@ import Svg, { Circle, Line } from "react-native-svg";
 import { useColors } from "@/hooks/useColors";
 import authStorage from "@/utils/authStorage";
 import { Glyph } from "@/components/ui/Glyph";
+import { LiveFlame } from "@/components/ui/LiveFlame";
 import { ChunkyButton } from "@/components/ui/GameKit";
 import { accents, radii, timing } from "@/constants/theme";
 
@@ -625,7 +631,10 @@ function SummaryBody({
             style={[s.tile, { backgroundColor: colors.muted, borderColor: colors.border }]}
           >
             <View style={s.tileHead}>
-              <Glyph name={t.icon} size={13} color={colors.primary} />
+              {/* Серия горит: её можно потерять, а остальные цифры — нет. */}
+              {t.icon === "flame"
+                ? <LiveFlame size={15} color={accents.amber} coreColor={accents.gold} />
+                : <Glyph name={t.icon} size={13} color={colors.primary} />}
               <Text style={[s.tileLabel, { color: colors.mutedForeground }]}>{t.label}</Text>
             </View>
             <Text style={[s.tileValue, { color: colors.foreground }]}>{t.value}</Text>
