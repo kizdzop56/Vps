@@ -14,12 +14,22 @@
 // как недоделанная.
 //
 // Проседает при нажатии только то, что реально что-то открывает: день недели,
-// карточка ближайшего занятия, кнопки. Просто карточка со сведениями грани
-// имеет, но не проседает — проседание обещает действие.
+// карточка ближайшего занятия, кнопки шапки, полоса недели. Просто карточка со
+// сведениями грань имеет, но не проседает — проседание обещает действие.
+// Технически это два разных компонента: Chunky (только грань) и ChunkyTap
+// (грань + проседание). Если у кнопки есть грань, но нет ChunkyTap, она
+// выглядит сломанной рядом с соседями — именно так и было со «Своим временем».
 //
 // Свободный слот — исключение: он рисуется ПУНКТИРОМ и без грани. Это пустое
 // место, а не предмет; объём тут врал бы. Физическая кнопка внутри («Записаться»)
 // и есть то единственное, что можно потрогать.
+//
+// ── Полоса недели ───────────────────────────────────────────────────────────
+// Месяц открывается нажатием на ЛЮБОЕ место полосы, кроме самих дней: отдельной
+// кнопки «Месяц» больше нет. Кнопка занимала правый угол шапки и объясняла то,
+// что и так очевидно — по календарю жмут, чтобы увидеть больше календаря.
+// Вместо неё справа от названия месяца стоит шеврон: он не кликается отдельно,
+// а просто сообщает, что блок раскрывается.
 //
 // ── Вкладки ─────────────────────────────────────────────────────────────────
 // Переключатель собран как в листе друзей: подложка с гранью, активная вкладка
@@ -42,18 +52,26 @@
 //  • Линия «сейчас» — отсечка текущего момента внутри дня.
 //  • Кнопка «Предложить своё время» была продублирована в шапке и внизу
 //    списка. Главное действие должно быть одно.
+//  • Подпись «завершено: N» висела отдельной строкой справа над списком.
+//    Прошедшие уроки и так стоят в списке приглушёнными, с подписью «урок
+//    прошёл»: счётчик пересказывал то, что видно глазами, и занимал строку.
 //  • Отступы берутся из constants/layout.ts. Нижний — screenBottom: панель
 //    вкладок плавает поверх содержимого, и без него последняя карточка дня
 //    уезжает под неё.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
-// НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
-// («Cannot set indexed properties on this object»).
+// 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
+//    («Cannot set indexed properties on this object»).
+// 2. Вложенные Pressable в react-native-web: клик по внутреннему элементу
+//    всплывает до внешнего. Поэтому у полосы недели стоит защита по времени
+//    (dayTapRef) — иначе выбор дня заодно открывал бы окно месяца.
+// 3. useNativeDriver только не в вебе: там нативного драйвера нет.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable,
   ActivityIndicator, TextInput, RefreshControl, Modal, Alert,
+  Animated, Easing, Platform,
   type ViewStyle, type StyleProp,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -67,8 +85,11 @@ import { useCalendarBadge } from "@/contexts/CalendarBadgeContext";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
 import { TimeRangePicker, toMinutes, toTime } from "@/components/ui/TimeRangePicker";
-import { accents, gradients, radii } from "@/constants/theme";
+import { accents, gradients, radii, timing } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
+
+/** В вебе нативного драйвера нет: там анимации всегда идут на JS. */
+const NATIVE_DRIVER = Platform.OS !== "web";
 
 // ── Толщина граней ────────────────────────────────────────────────────────
 /** Крупные блоки: шапка дня, ближайшее занятие, неделя. */
@@ -83,6 +104,8 @@ const EDGE_DARK = "#4c1d95";
 /**
  * Оболочка с нижней гранью. Грань — отдельный слой под корпусом: у View в RN
  * не может быть двух теней, поэтому «толщину» рисуем настоящим прямоугольником.
+ *
+ * Без проседания: для того, что не нажимается.
  */
 function Chunky({
   color, edge = EDGE, radius = radii.md, style, children,
@@ -100,6 +123,52 @@ function Chunky({
         borderRadius: radius, backgroundColor: color,
       }} />
       {children}
+    </View>
+  );
+}
+
+/**
+ * То же самое, но корпус проседает на высоту грани при нажатии — как клавиша.
+ *
+ * Использовать ТОЛЬКО там, где нажатие что-то делает. Кнопка с гранью, которая
+ * не проседает, рядом с проседающими соседями читается как неработающая: ровно
+ * это и происходило со «Своим временем» и «Слотом» в шапке.
+ */
+function ChunkyTap({
+  color, edge = EDGE_SM, radius = radii.md, onPress, style, accessibilityLabel, children,
+}: {
+  color: string;
+  edge?: number;
+  radius?: number;
+  onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
+  children: React.ReactNode;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: timing.press,
+      easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+    }).start();
+
+  return (
+    <View style={[{ paddingBottom: edge }, style]}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: edge, bottom: 0,
+        borderRadius: radius, backgroundColor: color,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={onPress}
+          onPressIn={() => set(edge)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          {children}
+        </Pressable>
+      </Animated.View>
     </View>
   );
 }
@@ -336,6 +405,15 @@ export default function CalendarScreen() {
 
   const [deleteSlotId, setDeleteSlotId] = useState<number | null>(null);
   const scheduleScrollRef = useRef<import("react-native").ScrollView>(null);
+  /**
+   * Когда последний раз нажимали на день недели.
+   *
+   * В react-native-web клик по вложенному Pressable всплывает до внешнего,
+   * поэтому выбор дня заодно открывал бы окно месяца. Отметка времени решает
+   * это надёжнее, чем возня с остановкой всплытия: 300 мс достаточно, а
+   * осознанный тап по пустому месту полосы в такой промежуток не попадает.
+   */
+  const dayTapRef = useRef(0);
 
   const [bookingFilter, setBookingFilter] = useState<"all" | "pending" | "confirmed" | "rejected">("all");
 
@@ -639,8 +717,9 @@ export default function CalendarScreen() {
     headDate: { fontSize: 26, fontWeight: "900", letterSpacing: -0.8, color: colors.foreground },
     headCaption: { fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground, marginTop: 5 },
 
-    // Кнопка в шапке — маленькая физическая клавиша с гранью. У ученика она
-    // спокойнее: «Своё время» — запасной путь, а не главное действие.
+    // Кнопка в шапке — маленькая физическая клавиша: грань снизу и проседание
+    // при нажатии (ChunkyTap). У ученика она спокойнее: «Своё время» — запасной
+    // путь, а не главное действие.
     headBtn: {
       flexDirection: "row", alignItems: "center", gap: 7,
       paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.pill,
@@ -703,12 +782,10 @@ export default function CalendarScreen() {
     },
     weekHead: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4, paddingBottom: 11 },
     weekMonth: { flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground, letterSpacing: -0.1 },
-    monthBtn: {
-      flexDirection: "row", alignItems: "center", gap: 5,
-      paddingHorizontal: 11, paddingVertical: 6, borderRadius: radii.pill,
-      backgroundColor: colors.primary + "1a",
-    },
-    monthBtnText: { fontSize: 11.5, fontWeight: "800", color: accents.violetDeep },
+    // Подсказка «здесь раскрывается»: не кнопка, поэтому у неё нет ни фона, ни
+    // своей области нажатия — весь блок и так нажимается.
+    weekHint: { flexDirection: "row", alignItems: "center", gap: 5 },
+    weekHintText: { fontSize: 11, fontWeight: "800", color: accents.violetDeep, opacity: 0.75 },
     weekRow: { flexDirection: "row", gap: 4 },
     // Один и тот же размер у всех дней: при переключении соседний день не
     // должен оставлять после себя тень или подложку.
@@ -723,7 +800,6 @@ export default function CalendarScreen() {
     dot: { width: 5, height: 5, borderRadius: 2.5 },
 
     summary: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginBottom: 13 },
-    summaryDone: { marginLeft: "auto", fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground, fontVariant: ["tabular-nums"] },
 
     slotRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
     slotTimeCol: { width: 46, paddingTop: 13, alignItems: "flex-end" },
@@ -931,49 +1007,71 @@ export default function CalendarScreen() {
       ? ((nextLesson as TeacherSlot).bookings ?? []).find((b) => b.status === "confirmed")?.studentName ?? "Ученик"
       : (nextLesson as StudentSlot).teacherName ?? "Учитель";
     return (
-      <Chunky color={EDGE_DARK} radius={radii.lg} style={{ marginBottom: 14 }}>
-        <TouchableOpacity activeOpacity={0.9} onPress={() => goToDate(nextLesson.date)}>
-          <LinearGradient
-            colors={gradients.action as unknown as string[]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={s.nextCard}
-          >
-            <View style={s.nextIcon}>
-              <Glyph name="calendar" size={23} color="#ffffff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.nextLabel}>Ближайшее занятие</Text>
-              <Text style={s.nextWhen}>{humanDay(nextLesson.date)} в {nextLesson.startTime}</Text>
-              <Text style={s.nextWho}>
-                {isTeacherRole ? `с ${who}` : who} · до {nextLesson.endTime}
-              </Text>
-            </View>
-            <Glyph name="chevron" size={19} color="#ffffff" />
-          </LinearGradient>
-        </TouchableOpacity>
-      </Chunky>
+      <ChunkyTap
+        color={EDGE_DARK}
+        edge={EDGE}
+        radius={radii.lg}
+        style={{ marginBottom: 14 }}
+        onPress={() => goToDate(nextLesson.date)}
+        accessibilityLabel="Перейти к ближайшему занятию"
+      >
+        <LinearGradient
+          colors={gradients.action as unknown as string[]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={s.nextCard}
+        >
+          <View style={s.nextIcon}>
+            <Glyph name="calendar" size={23} color="#ffffff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.nextLabel}>Ближайшее занятие</Text>
+            <Text style={s.nextWhen}>{humanDay(nextLesson.date)} в {nextLesson.startTime}</Text>
+            <Text style={s.nextWho}>
+              {isTeacherRole ? `с ${who}` : who} · до {nextLesson.endTime}
+            </Text>
+          </View>
+          <Glyph name="chevron" size={19} color="#ffffff" />
+        </LinearGradient>
+      </ChunkyTap>
     );
   };
 
+  /**
+   * Полоса недели. Нажатие в любое место, КРОМЕ самих дней, открывает месяц.
+   * Отдельной кнопки «Месяц» нет: по календарю жмут именно затем, чтобы увидеть
+   * больше календаря, и объяснять это кнопкой не нужно.
+   */
   const renderWeekStrip = () => {
     const today = todayStr();
     const anchor = new Date(selectedDate + "T00:00:00");
+
+    const openMonth = () => {
+      // Клик по дню всплывает сюда (см. ГРАБЛИ 2) — такие нажатия пропускаем.
+      if (Date.now() - dayTapRef.current < 300) return;
+      setMonthAnchor(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+      setShowMonth(true);
+    };
+
     return (
-      <Chunky color={EDGE_LIGHT} radius={radii.lg} style={{ marginBottom: 14 }}>
+      <ChunkyTap
+        color={EDGE_LIGHT}
+        edge={EDGE}
+        radius={radii.lg}
+        style={{ marginBottom: 14 }}
+        onPress={openMonth}
+        accessibilityLabel="Открыть календарь на месяц"
+      >
         <View style={s.weekCard}>
           <View style={s.weekHead}>
             <Text style={s.weekMonth}>{MONTH_FULL[anchor.getMonth()]} {anchor.getFullYear()}</Text>
-            <Pressable
-              style={({ pressed }) => [s.monthBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => {
-                setMonthAnchor(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
-                setShowMonth(true);
-              }}
-            >
-              <Glyph name="calendar" size={12} color={accents.violetDeep} />
-              <Text style={s.monthBtnText}>Месяц</Text>
-            </Pressable>
+            {/* Не кнопка, а подсказка: весь блок и так раскрывается. */}
+            <View style={s.weekHint} pointerEvents="none">
+              <Text style={s.weekHintText}>весь месяц</Text>
+              <View style={{ transform: [{ rotate: "90deg" }] }}>
+                <Glyph name="chevron" size={13} color={accents.violetDeep} />
+              </View>
+            </View>
           </View>
 
           <View style={s.weekRow}>
@@ -986,7 +1084,10 @@ export default function CalendarScreen() {
               return (
                 <Pressable
                   key={date}
-                  onPress={() => setSelectedDate(date)}
+                  onPress={() => {
+                    dayTapRef.current = Date.now();
+                    setSelectedDate(date);
+                  }}
                   style={[
                     s.dayCell,
                     isToday && !active && { borderWidth: 1.5, borderColor: colors.primary + "70" },
@@ -1023,10 +1124,15 @@ export default function CalendarScreen() {
             })}
           </View>
         </View>
-      </Chunky>
+      </ChunkyTap>
     );
   };
 
+  /**
+   * Сводка дня: только то, что ещё живо. Счётчика завершённых здесь нет —
+   * прошедшие уроки стоят в списке приглушёнными и подписаны «урок прошёл»,
+   * а отдельная строка справа пересказывала это словами.
+   */
   const renderDaySummary = () => {
     const chips: { icon: GlyphName; color: string; text: string }[] = [];
     if (selectedMeta.lesson > 0) {
@@ -1038,16 +1144,13 @@ export default function CalendarScreen() {
     if (selectedMeta.pending > 0) chips.push({ icon: "clock",  color: DOT_PENDING, text: `${selectedMeta.pending} ожидает` });
     if (selectedMeta.free > 0)    chips.push({ icon: "target", color: DOT_FREE,    text: `${selectedMeta.free} свободно` });
 
-    if (chips.length === 0 && selectedMeta.past === 0) return null;
+    if (chips.length === 0) return null;
 
     return (
       <View style={s.summary}>
         {chips.map((c) => (
           <Pill key={c.text} text={c.text} icon={c.icon} tone="soft" color={c.color} />
         ))}
-        {selectedMeta.past > 0 && (
-          <Text style={s.summaryDone}>завершено: {selectedMeta.past}</Text>
-        )}
       </View>
     );
   };
@@ -1984,35 +2087,41 @@ export default function CalendarScreen() {
           <Text style={s.headCaption}>{dayCaption(selectedDate)}</Text>
         </View>
 
-        {/* Главное действие роли — сразу в шапке, а не в конце прокрутки. */}
+        {/* Главное действие роли — сразу в шапке, а не в конце прокрутки.
+            Обе кнопки на ChunkyTap: они проседают, как и всё остальное. */}
         {activeTab === "schedule" && !isTeacherRole && (
-          <Chunky color={colors.success + "55"} edge={EDGE_SM} radius={radii.pill}>
-            <Pressable
-              onPress={handleOpenCustomReq}
-              style={[s.headBtn, {
-                backgroundColor: colors.success + "18",
-                borderWidth: 1.5, borderColor: colors.success + "40",
-              }]}
-            >
+          <ChunkyTap
+            color={colors.success + "55"}
+            radius={radii.pill}
+            onPress={handleOpenCustomReq}
+            accessibilityLabel="Предложить своё время"
+          >
+            <View style={[s.headBtn, {
+              backgroundColor: colors.success + "18",
+              borderWidth: 1.5, borderColor: colors.success + "40",
+            }]}>
               <Glyph name="plus" size={14} color={colors.success} />
               <Text style={[s.headBtnText, { color: colors.success }]}>Своё время</Text>
-            </Pressable>
-          </Chunky>
+            </View>
+          </ChunkyTap>
         )}
         {activeTab === "schedule" && isTeacherRole && (
-          <Chunky color={accents.indigoDeep} edge={EDGE_SM} radius={radii.pill}>
-            <Pressable onPress={openAddSlot}>
-              <LinearGradient
-                colors={gradients.action as unknown as string[]}
-                start={{ x: 0.1, y: 0 }}
-                end={{ x: 0.9, y: 1 }}
-                style={s.headBtn}
-              >
-                <Glyph name="plus" size={14} color="#fff" />
-                <Text style={[s.headBtnText, { color: "#fff" }]}>Слот</Text>
-              </LinearGradient>
-            </Pressable>
-          </Chunky>
+          <ChunkyTap
+            color={accents.indigoDeep}
+            radius={radii.pill}
+            onPress={openAddSlot}
+            accessibilityLabel="Добавить слот"
+          >
+            <LinearGradient
+              colors={gradients.action as unknown as string[]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={s.headBtn}
+            >
+              <Glyph name="plus" size={14} color="#fff" />
+              <Text style={[s.headBtnText, { color: "#fff" }]}>Слот</Text>
+            </LinearGradient>
+          </ChunkyTap>
         )}
       </View>
 
