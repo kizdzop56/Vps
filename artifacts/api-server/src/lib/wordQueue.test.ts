@@ -1,7 +1,6 @@
-// Тесты отбора карточек по режимам. Без БД и express: node:test + node:assert,
-// запускается без установки зависимостей.
+// Тесты отбора карточек по режимам. Без БД и express: node:test + node:assert.
 //
-//   pnpm exec tsx --test artifacts/api-server/src/lib/wordQueue.test.ts
+//   pnpm --filter @workspace/api-server test
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -10,6 +9,7 @@ import {
   MARATHON_MAX_CARDS,
   belongsToMarathon,
   compareByDue,
+  isDue,
   needsMoreStudy,
   pickMarathonCards,
 } from "./wordQueue";
@@ -31,6 +31,13 @@ test("новое слово не попадает ни в один из режи
   // нормой, поэтому здесь оба ответа должны быть отрицательными.
   assert.equal(belongsToMarathon(undefined), false);
   assert.equal(needsMoreStudy(undefined, NOW), false);
+  assert.equal(isDue(undefined, NOW), false);
+});
+
+test("срок наступил — это dueAt не позже «сейчас»", () => {
+  assert.equal(isDue({ memoryLevel: 4, dueAt: minutes(-1) }, NOW), true);
+  assert.equal(isDue({ memoryLevel: 4, dueAt: NOW }, NOW), true);
+  assert.equal(isDue({ memoryLevel: 4, dueAt: minutes(1) }, NOW), false);
 });
 
 test("в «Учить слова» идут только неусвоенные слова с наступившим сроком", () => {
@@ -49,21 +56,35 @@ test("сорвавшееся слово возвращается доучива�
   assert.equal(needsMoreStudy(afterLapse, NOW), true);
 });
 
-test("марафон отдаёт выученные слова по возрастанию срока", () => {
+test("марафон отдаёт только созревшие выученные слова", () => {
   const states = new Map([
-    ["soon", { memoryLevel: 4, dueAt: minutes(5) }],
+    ["soon", { memoryLevel: 4, dueAt: minutes(5) }],        // срок ещё не подошёл
     ["overdue", { memoryLevel: 5, dueAt: minutes(-60) }],
-    ["later", { memoryLevel: 5, dueAt: minutes(60) }],
-    ["learning", { memoryLevel: 2, dueAt: minutes(-999) }],
+    ["later", { memoryLevel: 5, dueAt: minutes(60) }],      // и здесь тоже
+    ["learning", { memoryLevel: 2, dueAt: minutes(-999) }], // не выучено
   ]);
   const get = (id: string) => states.get(id);
 
   const { picked, learnedCount, dueNow } = pickMarathonCards([...states.keys()], get, NOW);
 
-  // Неусвоенное слово не попадает, даже будучи самым просроченным.
-  assert.deepEqual(picked, ["overdue", "soon", "later"]);
+  // Слово, отвеченное недавно, снова не приходит — в этом весь смысл
+  // интервального повторения. Неусвоенное не попадает и подавно.
+  assert.deepEqual(picked, ["overdue"]);
+  // В зале повторений при этом три слова: счётчик показывает всё выученное.
   assert.equal(learnedCount, 3);
   assert.equal(dueNow, 1);
+});
+
+test("созревшие идут по возрастанию срока: дольше всех ждало — первым", () => {
+  const states = new Map([
+    ["hour", { memoryLevel: 4, dueAt: minutes(-60) }],
+    ["week", { memoryLevel: 5, dueAt: minutes(-60 * 24 * 7) }],
+    ["minute", { memoryLevel: 4, dueAt: minutes(-1) }],
+  ]);
+  const get = (id: string) => states.get(id);
+
+  const { picked } = pickMarathonCards([...states.keys()], get, NOW);
+  assert.deepEqual(picked, ["week", "hour", "minute"]);
 });
 
 test("чем выше уровень, тем дальше слово в очереди", () => {
@@ -78,13 +99,16 @@ test("чем выше уровень, тем дальше слово в очер
 });
 
 test("порция марафона ограничена лимитом, счётчик показывает всё", () => {
-  const ids = Array.from({ length: MARATHON_MAX_CARDS + 15 }, (_, i) => `w${i}`);
-  const get = (id: string) => ({ memoryLevel: 4, dueAt: minutes(Number(id.slice(1))) });
+  const total = MARATHON_MAX_CARDS + 15;
+  const ids = Array.from({ length: total }, (_, i) => `w${i}`);
+  // Все сроки в прошлом: w0 просрочено сильнее всех, w44 — меньше всех.
+  const get = (id: string) => ({ memoryLevel: 4, dueAt: minutes(Number(id.slice(1)) - total) });
 
-  const { picked, learnedCount } = pickMarathonCards(ids, get, NOW);
+  const { picked, learnedCount, dueNow } = pickMarathonCards(ids, get, NOW);
 
   assert.equal(picked.length, MARATHON_MAX_CARDS);
-  assert.equal(learnedCount, ids.length);
+  assert.equal(learnedCount, total);
+  assert.equal(dueNow, total);
   assert.equal(picked[0], "w0");
 });
 
@@ -97,5 +121,16 @@ test("пустой марафон — это нормальный ответ, а
   );
   assert.deepEqual(picked, []);
   assert.equal(learnedCount, 0);
+  assert.equal(dueNow, 0);
+});
+
+test("всё выучено и ничего не созрело — порция пуста, но зал не пуст", () => {
+  const { picked, learnedCount, dueNow } = pickMarathonCards(
+    ["a", "b"],
+    () => ({ memoryLevel: 5, dueAt: minutes(60 * 24) }),
+    NOW,
+  );
+  assert.deepEqual(picked, []);
+  assert.equal(learnedCount, 2);
   assert.equal(dueNow, 0);
 });
