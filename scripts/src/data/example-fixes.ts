@@ -9,13 +9,14 @@
 //
 //   1. примера нет вовсе (exEn/exRu — пустые строки);
 //   2. пример не про то значение: spring «весна» → пример про вывих,
-//      cheek «щека» → про наглость, tissue «салфетка» → «ткань лжи»;
-//   3. пример нельзя показывать ребёнку: tea → про марихуану, sad → про
-//      наркотики, thumb → цитата с порносайта;
+//      cheek «щека» → про наглость, vein «вена» → «в том же духе»;
+//   3. пример нельзя показывать ребёнку: tea → про марихуану, thumb → цитата
+//      с порносайта, erect → про эрекцию, widen → про упавший пеньюар;
 //   4. производная форма получила пример базового слова: карточка breathing
 //      «дыхание» показывала предложение про рыб и жабры;
 //   5. вместо примера — мусор из служебных полей словаря: библиографическая
-//      ссылка (kit, myth) или обрывок репортажа (lane).
+//      ссылка (kit, myth, liable), цитата 1658 года (nominate), радиопереговоры
+//      про танки (correction).
 //
 // Шестой случай — слово с двумя ходовыми значениями — этим слоем не лечится:
 // там проблема не в примере, а в самой карточке, которая учит одному переводу
@@ -33,6 +34,7 @@ import { A1_FIXES } from "./example-fixes-a1";
 import { A2_FIXES } from "./example-fixes-a2";
 import { B1_FIXES } from "./example-fixes-b1";
 import { B2_FIXES } from "./example-fixes-b2";
+import { C1_FIXES } from "./example-fixes-c1";
 
 export type ExampleFix = {
   exEn?: string;
@@ -51,6 +53,7 @@ export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
   ...A2_FIXES,
   ...B1_FIXES,
   ...B2_FIXES,
+  ...C1_FIXES,
 };
 
 export function fixFor(en: string): ExampleFix | undefined {
