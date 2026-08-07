@@ -24,7 +24,9 @@
 //   • фраза живая и короткая, по ней сразу виден нужный смысл;
 //   • ru — перевод фразы целиком, а не отдельного слова;
 //   • theme — существующая колода, её уровень должен совпадать с cefr фразы;
-//   • ipa у фраз не заполняем: в каталоге у словосочетаний она пустая.
+//   • ipa у фраз не заполняем: в каталоге у словосочетаний она пустая;
+//   • перечислять фразы для КАЖДОГО уровня, где слово встречается, не нужно:
+//     недостающие уровни закрываются зеркалированием (см. applyPolysemous).
 //
 // Проверка: pnpm validate:examples
 
@@ -433,8 +435,6 @@ const B1: PolysemousWord[] = [
 ];
 
 // ── B2 ───────────────────────────────────────────────────────────────────────
-// Эти слова я оставил без правки в батче B2 намеренно: подпорка в примере
-// закрепила бы один перевод из двух.
 const B2: PolysemousWord[] = [
   {
     word: "concrete",
@@ -600,9 +600,20 @@ export function isAmbiguous(en: string): boolean {
   return AMBIGUOUS_WORDS.has(en.trim().toLowerCase());
 }
 
+const BY_WORD = new Map(POLYSEMOUS.map((p) => [p.word.trim().toLowerCase(), p]));
+
 /**
  * Убирает одиночные карточки многозначных слов и добавляет вместо них карточки
  * со словосочетаниями.
+ *
+ * Зеркалирование. Слово удаляется из ВСЕХ колод (ключ — english), а фразы
+ * добавляются только туда, где указано в phrases. Каталог же держит одно слово
+ * на нескольких уровнях: craft есть в B2 и C1, value в B1 и B2, light в A1 и A2.
+ * Без зеркалирования ученик одного уровня получал бы замену, а другого — терял
+ * слово вовсе. Поэтому если у слова нет ни одной фразы уровня той колоды, где
+ * оно лежало, его смыслы клонируются в эту же колоду с её уровнем: текст тот же,
+ * меняются theme и cefr. Дублирование english между колодами для каталога
+ * нормально — downstairs так лежит и в A1, и в A2.
  *
  * Тихо потерянная карточка здесь хуже шумной ошибки: если тема названа с
  * опечаткой или фраза уже есть в каталоге, сид просто ничего не добавит, и
@@ -615,10 +626,12 @@ export function applyPolysemous(decks: SeedDeck[]): {
   problems: string[];
   removed: number;
   added: number;
+  mirrored: number;
 } {
   const problems: string[] = [];
   let removed = 0;
   let added = 0;
+  let mirrored = 0;
 
   const byTheme = new Map<string, SensePhrase[]>();
   for (const entry of POLYSEMOUS) {
@@ -641,10 +654,29 @@ export function applyPolysemous(decks: SeedDeck[]): {
   }
 
   const out = decks.map((deck) => {
-    const extra = byTheme.get(deck.theme) ?? [];
     const kept = deck.words.filter((w) => !isAmbiguous(w.en));
-    removed += deck.words.length - kept.length;
-    if (extra.length === 0) return kept.length === deck.words.length ? deck : { ...deck, words: kept };
+    const dropped = deck.words.filter((w) => isAmbiguous(w.en));
+    removed += dropped.length;
+
+    const extra: SensePhrase[] = [...(byTheme.get(deck.theme) ?? [])];
+
+    // Уровень колоды: у тематических колод cefrLevel есть всегда, но подстрахуемся
+    // уровнем самой карточки — иначе зеркало ушло бы с пустым cefr.
+    for (const w of dropped) {
+      const entry = BY_WORD.get(w.en.trim().toLowerCase());
+      if (!entry || entry.phrases.length < 2) continue;
+      const level = deck.cefrLevel ?? w.cefr;
+      if (!level) continue;
+      if (entry.phrases.some((p) => p.cefr === level)) continue; // уровень уже закрыт
+      for (const p of entry.phrases) {
+        extra.push({ ...p, theme: deck.theme, cefr: level });
+        mirrored++;
+      }
+    }
+
+    if (extra.length === 0) {
+      return kept.length === deck.words.length ? deck : { ...deck, words: kept };
+    }
 
     const have = new Set(kept.map((w) => w.en.trim().toLowerCase()));
     const words = [...kept];
@@ -665,5 +697,5 @@ export function applyPolysemous(decks: SeedDeck[]): {
     return { ...deck, words };
   });
 
-  return { decks: out, problems, removed, added };
+  return { decks: out, problems, removed, added, mirrored };
 }

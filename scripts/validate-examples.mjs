@@ -16,6 +16,9 @@
 // (при слиянии карт перетирается); многозначное слово с одним смыслом (слово
 // просто потерялось бы); фраза в несуществующей колоде, чужого уровня или
 // дублирующая каталог (сид её отбросит); фраза, в которой нет самого слова.
+// Отдельно — предупреждения: правка примера для слова, у которого одиночной
+// карточки больше нет (не применится никогда, но выглядит рабочей), и уровни,
+// закрытые зеркалированием фраз.
 //
 // Зависимостей нет и tsc не нужен: файлы читаются как текст, как и в
 // validate-flashcards.mjs.
@@ -41,6 +44,7 @@ const POLY_RE =
   /word:\s*"([^"]+)"|theme:\s*"([^"]+)",\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?cefr:\s*"([A-C][12])"/g;
 
 const errors = [];
+const warnings = [];
 const dataFiles = readdirSync(DATA);
 const catalogFiles = dataFiles
   .filter((f) => f === "flashcards-data.ts" || /^vocabulary-[a-c][12]\.ts$/.test(f))
@@ -70,6 +74,7 @@ if (words.size === 0) {
 
 // ── многозначные слова: одиночная карточка убрана, смыслы разложены по фразам ─
 const ambiguous = new Map(); // слово → массив фраз
+let mirroredLevels = 0;
 if (dataFiles.includes(POLY)) {
   const src = readFileSync(path.join(DATA, POLY), "utf8");
   let current = null;
@@ -84,12 +89,25 @@ if (dataFiles.includes(POLY)) {
   }
 
   for (const [word, list] of ambiguous) {
-    if (!words.has(word)) {
+    const inCatalog = words.get(word);
+    if (!inCatalog) {
       errors.push(`"${word}" (${POLY}): такого слова нет в каталоге — убирать нечего`);
     }
     if (list.length < 2) {
       errors.push(`"${word}" (${POLY}): указан ${list.length} смысл — слово потерялось бы совсем`);
     }
+
+    // Уровни каталога, для которых фраз нет: их закроет зеркалирование в
+    // applyPolysemous. Это не ошибка, но знать полезно — текст фраз там общий.
+    if (inCatalog) {
+      const covered = new Set(list.map((p) => p.cefr));
+      const missing = [...inCatalog.levels].filter((l) => !covered.has(l)).sort();
+      if (missing.length > 0) {
+        mirroredLevels += missing.length;
+        warnings.push(`"${word}": фраз для ${missing.join(", ")} нет — уровни закроются зеркалированием`);
+      }
+    }
+
     for (const p of list) {
       if (!themes.has(p.theme)) {
         errors.push(`фраза "${p.en}": колоды "${p.theme}" нет в датасете — карточка не попадёт в базу`);
@@ -128,6 +146,14 @@ for (const file of levelFixFiles) {
   }
 }
 
+// Правка примера для слова, которое учится только словосочетаниями: одиночной
+// карточки больше нет, поэтому применять правку не к чему. Не ошибка, но код
+// мёртвый и вводит в заблуждение.
+const deadFixes = [...fixed].filter(([key]) => ambiguous.has(key));
+for (const [key, file] of deadFixes) {
+  warnings.push(`"${key}" (${file}): у слова нет одиночной карточки (${POLY}) — правка не применится`);
+}
+
 // ── отчёт по уровням ─────────────────────────────────────────────────────
 // Многозначные слова в подсчёт не идут: их одиночных карточек в приложении
 // больше нет, поэтому «пустой пример» у них ничего не значит.
@@ -148,8 +174,8 @@ for (const [word, { levels, empty }] of words) {
 
 const phraseCount = [...ambiguous.values()].reduce((n, list) => n + list.length, 0);
 console.log(`Файлов каталога: ${catalogFiles.length}, уникальных карточек: ${words.size}`);
-console.log(`Правок примеров: ${fixed.size}`);
-console.log(`Многозначных слов: ${ambiguous.size} (одиночные карточки убраны), словосочетаний вместо них: ${phraseCount}\n`);
+console.log(`Правок примеров: ${fixed.size}${deadFixes.length > 0 ? ` (мёртвых: ${deadFixes.length})` : ""}`);
+console.log(`Многозначных слов: ${ambiguous.size} (одиночные карточки убраны), словосочетаний: ${phraseCount}, уровней под зеркалирование: ${mirroredLevels}\n`);
 
 let remaining = 0;
 for (const level of LEVELS) {
@@ -167,6 +193,11 @@ for (const level of LEVELS) {
 // Ключ правки, которого нет в датасете — опечатка: правка не применится никогда.
 for (const [key, file] of fixed) {
   if (!words.has(key)) errors.push(`"${key}" (${file}): такого слова нет в датасете — правка не применится`);
+}
+
+if (warnings.length > 0) {
+  console.log("");
+  for (const w of warnings) console.log(`⚠️  ${w}`);
 }
 
 if (errors.length > 0) {
