@@ -10,8 +10,20 @@
 //   memoryLevel 0 → choiceRu только (EN → выбор RU, первое узнавание);
 //   memoryLevel 1–2 → choiceRu или choiceEn поровну, детерминировано по сиду
 //                     (слово + день): оба направления чередуются без Math.random;
-//   memoryLevel 3 → listen (только озвучка → выбор перевода, аудирование);
-//   memoryLevel 4–5 → build (собери слово из букв, орфография).
+//   memoryLevel 3 → listen или typeRu: аудирование и письменный перевод;
+//   memoryLevel 4–5 → build, typeEn или speak: орфография, воспроизведение и речь.
+//
+// Выбор из вариантов — это узнавание: правильный ответ уже на экране, его надо
+// лишь опознать. Поэтому со среднего уровня подмешиваются упражнения на
+// воспроизведение, где ответ ребёнок достаёт из головы сам:
+//
+//   typeRu — видит английское слово, пишет перевод по-русски;
+//   typeEn — видит перевод, пишет слово по-английски;
+//   speak  — произносит слово вслух, клиент распознаёт речь.
+//
+// Проверку свободного ответа делает lib/answerCheck.ts: она прощает регистр,
+// пунктуацию и одну опечатку, принимает любой из переводов карточки, а
+// произношению даёт три попытки.
 //
 // Словосочетания и слова длиннее MAX_BUILD_LENGTH из букв не собираются —
 // вместо этого аудирование или choiceEn.
@@ -34,8 +46,28 @@
 // Модуль чистый (без БД и express) — тесты в wordExercise.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 import { LEARNED_LEVEL } from "./srs";
+import { SPEAK_MAX_ATTEMPTS } from "./answerCheck";
 
-export type ExerciseType = "intro" | "choiceRu" | "choiceEn" | "listen" | "build";
+export type ExerciseType =
+  | "intro"
+  | "choiceRu"
+  | "choiceEn"
+  | "listen"
+  | "build"
+  | "typeRu"
+  | "typeEn"
+  | "speak";
+
+/** Упражнения со свободным ответом: проверяет answerCheck, а не сравнение с options. */
+export const FREE_ANSWER_TYPES: ReadonlySet<ExerciseType> = new Set<ExerciseType>([
+  "typeRu",
+  "typeEn",
+  "speak",
+]);
+
+export function isFreeAnswer(type: ExerciseType): boolean {
+  return FREE_ANSWER_TYPES.has(type);
+}
 
 export type Exercise = {
   type: ExerciseType;
@@ -49,6 +81,16 @@ export type Exercise = {
   letters?: string[];
   /** Верный ответ строкой (для build — само слово). */
   answer?: string;
+  /**
+   * Все допустимые ответы (для typeRu / typeEn / speak). Клиент показывает
+   * верный вариант после ответа; саму проверку делает сервер в POST /review,
+   * чтобы правила жили в одном месте.
+   */
+  accept?: string[];
+  /** На каком языке ждём ответ — клиенту нужно для клавиатуры и распознавания речи. */
+  answerLang?: "ru" | "en";
+  /** Сколько попыток даётся (для speak). */
+  maxAttempts?: number;
 };
 
 export type WordLike = {
@@ -77,6 +119,14 @@ export const OPTION_COUNT = 4;
 export const MIN_OPTION_COUNT = 2;
 /** Максимальная длина слова, которое просим собрать из букв. */
 export const MAX_BUILD_LENGTH = 12;
+/**
+ * Максимальная длина ответа, который просим написать целиком.
+ *
+ * Длинную конструкцию («take care of sb/sth/yourself») ребёнок будет набирать
+ * дольше, чем вспоминать, и ошибётся на опечатке, а не на знании. Такие
+ * карточки остаются на выборе и аудировании.
+ */
+export const MAX_TYPING_LENGTH = 24;
 
 // ── Детерминированный генератор случайных чисел ──────────────────────────────
 // Нужен, чтобы порядок вариантов был стабильным для одной и той же карточки в
@@ -123,12 +173,37 @@ export function isBuildable(english: string): boolean {
   return word.length >= 3 && word.length <= MAX_BUILD_LENGTH;
 }
 
+/** Ответ достаточно короткий, чтобы просить написать его целиком. */
+export function isTypeable(answer: string): boolean {
+  const value = answer.trim();
+  return value.length > 0 && value.length <= MAX_TYPING_LENGTH;
+}
+
+/**
+ * Слово годится для проверки произношения.
+ *
+ * Распознавание речи ошибается тем чаще, чем длиннее фраза, поэтому просим
+ * произнести только короткие английские слова и словосочетания. Плейсхолдеры
+ * (sb/sth) вслух не произносятся вовсе — такие карточки исключаем.
+ */
+export function isSpeakable(english: string): boolean {
+  const value = english.trim();
+  if (!value || value.length > MAX_TYPING_LENGTH) return false;
+  if (/\b(sb|sth)\b/i.test(value)) return false;
+  if (/[…]/.test(value)) return false;
+  return /^[A-Za-z][A-Za-z' -]*$/.test(value);
+}
+
 export function pickExerciseType(opts: {
   memoryLevel: number;
   isNew: boolean;
   english: string;
+  /** Основной перевод — нужен, чтобы решить, можно ли просить написать его. */
+  translation?: string;
   allowListen?: boolean;
-  /** ID слова — нужен для детерминированного чередования choiceRu/choiceEn. */
+  /** Клиент умеет распознавать речь (микрофон + Web Speech API / expo). */
+  allowSpeak?: boolean;
+  /** ID слова — нужен для детерминированного чередования типов. */
   wordId?: number;
   /** Точка времени — нужна для cardSeed (по умолчанию now). */
   now?: Date;
@@ -136,26 +211,47 @@ export function pickExerciseType(opts: {
   const { isNew, english, wordId } = opts;
   const level = Number.isFinite(opts.memoryLevel) ? Math.max(0, Math.trunc(opts.memoryLevel)) : 0;
   const allowListen = opts.allowListen !== false;
+  const allowSpeak = opts.allowSpeak === true;
+  const translation = (opts.translation ?? "").trim();
 
   if (isNew) return "intro";
+
+  // Один и тот же сид на карточку и день: тип упражнения стабилен в течение
+  // дня (ребёнок не получает разные задания при перезаходе) и воспроизводим
+  // в тестах.
+  const seed = wordId != null ? cardSeed(wordId, opts.now) : 0;
 
   // memoryLevel 0: слово только что прошло знакомство, обратное направление
   // ещё слишком рано — даём только узнавание EN→RU.
   if (level === 0) return "choiceRu";
 
   // memoryLevel 1–2: чередуем choiceRu (EN→RU) и choiceEn (RU→EN) поровну.
-  // Чередование детерминировано: бит из cardSeed (wordId + день) — стабилен
-  // в течение дня, воспроизводим в тестах, не зависит от Math.random.
-  if (level <= 2) {
-    const choiceEnBit = wordId != null ? cardSeed(wordId, opts.now) % 2 : 0;
-    return choiceEnBit === 1 ? "choiceEn" : "choiceRu";
+  if (level <= 2) return seed % 2 === 1 ? "choiceEn" : "choiceRu";
+
+  const canTypeRu = isTypeable(translation);
+  const canTypeEn = isTypeable(english);
+  const canSpeak = allowSpeak && isSpeakable(english);
+
+  // memoryLevel 3: узнавание уже пройдено — половину показов отдаём письму,
+  // остальное аудированию.
+  if (level === 3) {
+    if (seed % 2 === 0 && canTypeRu) return "typeRu";
+    if (allowListen) return "listen";
+    return canTypeRu ? "typeRu" : "choiceEn";
   }
 
-  if (level === 3) return allowListen ? "listen" : "choiceEn";
+  // memoryLevel 4–5: слово выучено, закрепляем воспроизведением — орфография,
+  // письменный перевод и речь по очереди.
+  const wheel: ExerciseType[] = [];
+  if (isBuildable(english)) wheel.push("build");
+  if (canTypeEn) wheel.push("typeEn");
+  if (canSpeak) wheel.push("speak");
+  if (wheel.length > 0) return wheel[seed % wheel.length]!;
 
-  // Выученное закрепляем письмом; фразы и длинные слова — аудированием/выбором.
-  if (level >= LEARNED_LEVEL && isBuildable(english)) return "build";
-  return allowListen ? "listen" : "choiceEn";
+  // Ни собрать, ни написать, ни произнести (длинная конструкция) — остаётся
+  // аудирование или выбор.
+  if (allowListen) return "listen";
+  return "choiceEn";
 }
 
 // ── Варианты ответа ──────────────────────────────────────────────────────────
@@ -373,15 +469,19 @@ export function buildExercise(opts: {
   pool: WordLike[];
   now?: Date;
   allowListen?: boolean;
+  allowSpeak?: boolean;
 }): Exercise {
   const { word, memoryLevel, isNew, pool } = opts;
   const now = opts.now ?? new Date();
   const rng = mulberry32(cardSeed(word.id, now));
+  const translation = mainTranslation(word);
   const type = pickExerciseType({
     memoryLevel,
     isNew,
     english: word.english,
+    translation,
     allowListen: opts.allowListen,
+    allowSpeak: opts.allowSpeak,
     wordId: word.id,
     now,
   });
@@ -392,7 +492,42 @@ export function buildExercise(opts: {
   }
 
   if (type === "build") {
-    return { type, prompt: mainTranslation(word), answer: word.english.trim(), letters: letterTiles(word.english, rng) };
+    return { type, prompt: translation, answer: word.english.trim(), letters: letterTiles(word.english, rng) };
+  }
+
+  // Свободный ответ: вариантов не даём вовсе. accept — все допустимые написания;
+  // сравнение делает сервер при приёме ответа (lib/answerCheck.ts), клиент лишь
+  // показывает верный вариант после проверки.
+  if (type === "typeRu") {
+    return {
+      type,
+      prompt: word.english,
+      answer: translation,
+      accept: word.translationsRu.map((t) => t.trim()).filter(Boolean),
+      answerLang: "ru",
+    };
+  }
+
+  if (type === "typeEn") {
+    return {
+      type,
+      prompt: translation,
+      answer: word.english.trim(),
+      accept: [word.english.trim()],
+      answerLang: "en",
+    };
+  }
+
+  if (type === "speak") {
+    return {
+      type,
+      // Показываем и слово, и перевод: задача не вспомнить его, а произнести.
+      prompt: word.english,
+      answer: word.english.trim(),
+      accept: [word.english.trim()],
+      answerLang: "en",
+      maxAttempts: SPEAK_MAX_ATTEMPTS,
+    };
   }
 
   // Признаки правильного ответа, по которым подбираются дистракторы: часть
@@ -412,14 +547,14 @@ export function buildExercise(opts: {
       target,
     );
     return options.length >= MIN_OPTION_COUNT
-      ? { type, prompt: mainTranslation(word), options, answerIndex, answer }
+      ? { type, prompt: translation, options, answerIndex, answer }
       : { type: "intro", prompt: word.english };
   }
 
   // choiceRu и listen отличаются только тем, показываем ли само слово: варианты
   // в обоих случаях — переводы.
   const { options, answerIndex, answer } = buildOptions(
-    mainTranslation(word),
+    translation,
     candidates(mainTranslation),
     rng,
     word.translationsRu, // прочие переводы этого же слова нельзя давать как «неверные»
