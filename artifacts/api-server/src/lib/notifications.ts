@@ -35,7 +35,7 @@ import {
   assignmentsTable,
   usersTable,
 } from "@workspace/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { buildServerDailyPlan } from "./dailyPlan";
 import { computeDailyProgress } from "./dailyProgress";
 import { logger } from "./logger";
@@ -64,6 +64,15 @@ export const FEED_LIMIT = 60;
 
 /** Заданий и заявок берём не больше этого — лента не архив. */
 const SOURCE_LIMIT = 40;
+
+/**
+ * Сколько строк заводим за один заход.
+ *
+ * Упирается в первую сборку у давнего ученика: сорок медалей, сорок заданий и
+ * заявки — это под сотню строк одним запросом. Свежие всё равно окажутся в
+ * ленте, а хвост истории заводить незачем: его никто не откроет.
+ */
+const MAX_NEW_PER_SYNC = 60;
 
 /**
  * Как часто пересчитывать задачи дня.
@@ -140,7 +149,7 @@ async function collectFriendRequests(userId: number): Promise<Draft[]> {
     dedupeKey: `friend_request:${row.id}`,
     title: "Заявка в друзья",
     body: `${row.fromName} хочет добавить тебя в друзья`,
-    detail: `Ответить можно в профиле: раздел «Друзья» — «Мои друзья». Там же видно очки друзей.`,
+    detail: "Ответить можно в профиле: раздел «Друзья» — «Мои друзья». Там же видно очки друзей.",
     meta: { friendshipId: row.id, fromId: row.fromId, username: row.fromUsername },
     createdAt: row.createdAt,
   }));
@@ -188,7 +197,13 @@ async function collectAssignments(userId: number): Promise<Draft[]> {
     .from(assignedTasksTable)
     .innerJoin(assignmentsTable, eq(assignmentsTable.id, assignedTasksTable.assignmentId))
     .leftJoin(usersTable, eq(usersTable.id, assignedTasksTable.teacherId))
-    .where(eq(assignedTasksTable.studentId, userId))
+    .where(and(
+      eq(assignedTasksTable.studentId, userId),
+      // Удаление задания мягкое, а назначение при этом остаётся. Без этого
+      // условия ученик получал бы уведомление о задании, которого уже нет ни в
+      // одном списке.
+      isNull(assignmentsTable.deletedAt),
+    ))
     .orderBy(desc(assignedTasksTable.assignedAt))
     .limit(SOURCE_LIMIT);
 
@@ -304,7 +319,14 @@ export async function syncNotifications(userId: number): Promise<void> {
     ),
   );
 
-  const fresh = collected.flat().filter((d) => !known.has(d.dedupeKey));
+  const fresh = collected
+    .flat()
+    .filter((d) => !known.has(d.dedupeKey))
+    // Свежее вперёд: если порция не влезает целиком, отрезать надо хвост
+    // истории, а не сегодняшние события.
+    .sort((a, b) => (b.createdAt?.getTime() ?? now) - (a.createdAt?.getTime() ?? now))
+    .slice(0, MAX_NEW_PER_SYNC);
+
   if (fresh.length === 0) return;
 
   const stamp = silent ? new Date() : null;
