@@ -11,6 +11,10 @@
 // ширину. Персонаж должен быть главным на экране, ради него всё и затевалось.
 // Ниже — имя градиентом, реплика в неоновом пузыре и одна большая кнопка.
 //
+// Затемнение ПЛОТНОЕ. Через полупрозрачное просвечивал экран под окном: реплика
+// ложилась поверх карточек профиля, а белый зверь на пёстром фоне терял силуэт
+// и выглядел как не прорисовавшаяся картинка.
+//
 // Размер маскота считается от окна: ширина почти во весь экран, но высота
 // ограничена долей экрана, иначе на низких телефонах пузырь с текстом уезжает
 // под кнопку. Пропорция берётся из WavingMascot (MASCOT_RATIO), чтобы
@@ -28,6 +32,7 @@ import {
 import { useColors } from "@/hooks/useColors";
 import { AnimatedMascotImage, type MascotPose } from "@/components/AnimatedMascotImage";
 import { MASCOT_RATIO } from "@/components/WavingMascot";
+import { ChunkyCta } from "@/components/ui/ChunkyCta";
 
 export type MascotMood = "happy" | "celebrate" | "sad" | "thinking" | "wave" | "sleep";
 
@@ -169,22 +174,18 @@ export function MascotModal({
           </TouchableOpacity>
 
           {actionLabel && onAction && (
-            <TouchableOpacity
-              style={[styles.btn, styles.btnGhost, { width: cardW, borderColor: glow }]}
+            <ChunkyCta
+              label={actionLabel}
+              tone="ghost"
+              width={cardW}
               onPress={() => { onAction(); onClose(); }}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.btnGhostText}>{actionLabel}</Text>
-            </TouchableOpacity>
+              style={{ marginBottom: 4 }}
+            />
           )}
 
-          <TouchableOpacity
-            style={[styles.btn, { width: cardW }]}
-            onPress={onClose}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.btnText}>Понятно! 👍</Text>
-          </TouchableOpacity>
+          {/* Кнопка объёмная: как всё нажимаемое в приложении. Эмодзи нет —
+              палец вверх ничего не добавляет к слову «Понятно». */}
+          <ChunkyCta label="Понятно" onPress={onClose} width={cardW} />
         </Animated.View>
       </TouchableOpacity>
     </Modal>
@@ -416,9 +417,11 @@ export function getMascotMessage(
 
 const styles = StyleSheet.create({
   // Затемнение во весь экран, без карточки: как в подсказках по вкладкам.
+  // Плотное намеренно — через полупрозрачное просвечивал профиль, и белый зверь
+  // на пёстрых карточках терял силуэт.
   overlay: {
     flex: 1,
-    backgroundColor: "#000000b8",
+    backgroundColor: "#000000e6",
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 20,
@@ -448,18 +451,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     color: "#ede9ff",
   },
-  btn: {
-    borderRadius: 16,
-    paddingVertical: 15,
-    alignItems: "center",
-    backgroundColor: "#8b5cf6",
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.35)",
-  },
-  btnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  // Второстепенное действие: прозрачная кнопка, чтобы не спорить с главной.
-  btnGhost: { backgroundColor: "transparent", marginBottom: 10 },
-  btnGhostText: { color: "#ede9ff", fontSize: 16, fontWeight: "700" },
 
   floatingBtn: {
     position: "absolute",
