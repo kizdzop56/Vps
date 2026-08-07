@@ -17,7 +17,7 @@
 // обновляется → повторные запросы идут прямо в кэш.
 import { Router } from "express";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, createReadStream } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { db } from "@workspace/db";
@@ -36,6 +36,17 @@ const router = Router();
 const TEXT_RE = /^[a-zA-Z][a-zA-Z\s\-'.,!?;:()]*$/;
 const TEXT_MAX = 200;
 
+/**
+ * Версия правил синтеза. Входит в ключ кэша.
+ *
+ * Менять при КАЖДОМ изменении того, как текст превращается в звук: смена
+ * голоса, модели, обработки текста. Иначе ученики продолжат слушать записи,
+ * сделанные по старым правилам, — кэш вечный и сам не протухает.
+ *
+ * v2 — speakableText(): к фразе добавляется точка (см. ниже).
+ */
+const TTS_VERSION = "v2";
+
 // ── Локальный кэш ──────────────────────────────────────────────────────────
 let ttsDir = path.resolve(process.cwd(), "../../uploads/tts");
 try {
@@ -45,8 +56,35 @@ try {
   if (!existsSync(ttsDir)) mkdirSync(ttsDir, { recursive: true });
 }
 
-function sha256(text: string): string {
-  return createHash("sha256").update(text.toLowerCase().trim()).digest("hex");
+/** Ключ кэша для текста. Версия внутри: правила синтеза меняются — ключ тоже. */
+function cacheKeyFor(text: string): string {
+  return createHash("sha256")
+    .update(`${TTS_VERSION}:${text.toLowerCase().trim()}`)
+    .digest("hex");
+}
+
+/**
+ * Текст, который уходит в синтезатор.
+ *
+ * ЗАЧЕМ ТОЧКА. Нейронный TTS выбирает мелодику фразы по знакам препинания.
+ * Кусок вроде «take care of» без точки для него — начало предложения, у
+ * которого дальше обязано быть дополнение: голос идёт вверх и обрывается на
+ * полуслове. Ребёнок слышит, что запись «хочет сказать что-то ещё».
+ *
+ * С точкой тот же фрагмент читается как законченная реплика, с падающей
+ * интонацией. Особенно заметно на глагольных связках и фразах с предлогом на
+ * конце («take care of», «look forward to», «give up on»).
+ *
+ * В кэш и в базу идёт ЧИСТЫЙ текст карточки: точка нужна только синтезатору и
+ * не должна протекать в данные слова.
+ */
+function speakableText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  // Уже есть завершающий знак — не трогаем: примеры-предложения приходят
+  // с собственной пунктуацией.
+  if (/[.!?;:]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.`;
 }
 
 function localTtsPath(key: string): string {
@@ -149,7 +187,9 @@ async function deepgramTts(text: string): Promise<Buffer | null> {
           Authorization: `Token ${key}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text }),
+        // speakableText, а не сырой текст: без точки фраза читается как
+        // оборванное начало предложения.
+        body: JSON.stringify({ text: speakableText(text) }),
         signal: AbortSignal.timeout(15_000),
       },
     );
@@ -166,7 +206,7 @@ async function azureTts(text: string): Promise<Buffer | null> {
   const region = process.env["AZURE_SPEECH_REGION"]?.trim();
   if (!key || !region) return null;
   // Экранируем XML-спецсимволы в тексте
-  const safe = text.replace(/[<>&'"]/g, (c) =>
+  const safe = speakableText(text).replace(/[<>&'"]/g, (c) =>
     ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c] ?? c)
   );
   const ssml = `<speak version='1.0' xml:lang='en-US'><voice xml:lang='en-US' name='en-US-AriaNeural'>${safe}</voice></speak>`;
@@ -239,22 +279,27 @@ router.get("/tts", async (req, res) => {
     }
     text = word.english;
 
-    // Если audio_url уже указывает на наш кэш — извлекаем ключ и отдаём
+    // Ссылка на наш кэш. Используем её ТОЛЬКО если ключ соответствует текущей
+    // версии правил синтеза: иначе мы бы вечно отдавали запись, сделанную по
+    // старым правилам, в обход всей логики ниже. Не совпало — идём дальше и
+    // перезаписываем ссылку свежим ключом.
     if (word.audioUrl?.startsWith("/api/tts?key=")) {
-      const cacheKey = word.audioUrl.slice("/api/tts?key=".length);
-      const cached = await readFromCache(cacheKey).catch(() => null);
-      if (cached) {
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        res.send(cached);
-        return;
+      const storedKey = word.audioUrl.slice("/api/tts?key=".length);
+      if (storedKey === cacheKeyFor(text)) {
+        const cached = await readFromCache(storedKey).catch(() => null);
+        if (cached) {
+          res.setHeader("Content-Type", "audio/mpeg");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          res.send(cached);
+          return;
+        }
       }
-      // Кэш протух или отсутствует — скачаем заново ниже
+      // Ключ устарел или файла нет — озвучим заново ниже.
     }
 
     // Если audio_url — внешний URL (напр. из fetch-audio скрипта) — скачиваем и кэшируем
     if (word.audioUrl?.startsWith("http")) {
-      const cacheKey = sha256(text);
+      const cacheKey = cacheKeyFor(text);
       const cachedBuf = await readFromCache(cacheKey).catch(() => null);
       if (cachedBuf) {
         // Обновляем ссылку в БД на кэшированную (фоново)
@@ -293,7 +338,7 @@ router.get("/tts", async (req, res) => {
     return;
   }
 
-  const cacheKey = sha256(text);
+  const cacheKey = cacheKeyFor(text);
 
   // ── Кэш ───────────────────────────────────────────────────────────────
   const cached = await readFromCache(cacheKey).catch(() => null);
