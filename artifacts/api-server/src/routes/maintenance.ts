@@ -4,45 +4,35 @@
 // Страницей, а не скриптом, потому что шелла с доступом к базе на бесплатном
 // хостинге нет, а владелец проекта работает с телефона.
 //
-// ── Единственная операция: заполнить пустые примеры ─────────────────────────
-// Пример берётся ТОЛЬКО из Викисловаря и только из того значения, чей русский
-// перевод совпал с переводом карточки. У Викисловаря примеры лежат внутри
-// значения (см. lib/wiktionary.ts), поэтому для карточки «tie = галстук»
-// находится значение «necktie» и пример из него — а не из «ничьей».
+// ── Что здесь есть ──────────────────────────────────────────────────────────
 //
-// Совпадения нет — карточку не трогаем вовсе.
+// 1. КОНСТРУКТОР ФРАЗ (/maintenance/phrases) — главное.
 //
-// ── Почему нет запасного источника ──────────────────────────────────────────
-// Он был: Tatoeba, база предложений с человеческим переводом. Идея казалась
-// безопасной, но на карточке «cooker = плита» появился пример «I bought a slow
-// cooker» — «Я купил тиховарку». Перевод честный, слово на месте, а плиты нет:
-// slow cooker — другое устройство и другое значение.
+//    Вводишь слово или конструкцию, получаешь готовые карточки-фразы с
+//    человеческим переводом (Tatoeba), отмечаешь нужные, добавляешь в колоду.
+//    Если введена идиома — отдельно показывается её значение из Викисловаря.
 //
-// Причина в самом принципе: Tatoeba ищет предложения ПО СЛОВУ и о значениях не
-// знает ничего. Для многозначного слова она отдаёт любое употребление.
+//    Единица обучения здесь — ПРЕДЛОЖЕНИЕ, и это снимает всю боль прошлых
+//    заходов: у фразы одно значение, поэтому ни многозначность, ни дословный
+//    перевод идиом, ни «пример о чужом значении» тут невозможны в принципе
+//    (подробно — в lib/phraseSource.ts).
 //
-// Проверить её выдачу нечем. Сравнивать перевод примера с переводом карточки я
-// уже пробовал — это самодельная морфология, которая резала нормальные
-// карточки («кухня» не находилась в «на кухне»).
+//    Выбор оставлен человеку намеренно. Автоматически определить, какая из
+//    восьми фраз «живее», нельзя, а каждая моя попытка судить за человека в
+//    этом разделе кончалась порчей данных. Выбрать из готовых пар — секунды:
+//    содержимое уже верное, решается только вкус.
 //
-// Итог: источник один, зато его выдача проверяема по построению. Примеров
-// находится заметно меньше — и это правильный размен. Пустой пример ничему не
-// мешает, а пример о чужом значении учит неверному.
+// 2. ПРИМЕРЫ К СЛОВАМ (/maintenance/fill-examples) — старый каталог.
 //
-// ── Правило записи ──────────────────────────────────────────────────────────
-// Пишем ТОЛЬКО туда, где примера нет. Существующие не трогаем: цена ошибки —
-// стёртый хороший пример, а проверять тысячи строк руками никто не будет.
+//    Заполняет пустые примеры у карточек-слов. Пример берётся из Викисловаря и
+//    только из того значения, чей перевод совпал с переводом карточки. Пишет
+//    ТОЛЬКО туда, где примера нет: цена ошибки — стёртый хороший пример.
 //
-// Проверки переводов здесь нет и не будет. Русские переводы в Викисловаре
-// заполнены выборочно, поэтому «перевода карточки нет среди словарных» — это
-// незнание, а не доказательство ошибки. Отчёт на таком основании помечал почти
-// каждую карточку и удалён.
-//
-// ── Курсор по id, а не смещение ─────────────────────────────────────────────
-// Обход идёт через `after` — id последнего просмотренного слова. Со смещением
-// заполнение вставало намертво: выборка каждый раз брала первые N слов без
-// примера, заполненные уходили, а те, для которых пример не нашёлся, оставались
-// в начале — и следующий запрос упирался в них же.
+// ── Чего здесь нет и не будет ───────────────────────────────────────────────
+// Проверки переводов у слов. Русские переводы в Викисловаре заполнены
+// выборочно, поэтому «перевода карточки нет среди словарных» — это незнание, а
+// не доказательство ошибки. Отчёт на таком основании помечал почти каждую
+// карточку и удалён.
 //
 // ── Доступ ──────────────────────────────────────────────────────────────────
 // Ключ MAINTENANCE_KEY из окружения. Не задан — маршрута нет вовсе (404, а не
@@ -56,12 +46,13 @@ import { decksTable, wordsTable } from "@workspace/db";
 import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { googleTranslate } from "@workspace/translate";
 import { exampleFromSense, fetchSenses, findSense } from "../lib/wiktionary";
-import { EXAMPLES_PAGE } from "./maintenancePage";
+import { fetchIdiom, fetchPhrases } from "../lib/phraseSource";
+import { EXAMPLES_PAGE, PHRASES_PAGE } from "./maintenancePage";
 
 const router = Router();
 
 /**
- * Сколько слов за один запрос.
+ * Сколько слов за один запрос при заполнении примеров.
  *
  * Каждое слово — это обращение в словарь и, если пример нашёлся, перевод
  * фразы. Порция маленькая: она должна укладываться в таймаут прокси и не
@@ -96,7 +87,142 @@ function requireMaintenanceKey(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-// ── Выборка ─────────────────────────────────────────────────────────────────
+function intParam(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// КОНСТРУКТОР ФРАЗ
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /maintenance/phrases/find ───────────────────────────────────────────
+// Найти карточки-фразы вокруг слова или конструкции. Ничего не пишет.
+router.get("/maintenance/phrases/find", requireMaintenanceKey, async (req, res) => {
+  const query = String(req.query["q"] ?? "").trim();
+  if (!query) {
+    res.status(400).json({ error: "Введите слово или фразу" });
+    return;
+  }
+
+  // Фразы и идиому тянем параллельно: это разные источники, ждать по очереди
+  // незачем. Идиома есть только у устойчивых выражений — у обычных слов null.
+  const [phrases, idiom] = await Promise.all([
+    fetchPhrases(query),
+    query.includes(" ") ? fetchIdiom(query) : Promise.resolve(null),
+  ]);
+
+  res.json({ query, phrases, idiom });
+});
+
+/**
+ * Найти или создать колоду для фраз.
+ *
+ * Колода системная и БЕЗ cefrLevel — значит попадёт в тематические на экране
+ * «Слова» (см. pickThemeDecks в app/(main)/flashcards.tsx). Уровень не ставим
+ * намеренно: фразы отбирает человек, и раскладывать их по CEFR он не обязан.
+ */
+async function ensurePhraseDeck(title: string): Promise<number> {
+  const clean = title.trim().slice(0, 60) || "Фразы";
+
+  const [existing] = await db
+    .select({ id: decksTable.id })
+    .from(decksTable)
+    .where(and(eq(decksTable.isSystem, true), eq(decksTable.title, clean)));
+  if (existing) return existing.id;
+
+  const [created] = await db
+    .insert(decksTable)
+    .values({
+      ownerId: null,
+      title: clean,
+      theme: "phrases",
+      description: "Живые фразы с переводом носителей",
+      emoji: "💬",
+      isSystem: true,
+      hidden: false,
+    })
+    .returning({ id: decksTable.id });
+
+  return created!.id;
+}
+
+// ── POST /maintenance/phrases/add ───────────────────────────────────────────
+// Добавить отобранные человеком карточки в колоду.
+//
+// Карточка-фраза ложится в существующую схему без изменений: english — само
+// предложение, translationsRu — его перевод, exampleEn/Ru — фраза
+// употребления. Поэтому тренажёр, интервальные повторения, озвучка и голосовой
+// ввод работают с ней сразу: для них это обычная карточка, просто длиннее.
+router.post("/maintenance/phrases/add", requireMaintenanceKey, async (req, res) => {
+  const body = req.body as {
+    deck?: unknown;
+    cards?: Array<{ en?: unknown; ru?: unknown; exampleEn?: unknown; exampleRu?: unknown }>;
+  };
+
+  const deckTitle = typeof body.deck === "string" ? body.deck : "";
+  const incoming = Array.isArray(body.cards) ? body.cards : [];
+  if (!deckTitle.trim()) {
+    res.status(400).json({ error: "Укажите название колоды" });
+    return;
+  }
+  if (incoming.length === 0) {
+    res.status(400).json({ error: "Не выбрано ни одной фразы" });
+    return;
+  }
+
+  const deckId = await ensurePhraseDeck(deckTitle);
+
+  // Что уже лежит в колоде — чтобы не плодить дубликаты, и текущий порядок,
+  // чтобы дописывать в конец.
+  const present = await db
+    .select({ english: wordsTable.english, sortOrder: wordsTable.sortOrder })
+    .from(wordsTable)
+    .where(eq(wordsTable.deckId, deckId));
+  const have = new Set(present.map((w) => w.english.trim().toLowerCase()));
+  let sortOrder = present.reduce((max, w) => Math.max(max, w.sortOrder), -1) + 1;
+
+  const rows: Array<typeof wordsTable.$inferInsert> = [];
+  let skipped = 0;
+
+  for (const card of incoming) {
+    const en = typeof card.en === "string" ? card.en.trim() : "";
+    const ru = typeof card.ru === "string" ? card.ru.trim() : "";
+    if (!en || !ru) { skipped += 1; continue; }
+
+    const key = en.toLowerCase();
+    if (have.has(key)) { skipped += 1; continue; }
+    have.add(key);
+
+    const exampleEn = typeof card.exampleEn === "string" ? card.exampleEn.trim() : "";
+    const exampleRu = typeof card.exampleRu === "string" ? card.exampleRu.trim() : "";
+
+    rows.push({
+      deckId,
+      english: en,
+      translationsRu: [ru],
+      exampleEn: exampleEn || null,
+      exampleRu: exampleRu || null,
+      // Часть речи и уровень у предложения смысла не имеют.
+      partOfSpeech: null,
+      cefrLevel: null,
+      sortOrder: sortOrder++,
+    });
+  }
+
+  if (rows.length > 0) await db.insert(wordsTable).values(rows);
+
+  res.json({ deckId, deck: deckTitle.trim(), added: rows.length, skipped });
+});
+
+router.get("/maintenance/phrases", requireMaintenanceKey, (_req, res) => {
+  res.type("html").send(PHRASES_PAGE);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ПРИМЕРЫ К СЛОВАМ (старый каталог)
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Только системные колоды: колоды учителей и учеников — их данные.
 const noExample = or(isNull(wordsTable.exampleEn), eq(wordsTable.exampleEn, ""));
 
@@ -119,8 +245,10 @@ async function countPending(): Promise<number> {
 /**
  * Слова без примера после курсора.
  *
- * Курсор — id последнего просмотренного слова. Порядок по id обязателен: без
- * него СУБД вольна вернуть строки как угодно, и курсор потеряет смысл.
+ * Курсор — id последнего просмотренного слова. Со смещением прогон вставал
+ * намертво: выборка каждый раз брала первые N слов без примера, заполненные
+ * уходили, а те, для которых пример не нашёлся, оставались в начале — и
+ * следующий запрос упирался в них же.
  */
 async function loadAfter(after: number, limit: number): Promise<WordRow[]> {
   const rows = await db
@@ -138,13 +266,6 @@ async function loadAfter(after: number, limit: number): Promise<WordRow[]> {
   return rows as WordRow[];
 }
 
-function intParam(value: unknown, fallback: number): number {
-  const n = Number(value);
-  return Number.isInteger(n) && n >= 0 ? n : fallback;
-}
-
-// ── Подбор примера ──────────────────────────────────────────────────────────
-
 /**
  * Найти пример, показывающий НУЖНОЕ значение слова.
  *
@@ -154,7 +275,6 @@ function intParam(value: unknown, fallback: number): number {
  *
  * Русский перевод фразы получаем машинным переводом, и это безопасно:
  * переводится ЦЕЛОЕ ПРЕДЛОЖЕНИЕ, где контекст сам снимает многозначность.
- * Ломался машинный перевод именно на отдельных словах и идиомах.
  */
 async function findExample(word: WordRow): Promise<{ en: string; ru: string } | null> {
   const senses = await fetchSenses(word.english);
@@ -169,7 +289,6 @@ async function findExample(word: WordRow): Promise<{ en: string; ru: string } | 
 }
 
 // ── GET /maintenance/fill-examples/batch ────────────────────────────────────
-// Заполнить очередную порцию пустых примеров. dry=1 — только показать.
 router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req, res) => {
   const limit = Math.min(Math.max(intParam(req.query["limit"], BATCH_DEFAULT), 1), BATCH_MAX);
   const after = intParam(req.query["after"], 0);
@@ -230,7 +349,6 @@ router.get("/maintenance/fill-examples/batch", requireMaintenanceKey, async (req
   });
 });
 
-// ── GET /maintenance/fill-examples ──────────────────────────────────────────
 router.get("/maintenance/fill-examples", requireMaintenanceKey, (_req, res) => {
   res.type("html").send(EXAMPLES_PAGE);
 });
