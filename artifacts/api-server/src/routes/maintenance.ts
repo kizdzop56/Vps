@@ -6,21 +6,26 @@
 //
 // ── Что здесь есть ──────────────────────────────────────────────────────────
 //
-// 1. КОНСТРУКТОР ФРАЗ (/maintenance/phrases) — главное.
+// 1. КОНСТРУКТОР КАРТОЧЕК (/maintenance/phrases) — главное.
 //
-//    Вводишь слово или конструкцию, получаешь готовые карточки-фразы с
-//    человеческим переводом (Tatoeba), отмечаешь нужные, добавляешь в колоду.
-//    Если введена идиома — отдельно показывается её значение из Викисловаря.
+//    Вводишь слово или конструкцию, получаешь СРАЗУ три вида карточек:
 //
-//    Единица обучения здесь — ПРЕДЛОЖЕНИЕ, и это снимает всю боль прошлых
-//    заходов: у фразы одно значение, поэтому ни многозначность, ни дословный
-//    перевод идиом, ни «пример о чужом значении» тут невозможны в принципе
-//    (подробно — в lib/phraseSource.ts).
+//      • значения слова — перевод и пример из одной записи Викисловаря;
+//      • фразы с этим словом — предложение и перевод, написанные людьми;
+//      • смысл идиомы, если введено устойчивое выражение.
 //
-//    Выбор оставлен человеку намеренно. Автоматически определить, какая из
-//    восьми фраз «живее», нельзя, а каждая моя попытка судить за человека в
-//    этом разделе кончалась порчей данных. Выбрать из готовых пар — секунды:
-//    содержимое уже верное, решается только вкус.
+//    Отмечаешь нужные, добавляешь в колоду. Раздельных режимов нет намеренно:
+//    человек не должен заранее решать, слово он вводит или конструкцию.
+//
+//    Каждая карточка собрана так, что верна ПО ПОСТРОЕНИЮ — все поля приходят
+//    из одного источника (подробно в lib/phraseSource.ts). Именно это снимает
+//    боль прошлых заходов: перевод от одного значения с примером от другого
+//    больше не встречается.
+//
+//    Отбор оставлен человеку. Автоматически определить, какая из восьми фраз
+//    «живее», нельзя, а каждая попытка судить за человека здесь кончалась
+//    порчей данных. Выбрать из готовых карточек — секунды: содержимое уже
+//    верное, решается только вкус.
 //
 // 2. ПРИМЕРЫ К СЛОВАМ (/maintenance/fill-examples) — старый каталог.
 //
@@ -46,7 +51,7 @@ import { decksTable, wordsTable } from "@workspace/db";
 import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { googleTranslate } from "@workspace/translate";
 import { exampleFromSense, fetchSenses, findSense } from "../lib/wiktionary";
-import { fetchIdiom, fetchPhrases } from "../lib/phraseSource";
+import { fetchIdiom, fetchPhrases, fetchWordCards } from "../lib/phraseSource";
 import { EXAMPLES_PAGE, PHRASES_PAGE } from "./maintenancePage";
 
 const router = Router();
@@ -93,11 +98,11 @@ function intParam(value: unknown, fallback: number): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// КОНСТРУКТОР ФРАЗ
+// КОНСТРУКТОР КАРТОЧЕК
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── GET /maintenance/phrases/find ───────────────────────────────────────────
-// Найти карточки-фразы вокруг слова или конструкции. Ничего не пишет.
+// Найти карточки вокруг слова или конструкции. Ничего не пишет.
 router.get("/maintenance/phrases/find", requireMaintenanceKey, async (req, res) => {
   const query = String(req.query["q"] ?? "").trim();
   if (!query) {
@@ -105,24 +110,28 @@ router.get("/maintenance/phrases/find", requireMaintenanceKey, async (req, res) 
     return;
   }
 
-  // Фразы и идиому тянем параллельно: это разные источники, ждать по очереди
-  // незачем. Идиома есть только у устойчивых выражений — у обычных слов null.
-  const [phrases, idiom] = await Promise.all([
+  const isSingleWord = !query.includes(" ") || /^to\s+\S+$/i.test(query);
+
+  // Три источника разом: ждать их по очереди незачем. Слова ищем только для
+  // одиночного ввода, идиому — только для многословного: у обычного слова
+  // пометки idiomatic не бывает, а у выражения нет словарных «значений слова».
+  const [words, phrases, idiom] = await Promise.all([
+    isSingleWord ? fetchWordCards(query) : Promise.resolve([]),
     fetchPhrases(query),
-    query.includes(" ") ? fetchIdiom(query) : Promise.resolve(null),
+    isSingleWord ? Promise.resolve(null) : fetchIdiom(query),
   ]);
 
-  res.json({ query, phrases, idiom });
+  res.json({ query, words, phrases, idiom });
 });
 
 /**
- * Найти или создать колоду для фраз.
+ * Найти или создать колоду.
  *
  * Колода системная и БЕЗ cefrLevel — значит попадёт в тематические на экране
  * «Слова» (см. pickThemeDecks в app/(main)/flashcards.tsx). Уровень не ставим
- * намеренно: фразы отбирает человек, и раскладывать их по CEFR он не обязан.
+ * намеренно: карточки отбирает человек, и раскладывать их по CEFR он не обязан.
  */
-async function ensurePhraseDeck(title: string): Promise<number> {
+async function ensureDeck(title: string): Promise<number> {
   const clean = title.trim().slice(0, 60) || "Фразы";
 
   const [existing] = await db
@@ -137,7 +146,7 @@ async function ensurePhraseDeck(title: string): Promise<number> {
       ownerId: null,
       title: clean,
       theme: "phrases",
-      description: "Живые фразы с переводом носителей",
+      description: "Живая речь: фразы и слова с проверенным переводом",
       emoji: "💬",
       isSystem: true,
       hidden: false,
@@ -150,14 +159,20 @@ async function ensurePhraseDeck(title: string): Promise<number> {
 // ── POST /maintenance/phrases/add ───────────────────────────────────────────
 // Добавить отобранные человеком карточки в колоду.
 //
-// Карточка-фраза ложится в существующую схему без изменений: english — само
-// предложение, translationsRu — его перевод, exampleEn/Ru — фраза
-// употребления. Поэтому тренажёр, интервальные повторения, озвучка и голосовой
-// ввод работают с ней сразу: для них это обычная карточка, просто длиннее.
+// Карточка ложится в существующую схему без изменений: english — слово или
+// предложение, translationsRu — перевод, exampleEn/Ru — пример. Поэтому
+// тренажёр, интервальные повторения, озвучка и голосовой ввод работают с ней
+// сразу: для них это обычная карточка.
 router.post("/maintenance/phrases/add", requireMaintenanceKey, async (req, res) => {
   const body = req.body as {
     deck?: unknown;
-    cards?: Array<{ en?: unknown; ru?: unknown; exampleEn?: unknown; exampleRu?: unknown }>;
+    cards?: Array<{
+      en?: unknown;
+      ru?: unknown;
+      exampleEn?: unknown;
+      exampleRu?: unknown;
+      partOfSpeech?: unknown;
+    }>;
   };
 
   const deckTitle = typeof body.deck === "string" ? body.deck : "";
@@ -167,11 +182,11 @@ router.post("/maintenance/phrases/add", requireMaintenanceKey, async (req, res) 
     return;
   }
   if (incoming.length === 0) {
-    res.status(400).json({ error: "Не выбрано ни одной фразы" });
+    res.status(400).json({ error: "Не выбрано ни одной карточки" });
     return;
   }
 
-  const deckId = await ensurePhraseDeck(deckTitle);
+  const deckId = await ensureDeck(deckTitle);
 
   // Что уже лежит в колоде — чтобы не плодить дубликаты, и текущий порядок,
   // чтобы дописывать в конец.
@@ -187,6 +202,7 @@ router.post("/maintenance/phrases/add", requireMaintenanceKey, async (req, res) 
 
   for (const card of incoming) {
     const en = typeof card.en === "string" ? card.en.trim() : "";
+    // Перевод может прийти списком («изменять, менять») — храним как есть.
     const ru = typeof card.ru === "string" ? card.ru.trim() : "";
     if (!en || !ru) { skipped += 1; continue; }
 
@@ -196,15 +212,16 @@ router.post("/maintenance/phrases/add", requireMaintenanceKey, async (req, res) 
 
     const exampleEn = typeof card.exampleEn === "string" ? card.exampleEn.trim() : "";
     const exampleRu = typeof card.exampleRu === "string" ? card.exampleRu.trim() : "";
+    const pos = typeof card.partOfSpeech === "string" ? card.partOfSpeech.trim() : "";
 
     rows.push({
       deckId,
       english: en,
-      translationsRu: [ru],
+      translationsRu: ru.split(/\s*,\s*/).filter(Boolean),
       exampleEn: exampleEn || null,
       exampleRu: exampleRu || null,
-      // Часть речи и уровень у предложения смысла не имеют.
-      partOfSpeech: null,
+      // У предложения части речи нет — тогда null.
+      partOfSpeech: pos || null,
       cefrLevel: null,
       sortOrder: sortOrder++,
     });
