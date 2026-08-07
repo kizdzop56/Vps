@@ -56,6 +56,15 @@ const NEXT_DELAY_BAD = 1900; // после ошибки даём время пр
 // как слово пишется правильно.
 const NEXT_DELAY_TYPO = 2200;
 
+/**
+ * Запас под последней кнопкой экрана.
+ *
+ * Кнопка вплотную к нижнему краю нажимается через раз: на айфонах там живёт
+ * жест «домой», и первое касание уходит системе. Плюс на вебе адресная строка
+ * Safari то появляется, то исчезает, и «низ экрана» — величина плавающая.
+ */
+const BOTTOM_SAFE_SPACE = 40;
+
 type Phase = "loading" | "run" | "done";
 // retry — промежуточная реакция на первую ошибку в сборке слова: даём собрать
 // заново, поэтому верный ответ показывать нельзя.
@@ -364,7 +373,6 @@ export function WordTrainer({
     setHeard(transcript || null);
     setSpeakState("checking");
 
-    const maxAttempts = exercise.maxAttempts ?? 3;
     try {
       const verdict = await fc.checkAnswer(card.id, "speak", transcript, attempts);
       if (!verdict.correct && verdict.retry) {
@@ -385,9 +393,8 @@ export function WordTrainer({
       timer.current = setTimeout(goNext, NEXT_DELAY_OK);
     } finally {
       setSpeakState((s) => (s === "checking" ? "idle" : s));
-      void maxAttempts;
     }
-  }, [card, feedback, speakState, exercise.maxAttempts, exercise.answer, attempts, applyVerdict, goNext]);
+  }, [card, feedback, speakState, exercise.answer, attempts, applyVerdict, goNext]);
 
   /** Не получается произнести — пусть напишет. Тупика быть не должно. */
   const skipSpeaking = React.useCallback(() => {
@@ -465,7 +472,11 @@ export function WordTrainer({
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 24, flexGrow: 1 }}
+        contentContainerStyle={{
+          padding: 20,
+          paddingBottom: Math.max(insets.bottom, 12) + BOTTOM_SAFE_SPACE,
+          flexGrow: 1,
+        }}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1.2, textAlign: "center" }}>
@@ -1028,6 +1039,11 @@ function LetterKey({
 }
 
 // ── итоги сессии ────────────────────────────────────────────────────────────
+//
+// Наградный экран, а не отчёт. Поэтому все поверхности здесь физические: у
+// каждой есть цветная нижняя грань, как у клавиш и панели вкладок. Плоские
+// белые прямоугольники читались как таблица успеваемости — ровно то, чем этот
+// экран быть не должен.
 function SessionSummary({
   colors, insets, background, answered, correctCount, points, learned, progress, emptyQueue, onExit,
 }: {
@@ -1053,29 +1069,46 @@ function SessionSummary({
     : goalReached
       ? gradients.medalEasy
       : gradients.action;
+  const heroEdge = emptyQueue ? "#6366f1" : goalReached ? "#b45309" : accents.indigoDeep;
 
   return (
     <ScrollView
-      contentContainerStyle={{ flexGrow: 1, justifyContent: "center", padding: 26, paddingTop: insets.top + 20, paddingBottom: Math.max(insets.bottom, 16) + 20 }}
+      contentContainerStyle={{
+        flexGrow: 1,
+        justifyContent: "center",
+        padding: 26,
+        paddingTop: insets.top + 20,
+        // Запас снизу: кнопка «Готово» не должна липнуть к краю экрана —
+        // там жест «домой», и первое касание уходит системе.
+        paddingBottom: Math.max(insets.bottom, 16) + BOTTOM_SAFE_SPACE,
+      }}
       style={{ backgroundColor: background }}
     >
       <View style={{ alignItems: "center" }}>
-        <LinearGradient
-          colors={heroGradient as unknown as string[]}
-          start={{ x: 0.1, y: 0 }}
-          end={{ x: 0.9, y: 1 }}
-          style={{
-            width: 96, height: 96, borderRadius: radii.xl,
-            alignItems: "center", justifyContent: "center",
-            transform: [{ rotate: "-4deg" }],
-            shadowColor: goalReached ? accents.amber : colors.primary,
-            shadowOffset: { width: 0, height: 8 },
-            shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
-          }}
-        >
-          <Glyph name={heroGlyph} size={46} color="#ffffff" />
-        </LinearGradient>
-        <Text style={{ fontSize: 25, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground, marginTop: 16, textAlign: "center" }}>
+        {/* Трофей тоже объёмный: под градиентом лежит грань, как у медали. */}
+        <View>
+          <View style={{
+            position: "absolute", left: 0, right: 0, top: 6, height: 96,
+            borderRadius: radii.xl, backgroundColor: heroEdge, opacity: 0.55,
+          }} />
+          <LinearGradient
+            colors={heroGradient as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{
+              width: 96, height: 96, borderRadius: radii.xl,
+              alignItems: "center", justifyContent: "center",
+              transform: [{ rotate: "-4deg" }],
+              borderWidth: 2, borderColor: "rgba(255,255,255,0.65)",
+              shadowColor: goalReached ? accents.amber : colors.primary,
+              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
+            }}
+          >
+            <Glyph name={heroGlyph} size={46} color="#ffffff" />
+          </LinearGradient>
+        </View>
+        <Text style={{ fontSize: 25, fontWeight: "900", letterSpacing: -0.6, color: colors.foreground, marginTop: 18, textAlign: "center" }}>
           {emptyQueue ? "Пока нечего повторять" : goalReached ? "Цель дня выполнена!" : "Хорошая работа!"}
         </Text>
         {emptyQueue && (
@@ -1088,24 +1121,23 @@ function SessionSummary({
       {!emptyQueue && (
         <>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
-            <SummaryCard colors={colors} icon="cards" tint={colors.primary} value={answered} label="слов пройдено" />
-            <SummaryCard colors={colors} icon="target" tint={accents.amber} value={`${accuracy}%`} label="правильных" />
-            <SummaryCard colors={colors} icon="star" tint={accents.magenta} value={`+${points}`} label="очков" />
-            <SummaryCard colors={colors} icon="check" tint={colors.success} value={learned} label="выучено" />
+            <SummaryCard colors={colors} icon="cards" tint={colors.primary} edge={accents.indigoDeep} value={answered} label="слов пройдено" />
+            <SummaryCard colors={colors} icon="target" tint={accents.amber} edge="#b45309" value={`${accuracy}%`} label="правильных" />
+            <SummaryCard colors={colors} icon="star" tint={accents.magenta} edge="#a21caf" value={`+${points}`} label="очков" />
+            <SummaryCard colors={colors} icon="check" tint={colors.success} edge={accents.violetDeep} value={learned} label="выучено" />
           </View>
 
           {progress && (
-            <View style={{
-              marginTop: 18, backgroundColor: colors.card, borderRadius: radii.md,
-              borderWidth: 1, borderColor: colors.border, padding: 16,
-              shadowColor: goalReached ? accents.gold : accents.violetDeep,
-              shadowOffset: { width: 0, height: 5 },
-              shadowOpacity: 0.15, shadowRadius: 14, elevation: 3,
-            }}>
+            <ChunkySurface
+              colors={colors}
+              edge={goalReached ? "#b45309" : accents.violetDeep}
+              glow={goalReached ? accents.gold : accents.violetDeep}
+              style={{ marginTop: 20, padding: 16 }}
+            >
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 11 }}>
                 <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
                 <Text style={{
-                  fontSize: 14, fontWeight: "900", fontVariant: ["tabular-nums"],
+                  fontSize: 15, fontWeight: "900", fontVariant: ["tabular-nums"],
                   color: goalReached ? accents.amber : colors.primary,
                 }}>
                   {progress.wordsToday} / {progress.dailyWordGoal}
@@ -1113,46 +1145,110 @@ function SessionSummary({
               </View>
               {/* Та же сегментированная цель, что на «Словах» и в статистике. */}
               <GoalPips value={progress.wordsToday} target={progress.dailyWordGoal} done={goalReached} />
-            </View>
+            </ChunkySurface>
           )}
         </>
       )}
 
-      <ChunkyButton label="Готово" icon="check" onPress={onExit} style={{ marginTop: 22 }} />
+      <ChunkyButton label="Готово" icon="check" onPress={onExit} style={{ marginTop: 24 }} />
     </ScrollView>
   );
 }
 
+/**
+ * Поверхность с физической нижней гранью.
+ *
+ * В RN у одного View не может быть двух теней, поэтому «толщину» рисуем
+ * настоящим прямоугольником под корпусом — тем же приёмом, что в ChunkyButton
+ * и MedalTile. Корпус остаётся белым: цвет живёт по краям, под текстом его нет.
+ */
+function ChunkySurface({
+  colors, edge, glow, style, children,
+}: {
+  colors: any;
+  edge: string;
+  glow: string;
+  style?: any;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={style}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 6, bottom: -6,
+        borderRadius: radii.md, backgroundColor: edge, opacity: 0.45,
+      }} />
+      <View style={{
+        backgroundColor: colors.card,
+        borderRadius: radii.md,
+        borderWidth: 1.5, borderColor: "rgba(99,102,241,0.18)",
+        padding: 14,
+        shadowColor: glow, shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.2, shadowRadius: 16, elevation: 4,
+      }}>
+        {children}
+      </View>
+      {/* Резерв под грань, чтобы соседний блок на неё не наезжал. */}
+      <View style={{ height: 6 }} />
+    </View>
+  );
+}
+
+/**
+ * Плитка результата: значок в градиентной плашке, крупное число, подпись.
+ *
+ * Значок раньше лежал в бледном квадрате того же цвета (tint + "1f") — на белом
+ * корпусе он почти не читался. Теперь плашка залита градиентом и слегка
+ * повёрнута: это наградный экран, строгая сетка ему не идёт.
+ */
 function SummaryCard({
-  colors, icon, tint, value, label,
+  colors, icon, tint, edge, value, label,
 }: {
   colors: any;
   icon: GlyphName;
   tint: string;
+  /** Цвет нижней грани — тёмная версия tint. */
+  edge: string;
   value: React.ReactNode;
   label: string;
 }) {
   return (
-    <View style={{
-      width: "47%", flexGrow: 1, backgroundColor: colors.card, borderRadius: radii.md,
-      borderWidth: 1, borderColor: colors.border, padding: 14,
-      shadowColor: tint, shadowOffset: { width: 0, height: 5 },
-      shadowOpacity: 0.16, shadowRadius: 14, elevation: 3,
-    }}>
+    <View style={{ width: "47%", flexGrow: 1 }}>
+      {/* Нижняя грань. */}
       <View style={{
-        width: 30, height: 30, borderRadius: 9,
-        backgroundColor: tint + "1f",
-        alignItems: "center", justifyContent: "center",
+        position: "absolute", left: 0, right: 0, top: 6, bottom: -6,
+        borderRadius: radii.md, backgroundColor: edge, opacity: 0.45,
+      }} />
+      <View style={{
+        backgroundColor: colors.card, borderRadius: radii.md,
+        borderWidth: 1.5, borderColor: "rgba(99,102,241,0.18)",
+        padding: 15,
+        shadowColor: tint, shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.22, shadowRadius: 16, elevation: 4,
       }}>
-        <Glyph name={icon} size={17} color={tint} />
+        <LinearGradient
+          colors={[tint, edge]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={{
+            width: 36, height: 36, borderRadius: radii.sm,
+            alignItems: "center", justifyContent: "center",
+            transform: [{ rotate: "-5deg" }],
+            borderWidth: 1.5, borderColor: "rgba(255,255,255,0.6)",
+            shadowColor: tint, shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.35, shadowRadius: 8, elevation: 3,
+          }}
+        >
+          <Glyph name={icon} size={19} color="#ffffff" />
+        </LinearGradient>
+        <Text style={{
+          fontSize: 28, fontWeight: "900", letterSpacing: -1,
+          color: colors.foreground, marginTop: 10, fontVariant: ["tabular-nums"],
+        }}>
+          {value}
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: "600", color: colors.mutedForeground, marginTop: 1 }}>{label}</Text>
       </View>
-      <Text style={{
-        fontSize: 25, fontWeight: "900", letterSpacing: -0.8,
-        color: colors.foreground, marginTop: 8, fontVariant: ["tabular-nums"],
-      }}>
-        {value}
-      </Text>
-      <Text style={{ fontSize: 12, color: colors.mutedForeground }}>{label}</Text>
+      <View style={{ height: 6 }} />
     </View>
   );
 }
