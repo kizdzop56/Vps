@@ -16,6 +16,17 @@
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
 //
+// ── Слово звучит ОДИН раз за карточку ───────────────────────────────────────
+// Автоматическая озвучка запускается ровно в одном месте — при появлении
+// карточки. После ответа звук сам не играет: для этого в блоке итога есть
+// кнопка «Прослушать».
+//
+// Так было не всегда. Раньше ответ озвучивал слово повторно, и получалось два
+// источника звука на одну карточку. Хуже того, через NEXT_DELAY_OK карточка
+// сменялась и следующая начинала говорить, обрывая предыдущую запись на
+// полуслове: на длинных картах вроде «take care of» 1,2 секунды не хватает, и
+// это слышалось как «сказал полфразы и переключился на что-то другое».
+//
 // ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
 // «Верно!» и «Неверно» показываются внутри карточки задания, под самим
 // заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
@@ -83,8 +94,8 @@ import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
 import { accents, gradients, radii, chunky } from "@/constants/theme";
 
-// Пауза после верного ответа: карточка не улетает мгновенно, за это время
-// доигрывает озвучка правильного слова.
+// Пауза после верного ответа: карточка не улетает мгновенно, ученик успевает
+// увидеть «Верно!» и заметить, какой вариант был правильным.
 const NEXT_DELAY_OK = 1200;
 // Опечатку показываем дольше верного ответа: ребёнок должен успеть прочитать,
 // как слово пишется правильно.
@@ -199,6 +210,12 @@ export function WordTrainer({
   // сессии, а вызов лезет в globalThis.
   const speechInput = React.useMemo(() => isSpeechInputAvailable(), []);
 
+  /** Проиграть слово текущей карточки. Только по явному действию ученика. */
+  const playWord = React.useCallback(() => {
+    if (!card) return;
+    speakWord(card.id, card.english);
+  }, [card]);
+
   // ── загрузка очереди ──
   React.useEffect(() => {
     let alive = true;
@@ -232,11 +249,11 @@ export function WordTrainer({
     }).start();
   }, [pos, phase]);
 
-  // Озвучка при показе карточки: слово ребёнок должен услышать, а в аудировании
-  // это вообще единственная подсказка.
+  // ЕДИНСТВЕННАЯ автоматическая озвучка: показ карточки. Слово ребёнок должен
+  // услышать, а в аудировании это вообще единственная подсказка.
   //
-  // В typeEn и speak озвучки НЕТ намеренно: там ребёнок сам вспоминает, как
-  // слово звучит и пишется, — подсказка убила бы упражнение.
+  // В typeEn, build и speak озвучки НЕТ намеренно: там ребёнок сам вспоминает,
+  // как слово звучит и пишется, — подсказка убила бы упражнение.
   React.useEffect(() => {
     if (phase !== "run" || !card) return;
     shownAt.current = Date.now();
@@ -340,15 +357,16 @@ export function WordTrainer({
   );
 
   // ── обработчики упражнений ──
+  //
+  // Ни один из них НЕ озвучивает слово: автоматический звук в приложении
+  // ровно один — при появлении карточки. Услышать верное слово после ответа
+  // можно кнопкой «Прослушать» в блоке итога.
   const pickOption = React.useCallback((index: number) => {
     if (feedback || !card) return;
     const correct = index === exercise.answerIndex;
     setFeedback({ correct, picked: index });
     // Ошибка ждёт ученика: карточку не листаем.
     submit({ correct }, exercise.type, correct ? NEXT_DELAY_OK : null);
-    // Верное слово озвучиваем в любом случае: после ошибки услышать его даже
-    // важнее, чем после попадания.
-    if (speechAvailable() && exercise.type !== "intro") speakWord(card.id, card.english);
   }, [feedback, card, exercise, submit]);
 
   const answerLetters = React.useMemo(() => (exercise.answer ?? "").toLowerCase().split(""), [exercise.answer]);
@@ -374,8 +392,7 @@ export function WordTrainer({
     }
     setFeedback({ correct });
     submit({ correct }, "build", correct ? NEXT_DELAY_OK : null);
-    if (card && speechAvailable()) speakWord(card.id, card.english);
-  }, [feedback, exercise.letters, built, answerLetters, attempts, submit, card]);
+  }, [feedback, exercise.letters, built, answerLetters, attempts, submit]);
 
   const undoLetter = React.useCallback(() => {
     if (feedback) return;
@@ -390,9 +407,10 @@ export function WordTrainer({
   /**
    * «Не знаю»: ученик честно признаётся, что не помнит слово.
    *
-   * Показываем верный ответ, озвучиваем его и засчитываем полный промах —
-   * попыток отдаём максимум, чтобы система повторений вернула слово скоро.
-   * Карточку не листаем: ученик впервые видит ответ, ему нужно время.
+   * Показываем верный ответ и засчитываем полный промах — попыток отдаём
+   * максимум, чтобы система повторений вернула слово скоро. Карточку не
+   * листаем: ученик впервые видит ответ, ему нужно время. Звук не запускаем —
+   * рядом с ответом стоит кнопка «Прослушать».
    */
   const giveUp = React.useCallback((mode: ExerciseType) => {
     if (!card || feedback) return;
@@ -401,7 +419,6 @@ export function WordTrainer({
     const expected = exercise.answer ?? exercise.options?.[exercise.answerIndex ?? 0] ?? "";
     setFeedback({ correct: false, gaveUp: true, note: `Правильный ответ: ${expected}` });
     submit({ correct: false }, mode, null, 3);
-    if (speechAvailable()) speakWord(card.id, card.english);
   }, [card, feedback, exercise.answer, exercise.options, exercise.answerIndex, submit]);
 
   /** Показать вердикт сервера по свободному ответу. */
@@ -423,9 +440,8 @@ export function WordTrainer({
         verdict.correct ? (verdict.typo ? NEXT_DELAY_TYPO : NEXT_DELAY_OK) : null,
         usedAttempts,
       );
-      if (card && speechAvailable()) speakWord(card.id, card.english);
     },
-    [exercise.answer, submit, card],
+    [exercise.answer, submit],
   );
 
   /** Ответ не проверен: сеть мигнула. В оценку не идёт, листается сам. */
@@ -555,7 +571,6 @@ export function WordTrainer({
       note: `Верное произношение: ${exercise.answer ?? ""}`,
     });
     submit({ correct: false }, "speak", null, exercise.maxAttempts ?? 3);
-    if (speechAvailable()) speakWord(card.id, card.english);
   }, [card, feedback, exercise.answer, exercise.maxAttempts, submit]);
 
   // ── экраны состояний ──
@@ -631,6 +646,15 @@ export function WordTrainer({
    */
   const needsNextButton = Boolean(feedback && !feedback.retry && !feedback.info && !feedback.correct);
 
+  /**
+   * Кнопка «Прослушать» в блоке итога.
+   *
+   * Заменяет автоматическую озвучку после ответа: слово звучит, только когда
+   * ученик сам этого захотел. У промежуточной подсказки в сборке (retry) её
+   * нет — там верный ответ ещё не показан, и подсказывать его звуком нельзя.
+   */
+  const canReplayAnswer = Boolean(feedback && !feedback.retry) && speechAvailable();
+
   /** Поле письменного ответа: используется и в typeRu/typeEn, и как запасной
       сценарий произношения. */
   const typingBlock = (placeholder: string) => (
@@ -665,7 +689,7 @@ export function WordTrainer({
         style={{ marginTop: 12 }}
       />
       {/* Выход из незнакомого слова: честное «не знаю» вместо набитых наугад
-          букв. Ответ показывается и озвучивается. */}
+          букв. Ответ показывается, а услышать его можно кнопкой рядом. */}
       <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "flex-start", marginTop: 4 }}>
         <SmallButton
           icon="help"
@@ -736,7 +760,7 @@ export function WordTrainer({
               {/* Кнопка звука — главный объект в аудировании, поэтому градиент
                   бренда и свечение, а не плоская плашка. */}
               <TouchableOpacity
-                onPress={() => card && speakWord(card.id, card.english)}
+                onPress={playWord}
                 activeOpacity={0.85}
                 accessibilityLabel="Прослушать слово"
               >
@@ -785,7 +809,7 @@ export function WordTrainer({
               )}
               {(isIntro || exercise.type === "choiceRu") && speechAvailable() && (
                 <TouchableOpacity
-                  onPress={() => card && speakWord(card.id, card.english)}
+                  onPress={playWord}
                   activeOpacity={0.8}
                   style={{
                     flexDirection: "row", alignItems: "center", gap: 7,
@@ -886,6 +910,23 @@ export function WordTrainer({
                 }}>
                   {verdict.detail}
                 </Text>
+              )}
+              {/* Звук после ответа — только по нажатию. Автоматически слово
+                  больше не проигрывается: см. шапку файла. */}
+              {canReplayAnswer && (
+                <TouchableOpacity
+                  onPress={playWord}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Прослушать слово"
+                  style={{
+                    flexDirection: "row", alignItems: "center", gap: 7,
+                    backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+                    paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+                  }}
+                >
+                  <Glyph name="sound" size={17} color={colors.primary} />
+                  <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 13.5 }}>Прослушать</Text>
+                </TouchableOpacity>
               )}
             </View>
           )}
@@ -1022,7 +1063,7 @@ export function WordTrainer({
                       <SmallButton
                         icon="sound"
                         label="Послушать"
-                        onPress={() => card && speakWord(card.id, card.english)}
+                        onPress={playWord}
                         colors={colors}
                       />
                     )}
