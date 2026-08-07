@@ -8,14 +8,14 @@
 // в scripts/src/data (генератор затирает каталог целиком):
 //
 //   example-fixes-{level}.ts — исправленные примеры, части речи, транскрипции;
-//   example-fixes-senses.ts  — базовые карточки многозначных слов;
-//   sense-phrases.ts         — второе значение слова отдельной карточкой-фразой.
+//   polysemous.ts            — многозначные слова: одиночная карточка убрана,
+//                              каждый смысл заведён словосочетанием.
 //
 // Скрипт показывает остаток без примера и ловит ошибки, которые иначе проходят
 // молча: ключ правки, которого нет в датасете; один ключ в двух файлах уровней
-// (при слиянии карт перетирается); карточка-фраза в несуществующей колоде или
-// дублирующая каталог (сид её отбросит); правка базового смысла без парной
-// фразы (значит, второе значение так и не учится).
+// (при слиянии карт перетирается); многозначное слово с одним смыслом (слово
+// просто потерялось бы); фраза в несуществующей колоде, чужого уровня или
+// дублирующая каталог (сид её отбросит); фраза, в которой нет самого слова.
 //
 // Зависимостей нет и tsc не нужен: файлы читаются как текст, как и в
 // validate-flashcards.mjs.
@@ -25,8 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.resolve(here, "src/data");
-const SENSES = "example-fixes-senses.ts";
-const PHRASES = "sense-phrases.ts";
+const POLY = "polysemous.ts";
 const SHOW = 12; // сколько слов показывать в списке по каждому уровню
 
 // Карточка в датасете — однострочный литерал без вложенных фигурных скобок,
@@ -35,9 +34,11 @@ const SHOW = 12; // сколько слов показывать в списке
 const WORD_RE =
   /\{\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?exEn:\s*"((?:[^"\\]|\\.)*)"\s*,\s*exRu:\s*"((?:[^"\\]|\\.)*)"\s*,\s*cefr:\s*"([A-C][12])"/g;
 const FIX_KEY_RE = /^\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*)):\s*\{/gm;
-const PHRASE_RE =
-  /theme:\s*"([^"]+)",\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?cefr:\s*"([A-C][12])"/g;
 const DECK_THEME_RE = /^\s*theme:\s*"([^"]+)"/gm;
+// В polysemous.ts слово и его фразы идут подряд, поэтому оба вида записей
+// собираем одним проходом и фразу относим к последнему встреченному слову.
+const POLY_RE =
+  /word:\s*"([^"]+)"|theme:\s*"([^"]+)",\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?cefr:\s*"([A-C][12])"/g;
 
 const errors = [];
 const dataFiles = readdirSync(DATA);
@@ -67,22 +68,57 @@ if (words.size === 0) {
   process.exit(1);
 }
 
+// ── многозначные слова: одиночная карточка убрана, смыслы разложены по фразам ─
+const ambiguous = new Map(); // слово → массив фраз
+if (dataFiles.includes(POLY)) {
+  const src = readFileSync(path.join(DATA, POLY), "utf8");
+  let current = null;
+  for (const m of src.matchAll(POLY_RE)) {
+    if (m[1]) {
+      current = m[1].trim().toLowerCase();
+      if (!ambiguous.has(current)) ambiguous.set(current, []);
+      continue;
+    }
+    if (!current) continue;
+    ambiguous.get(current).push({ theme: m[2], en: m[3].trim(), cefr: m[4] });
+  }
+
+  for (const [word, list] of ambiguous) {
+    if (!words.has(word)) {
+      errors.push(`"${word}" (${POLY}): такого слова нет в каталоге — убирать нечего`);
+    }
+    if (list.length < 2) {
+      errors.push(`"${word}" (${POLY}): указан ${list.length} смысл — слово потерялось бы совсем`);
+    }
+    for (const p of list) {
+      if (!themes.has(p.theme)) {
+        errors.push(`фраза "${p.en}": колоды "${p.theme}" нет в датасете — карточка не попадёт в базу`);
+      }
+      // Темы генерируются как {тема}_{уровень}, поэтому уровень колоды виден по
+      // её имени: карточка чужого уровня сломала бы марафон и группировку.
+      if (!p.theme.endsWith(`_${p.cefr.toLowerCase()}`)) {
+        errors.push(`фраза "${p.en}": уровень ${p.cefr} не совпадает с колодой "${p.theme}"`);
+      }
+      if (words.has(p.en.toLowerCase())) {
+        errors.push(`фраза "${p.en}" уже есть в каталоге — сид отбросит дубликат`);
+      }
+      // Фраза без самого слова учит чему-то другому, а нужный смысл так и не
+      // появляется: обычная опечатка при заполнении.
+      if (!new RegExp(`(^|[^a-z])${word}(s|es|ed|ing)?([^a-z]|$)`, "i").test(p.en)) {
+        errors.push(`фраза "${p.en}" не содержит слова "${word}" — смысл не будет учиться`);
+      }
+    }
+  }
+}
+
 // ── правки: ключи по файлам ───────────────────────────────────────────────
-function readFixKeys(file) {
+const fixed = new Map(); // ключ → файл, в котором объявлен
+for (const file of levelFixFiles) {
   const src = readFileSync(path.join(DATA, file), "utf8");
-  const keys = [];
   for (const m of src.matchAll(FIX_KEY_RE)) {
     const key = (m[1] ?? m[2]).trim().toLowerCase();
     // Служебные объекты в тех же файлах (тип ExampleFix и т.п.) ключами не считаем.
     if (["exen", "exru", "pos", "ipa"].includes(key)) continue;
-    keys.push(key);
-  }
-  return keys;
-}
-
-const fixed = new Map(); // ключ → файл, в котором объявлен
-for (const file of levelFixFiles) {
-  for (const key of readFixKeys(file)) {
     const seen = fixed.get(key);
     if (seen) {
       errors.push(`ключ "${key}" объявлен дважды: ${seen} и ${file} — при слиянии карт один перетрёт другой`);
@@ -92,52 +128,14 @@ for (const file of levelFixFiles) {
   }
 }
 
-// Слой многозначных слов накладывается последним и перекрывает пофайловые
-// правки намеренно, поэтому его ключи в проверке на дубликаты не участвуют.
-const senseKeys = dataFiles.includes(SENSES) ? readFixKeys(SENSES) : [];
-const overrides = [];
-for (const key of senseKeys) {
-  if (fixed.has(key)) overrides.push(`${key} (перекрывает ${fixed.get(key)})`);
-  fixed.set(key, SENSES);
-}
-
-// ── карточки-фразы для вторых значений ────────────────────────────────────
-const phrases = [];
-if (dataFiles.includes(PHRASES)) {
-  const src = readFileSync(path.join(DATA, PHRASES), "utf8");
-  for (const m of src.matchAll(PHRASE_RE)) {
-    phrases.push({ theme: m[1], en: m[2].trim(), cefr: m[3] });
-  }
-
-  for (const p of phrases) {
-    if (!themes.has(p.theme)) {
-      errors.push(`фраза "${p.en}": колоды "${p.theme}" нет в датасете — карточка не попадёт в базу`);
-    }
-    // Темы генерируются как {тема}_{уровень}, поэтому уровень колоды виден по
-    // её имени: карточка чужого уровня сломала бы марафон и группировку.
-    if (!p.theme.endsWith(`_${p.cefr.toLowerCase()}`)) {
-      errors.push(`фраза "${p.en}": уровень ${p.cefr} не совпадает с колодой "${p.theme}"`);
-    }
-    if (words.has(p.en.toLowerCase())) {
-      errors.push(`фраза "${p.en}" уже есть в каталоге — сид отбросит дубликат`);
-    }
-  }
-
-  // Правка базового смысла без парной фразы означает, что второе значение так и
-  // не учится: слово поправили, а вторую карточку забыли добавить.
-  for (const key of senseKeys) {
-    const covered = phrases.some((p) => new RegExp(`(^|\\s)${key}(\\s|$)`, "i").test(p.en));
-    if (!covered) {
-      errors.push(`"${key}" в ${SENSES}: нет парной карточки-фразы в ${PHRASES} — второе значение не учится`);
-    }
-  }
-}
-
 // ── отчёт по уровням ─────────────────────────────────────────────────────
+// Многозначные слова в подсчёт не идут: их одиночных карточек в приложении
+// больше нет, поэтому «пустой пример» у них ничего не значит.
 const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 const byLevel = new Map(LEVELS.map((l) => [l, { total: 0, empty: [], covered: 0 }]));
 
 for (const [word, { levels, empty }] of words) {
+  if (ambiguous.has(word)) continue;
   for (const level of levels) {
     const bucket = byLevel.get(level);
     if (!bucket) continue;
@@ -148,10 +146,10 @@ for (const [word, { levels, empty }] of words) {
   }
 }
 
+const phraseCount = [...ambiguous.values()].reduce((n, list) => n + list.length, 0);
 console.log(`Файлов каталога: ${catalogFiles.length}, уникальных карточек: ${words.size}`);
-console.log(`Правок: ${fixed.size} (из них базовых смыслов: ${senseKeys.length}), карточек-фраз: ${phrases.length}`);
-if (overrides.length > 0) console.log(`Перекрыто слоем смыслов: ${overrides.join(", ")}`);
-console.log("");
+console.log(`Правок примеров: ${fixed.size}`);
+console.log(`Многозначных слов: ${ambiguous.size} (одиночные карточки убраны), словосочетаний вместо них: ${phraseCount}\n`);
 
 let remaining = 0;
 for (const level of LEVELS) {
