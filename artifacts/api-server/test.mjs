@@ -32,18 +32,18 @@ import { build } from "esbuild";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(root, "src");
 
-/** Все *.test.ts внутри src, включая вложенные папки. */
-function findTests(dir) {
+/** Все файлы в дереве, для которых keep(имя) истинно. */
+function walk(dir, keep) {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...findTests(full));
-    else if (entry.name.endsWith(".test.ts")) out.push(full);
+    if (entry.isDirectory()) out.push(...walk(full, keep));
+    else if (keep(entry.name)) out.push(full);
   }
   return out.sort();
 }
 
-const tests = findTests(srcDir);
+const tests = walk(srcDir, (name) => name.endsWith(".test.ts"));
 if (tests.length === 0) {
   console.error("Тестов не найдено — искали *.test.ts в src/");
   process.exit(1);
@@ -55,12 +55,20 @@ try {
   await build({
     entryPoints: tests,
     outdir: outDir,
+    // Общий корень задан явно. Иначе esbuild берёт за него самую глубокую
+    // общую папку входных файлов, и раскладка результата меняется от того,
+    // где лежит очередной тест.
+    outbase: srcDir,
     // bundle обязателен: он и разрешает импорты без расширений, и втягивает
     // соседние модули, которые тест проверяет.
     bundle: true,
     platform: "node",
     target: "node20",
     format: "esm",
+    // Расширение обязано быть .mjs. Временная папка лежит в /tmp, package.json
+    // над ней нет, поэтому .js для Node — это CommonJS, и модуль с import
+    // падает, не начав работу.
+    outExtension: { ".js": ".mjs" },
     sourcemap: "inline",
     // Внешние пакеты не собираем: тесты трогают только чистые модули, а если
     // какой-то из них потянет @workspace/db, лучше упасть с внятной ошибкой
@@ -69,9 +77,11 @@ try {
     logLevel: "silent",
   });
 
-  const built = readdirSync(outDir)
-    .filter((f) => f.endsWith(".js") || f.endsWith(".mjs"))
-    .map((f) => path.join(outDir, f));
+  const built = walk(outDir, (name) => name.endsWith(".mjs"));
+  if (built.length !== tests.length) {
+    console.error(`Собрано ${built.length} тестов из ${tests.length} — прогон отменён`);
+    process.exit(1);
+  }
 
   // --enable-source-maps: стек ошибки указывает на строку .ts, а не бандла.
   const run = spawnSync(process.execPath, ["--test", "--enable-source-maps", ...built], {
