@@ -21,9 +21,15 @@ export default function StudyScreen() {
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
   }, [qc, id]);
 
+  // См. session.tsx: router.back() в табах уводит на первую вкладку.
+  const exit = React.useCallback(() => {
+    refreshLists();
+    router.replace("/flashcards");
+  }, [refreshLists, router]);
+
   return (
     <View style={{ flex: 1 }}>
-      <WordTrainer loader={loadQueue} onFinished={refreshLists} onExit={() => { refreshLists(); router.back(); }} />
+      <WordTrainer loader={loadQueue} onFinished={refreshLists} onExit={exit} />
     </View>
   );
 }
