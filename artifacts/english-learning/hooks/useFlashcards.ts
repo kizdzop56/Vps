@@ -19,7 +19,19 @@ import type {
 } from "@workspace/api-client-react";
 
 // ── Тренажёр слов ───────────────────────────────────────────────────────────
-export type ExerciseType = "intro" | "choiceRu" | "choiceEn" | "listen" | "build";
+// typeRu / typeEn / speak — упражнения со свободным ответом: вариантов нет,
+// ответ ученик достаёт из головы сам. Их проверяет сервер
+// (POST /flashcards/check-answer), а не клиент: правила прощения регистра,
+// артиклей и опечаток должны быть одни для веба и натива.
+export type ExerciseType =
+  | "intro"
+  | "choiceRu"
+  | "choiceEn"
+  | "listen"
+  | "build"
+  | "typeRu"
+  | "typeEn"
+  | "speak";
 
 export type Exercise = {
   type: ExerciseType;
@@ -28,6 +40,12 @@ export type Exercise = {
   answerIndex?: number;
   letters?: string[];
   answer?: string;
+  /** Все допустимые ответы (свободный ответ) — показываем после проверки. */
+  accept?: string[];
+  /** Язык ответа: нужен для клавиатуры и распознавания речи. */
+  answerLang?: "ru" | "en";
+  /** Сколько попыток даётся на произношение. */
+  maxAttempts?: number;
 };
 
 export type Grade = "again" | "hard" | "good" | "easy";
@@ -37,6 +55,19 @@ export type AnswerInfo = {
   attempts?: number;
   elapsedMs?: number;
   hintUsed?: boolean;
+};
+
+/** Ответ сервера на проверку письменного или устного ответа. */
+export type AnswerCheck = {
+  correct: boolean;
+  /** Принято с опечаткой: показываем верное написание, но не наказываем. */
+  typo: boolean;
+  /** Попытки ещё остались (только для произношения) — просим повторить. */
+  retry?: boolean;
+  attemptsLeft?: number;
+  maxAttempts?: number;
+  expected: string[];
+  matched?: string;
 };
 
 export type TrainerCard = StudyCard & { emoji?: string; exercise?: Exercise };
@@ -74,6 +105,10 @@ export type MarathonQueue = Partial<DailyWordProgress> & {
   nextLevel?: string;
   totalWords: number;
   answeredWords: number;
+  /** Сколько слов уровня уже выучено — весь зал повторений. */
+  learnedCount?: number;
+  /** Сколько из них созрело к повторению прямо сейчас. */
+  dueNow?: number;
   seen: number;
   correct: number;
   accuracy: number;
@@ -204,6 +239,22 @@ export const fc = {
     apiFetch<ReviewOutcome>("/api/flashcards/review", {
       method: "POST",
       body: JSON.stringify({ wordId, ...body }),
+    }),
+  /**
+   * Проверить свободный ответ: письмо или расшифровку произношения.
+   *
+   * Проверяет сервер, а не клиент: иначе веб и натив разойдутся в трактовке
+   * («Кот.» против «кот», опечатка против ошибки) и ребёнок получит разные
+   * оценки за один и тот же ответ на разных устройствах. Эталон сервер берёт из
+   * базы по wordId — прислать свой «правильный ответ» нельзя.
+   *
+   * attempt нужен только для "speak": по нему сервер решает, дать ещё попытку
+   * или засчитать ошибку.
+   */
+  checkAnswer: (wordId: number, mode: "typeRu" | "typeEn" | "speak", given: string, attempt = 1) =>
+    apiFetch<AnswerCheck>("/api/flashcards/check-answer", {
+      method: "POST",
+      body: JSON.stringify({ wordId, mode, given, attempt }),
     }),
   getPlacement: () => apiFetch<PlacementTest>("/api/flashcards/placement"),
   submitPlacement: (answers: PlacementAnswer[]) =>

@@ -9,10 +9,18 @@
 //   выбор перевода (EN→RU) — узнавание;
 //   выбор слова (RU→EN) — припоминание;
 //   аудирование — только озвучка, выбрать перевод;
-//   собери слово — буквы тапом, без клавиатуры (детям так проще).
+//   собери слово — буквы тапом, без клавиатуры (детям так проще);
+//   напиши перевод / напиши слово — свободный ответ с клавиатуры;
+//   произнеси слово — микрофон, три попытки.
 //
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
+//
+// ── Свободный ответ проверяет сервер ────────────────────────────────────────
+// Для письма и произношения ответ не сравнивается здесь: этим занимается
+// POST /flashcards/check-answer. Иначе веб и натив разойдутся в трактовке
+// («Кот.» против «кот», опечатка против ошибки), и один и тот же ответ получит
+// разные оценки на разных устройствах.
 //
 // ── Цвет состояния не трогает текст ─────────────────────────────────────────
 // Клавиша ответа НИКОГДА не заливается цветом состояния целиком. Раньше
@@ -29,12 +37,13 @@
 // Эмодзи в интерфейсе не используются; card.emoji приходит из данных слова
 // и остаётся как иллюстрация к слову, это не иконка интерфейса.
 import React from "react";
-import { View, Text, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { fc, speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
-import type { Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
+import type { AnswerCheck, Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
+import { cancelListening, isSpeechInputAvailable, listenOnce } from "@/hooks/useSpeechInput";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
 import { accents, gradients, radii, chunky } from "@/constants/theme";
@@ -43,11 +52,17 @@ import { accents, gradients, radii, chunky } from "@/constants/theme";
 // доигрывает озвучка правильного слова. Кто не хочет ждать — жмёт «Дальше».
 const NEXT_DELAY_OK = 1200;
 const NEXT_DELAY_BAD = 1900; // после ошибки даём время прочитать верный ответ
+// Опечатку показываем дольше верного ответа: ребёнок должен успеть прочитать,
+// как слово пишется правильно.
+const NEXT_DELAY_TYPO = 2200;
 
 type Phase = "loading" | "run" | "done";
 // retry — промежуточная реакция на первую ошибку в сборке слова: даём собрать
 // заново, поэтому верный ответ показывать нельзя.
-type Feedback = { correct: boolean; picked?: number; retry?: boolean } | null;
+type Feedback = { correct: boolean; picked?: number; retry?: boolean; typo?: boolean; note?: string } | null;
+
+/** Что сейчас делает микрофон. */
+type SpeakState = "idle" | "listening" | "checking";
 
 export function WordTrainer({
   loader,
@@ -84,6 +99,12 @@ export function WordTrainer({
   const [hintUsed, setHintUsed] = React.useState(false);
   const [attempts, setAttempts] = React.useState(1);
 
+  // свободный ответ: письмо и произношение
+  const [typed, setTyped] = React.useState("");
+  const [checking, setChecking] = React.useState(false);
+  const [speakState, setSpeakState] = React.useState<SpeakState>("idle");
+  const [heard, setHeard] = React.useState<string | null>(null);
+
   // итоги сессии
   const [answered, setAnswered] = React.useState(0);
   const [correctCount, setCorrectCount] = React.useState(0);
@@ -102,6 +123,10 @@ export function WordTrainer({
   const exercise: Exercise = card?.exercise ?? { type: "intro", prompt: card?.english ?? "" };
   const total = cards.length;
 
+  // Распознавание речи проверяем один раз: результат не меняется в течение
+  // сессии, а вызов лезет в globalThis.
+  const speechInput = React.useMemo(() => isSpeechInputAvailable(), []);
+
   // ── загрузка очереди ──
   React.useEffect(() => {
     let alive = true;
@@ -119,11 +144,12 @@ export function WordTrainer({
     return () => { alive = false; };
   }, [loader]);
 
-  // Уходя с тренажёра, обрываем и таймер перелистывания, и звук: иначе слово
-  // продолжает звучать уже на другом экране.
+  // Уходя с тренажёра, обрываем таймер перелистывания, звук и микрофон: иначе
+  // слово продолжает звучать (или запись идёт) уже на другом экране.
   React.useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
     stopSpeaking();
+    cancelListening();
   }, []);
 
   // Появление новой карточки.
@@ -136,11 +162,14 @@ export function WordTrainer({
 
   // Озвучка при показе карточки: слово ребёнок должен услышать, а в аудировании
   // это вообще единственная подсказка.
+  //
+  // В typeEn и speak озвучки НЕТ намеренно: там ребёнок сам вспоминает, как
+  // слово звучит и пишется, — подсказка убила бы упражнение.
   React.useEffect(() => {
     if (phase !== "run" || !card) return;
     shownAt.current = Date.now();
     if (!speechAvailable()) return;
-    if (exercise.type === "intro" || exercise.type === "choiceRu" || exercise.type === "listen") {
+    if (exercise.type === "intro" || exercise.type === "choiceRu" || exercise.type === "listen" || exercise.type === "typeRu") {
       speakWord(card.id, card.english);
     }
     // Смена карточки обрывает её озвучку — новое слово не должно накладываться
@@ -161,10 +190,15 @@ export function WordTrainer({
     setBuilt([]);
     setHintUsed(false);
     setAttempts(1);
+    setTyped("");
+    setChecking(false);
+    setSpeakState("idle");
+    setHeard(null);
   }, []);
 
   const goNext = React.useCallback(() => {
     stopSpeaking(); // звук предыдущей карточки не тянем на следующую
+    cancelListening();
     resetCardState();
     const next = pos + 1;
     if (next >= cards.length) setPhase("done");
@@ -185,14 +219,22 @@ export function WordTrainer({
 
   /** Отправить результат карточки и перейти к следующей. */
   const submit = React.useCallback(
-    (payload: { correct: boolean } | { grade: Grade }, mode: ExerciseType, delay: number) => {
+    (payload: { correct: boolean } | { grade: Grade }, mode: ExerciseType, delay: number, attemptsOverride?: number) => {
       if (!card) return;
       const isCorrect = "correct" in payload ? payload.correct : payload.grade !== "again";
       setAnswered((n) => n + 1);
       if (isCorrect) setCorrectCount((n) => n + 1);
 
       const body = "correct" in payload
-        ? { answer: { correct: payload.correct, attempts, elapsedMs: Date.now() - shownAt.current, hintUsed }, mode }
+        ? {
+          answer: {
+            correct: payload.correct,
+            attempts: attemptsOverride ?? attempts,
+            elapsedMs: Date.now() - shownAt.current,
+            hintUsed,
+          },
+          mode,
+        }
         : { grade: payload.grade, mode };
 
       fc.review(card.id, body)
@@ -256,6 +298,104 @@ export function WordTrainer({
     setAttempts((a) => Math.max(a, 2));
   }, []);
 
+  /** Показать вердикт сервера по свободному ответу и закрыть карточку. */
+  const applyVerdict = React.useCallback(
+    (verdict: AnswerCheck, mode: ExerciseType, usedAttempts: number, note?: string) => {
+      const expected = verdict.expected?.[0] ?? exercise.answer ?? "";
+      setFeedback({
+        correct: verdict.correct,
+        typo: verdict.typo,
+        // Опечатку показываем отдельной строкой: ответ принят, но написание надо
+        // запомнить правильное.
+        note: verdict.correct
+          ? (verdict.typo ? `Почти точно: ${expected}` : undefined)
+          : note ?? `Верный ответ: ${expected}`,
+      });
+      submit(
+        { correct: verdict.correct },
+        mode,
+        verdict.correct ? (verdict.typo ? NEXT_DELAY_TYPO : NEXT_DELAY_OK) : NEXT_DELAY_BAD,
+        usedAttempts,
+      );
+      if (verdict.correct && card && speechAvailable()) speakWord(card.id, card.english);
+    },
+    [exercise.answer, submit, card],
+  );
+
+  /** Письменный ответ: отправляем на проверку серверу. */
+  const submitTyped = React.useCallback(async () => {
+    if (!card || feedback || checking) return;
+    const value = typed.trim();
+    if (!value) return;
+    const mode = exercise.type === "typeEn" ? "typeEn" : "typeRu";
+    setChecking(true);
+    try {
+      const verdict = await fc.checkAnswer(card.id, mode, value);
+      applyVerdict(verdict, mode, attempts);
+    } catch {
+      // Сеть могла мигнуть. Засчитывать ошибку за это нельзя: ребёнок не
+      // виноват. Показываем верный ответ и идём дальше без оценки.
+      setFeedback({ correct: true, note: `Ответ: ${exercise.answer ?? ""}` });
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+    } finally {
+      setChecking(false);
+    }
+  }, [card, feedback, checking, typed, exercise.type, exercise.answer, attempts, applyVerdict, goNext]);
+
+  /** Произношение: слушаем и отправляем расшифровку на проверку. */
+  const startListening = React.useCallback(async () => {
+    if (!card || feedback || speakState !== "idle") return;
+    setHeard(null);
+    setSpeakState("listening");
+    const result = await listenOnce("en-US");
+
+    if (result.ok === false && result.reason === "unavailable") {
+      // Распознавания нет — упражнение не должно превратиться в тупик.
+      setSpeakState("idle");
+      setHeard(null);
+      setFeedback({ correct: true, note: "Микрофон недоступен — послушай и повтори вслух" });
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+      return;
+    }
+
+    const transcript = result.ok ? result.transcript : "";
+    setHeard(transcript || null);
+    setSpeakState("checking");
+
+    const maxAttempts = exercise.maxAttempts ?? 3;
+    try {
+      const verdict = await fc.checkAnswer(card.id, "speak", transcript, attempts);
+      if (!verdict.correct && verdict.retry) {
+        // Попытки ещё есть: это не ошибка, а просьба повторить.
+        setAttempts((a) => a + 1);
+        setSpeakState("idle");
+        return;
+      }
+      applyVerdict(
+        verdict,
+        "speak",
+        attempts,
+        verdict.correct ? undefined : `Верное произношение: ${exercise.answer ?? ""}`,
+      );
+    } catch {
+      setFeedback({ correct: true, note: `Ответ: ${exercise.answer ?? ""}` });
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+    } finally {
+      setSpeakState((s) => (s === "checking" ? "idle" : s));
+      void maxAttempts;
+    }
+  }, [card, feedback, speakState, exercise.maxAttempts, exercise.answer, attempts, applyVerdict, goNext]);
+
+  /** Не получается произнести — пусть напишет. Тупика быть не должно. */
+  const skipSpeaking = React.useCallback(() => {
+    if (!card || feedback) return;
+    setFeedback({ correct: false, note: `Верное произношение: ${exercise.answer ?? ""}` });
+    submit({ correct: false }, "speak", NEXT_DELAY_BAD, exercise.maxAttempts ?? 3);
+  }, [card, feedback, exercise.answer, exercise.maxAttempts, submit]);
+
   // ── экраны состояний ──
   if (error) {
     return (
@@ -291,6 +431,9 @@ export function WordTrainer({
   const isIntro = exercise.type === "intro";
   const isBuild = exercise.type === "build";
   const isListen = exercise.type === "listen";
+  const isTyping = exercise.type === "typeRu" || exercise.type === "typeEn";
+  const isSpeak = exercise.type === "speak";
+  const isChoice = !isIntro && !isBuild && !isTyping && !isSpeak;
   const promptLabel = PROMPT_LABEL[exercise.type];
 
   return (
@@ -321,7 +464,10 @@ export function WordTrainer({
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 24, flexGrow: 1 }}>
+      <ScrollView
+        contentContainerStyle={{ padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 24, flexGrow: 1 }}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1.2, textAlign: "center" }}>
           {promptLabel}
         </Text>
@@ -388,7 +534,7 @@ export function WordTrainer({
               >
                 {exercise.prompt}
               </Text>
-              {(isIntro || exercise.type === "choiceRu") && !!card?.ipa && (
+              {(isIntro || exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
                 <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
               )}
               {(isIntro || exercise.type === "choiceRu") && speechAvailable() && (
@@ -471,9 +617,21 @@ export function WordTrainer({
         {/* реакция на ответ */}
         {feedback && !isBuild && (
           <View style={{ marginTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 }}>
-            <Glyph name={feedback.correct ? "check" : "close"} size={17} color={feedback.correct ? okColor : colors.destructive} />
-            <Text style={{ fontSize: 15, fontWeight: "900", color: feedback.correct ? okColor : colors.destructive, flexShrink: 1 }}>
-              {feedback.correct ? "Верно!" : `Верный ответ: ${exercise.options?.[exercise.answerIndex ?? 0] ?? exercise.answer ?? ""}`}
+            <Glyph
+              name={feedback.correct ? "check" : "close"}
+              size={17}
+              color={feedback.correct ? (feedback.typo ? colors.warning : okColor) : colors.destructive}
+            />
+            <Text
+              style={{
+                fontSize: 15, fontWeight: "900", flexShrink: 1,
+                color: feedback.correct ? (feedback.typo ? colors.warning : okColor) : colors.destructive,
+              }}
+            >
+              {feedback.note
+                ?? (feedback.correct
+                  ? "Верно!"
+                  : `Верный ответ: ${exercise.options?.[exercise.answerIndex ?? 0] ?? exercise.answer ?? ""}`)}
             </Text>
           </View>
         )}
@@ -520,7 +678,7 @@ export function WordTrainer({
         )}
 
         {/* варианты ответа */}
-        {!isIntro && !isBuild && (
+        {isChoice && (
           <View style={{ marginTop: 18, gap: 12 }}>
             {(exercise.options ?? []).map((option, index) => {
               const isAnswer = index === exercise.answerIndex;
@@ -540,6 +698,139 @@ export function WordTrainer({
                 />
               );
             })}
+          </View>
+        )}
+
+        {/* письменный ответ */}
+        {isTyping && !feedback && (
+          <View style={{ marginTop: 18 }}>
+            <TextInput
+              value={typed}
+              onChangeText={setTyped}
+              onSubmitEditing={submitTyped}
+              editable={!checking}
+              autoCapitalize="none"
+              autoCorrect={false}
+              // Автоподсказки клавиатуры сделали бы упражнение бессмысленным:
+              // телефон допишет слово за ребёнка.
+              autoComplete="off"
+              spellCheck={false}
+              returnKeyType="done"
+              placeholder={exercise.answerLang === "en" ? "Напиши по-английски" : "Напиши перевод"}
+              placeholderTextColor={colors.mutedForeground}
+              accessibilityLabel="Поле ответа"
+              style={{
+                backgroundColor: colors.card,
+                borderWidth: 2, borderColor: typed.trim() ? colors.primary : colors.border,
+                borderRadius: radii.md, paddingHorizontal: 16, paddingVertical: 15,
+                fontSize: 19, fontWeight: "700", color: colors.foreground,
+              }}
+            />
+            <ChunkyButton
+              label={checking ? "Проверяем…" : "Проверить"}
+              icon="check"
+              onPress={submitTyped}
+              disabled={checking || !typed.trim()}
+              style={{ marginTop: 12 }}
+            />
+          </View>
+        )}
+
+        {/* произношение */}
+        {isSpeak && !feedback && (
+          <View style={{ marginTop: 18, alignItems: "center" }}>
+            {speechInput ? (
+              <>
+                <TouchableOpacity
+                  onPress={startListening}
+                  disabled={speakState !== "idle"}
+                  activeOpacity={0.85}
+                  accessibilityLabel="Произнести слово"
+                >
+                  <LinearGradient
+                    colors={gradients.action as unknown as string[]}
+                    start={{ x: 0.1, y: 0 }}
+                    end={{ x: 0.9, y: 1 }}
+                    style={{
+                      alignItems: "center", justifyContent: "center",
+                      width: 116, height: 116, borderRadius: 58,
+                      opacity: speakState === "idle" ? 1 : 0.65,
+                      shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
+                      shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
+                    }}
+                  >
+                    {speakState === "checking"
+                      ? <ActivityIndicator size="large" color="#ffffff" />
+                      : <Glyph name={speakState === "listening" ? "sound" : "mic"} size={44} color="#ffffff" />}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <Text style={{ marginTop: 14, fontSize: 15, fontWeight: "800", color: colors.foreground, textAlign: "center" }}>
+                  {speakState === "listening" ? "Слушаю…" : speakState === "checking" ? "Проверяю…" : "Нажми и произнеси слово"}
+                </Text>
+
+                {/* Что именно услышало распознавание. Без этого ребёнок не
+                    понимает, ошибся он или микрофон, и следующая попытка
+                    превращается в лотерею. */}
+                {!!heard && speakState === "idle" && (
+                  <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground, textAlign: "center" }}>
+                    Услышал: «{heard}»
+                  </Text>
+                )}
+
+                <Text style={{ marginTop: 10, fontSize: 13, fontWeight: "800", color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                  Попытка {Math.min(attempts, exercise.maxAttempts ?? 3)} из {exercise.maxAttempts ?? 3}
+                </Text>
+
+                {speakState === "idle" && (
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                    {speechAvailable() && (
+                      <SmallButton
+                        icon="sound"
+                        label="Послушать"
+                        onPress={() => card && speakWord(card.id, card.english)}
+                        colors={colors}
+                      />
+                    )}
+                    <SmallButton icon="close" label="Не получается" onPress={skipSpeaking} colors={colors} />
+                  </View>
+                )}
+              </>
+            ) : (
+              // Распознавания нет — вместо тупика предлагаем написать слово.
+              <View style={{ width: "100%" }}>
+                <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 }}>
+                  Микрофон недоступен на этом устройстве. Напиши слово по-английски.
+                </Text>
+                <TextInput
+                  value={typed}
+                  onChangeText={setTyped}
+                  onSubmitEditing={submitTyped}
+                  editable={!checking}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                  spellCheck={false}
+                  returnKeyType="done"
+                  placeholder="Напиши по-английски"
+                  placeholderTextColor={colors.mutedForeground}
+                  accessibilityLabel="Поле ответа"
+                  style={{
+                    backgroundColor: colors.card,
+                    borderWidth: 2, borderColor: typed.trim() ? colors.primary : colors.border,
+                    borderRadius: radii.md, paddingHorizontal: 16, paddingVertical: 15, marginTop: 12,
+                    fontSize: 19, fontWeight: "700", color: colors.foreground,
+                  }}
+                />
+                <ChunkyButton
+                  label={checking ? "Проверяем…" : "Проверить"}
+                  icon="check"
+                  onPress={submitTyped}
+                  disabled={checking || !typed.trim()}
+                  style={{ marginTop: 12 }}
+                />
+              </View>
+            )}
           </View>
         )}
 
@@ -598,6 +889,9 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
   choiceEn: "Выбери слово",
   listen: "Послушай и выбери перевод",
   build: "Собери слово из букв",
+  typeRu: "Напиши перевод",
+  typeEn: "Напиши слово по-английски",
+  speak: "Произнеси слово вслух",
 };
 
 // ── физические клавиши ──────────────────────────────────────────────────────
