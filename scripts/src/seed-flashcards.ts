@@ -8,17 +8,23 @@ import { db, decksTable, wordsTable } from "@workspace/db";
 import { and, eq, isNull, inArray } from "drizzle-orm";
 import { SEED_DECKS, emojiFor } from "./data/flashcards-data";
 import { VOCAB_DECKS } from "./data/vocabulary-index";
+import { applyExampleFixes, fixFor } from "./data/example-fixes";
 
 // Ручные тематические колоды (flashcards-data.ts) + колоды, наполненные
 // импортёром реального словаря (scripts/src/import-vocabulary.ts). Импортёр
 // пишет в отдельные vocabulary-{level}.ts именно затем, чтобы не раздувать
 // flashcards-data.ts до неуправляемого размера.
-const ALL_DECKS = [...SEED_DECKS, ...VOCAB_DECKS];
+//
+// Сверху накладывается слой ручных правок примеров (example-fixes.ts): каталог
+// автогенерирован, поэтому правки нельзя держать внутри него — их затрёт
+// следующий прогон генератора.
+const ALL_DECKS = applyExampleFixes([...SEED_DECKS, ...VOCAB_DECKS]);
 
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
   let emojiFilled = 0;
+  let examplesFixed = 0;
 
   for (let i = 0; i < ALL_DECKS.length; i++) {
     const d = ALL_DECKS[i]!;
@@ -69,7 +75,15 @@ export async function seedFlashcards(): Promise<void> {
 
     // Какие слова уже есть в колоде — не дублируем
     const present = await db
-      .select({ id: wordsTable.id, english: wordsTable.english, emoji: wordsTable.emoji })
+      .select({
+        id: wordsTable.id,
+        english: wordsTable.english,
+        emoji: wordsTable.emoji,
+        partOfSpeech: wordsTable.partOfSpeech,
+        ipa: wordsTable.ipa,
+        exampleEn: wordsTable.exampleEn,
+        exampleRu: wordsTable.exampleRu,
+      })
       .from(wordsTable)
       .where(eq(wordsTable.deckId, deckId));
     const have = new Set(present.map((w) => w.english.toLowerCase()));
@@ -83,6 +97,31 @@ export async function seedFlashcards(): Promise<void> {
       if (!emoji || row.emoji === emoji) continue;
       await db.update(wordsTable).set({ emoji }).where(eq(wordsTable.id, row.id));
       emojiFilled++;
+    }
+
+    // Ручные правки примеров — та же история, что с картинками: слово уже лежит
+    // в базе, а сид существующие слова не обновляет, поэтому исправленный пример
+    // сам собой не доедет. Пишем только поля, которые правка задаёт явно, и
+    // только когда значение действительно отличается: прогресс ученика
+    // (user_card_state) живёт в отдельной таблице и не задевается.
+    for (const row of present) {
+      const fix = fixFor(row.english);
+      if (!fix) continue;
+
+      const patch: Partial<{
+        partOfSpeech: string;
+        ipa: string;
+        exampleEn: string;
+        exampleRu: string;
+      }> = {};
+      if (fix.pos !== undefined && row.partOfSpeech !== fix.pos) patch.partOfSpeech = fix.pos;
+      if (fix.ipa !== undefined && row.ipa !== fix.ipa) patch.ipa = fix.ipa;
+      if (fix.exEn !== undefined && row.exampleEn !== fix.exEn) patch.exampleEn = fix.exEn;
+      if (fix.exRu !== undefined && row.exampleRu !== fix.exRu) patch.exampleRu = fix.exRu;
+      if (Object.keys(patch).length === 0) continue;
+
+      await db.update(wordsTable).set(patch).where(eq(wordsTable.id, row.id));
+      examplesFixed++;
     }
 
     const toInsert = d.words
@@ -133,5 +172,5 @@ export async function seedFlashcards(): Promise<void> {
     );
   }
 
-  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled}, устаревших колод удалено ${stale.length} (всего колод в датасете ${ALL_DECKS.length}).`);
+  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled}, примеров исправлено ${examplesFixed}, устаревших колод удалено ${stale.length} (всего колод в датасете ${ALL_DECKS.length}).`);
 }
