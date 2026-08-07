@@ -8,6 +8,7 @@
 // в scripts/src/data (генератор затирает каталог целиком):
 //
 //   example-fixes-{level}.ts — исправленные примеры, части речи, транскрипции;
+//   example-fixes-review.ts  — исправления после вычитки, накладываются последними;
 //   polysemous.ts            — многозначные слова: одиночная карточка убрана,
 //                              каждый смысл заведён словосочетанием.
 //
@@ -16,9 +17,11 @@
 // (при слиянии карт перетирается); многозначное слово с одним смыслом (слово
 // просто потерялось бы); фраза в несуществующей колоде, чужого уровня или
 // дублирующая каталог (сид её отбросит); фраза, в которой нет самого слова.
-// Отдельно — предупреждения: правка примера для слова, у которого одиночной
-// карточки больше нет (не применится никогда, но выглядит рабочей), и уровни,
-// закрытые зеркалированием фраз.
+//
+// Отдельно, не как ошибки: уровни, которые закроются зеркалированием фраз, и
+// правки «в запасе» — для слов, ушедших в polysemous.ts. Такие правки сейчас не
+// применяются (одиночной карточки нет), но удалять их не нужно: если слово
+// когда-нибудь вернётся одиночной карточкой, готовый пример уже будет.
 //
 // Зависимостей нет и tsc не нужен: файлы читаются как текст, как и в
 // validate-flashcards.mjs.
@@ -29,6 +32,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.resolve(here, "src/data");
 const POLY = "polysemous.ts";
+const REVIEW = "example-fixes-review.ts";
 const SHOW = 12; // сколько слов показывать в списке по каждому уровню
 
 // Карточка в датасете — однострочный литерал без вложенных фигурных скобок,
@@ -44,7 +48,7 @@ const POLY_RE =
   /word:\s*"([^"]+)"|theme:\s*"([^"]+)",\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?cefr:\s*"([A-C][12])"/g;
 
 const errors = [];
-const warnings = [];
+const notes = [];
 const dataFiles = readdirSync(DATA);
 const catalogFiles = dataFiles
   .filter((f) => f === "flashcards-data.ts" || /^vocabulary-[a-c][12]\.ts$/.test(f))
@@ -74,7 +78,7 @@ if (words.size === 0) {
 
 // ── многозначные слова: одиночная карточка убрана, смыслы разложены по фразам ─
 const ambiguous = new Map(); // слово → массив фраз
-let mirroredLevels = 0;
+const mirrored = [];
 if (dataFiles.includes(POLY)) {
   const src = readFileSync(path.join(DATA, POLY), "utf8");
   let current = null;
@@ -98,14 +102,11 @@ if (dataFiles.includes(POLY)) {
     }
 
     // Уровни каталога, для которых фраз нет: их закроет зеркалирование в
-    // applyPolysemous. Это не ошибка, но знать полезно — текст фраз там общий.
+    // applyPolysemous. Не ошибка, но знать полезно — текст фраз там общий.
     if (inCatalog) {
       const covered = new Set(list.map((p) => p.cefr));
       const missing = [...inCatalog.levels].filter((l) => !covered.has(l)).sort();
-      if (missing.length > 0) {
-        mirroredLevels += missing.length;
-        warnings.push(`"${word}": фраз для ${missing.join(", ")} нет — уровни закроются зеркалированием`);
-      }
+      if (missing.length > 0) mirrored.push(`${word} → ${missing.join(", ")}`);
     }
 
     for (const p of list) {
@@ -130,13 +131,21 @@ if (dataFiles.includes(POLY)) {
 }
 
 // ── правки: ключи по файлам ───────────────────────────────────────────────
-const fixed = new Map(); // ключ → файл, в котором объявлен
-for (const file of levelFixFiles) {
+function readFixKeys(file) {
   const src = readFileSync(path.join(DATA, file), "utf8");
+  const keys = [];
   for (const m of src.matchAll(FIX_KEY_RE)) {
     const key = (m[1] ?? m[2]).trim().toLowerCase();
     // Служебные объекты в тех же файлах (тип ExampleFix и т.п.) ключами не считаем.
     if (["exen", "exru", "pos", "ipa"].includes(key)) continue;
+    keys.push(key);
+  }
+  return keys;
+}
+
+const fixed = new Map(); // ключ → файл, в котором объявлен
+for (const file of levelFixFiles) {
+  for (const key of readFixKeys(file)) {
     const seen = fixed.get(key);
     if (seen) {
       errors.push(`ключ "${key}" объявлен дважды: ${seen} и ${file} — при слиянии карт один перетрёт другой`);
@@ -146,13 +155,20 @@ for (const file of levelFixFiles) {
   }
 }
 
-// Правка примера для слова, которое учится только словосочетаниями: одиночной
-// карточки больше нет, поэтому применять правку не к чему. Не ошибка, но код
-// мёртвый и вводит в заблуждение.
-const deadFixes = [...fixed].filter(([key]) => ambiguous.has(key));
-for (const [key, file] of deadFixes) {
-  warnings.push(`"${key}" (${file}): у слова нет одиночной карточки (${POLY}) — правка не применится`);
+// Слой вычитки накладывается последним и перекрывает пофайловые правки
+// намеренно, поэтому в проверке на дубликаты не участвует.
+const overrides = [];
+if (dataFiles.includes(REVIEW)) {
+  for (const key of readFixKeys(REVIEW)) {
+    if (fixed.has(key)) overrides.push(`${key} (было в ${fixed.get(key)})`);
+    fixed.set(key, REVIEW);
+  }
 }
+
+// Правка для слова, которое учится только словосочетаниями: одиночной карточки
+// нет, поэтому сейчас она не применяется. Держим как запас — если слово вернётся
+// одиночной карточкой, готовый пример уже будет.
+const reserve = [...fixed].filter(([key]) => ambiguous.has(key)).map(([key]) => key);
 
 // ── отчёт по уровням ─────────────────────────────────────────────────────
 // Многозначные слова в подсчёт не идут: их одиночных карточек в приложении
@@ -174,8 +190,8 @@ for (const [word, { levels, empty }] of words) {
 
 const phraseCount = [...ambiguous.values()].reduce((n, list) => n + list.length, 0);
 console.log(`Файлов каталога: ${catalogFiles.length}, уникальных карточек: ${words.size}`);
-console.log(`Правок примеров: ${fixed.size}${deadFixes.length > 0 ? ` (мёртвых: ${deadFixes.length})` : ""}`);
-console.log(`Многозначных слов: ${ambiguous.size} (одиночные карточки убраны), словосочетаний: ${phraseCount}, уровней под зеркалирование: ${mirroredLevels}\n`);
+console.log(`Правок примеров: ${fixed.size}, из них в запасе: ${reserve.length}`);
+console.log(`Многозначных слов: ${ambiguous.size} (одиночные карточки убраны), словосочетаний: ${phraseCount}\n`);
 
 let remaining = 0;
 for (const level of LEVELS) {
@@ -190,14 +206,18 @@ for (const level of LEVELS) {
   }
 }
 
+if (overrides.length > 0) notes.push(`вычиткой перекрыто: ${overrides.join(", ")}`);
+if (mirrored.length > 0) notes.push(`уровни закроются зеркалированием фраз: ${mirrored.join("; ")}`);
+if (reserve.length > 0) notes.push(`правки в запасе (слово учится словосочетаниями): ${reserve.join(", ")}`);
+
 // Ключ правки, которого нет в датасете — опечатка: правка не применится никогда.
 for (const [key, file] of fixed) {
   if (!words.has(key)) errors.push(`"${key}" (${file}): такого слова нет в датасете — правка не применится`);
 }
 
-if (warnings.length > 0) {
+if (notes.length > 0) {
   console.log("");
-  for (const w of warnings) console.log(`⚠️  ${w}`);
+  for (const n of notes) console.log(`ℹ️  ${n}`);
 }
 
 if (errors.length > 0) {

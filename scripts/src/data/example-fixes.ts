@@ -35,6 +35,7 @@ import { A2_FIXES } from "./example-fixes-a2";
 import { B1_FIXES } from "./example-fixes-b1";
 import { B2_FIXES } from "./example-fixes-b2";
 import { C1_FIXES } from "./example-fixes-c1";
+import { REVIEW_FIXES } from "./example-fixes-review";
 
 export type ExampleFix = {
   exEn?: string;
@@ -48,12 +49,17 @@ export type ExampleFix = {
 // сломанным примером, и правка должна доехать до всех копий. Из-за этого ключи
 // между файлами уровней не должны пересекаться — при слиянии дубликат молча
 // перетёрся бы. За этим следит pnpm validate:examples.
+//
+// REVIEW_FIXES идёт последним и перекрывает намеренно: это исправления после
+// вычитки, где русский был подогнан под глоссу карточки вместо смысла
+// предложения (см. example-fixes-review.ts).
 export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
   ...A1_FIXES,
   ...A2_FIXES,
   ...B1_FIXES,
   ...B2_FIXES,
   ...C1_FIXES,
+  ...REVIEW_FIXES,
 };
 
 export function fixFor(en: string): ExampleFix | undefined {
