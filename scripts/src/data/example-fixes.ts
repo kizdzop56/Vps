@@ -21,6 +21,8 @@
 //     карточки, иначе ученик выучит не то;
 //   • одно короткое предложение, лексика уровня карточки или ниже;
 //   • exRu — перевод этого же предложения, а не пересказ;
+//   • у конструкций (sth, sb, …) плейсхолдер в примере раскрыт реальным словом:
+//     «give sth up» без предмета остаётся абстракцией;
 //   • pos/ipa указываются только когда в датасете они явно битые
 //     (curly помечено noun, транскрипция вида «/-i/»).
 //
@@ -35,8 +37,8 @@ export type ExampleFix = {
   ipa?: string;
 };
 
-// Батч 1 — уровень A2 (слова; словосочетания и фразы идут отдельным батчем).
-export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
+// Батч 1 — уровень A2, отдельные слова.
+const A2_WORDS: Record<string, ExampleFix> = {
   // ── пример был не про то значение или не для детей ───────────────────────
   downstairs: { exEn: "My parents are downstairs in the kitchen.", exRu: "Мои родители внизу, на кухне.", pos: "adverb" },
   worse: { exEn: "The weather today is worse than yesterday.", exRu: "Погода сегодня хуже, чем вчера." },
@@ -177,6 +179,121 @@ export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
   "art gallery": { exEn: "We saw old paintings in the art gallery.", exRu: "Мы видели старые картины в художественной галерее." },
   "any more": { exEn: "I do not want any more soup.", exRu: "Я больше не хочу супа." },
 };
+
+// Батч 2 — уровень A2, словосочетания и фразы (pos: "phrase" и родственные).
+// Примеров у них не было вообще: карточка показывала «in the end — в конце
+// концов», и куда это вставлять в речь, ученик не узнавал. Плейсхолдеры (sth,
+// sb, …) в примере раскрыты конкретным словом.
+const A2_PHRASES: Record<string, ExampleFix> = {
+  // время и место
+  "at the time": { exEn: "I was at school at the time.", exRu: "В то время я был в школе." },
+  "at the time of sth": { exEn: "At the time of the storm we stayed at home.", exRu: "Во время шторма мы оставались дома." },
+  "per hour": { exEn: "The car goes ninety kilometres per hour.", exRu: "Машина едет девяносто километров в час." },
+  "a long time ago": { exEn: "This castle was built a long time ago.", exRu: "Этот замок построили давным-давно." },
+  "a long way": { exEn: "It is a long way from here to the station.", exRu: "Отсюда до станции долгий путь." },
+  "at first": { exEn: "At first the task looked difficult.", exRu: "Сначала задание казалось сложным." },
+  "at the age of…": { exEn: "She started school at the age of six.", exRu: "Она пошла в школу в возрасте шести лет." },
+  "by the end of sth": { exEn: "By the end of the week I will finish the book.", exRu: "К концу недели я закончу книгу." },
+  "at the start of sth": { exEn: "We met at the start of the year.", exRu: "Мы познакомились в начале года." },
+  "in the end": { exEn: "In the end we decided to stay at home.", exRu: "В конце концов мы решили остаться дома." },
+  "in the middle": { exEn: "A big table stands in the middle.", exRu: "Большой стол стоит в середине." },
+  "all the time": { exEn: "He talks about football all the time.", exRu: "Он всё время говорит о футболе." },
+  "again and again": { exEn: "She read the letter again and again.", exRu: "Она читала письмо снова и снова." },
+  "on the wall": { exEn: "There is a big map on the wall.", exRu: "На стене большая карта." },
+  "in the air": { exEn: "The smell of coffee was in the air.", exRu: "В воздухе стоял запах кофе." },
+  "on top of sth/sb": { exEn: "The cat sleeps on top of the box.", exRu: "Кот спит поверх коробки." },
+  "on the other side": { exEn: "The bus stop is on the other side.", exRu: "Автобусная остановка с другой стороны." },
+  "the other side of sth": { exEn: "They live on the other side of the town.", exRu: "Они живут на другой стороне города." },
+
+  // чувства и оценки
+  "feel good": { exEn: "I feel good after a long walk.", exRu: "Я чувствую себя хорошо после долгой прогулки." },
+  "feel like sth": { exEn: "I feel like a new person after the holiday.", exRu: "После отпуска я чувствую себя новым человеком." },
+  "happy with sb/sth": { exEn: "The teacher is happy with my work.", exRu: "Учитель доволен моей работой." },
+  "i'm afraid…": { exEn: "I'm afraid we are late.", exRu: "Боюсь, мы опоздали." },
+  "sound like sb/sth": { exEn: "That sounds like a good idea.", exRu: "Это звучит как хорошая идея." },
+  "worried about sb/sth": { exEn: "She is worried about her exam.", exRu: "Она беспокоится о своём экзамене." },
+  "would love to do sth": { exEn: "I would love to visit London.", exRu: "Я хотел бы посетить Лондон." },
+  "in love": { exEn: "They are in love and want to marry.", exRu: "Они влюблены и хотят пожениться." },
+  "in danger": { exEn: "The animals in this forest are in danger.", exRu: "Животные в этом лесу в опасности." },
+  "much better": { exEn: "I feel much better today.", exRu: "Сегодня я чувствую себя намного лучше." },
+
+  // здоровье и части целого
+  "health problems": { exEn: "Smoking causes serious health problems.", exRu: "Курение вызывает серьёзные проблемы со здоровьем." },
+  "in hospital": { exEn: "My uncle is in hospital after the accident.", exRu: "Мой дядя в больнице после аварии." },
+  "the rest of sth": { exEn: "I will eat the rest of the cake tomorrow.", exRu: "Остальную часть пирога я съем завтра." },
+  "for the rest of sth": { exEn: "He stayed in bed for the rest of the day.", exRu: "Он остался в постели на остальную часть дня." },
+  "as part of sth": { exEn: "We visited a farm as part of the trip.", exRu: "Мы посетили ферму как часть поездки." },
+
+  // количество и перечисление
+  "a couple of sth": { exEn: "I need a couple of days to finish the work.", exRu: "Мне нужна пара дней, чтобы закончить работу." },
+  "a number of sth": { exEn: "A number of students were late.", exRu: "Ряд учеников опоздал." },
+  "one or two": { exEn: "I have one or two questions.", exRu: "У меня один или два вопроса." },
+  "quite a lot": { exEn: "She knows quite a lot about music.", exRu: "Она знает довольно много о музыке." },
+  "less than…": { exEn: "The trip takes less than an hour.", exRu: "Поездка занимает меньше, чем час." },
+  "even more…": { exEn: "He wants even more sweets.", exRu: "Он хочет даже больше конфет." },
+  "each one": { exEn: "There are five boxes, and each one is full.", exRu: "Здесь пять коробок, и каждая полная." },
+  "everyone else": { exEn: "Everyone else went home early.", exRu: "Все остальные ушли домой рано." },
+  "all kinds of…": { exEn: "The shop sells all kinds of bread.", exRu: "В магазине продают все виды хлеба." },
+  "all sorts of…": { exEn: "We saw all sorts of animals at the zoo.", exRu: "Мы видели всяких животных в зоопарке." },
+  "all over…": { exEn: "Toys were all over the floor.", exRu: "Игрушки были повсюду на полу." },
+  "all about…": { exEn: "This book is all about space.", exRu: "Эта книга вся о космосе." },
+  "sort of sth": { exEn: "It is a sort of soup with fish.", exRu: "Это что-то типа супа с рыбой." },
+  "such a/an…": { exEn: "It was such a nice day.", exRu: "Это был такой хороший день." },
+
+  // порядок мысли и связки
+  "first of all": { exEn: "First of all, wash your hands.", exRu: "Прежде всего, вымой руки." },
+  "the first thing": { exEn: "The first thing I do is drink water.", exRu: "Первое, что я делаю, — пью воду." },
+  "the best thing": { exEn: "The best thing about summer is the sea.", exRu: "Лучшая вещь в лете — это море." },
+  "the important thing": { exEn: "The important thing is to try again.", exRu: "Важная вещь — попробовать снова." },
+  "the following…": { exEn: "Read the following text.", exRu: "Прочитай следующий текст." },
+  "in some cases": { exEn: "In some cases the train is late.", exRu: "В некоторых случаях поезд опаздывает." },
+  "in the same way": { exEn: "Do it in the same way as yesterday.", exRu: "Сделай это таким же образом, как вчера." },
+  "in this way": { exEn: "In this way you save a lot of time.", exRu: "Таким образом ты экономишь много времени." },
+  "instead of": { exEn: "Let's walk instead of taking the bus.", exRu: "Давай пойдём пешком вместо автобуса." },
+  "except for": { exEn: "The shop is open every day except for Sunday.", exRu: "Магазин открыт каждый день, за исключением воскресенья." },
+  "if necessary": { exEn: "Call me again if necessary.", exRu: "Позвони мне снова, если необходимо." },
+  "if you want to": { exEn: "You can come with us if you want to.", exRu: "Ты можешь пойти с нами, если хочешь." },
+  "come on!": { exEn: "Come on! We are late.", exRu: "Ну давай же! Мы опаздываем." },
+
+  // люди, жизнь, работа
+  "old friend": { exEn: "I met an old friend from school.", exRu: "Я встретил старого друга из школы." },
+  "ordinary people": { exEn: "The film is about ordinary people.", exRu: "Фильм об обычных людях." },
+  "in business": { exEn: "Her family has been in business for years.", exRu: "Её семья в бизнесе уже много лет." },
+  "in history": { exEn: "It was the coldest winter in history.", exRu: "Это была самая холодная зима в истории." },
+  "in prison": { exEn: "The thief spent two years in prison.", exRu: "Вор провёл два года в тюрьме." },
+  "make money": { exEn: "He makes money by selling bread.", exRu: "Он зарабатывает деньги, продавая хлеб." },
+  "do well": { exEn: "She did well in her exams.", exRu: "Она преуспела на экзаменах." },
+  "take part": { exEn: "Ten schools took part in the competition.", exRu: "В соревновании приняли участие десять школ." },
+
+  // действия и конструкции с глаголом
+  "used to": { exEn: "I am used to getting up early.", exRu: "Я привык вставать рано." },
+  "able to do sth": { exEn: "She is able to swim very well.", exRu: "Она способна плавать очень хорошо." },
+  "be allowed to do sth": { exEn: "Children are allowed to play here.", exRu: "Детям разрешено играть здесь." },
+  "be made of sth": { exEn: "This box is made of wood.", exRu: "Эта коробка сделана из дерева." },
+  "add to sth": { exEn: "Add some salt to the soup.", exRu: "Добавь немного соли к супу." },
+  "carry sth out": { exEn: "The doctors carried out a simple test.", exRu: "Врачи осуществили простой тест." },
+  "end with sth": { exEn: "The film ends with a song.", exRu: "Фильм заканчивается песней." },
+  "start with sb/sth": { exEn: "The lesson starts with a short song.", exRu: "Урок начинается с короткой песни." },
+  "followed by sb/sth": { exEn: "Dinner was followed by a long walk.", exRu: "За ужином последовала долгая прогулка." },
+  "lead to sth": { exEn: "This path leads to the river.", exRu: "Эта дорожка ведёт к реке." },
+  "fill sth in": { exEn: "Please fill in this form.", exRu: "Пожалуйста, заполните эту форму." },
+  "look sth up": { exEn: "Look the new word up in the dictionary.", exRu: "Поищи новое слово в словаре." },
+  "write sth down": { exEn: "Write down the new words in your notebook.", exRu: "Запиши новые слова в тетрадь." },
+  "give sth up": { exEn: "He gave up sweets for a month.", exRu: "Он бросил сладкое на месяц." },
+  "throw sth away": { exEn: "Do not throw away this box.", exRu: "Не выбрасывай эту коробку." },
+  "pick sb/sth up": { exEn: "My father picks me up after school.", exRu: "Мой папа забирает меня после школы." },
+  "put sth on": { exEn: "Put on your coat, it is cold outside.", exRu: "Надень пальто, на улице холодно." },
+  "take sth off": { exEn: "Take off your shoes at the door.", exRu: "Сними обувь у двери." },
+  "turn sth on": { exEn: "Turn on the radio, please.", exRu: "Включи радио, пожалуйста." },
+  "turn sth off": { exEn: "Turn off the light before you leave.", exRu: "Выключи свет перед уходом." },
+  "take care of sb/sth/yourself": { exEn: "Take care of your little sister.", exRu: "Позаботься о своей младшей сестре." },
+  "go and…": { exEn: "Go and wash your hands.", exRu: "Иди и вымой руки." },
+  "go away": { exEn: "Go away and leave me alone.", exRu: "Уходите и оставьте меня в покое." },
+  "go down sth": { exEn: "Go down this street to the bridge.", exRu: "Спуститесь вниз по этой улице до моста." },
+  "go for sth": { exEn: "Let's go for a walk after lunch.", exRu: "Пойдём на прогулку после обеда." },
+};
+
+export const EXAMPLE_FIXES: Record<string, ExampleFix> = { ...A2_WORDS, ...A2_PHRASES };
 
 export function fixFor(en: string): ExampleFix | undefined {
   return EXAMPLE_FIXES[en.trim().toLowerCase()];
