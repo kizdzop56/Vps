@@ -17,12 +17,19 @@
 //   StudyTimeCard    — плитка времени с живыми часами и разбором по дням
 //                      (components/StudyTimeCard.tsx);
 //   FriendsSheet     — лист связей: учитель, друзья, добавление по коду
-//                      (components/FriendsSheet.tsx).
+//                      (components/FriendsSheet.tsx);
+//   NotificationCenter — история уведомлений за колокольчиком в шапке
+//                      (components/NotificationCenter.tsx).
 //
 // Все карточки статистики устроены одинаково: нижняя грань и графики, которые
 // вырастают от нуля при появлении. Плоских карточек рядом с объёмными на этом
 // экране быть не должно — одна такая сразу читается как недоделанная.
 // Проседает при нажатии только то, что реально открывается: задания и время.
+//
+// ── Колокольчик ─────────────────────────────────────────────────────────────
+// Счётчик непрочитанного берётся тем же запросом, что и всплывающие окна в
+// макете вкладок: ключ react-query общий, поэтому лишнего похода на сервер не
+// появляется. Только у ученика — у учителя эта лента всегда была бы пустой.
 //
 // ── Повтор анимаций ─────────────────────────────────────────────────────────
 // Профиль — вкладка, а не отдельный экран: при уходе он не размонтируется, и
@@ -74,8 +81,11 @@ import { ScoreCard } from "@/components/ScoreCard";
 import { StudyTimeCard } from "@/components/StudyTimeCard";
 import { AssignmentsCard } from "@/components/AssignmentsCard";
 import { FriendsSheet } from "@/components/FriendsSheet";
+import { NotificationBell } from "@/components/NotificationBell";
+import { NotificationCenter } from "@/components/NotificationCenter";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification } from "@/hooks/useGamification";
+import { useNotifications } from "@/hooks/useNotifications";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
@@ -317,6 +327,7 @@ export default function ProfileScreen() {
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [period, setPeriod] = useState<StatsPeriod>("all");
@@ -342,6 +353,10 @@ export default function ProfileScreen() {
 
   const isStudent = user?.role === "student";
   const isTeacher = isTeacherOrAdmin(user?.role ?? "");
+
+  // Тот же запрос, что кормит всплывающие окна в макете вкладок: ключ
+  // react-query общий, поэтому второго похода на сервер не появляется.
+  const { unreadCount } = useNotifications(isStudent);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -847,6 +862,13 @@ export default function ProfileScreen() {
         />
       )}
 
+      {isStudent && (
+        <NotificationCenter
+          visible={notificationsOpen}
+          onClose={() => setNotificationsOpen(false)}
+        />
+      )}
+
       <AchievementToast achievement={toastAchievement} onHide={hideToast} />
 
       <MascotModal
@@ -902,6 +924,14 @@ export default function ProfileScreen() {
           onEditAvatar={() => setAvatarMenuOpen(true)}
           roleLabel={ROLE_LABELS[user.role] ?? user.role}
           ageLabel={age !== null ? ageWord(age) : null}
+          bell={isStudent
+            ? (
+              <NotificationBell
+                count={unreadCount}
+                onPress={() => setNotificationsOpen(true)}
+              />
+            )
+            : undefined}
           level={isStudent && gamStats
             ? { number: xpProgress.current.level, title: xpProgress.current.title }
             : null}

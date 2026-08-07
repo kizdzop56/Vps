@@ -9,6 +9,15 @@
 // что у медалей и уровня в разделе «Слова». Круг тут читался бы как «фото
 // профиля из соцсети», а не как награда.
 //
+// ── Про верхнюю строку ──────────────────────────────────────────────────────
+// В ней живут «назад», действие («Написать») и колокольчик уведомлений. Строка
+// рисуется, только если есть хотя бы одно из трёх: на своём профиле раньше её
+// не было вовсе.
+//
+// Колокольчик передаётся отдельным слотом, а не через action. У action иконка с
+// подписью и нет места под счётчик непрочитанного, а счётчик здесь — главное:
+// именно он сообщает, что стоит заглянуть.
+//
 // ── Про метки ───────────────────────────────────────────────────────────────
 // В ряду под именем стоят роль, возраст, «В сети» и «Друг». Все они отвечают
 // на вопрос «кто это передо мной», поэтому живут вместе. Дружба раньше была
@@ -199,12 +208,19 @@ export interface ProfileHeroProps {
   onBack?: () => void;
   /** Кнопка справа сверху: например «Написать». */
   action?: { icon: GlyphName; label: string; onPress: () => void } | null;
+  /**
+   * Колокольчик уведомлений — самый правый элемент верхней строки.
+   *
+   * Слот, а не набор пропсов: счётчик непрочитанного, его цвет и поведение
+   * живут в NotificationBell, шапке о них знать незачем.
+   */
+  bell?: React.ReactNode;
 }
 
 export function ProfileHero({
   name, username, avatarEmoji, avatarColor, avatarUrl, saving,
   onEditAvatar, roleLabel, ageLabel, online, friend, level, stats, xp, paddingTop,
-  onBack, action,
+  onBack, action, bell,
 }: ProfileHeroProps) {
   const [imageFailed, setImageFailed] = React.useState(false);
   React.useEffect(() => { setImageFailed(false); }, [avatarUrl]);
@@ -218,9 +234,9 @@ export function ProfileHero({
       end={{ x: 0.5, y: 1 }}
       style={[s.hero, { paddingTop }]}
     >
-      {/* Верхняя строка: назад и действие. Рисуется только когда есть что
-          показать — на своём профиле её нет вовсе. */}
-      {(onBack || action) && (
+      {/* Верхняя строка: назад, действие и колокольчик. Рисуется только когда
+          есть что показать. */}
+      {(onBack || action || bell) && (
         <View style={s.topBar}>
           {onBack ? (
             <TouchableOpacity
@@ -236,18 +252,21 @@ export function ProfileHero({
             </TouchableOpacity>
           ) : <View />}
 
-          {action && (
-            <TouchableOpacity
-              onPress={action.onPress}
-              style={s.actionBtn}
-              accessibilityRole="button"
-              accessibilityLabel={action.label}
-              activeOpacity={0.85}
-            >
-              <Glyph name={action.icon} size={15} color="#ffffff" />
-              <Text style={s.actionText}>{action.label}</Text>
-            </TouchableOpacity>
-          )}
+          <View style={s.topRight}>
+            {action && (
+              <TouchableOpacity
+                onPress={action.onPress}
+                style={s.actionBtn}
+                accessibilityRole="button"
+                accessibilityLabel={action.label}
+                activeOpacity={0.85}
+              >
+                <Glyph name={action.icon} size={15} color="#ffffff" />
+                <Text style={s.actionText}>{action.label}</Text>
+              </TouchableOpacity>
+            )}
+            {bell}
+          </View>
         </View>
       )}
 
@@ -369,6 +388,7 @@ const s = StyleSheet.create({
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     marginBottom: 12,
   },
+  topRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   topBtn: {
     width: 36, height: 36, borderRadius: 12,
     alignItems: "center", justifyContent: "center",

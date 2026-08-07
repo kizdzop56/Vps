@@ -10,3 +10,4 @@ export * from "./gamification";
 export * from "./authTokens";
 export * from "./flashcards";
 export * from "./messaging";
+export * from "./notifications";

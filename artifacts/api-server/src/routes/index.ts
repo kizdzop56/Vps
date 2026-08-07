@@ -14,6 +14,7 @@ import storageRouter from "./storage";
 import connectionsRouter from "./connections";
 import calendarRouter from "./calendar";
 import gamificationRouter from "./gamification";
+import notificationsRouter from "./notifications";
 import flashcardsRouter from "./flashcards";
 import flashcardsAnswerRouter from "./flashcardsAnswer";
 import messagingRouter from "./messaging";
@@ -42,6 +43,9 @@ router.use(storageRouter);
 router.use(connectionsRouter);
 router.use(calendarRouter);
 router.use(gamificationRouter);
+// Лента событий ученика: /notifications. Своё пространство путей, ни с чем не
+// пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
+router.use(notificationsRouter);
 router.use(flashcardsRouter);
 // Проверка свободного ответа (письмо и произношение): /flashcards/check-answer.
 // Путь не пересекается с маршрутами flashcardsRouter, поэтому порядок роли не
