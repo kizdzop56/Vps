@@ -83,8 +83,8 @@ export type Exercise = {
   answer?: string;
   /**
    * Все допустимые ответы (для typeRu / typeEn / speak). Клиент показывает
-   * верный вариант после ответа; саму проверку делает сервер в POST /review,
-   * чтобы правила жили в одном месте.
+   * верный вариант после ответа; саму проверку делает сервер
+   * (POST /flashcards/check-answer), чтобы правила жили в одном месте.
    */
   accept?: string[];
   /** На каком языке ждём ответ — клиенту нужно для клавиатуры и распознавания речи. */
@@ -201,7 +201,12 @@ export function pickExerciseType(opts: {
   /** Основной перевод — нужен, чтобы решить, можно ли просить написать его. */
   translation?: string;
   allowListen?: boolean;
-  /** Клиент умеет распознавать речь (микрофон + Web Speech API / expo). */
+  /**
+   * Клиент умеет распознавать речь. По умолчанию считаем, что умеет: микрофон
+   * есть почти везде, а устройство-исключение отключает упражнение явным
+   * allowSpeak=false. Обратное умолчание означало бы, что speak не появится
+   * нигде, пока каждый маршрут не вспомнит про флаг.
+   */
   allowSpeak?: boolean;
   /** ID слова — нужен для детерминированного чередования типов. */
   wordId?: number;
@@ -211,7 +216,7 @@ export function pickExerciseType(opts: {
   const { isNew, english, wordId } = opts;
   const level = Number.isFinite(opts.memoryLevel) ? Math.max(0, Math.trunc(opts.memoryLevel)) : 0;
   const allowListen = opts.allowListen !== false;
-  const allowSpeak = opts.allowSpeak === true;
+  const allowSpeak = opts.allowSpeak !== false;
   const translation = (opts.translation ?? "").trim();
 
   if (isNew) return "intro";
@@ -496,7 +501,7 @@ export function buildExercise(opts: {
   }
 
   // Свободный ответ: вариантов не даём вовсе. accept — все допустимые написания;
-  // сравнение делает сервер при приёме ответа (lib/answerCheck.ts), клиент лишь
+  // сравнение делает сервер (POST /flashcards/check-answer), клиент лишь
   // показывает верный вариант после проверки.
   if (type === "typeRu") {
     return {
@@ -521,7 +526,7 @@ export function buildExercise(opts: {
   if (type === "speak") {
     return {
       type,
-      // Показываем и слово, и перевод: задача не вспомнить его, а произнести.
+      // Показываем само слово: задача не вспомнить его, а произнести.
       prompt: word.english,
       answer: word.english.trim(),
       accept: [word.english.trim()],
