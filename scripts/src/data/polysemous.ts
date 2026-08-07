@@ -24,7 +24,6 @@
 //   • фраза живая и короткая, по ней сразу виден нужный смысл;
 //   • ru — перевод фразы целиком, а не отдельного слова;
 //   • theme — существующая колода, её уровень должен совпадать с cefr фразы;
-//   • pos: "phrase" — по нему валидатор считает словосочетания в колоде;
 //   • ipa у фраз не заполняем: в каталоге у словосочетаний она пустая.
 //
 // Проверка: pnpm validate:examples
@@ -48,8 +47,8 @@ export type PolysemousWord = {
   phrases: SensePhrase[];
 };
 
-export const POLYSEMOUS: PolysemousWord[] = [
-  // ── A1 ───────────────────────────────────────────────────────────────────
+// ── A1 ───────────────────────────────────────────────────────────────────────
+const A1: PolysemousWord[] = [
   {
     word: "glass",
     phrases: [
@@ -185,8 +184,31 @@ export const POLYSEMOUS: PolysemousWord[] = [
       { theme: "emotions_character_a1", en: "pay interest", ru: ["платить проценты"], exEn: "You pay interest on the money you borrow.", exRu: "Ты платишь проценты за деньги, которые берёшь в долг.", cefr: "A1" },
     ],
   },
+  {
+    word: "fine",
+    phrases: [
+      { theme: "appearance_qualities_a1", en: "I feel fine", ru: ["я чувствую себя хорошо"], exEn: "I feel fine today, thank you.", exRu: "Я чувствую себя хорошо сегодня, спасибо.", cefr: "A1" },
+      { theme: "appearance_qualities_a1", en: "pay a fine", ru: ["заплатить штраф"], exEn: "He had to pay a fine for parking here.", exRu: "Ему пришлось заплатить штраф за парковку здесь.", cefr: "A1" },
+    ],
+  },
+  {
+    word: "sound",
+    phrases: [
+      { theme: "appearance_qualities_a1", en: "a strange sound", ru: ["странный звук"], exEn: "I heard a strange sound in the garden.", exRu: "Я услышал странный звук в саду.", cefr: "A1" },
+      { theme: "appearance_qualities_a1", en: "that sounds good", ru: ["это звучит хорошо"], exEn: "A picnic on Sunday? That sounds good.", exRu: "Пикник в воскресенье? Это звучит хорошо.", cefr: "A1" },
+    ],
+  },
+  {
+    word: "just",
+    phrases: [
+      { theme: "appearance_qualities_a1", en: "I have just finished", ru: ["я только что закончил"], exEn: "I have just finished my homework.", exRu: "Я только что закончил домашнее задание.", cefr: "A1" },
+      { theme: "appearance_qualities_a1", en: "just one more", ru: ["только ещё один"], exEn: "Just one more question, please.", exRu: "Только ещё один вопрос, пожалуйста.", cefr: "A1" },
+    ],
+  },
+];
 
-  // ── A2 ───────────────────────────────────────────────────────────────────
+// ── A2 ───────────────────────────────────────────────────────────────────────
+const A2: PolysemousWord[] = [
   {
     word: "jam",
     phrases: [
@@ -313,8 +335,17 @@ export const POLYSEMOUS: PolysemousWord[] = [
       { theme: "leisure_culture_a2", en: "run a shop", ru: ["управлять магазином"], exEn: "Her parents run a small shop.", exRu: "Её родители управляют небольшим магазином.", cefr: "A2" },
     ],
   },
+  {
+    word: "term",
+    phrases: [
+      { theme: "appearance_qualities_a2", en: "the summer term", ru: ["летний семестр"], exEn: "The summer term ends in June.", exRu: "Летний семестр заканчивается в июне.", cefr: "A2" },
+      { theme: "appearance_qualities_a2", en: "a medical term", ru: ["медицинский термин"], exEn: "He explained the medical term simply.", exRu: "Он просто объяснил медицинский термин.", cefr: "A2" },
+    ],
+  },
+];
 
-  // ── B1 ───────────────────────────────────────────────────────────────────
+// ── B1 ───────────────────────────────────────────────────────────────────────
+const B1: PolysemousWord[] = [
   {
     word: "chest",
     phrases: [
@@ -400,6 +431,165 @@ export const POLYSEMOUS: PolysemousWord[] = [
     ],
   },
 ];
+
+// ── B2 ───────────────────────────────────────────────────────────────────────
+// Эти слова я оставил без правки в батче B2 намеренно: подпорка в примере
+// закрепила бы один перевод из двух.
+const B2: PolysemousWord[] = [
+  {
+    word: "concrete",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a concrete wall", ru: ["бетонная стена"], exEn: "A concrete wall runs along the road.", exRu: "Бетонная стена идёт вдоль дороги.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "a concrete example", ru: ["конкретный пример"], exEn: "Give me a concrete example, please.", exRu: "Дай мне конкретный пример, пожалуйста.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "firm",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a firm handshake", ru: ["твёрдое рукопожатие"], exEn: "He greeted me with a firm handshake.", exRu: "Он приветствовал меня твёрдым рукопожатием.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "a law firm", ru: ["юридическая фирма"], exEn: "She works for a small law firm.", exRu: "Она работает в небольшой юридической фирме.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "pitch",
+    phrases: [
+      { theme: "leisure_culture_b2", en: "a football pitch", ru: ["футбольное поле"], exEn: "The football pitch was wet after the rain.", exRu: "Футбольное поле было мокрым после дождя.", cefr: "B2" },
+      { theme: "leisure_culture_b2", en: "a sales pitch", ru: ["рекламная речь"], exEn: "His sales pitch lasted ten minutes.", exRu: "Его рекламная речь длилась десять минут.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "counter",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "the shop counter", ru: ["прилавок магазина"], exEn: "He put the money on the shop counter.", exRu: "Он положил деньги на прилавок магазина.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "counter an argument", ru: ["возразить на аргумент"], exEn: "She countered his argument at once.", exRu: "Она сразу возразила на его аргумент.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "rank",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "the rank of captain", ru: ["звание капитана"], exEn: "He reached the rank of captain.", exRu: "Он достиг звания капитана.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "rank the answers", ru: ["расположить ответы по порядку"], exEn: "Rank the answers from best to worst.", exRu: "Расположи ответы по порядку от лучшего к худшему.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "scale",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a scale from one to ten", ru: ["шкала от одного до десяти"], exEn: "Rate the film on a scale from one to ten.", exRu: "Оцени фильм по шкале от одного до десяти.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "on a large scale", ru: ["в большом масштабе"], exEn: "They grow wheat on a large scale.", exRu: "Они выращивают пшеницу в большом масштабе.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "plain",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a plain white shirt", ru: ["простая белая рубашка"], exEn: "He wore a plain white shirt.", exRu: "Он надел простую белую рубашку.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "it is plain to see", ru: ["это очевидно"], exEn: "It is plain to see that he is tired.", exRu: "Очевидно, что он устал.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "minor",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a minor problem", ru: ["незначительная проблема"], exEn: "It was only a minor problem.", exRu: "Это была только незначительная проблема.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "sold to minors", ru: ["продано несовершеннолетним"], exEn: "These drinks cannot be sold to minors.", exRu: "Эти напитки нельзя продавать несовершеннолетним.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "stable",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a stable job", ru: ["стабильная работа"], exEn: "He is looking for a stable job.", exRu: "Он ищет стабильную работу.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "clean the stable", ru: ["чистить конюшню"], exEn: "She cleans the stable every morning.", exRu: "Она чистит конюшню каждое утро.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "tough",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a tough decision", ru: ["трудное решение"], exEn: "It was a tough decision for the family.", exRu: "Это было трудное решение для семьи.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "tough meat", ru: ["жёсткое мясо"], exEn: "The meat was tough and dry.", exRu: "Мясо было жёстким и сухим.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "loose",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a loose tooth", ru: ["шатающийся зуб"], exEn: "The boy has a loose tooth.", exRu: "У мальчика шатающийся зуб.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "loose trousers", ru: ["свободные брюки"], exEn: "He prefers loose trousers in summer.", exRu: "Летом он предпочитает свободные брюки.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "comic",
+    phrases: [
+      { theme: "leisure_culture_b2", en: "read a comic", ru: ["читать комикс"], exEn: "He reads a comic every evening.", exRu: "Он читает комикс каждый вечер.", cefr: "B2" },
+      { theme: "leisure_culture_b2", en: "a comic effect", ru: ["комический эффект"], exEn: "The hat created a comic effect.", exRu: "Шляпа создала комический эффект.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "arms",
+    phrases: [
+      { theme: "health_body_b2", en: "in her arms", ru: ["в её руках"], exEn: "She held the baby in her arms.", exRu: "Она держала малыша в своих руках.", cefr: "B2" },
+      { theme: "health_body_b2", en: "give up arms", ru: ["сдать оружие"], exEn: "The soldiers agreed to give up arms.", exRu: "Солдаты согласились сдать оружие.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "organ",
+    phrases: [
+      { theme: "health_body_b2", en: "an internal organ", ru: ["внутренний орган"], exEn: "The heart is an internal organ.", exRu: "Сердце — внутренний орган.", cefr: "B2" },
+      { theme: "health_body_b2", en: "play the organ", ru: ["играть на органе"], exEn: "She plays the organ in church.", exRu: "Она играет на органе в церкви.", cefr: "B2" },
+    ],
+  },
+  {
+    word: "model",
+    phrases: [
+      { theme: "appearance_qualities_b2", en: "a fashion model", ru: ["модель на подиуме"], exEn: "The fashion model walked slowly.", exRu: "Модель на подиуме шла медленно.", cefr: "B2" },
+      { theme: "appearance_qualities_b2", en: "the latest model", ru: ["последняя модель"], exEn: "This is the latest model of the phone.", exRu: "Это последняя модель телефона.", cefr: "B2" },
+    ],
+  },
+];
+
+// ── C1 ───────────────────────────────────────────────────────────────────────
+const C1: PolysemousWord[] = [
+  {
+    word: "dynamic",
+    phrases: [
+      { theme: "appearance_qualities_c1", en: "a dynamic speaker", ru: ["энергичный оратор"], exEn: "She is a dynamic speaker and holds attention.", exRu: "Она энергичный оратор и держит внимание.", cefr: "C1" },
+      { theme: "appearance_qualities_c1", en: "the family dynamic", ru: ["расстановка сил в семье"], exEn: "His arrival changed the family dynamic.", exRu: "Его приезд изменил расстановку сил в семье.", cefr: "C1" },
+    ],
+  },
+  {
+    word: "craft",
+    phrases: [
+      { theme: "leisure_culture_c1", en: "a traditional craft", ru: ["традиционное ремесло"], exEn: "Pottery is a traditional craft here.", exRu: "Гончарное дело здесь традиционное ремесло.", cefr: "C1" },
+      { theme: "leisure_culture_c1", en: "a small craft", ru: ["небольшое судно"], exEn: "A small craft crossed the bay.", exRu: "Небольшое судно пересекло бухту.", cefr: "C1" },
+    ],
+  },
+  {
+    word: "novel",
+    phrases: [
+      { theme: "leisure_culture_c1", en: "read a novel", ru: ["читать роман"], exEn: "She is reading a long novel.", exRu: "Она читает длинный роман.", cefr: "C1" },
+      { theme: "leisure_culture_c1", en: "a novel idea", ru: ["новая идея"], exEn: "He suggested a novel idea for the project.", exRu: "Он предложил новую идею для проекта.", cefr: "C1" },
+    ],
+  },
+  {
+    word: "charm",
+    phrases: [
+      { theme: "emotions_character_c1", en: "personal charm", ru: ["личное очарование"], exEn: "His personal charm won everyone over.", exRu: "Его личное очарование покорило всех.", cefr: "C1" },
+      { theme: "emotions_character_c1", en: "a lucky charm", ru: ["талисман на удачу"], exEn: "She keeps a lucky charm in her bag.", exRu: "Она держит талисман на удачу в сумке.", cefr: "C1" },
+    ],
+  },
+  {
+    word: "gravity",
+    phrases: [
+      { theme: "appearance_qualities_c1", en: "the force of gravity", ru: ["сила гравитации"], exEn: "The force of gravity holds us on the ground.", exRu: "Сила гравитации держит нас на земле.", cefr: "C1" },
+      { theme: "appearance_qualities_c1", en: "the gravity of the situation", ru: ["серьёзность ситуации"], exEn: "Nobody understood the gravity of the situation.", exRu: "Никто не понимал серьёзности ситуации.", cefr: "C1" },
+    ],
+  },
+  {
+    word: "vein",
+    phrases: [
+      { theme: "health_body_c1", en: "a vein in his arm", ru: ["вена на его руке"], exEn: "The nurse found a vein in his arm.", exRu: "Медсестра нашла вену на его руке.", cefr: "C1" },
+      { theme: "health_body_c1", en: "in the same vein", ru: ["в том же духе"], exEn: "He continued in the same vein for an hour.", exRu: "Он продолжал в том же духе целый час.", cefr: "C1" },
+    ],
+  },
+];
+
+export const POLYSEMOUS: PolysemousWord[] = [...A1, ...A2, ...B1, ...B2, ...C1];
 
 /** Слова, у которых одиночной карточки быть не должно. */
 export const AMBIGUOUS_WORDS: ReadonlySet<string> = new Set(
