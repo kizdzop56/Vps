@@ -25,6 +25,9 @@
 // МОЖНО: «есть ли значение, чей перевод совпадает с переводом карточки?»
 // Совпадение — это факт, и на нём можно строить выводы (findSense).
 //
+// МОЖНО: «что означает эта идиома?» У фразеологизмов есть пометка idiomatic и
+// толкование смысла, написанное человеком (см. phraseSource.ts).
+//
 // НЕЛЬЗЯ: «верен ли перевод карточки?» Русские переводы в Викисловаре
 // заполнены ВЫБОРОЧНО: у популярных значений есть, у прочих пусто, синонимы
 // перечислены не полностью. Отсутствие совпадения — это незнание, а не
@@ -44,8 +47,18 @@ export type WordSense = {
   definition: string;
   /** Часть речи: noun, verb, adjective, adverb… */
   partOfSpeech: string;
+  /**
+   * Пометки значения: idiomatic, slang, dated, US, British…
+   *
+   * «idiomatic» — единственный надёжный признак фразеологизма. Без него идиому
+   * пришлось бы угадывать по тексту толкования, а угадываний в этом разделе
+   * уже было достаточно.
+   */
+  tags: string[];
   /** Примеры употребления ИМЕННО этого значения. */
   examples: string[];
+  /** Английские синонимы этого значения. */
+  synonyms: string[];
   /** Русские переводы этого значения, без знаков ударения. */
   translationsRu: string[];
 };
@@ -53,7 +66,9 @@ export type WordSense = {
 type ApiTranslation = { language?: { code?: unknown }; word?: unknown };
 type ApiSense = {
   definition?: unknown;
+  tags?: unknown;
   examples?: unknown;
+  synonyms?: unknown;
   translations?: ApiTranslation[];
 };
 type ApiEntry = {
@@ -62,6 +77,12 @@ type ApiEntry = {
   senses?: ApiSense[];
 };
 type ApiResponse = { entries?: ApiEntry[] };
+
+/** Только строки, только непустые: в ответе бывает всё что угодно. */
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+}
 
 /**
  * Убрать знаки ударения из русского слова.
@@ -87,10 +108,10 @@ function lookupForm(english: string): string {
 }
 
 /**
- * Загрузить все значения английского слова.
+ * Загрузить все значения английского слова или фразы.
  *
- * Пустой массив — слова нет в словаре или сеть подвела. Отличать эти случаи
- * незачем: в обоих мы просто ничего не знаем и ничего не трогаем.
+ * Пустой массив — статьи нет или сеть подвела. Отличать эти случаи незачем: в
+ * обоих мы просто ничего не знаем и ничего не трогаем.
  */
 export async function fetchSenses(english: string): Promise<WordSense[]> {
   const word = lookupForm(english);
@@ -124,10 +145,6 @@ export async function fetchSenses(english: string): Promise<WordSense[]> {
       const definition = typeof sense.definition === "string" ? sense.definition.trim() : "";
       if (!definition) continue;
 
-      const examples = Array.isArray(sense.examples)
-        ? sense.examples.filter((e): e is string => typeof e === "string" && e.trim().length > 0)
-        : [];
-
       const translationsRu: string[] = [];
       for (const t of sense.translations ?? []) {
         if (t?.language?.code !== "ru") continue;
@@ -135,7 +152,14 @@ export async function fetchSenses(english: string): Promise<WordSense[]> {
         if (word && !translationsRu.includes(word)) translationsRu.push(word);
       }
 
-      senses.push({ definition, partOfSpeech, examples, translationsRu });
+      senses.push({
+        definition,
+        partOfSpeech,
+        tags: stringList(sense.tags).map((t) => t.toLowerCase()),
+        examples: stringList(sense.examples),
+        synonyms: stringList(sense.synonyms),
+        translationsRu,
+      });
     }
   }
 
