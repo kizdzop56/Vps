@@ -1,0 +1,46 @@
+# Тесты серверной логики: интервальное повторение, проверка ответов, подбор
+# упражнений, отбор карточек по режимам, учёт времени.
+#
+# Запускается на каждый push, который меняет код сервера или общие пакеты, и
+# вручную (Actions → Тесты → Run workflow).
+name: Тесты
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "artifacts/api-server/**"
+      - "lib/**"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "artifacts/api-server/**"
+      - "lib/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Часовой пояс приложения: границы суток в тестах считаются по нему же.
+    env:
+      APP_TIMEZONE: Europe/Minsk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # --no-frozen-lockfile — как в Dockerfile: локфайл в репозитории
+      # разошёлся с каталогом воркспейса, и строгий режим прерывает установку.
+      - name: Установка зависимостей
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Тесты
+        run: pnpm --filter @workspace/api-server run test
