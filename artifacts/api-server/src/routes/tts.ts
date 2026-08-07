@@ -11,7 +11,8 @@
 //      Отдаёт готовый mp3 (в отличие от Gemini, PCM разбирать не нужно).
 //   4. Gemini TTS — если когда-нибудь будет добавлен (сейчас нет)
 //   5. Azure Speech TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
-//   6. 404 JSON
+//   6. Устаревшая запись из кэша — лучше старая интонация, чем тишина
+//   7. 404 JSON
 //
 // После первого успешного поиска аудио кэшируется и words.audio_url
 // обновляется → повторные запросы идут прямо в кэш.
@@ -36,16 +37,45 @@ const router = Router();
 const TEXT_RE = /^[a-zA-Z][a-zA-Z\s\-'.,!?;:()]*$/;
 const TEXT_MAX = 200;
 
-/**
- * Версия правил синтеза. Входит в ключ кэша.
- *
- * Менять при КАЖДОМ изменении того, как текст превращается в звук: смена
- * голоса, модели, обработки текста. Иначе ученики продолжат слушать записи,
- * сделанные по старым правилам, — кэш вечный и сам не протухает.
- *
- * v2 — speakableText(): к фразе добавляется точка (см. ниже).
- */
+// ── Ключи кэша ──────────────────────────────────────────────────────────────
+//
+// ГРАБЛИ, стоившие всей озвучки разом.
+//
+// Версия правил синтеза сначала вошла в ключ КАЖДОГО текста. Кэш вечный
+// (immutable), поэтому одним коммитом весь накопленный запас стал недоступен:
+// тысячи слов одновременно пошли синтезироваться заново. dictionaryapi.dev на
+// такой залп отвечает отказом, и слова с живой записью носителя начали
+// возвращать 404 — озвучка «перестала работать» целиком.
+//
+// Суть в том, что одиночным словам версия не нужна ВООБЩЕ. Точку добавляет
+// speakableText(), а она уходит только в синтезатор; поиск в словаре идёт по
+// чистому слову, и запись носителя от версии не зависит ни на байт.
+//
+// Поэтому версионируются только ФРАЗЫ — те самые «take care of», ради которых
+// правка и делалась. Одиночные слова остаются на прежнем ключе.
+//
+// Менять TTS_VERSION при изменении того, как ФРАЗА превращается в звук.
 const TTS_VERSION = "v2";
+
+/** Фраза (есть пробел) — только у неё интонация зависит от наших правил. */
+function isPhrase(text: string): boolean {
+  return text.trim().includes(" ");
+}
+
+function hashOf(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Ключ без версии. Он же — ключ всех записей, сделанных до версионирования. */
+function legacyKeyFor(text: string): string {
+  return hashOf(text.toLowerCase().trim());
+}
+
+/** Актуальный ключ кэша для текста. */
+function cacheKeyFor(text: string): string {
+  const normalized = text.toLowerCase().trim();
+  return isPhrase(normalized) ? hashOf(`${TTS_VERSION}:${normalized}`) : hashOf(normalized);
+}
 
 // ── Локальный кэш ──────────────────────────────────────────────────────────
 let ttsDir = path.resolve(process.cwd(), "../../uploads/tts");
@@ -54,13 +84,6 @@ try {
 } catch {
   ttsDir = "/tmp/uploads/tts";
   if (!existsSync(ttsDir)) mkdirSync(ttsDir, { recursive: true });
-}
-
-/** Ключ кэша для текста. Версия внутри: правила синтеза меняются — ключ тоже. */
-function cacheKeyFor(text: string): string {
-  return createHash("sha256")
-    .update(`${TTS_VERSION}:${text.toLowerCase().trim()}`)
-    .digest("hex");
 }
 
 /**
@@ -243,6 +266,13 @@ router.get("/tts", async (req, res) => {
   const wordIdParam = req.query["wordId"];
   const textParam = req.query["text"];
 
+  /** Отдать mp3 клиенту. */
+  const sendAudio = (buf: Buffer) => {
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.send(buf);
+  };
+
   // ── Режим подачи из кэша по sha256-ключу ──────────────────────────────
   if (typeof keyParam === "string" && keyParam) {
     const buf = await readFromCache(keyParam).catch(() => null);
@@ -251,9 +281,7 @@ router.get("/tts", async (req, res) => {
       res.status(404).json({ error: "Audio not found in cache" });
       return;
     }
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    res.send(buf);
+    sendAudio(buf);
     return;
   }
 
@@ -279,22 +307,19 @@ router.get("/tts", async (req, res) => {
     }
     text = word.english;
 
-    // Ссылка на наш кэш. Используем её ТОЛЬКО если ключ соответствует текущей
-    // версии правил синтеза: иначе мы бы вечно отдавали запись, сделанную по
-    // старым правилам, в обход всей логики ниже. Не совпало — идём дальше и
-    // перезаписываем ссылку свежим ключом.
+    // Ссылка на наш кэш. Используем её, если ключ соответствует текущим
+    // правилам синтеза. Не совпал (фраза, озвученная до версионирования) —
+    // идём синтезировать заново, но старую запись держим про запас: она
+    // прозвучит, если синтез не удастся.
     if (word.audioUrl?.startsWith("/api/tts?key=")) {
       const storedKey = word.audioUrl.slice("/api/tts?key=".length);
       if (storedKey === cacheKeyFor(text)) {
         const cached = await readFromCache(storedKey).catch(() => null);
         if (cached) {
-          res.setHeader("Content-Type", "audio/mpeg");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-          res.send(cached);
+          sendAudio(cached);
           return;
         }
       }
-      // Ключ устарел или файла нет — озвучим заново ниже.
     }
 
     // Если audio_url — внешний URL (напр. из fetch-audio скрипта) — скачиваем и кэшируем
@@ -305,9 +330,7 @@ router.get("/tts", async (req, res) => {
         // Обновляем ссылку в БД на кэшированную (фоново)
         db.update(wordsTable).set({ audioUrl: `/api/tts?key=${cacheKey}` })
           .where(eq(wordsTable.id, wordId!)).catch(() => {});
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        res.send(cachedBuf);
+        sendAudio(cachedBuf);
         return;
       }
       // Скачиваем внешний URL и кэшируем
@@ -316,9 +339,7 @@ router.get("/tts", async (req, res) => {
         saveToCache(cacheKey, downloaded).catch(() => {});
         db.update(wordsTable).set({ audioUrl: `/api/tts?key=${cacheKey}` })
           .where(eq(wordsTable.id, wordId!)).catch(() => {});
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        res.send(downloaded);
+        sendAudio(downloaded);
         return;
       }
       // Внешний URL недоступен — продолжаем поиск ниже
@@ -347,9 +368,7 @@ router.get("/tts", async (req, res) => {
       db.update(wordsTable).set({ audioUrl: `/api/tts?key=${cacheKey}` })
         .where(eq(wordsTable.id, wordId)).catch(() => {});
     }
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    res.send(cached);
+    sendAudio(cached);
     return;
   }
 
@@ -372,7 +391,21 @@ router.get("/tts", async (req, res) => {
     audioBuf = await azureTts(text).catch(() => null);
   }
 
+  // ── 5. Устаревшая запись из кэша ────────────────────────────────────────
+  // Синтез не удался: нет ключей, внешний сервис отказал, кончилась квота.
+  // Если для этого текста уже есть запись по прежнему ключу — отдаём её.
+  // Старая интонация лучше тишины, а ученику важно услышать слово.
   if (!audioBuf) {
+    const legacyKey = legacyKeyFor(text);
+    if (legacyKey !== cacheKey) {
+      const stale = await readFromCache(legacyKey).catch(() => null);
+      if (stale) {
+        req.log.warn({ text, wordId }, "tts: свежий синтез не удался, отдаём запись по старому ключу");
+        sendAudio(stale);
+        return;
+      }
+    }
+
     req.log.warn(
       { text, wordId, hasDeepgramKey: !!process.env["DEEPGRAM_API_KEY"], hasAzureKey: !!process.env["AZURE_SPEECH_KEY"] },
       "tts: no audio source produced audio for this text",
@@ -389,9 +422,7 @@ router.get("/tts", async (req, res) => {
     }
   }).catch(() => {});
 
-  res.setHeader("Content-Type", "audio/mpeg");
-  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-  res.send(audioBuf);
+  sendAudio(audioBuf);
 });
 
 export default router;
