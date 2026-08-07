@@ -53,6 +53,10 @@
 // набирает воздух — и всё это время распознавание уже считает, что фраза
 // закончилась. Попытка сгорала до того, как он открывал рот.
 //
+// Пока идёт запись, под микрофоном едет живая дорожка (components/ui/VoiceWave):
+// расшифровка приходит с задержкой, и без дорожки экран выглядел мёртвым —
+// непонятно, ловит микрофон голос или нет.
+//
 // Пустая расшифровка попытку НЕ тратит: это не ошибка ученика, а неудачная
 // запись. Тратятся только попытки, где действительно что-то прозвучало.
 //
@@ -91,6 +95,7 @@ import {
   type SpeechSession,
 } from "@/hooks/useSpeechInput";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { VoiceWave } from "@/components/ui/VoiceWave";
 import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
 import { accents, gradients, radii, chunky } from "@/constants/theme";
 
@@ -1024,6 +1029,19 @@ export function WordTrainer({
                     <Text style={{ marginTop: 4, fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
                       Скажи слово и нажми «Стоп»
                     </Text>
+
+                    {/* Дорожка громкости: видно, что микрофон ловит голос, ещё
+                        до того как придёт расшифровка. */}
+                    <View style={{
+                      width: "100%", marginTop: 12,
+                      backgroundColor: colors.card,
+                      borderRadius: radii.md,
+                      borderWidth: 1, borderColor: colors.border,
+                      paddingVertical: 8, paddingHorizontal: 10,
+                    }}>
+                      <VoiceWave active />
+                    </View>
+
                     {/* Живая расшифровка: ребёнок должен видеть, что его слышат,
                         иначе он не понимает, работает микрофон или нет. */}
                     <Text
