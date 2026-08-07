@@ -1,26 +1,26 @@
-// «Марафон слов»: прогон всех слов уровня знаний пользователя. Экран-обзор
-// показывает точность и прогресс; при точности ≥ порога и пройденных всех словах
-// приложение сообщает, что уровень можно повысить, и ведёт на тест-подтверждение
-// (после верного прохождения теста уровень меняется — уже реализованная функция).
+// «Марафон слов» — ЗАЛ ПОВТОРЕНИЙ выученного.
 //
-// ── Точность и прогресс — РАЗНЫЕ величины ───────────────────────────────────
-// Точность считается только по словам, на которые ученик уже отвечал: пока
-// слово не показали, ответа по нему нет. Поэтому «точность 93%» при 120
-// пройденных из 1060 — это честно, но рядом друг с другом два процента читаются
-// как одно и то же.
+// Сюда попадают только слова уровня, доведённые до «выучено», и только те из
+// них, у которых наступил срок. Всё остальное живёт в «Учить слова». Пустой
+// марафон — нормальное состояние, а не ошибка: чем лучше ученик знает слово,
+// тем позже оно вернётся.
 //
-// Раньше полоса заполнялась ПО ТОЧНОСТИ, а подпись под ней говорила о
-// пройденных словах — выходило «93% марафона пройдено», хотя 940 слов не
-// тронуты. Полоса обязана показывать то же, о чём говорит её подпись.
+// ── Три разных числа, которые легко перепутать ──────────────────────────────
+//   totalWords    — сколько слов на уровне вообще;
+//   answeredWords — на сколько ученик хоть раз отвечал (по ним полоса);
+//   learnedCount  — сколько доведено до «выучено» (это и есть зал повторений);
+//   dueNow        — сколько из выученных созрело прямо сейчас.
 //
-// Теперь: полоса = пройденные слова, а точность подписана числом отвеченных
-// слов и порогом перехода. Порог относится к точности, поэтому и стоит рядом с
-// ней, а не размечает полосу прогресса.
+// Полоса показывает пройденные слова — то же, о чём её подпись. Раньше она
+// заполнялась ПО ТОЧНОСТИ, а подпись говорила о пройденных: выходило «93%
+// марафона пройдено» при 940 нетронутых словах.
+//
+// Точность считается по последним ответам, а не за всю биографию: иначе ученик,
+// начинавший с ошибок, не мог отыграть порог никогда.
 //
 // ── На кнопке только действие ───────────────────────────────────────────────
 // У «Начать марафон» нет подписи. Она сообщала «N слов ещё не пройдено» — ровно
-// то же число, что стоит строкой выше в карточке уровня («Пройдено X из Y ·
-// осталось N»). От текста на кнопке ждут действия, а не повторного отчёта.
+// то же число, что стоит строкой выше в карточке уровня.
 //
 // Эмодзи на экране не используются: значки — глифы из своего набора.
 // Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью.
@@ -129,6 +129,16 @@ export default function MarathonScreen() {
   const donePct = data && data.totalWords > 0 ? data.answeredWords / data.totalWords : 0;
   const passing = data ? data.accuracy >= data.threshold : false;
 
+  // Зал повторений. Старый сервер этих полей не присылал — тогда считаем по
+  // самой очереди, чтобы обновление клиента не обогнало обновление сервера.
+  const learnedCount = data?.learnedCount ?? 0;
+  const dueNow = data?.dueNow ?? data?.cards.length ?? 0;
+  // Сколько слов надо пройти для перехода. Раньше требовались ВСЕ.
+  const answeredTarget = data?.answeredTarget ?? data?.totalWords ?? 0;
+  const recentAnswers = data?.recentAnswers ?? 0;
+  const minAnswers = data?.minAnswers ?? 0;
+  const enoughAnswers = recentAnswers >= minAnswers;
+
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: 120 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 18 }}>
@@ -178,10 +188,12 @@ export default function MarathonScreen() {
                 }}>
                   {data.accuracy}%
                 </Text>
-                {/* Главное пояснение: точность посчитана НЕ по всему марафону, а
-                    по тем словам, на которые ученик успел ответить. */}
+                {/* Точность считается по последним ответам, а не за всю историю —
+                    так и подписано, иначе число выглядит взявшимся ниоткуда. */}
                 <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-                  по {data.answeredWords} {pluralRu(data.answeredWords, "слову", "словам", "словам")}
+                  {recentAnswers > 0
+                    ? `по последним ${recentAnswers} ${pluralRu(recentAnswers, "ответу", "ответам", "ответам")}`
+                    : "пока нет ответов"}
                 </Text>
               </View>
             </View>
@@ -191,11 +203,16 @@ export default function MarathonScreen() {
                 прогрессу, и размечать им эту полосу нечем. */}
             <XpBar progress={donePct} height={12} />
             <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 9, fontVariant: ["tabular-nums"] }}>
-              Пройдено {data.answeredWords} из {data.totalWords} · осталось {left}
+              Пройдено {data.answeredWords} из {data.totalWords} · выучено {learnedCount}
             </Text>
             <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
-              Для перехода на следующий уровень: все слова и точность не ниже {data.threshold}%
+              Для перехода на следующий уровень: пройти {answeredTarget} {pluralRu(answeredTarget, "слово", "слова", "слов")} и держать точность не ниже {data.threshold}%
             </Text>
+            {!enoughAnswers && minAnswers > 0 && (
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
+                Точность начнём засчитывать после {minAnswers} ответов — сейчас {recentAnswers}.
+              </Text>
+            )}
           </Tile>
 
           {/* готовность к переходу на новый уровень */}
@@ -225,9 +242,26 @@ export default function MarathonScreen() {
                 Для уровня {data.level} пока нет слов в готовых колодах.
               </Text>
             </View>
+          ) : dueNow === 0 ? (
+            // Повторять нечего. Раньше кнопка стояла и здесь: ученик нажимал её и
+            // попадал в тренажёр с пустой очередью, без единого объяснения.
+            <Tile glow={accents.violetDeep} style={{ padding: 18 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 9 }}>
+                <Glyph name={learnedCount > 0 ? "trophy" : "compass"} size={19} color={colors.primary} />
+                <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground }}>
+                  {learnedCount > 0 ? "Всё повторено" : "Зал повторений пока пуст"}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 14, color: colors.mutedForeground, lineHeight: 21, marginBottom: 14 }}>
+                {learnedCount > 0
+                  ? `Все ${learnedCount} выученных ${pluralRu(learnedCount, "слово", "слова", "слов")} этого уровня повторены. Следующее вернётся, когда придёт срок: чем лучше ты знаешь слово, тем реже оно появляется.`
+                  : "В марафон слово попадает после того, как ты его выучишь. Начни с раздела «Учить слова» — и они появятся здесь сами."}
+              </Text>
+              <ChunkyButton label="Учить слова" icon="play" chevron onPress={backToWords} />
+            </Tile>
           ) : (
             <>
-              {/* Без подписи: сколько осталось, сказано строкой выше. */}
+              {/* Без подписи: сколько повторить, сказано абзацем ниже. */}
               <ChunkyButton
                 label="Начать марафон"
                 icon="play"
@@ -241,7 +275,7 @@ export default function MarathonScreen() {
                   <Glyph name="compass" size={HINT_ICON} color={colors.mutedForeground} />
                 </View>
                 <Text style={{ flex: 1, fontSize: HINT_SIZE, lineHeight: HINT_LINE, color: colors.mutedForeground }}>
-                  В марафоне встречаются все слова твоего уровня. Точность считается по тем словам, на которые ты уже отвечал, — сейчас это {data.answeredWords} из {data.totalWords}.
+                  Марафон повторяет слова, которые ты уже выучил. Сейчас к повторению готово {dueNow} из {learnedCount}; остальные вернутся по сроку.
                 </Text>
               </View>
             </>
