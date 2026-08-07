@@ -1,21 +1,24 @@
-// Флеш-карточки: колоды, изучение с интервальным повторением, placement-тест,
-// статистика, свои колоды и импорт. Данные офлайн (сид), озвучка — на клиенте
-// (Web Speech API). Для пользовательских слов перевод получаем через Google Translate.
+// Флеш-карточки: колоды, слова, каталог, импорт, назначения ученикам и
+// placement-тест.
+//
+// Тренажёр (очередь, ответы, статистика, марафон) живёт в
+// routes/flashcardsLearn.ts, общее для обеих половин — в lib/flashcardsCore.ts.
+// Раньше всё это лежало в одном файле на две тысячи строк, и правку в нём
+// нельзя было проверить глазами.
+//
+// Данные офлайн (сид), озвучка — через /api/tts. Для пользовательских слов
+// перевод получаем через Google Translate.
 import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   usersTable,
   decksTable,
   wordsTable,
-  userCardStateTable,
   placementResultsTable,
   flashcardSettingsTable,
-  reviewLogTable,
   deckAssignmentsTable,
-  teacherStudentsTable,
-  parentChildrenTable,
 } from "@workspace/db";
-import { eq, and, or, ne, asc, isNull, inArray, lte, gte, sql } from "drizzle-orm";
+import { eq, and, or, ne, asc, isNull, inArray, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import { translateWithGoogle, translateRussianToEnglish } from "@workspace/translate";
 import {
@@ -29,63 +32,16 @@ import {
   type WordInsertRow,
 } from "../lib/deckWords";
 import {
-  LEARNED_LEVEL,
-  awardablePoints,
-  countsAsLapse,
-  gradeFromAnswer,
-  gradeFromLegacy,
-  hardScore,
-  isHardCard,
-  isLearned,
-  legacyResultFromGrade,
-  nextReviewState,
-  pointsEarnedToday,
-  pointsForReview,
-  reachedLearned,
-  startOfDay,
-  type AnswerInfo,
-  type Grade,
-} from "../lib/srs";
-import {
-  buildExercise,
-  interleaveQueue,
-  type WordLike,
-} from "../lib/wordExercise";
-import {
-  MARATHON_MAX_CARDS,
-  needsMoreStudy,
-  pickMarathonCards,
-} from "../lib/wordQueue";
+  CEFR_ORDER,
+  assertOwnDeck,
+  canViewStudent,
+  clean,
+  deckStats,
+  ensureSettings,
+  loadViewableDeck,
+} from "../lib/flashcardsCore";
 
 const router = Router();
-
-// Может ли `viewer` смотреть данные ученика `studentId`: сам ученик, админ,
-// связанный учитель (accepted) или родитель ребёнка. Используется для чужой
-// статистики слов и назначения колод.
-async function canViewStudent(viewer: { userId: number; role: string }, studentId: number): Promise<boolean> {
-  if (viewer.userId === studentId) return true;
-  if (viewer.role === "admin") return true;
-  if (isTeacher(viewer.role)) {
-    const [ts] = await db.select({ id: teacherStudentsTable.id }).from(teacherStudentsTable).where(and(
-      eq(teacherStudentsTable.teacherId, viewer.userId),
-      eq(teacherStudentsTable.studentId, studentId),
-      eq(teacherStudentsTable.status, "accepted"),
-    ));
-    if (ts) return true;
-  }
-  if (viewer.role === "parent") {
-    const [pc] = await db.select({ id: parentChildrenTable.id }).from(parentChildrenTable).where(and(
-      eq(parentChildrenTable.parentId, viewer.userId),
-      eq(parentChildrenTable.studentId, studentId),
-    ));
-    if (pc) return true;
-  }
-  return false;
-}
-
-// Интервальное повторение, оценки и очки живут в ../lib/srs.ts (модуль без БД,
-// покрыт тестами srs.test.ts). Подбор упражнений — в ../lib/wordExercise.ts,
-// разделение режимов «Учить слова» / «Марафон» — в ../lib/wordQueue.ts.
 
 // Английское слово или короткая фраза латиницей. Один и тот же критерий
 // используют автоматическая проверка слова, ручное добавление и импорт.
@@ -98,242 +54,6 @@ const RUSSIAN_MAX_LEN = 80;
 
 function normalizeRussianInput(s: string): string {
   return s.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-// убрать null/undefined-поля, чтобы ответ соответствовал zod-схеме (optional)
-function clean<T extends Record<string, any>>(o: T): T {
-  const out: any = {};
-  for (const k of Object.keys(o)) if (o[k] !== null && o[k] !== undefined) out[k] = o[k];
-  return out;
-}
-
-// Прогресс по колодам: сколько слов, выучено, к повторению и ещё не введено.
-// Считаем агрегатами и только по нужным колодам. Раньше список колод читал
-// целиком таблицу слов и все состояния карточек пользователя — на бесплатном
-// хостинге и мобильной сети запрос отвечал секундами, и страница колоды не
-// успевала найти свою колоду в списке.
-async function deckStats(userId: number, deckIds: number[]): Promise<{
-  wordCount: Map<number, number>;
-  learned: Map<number, number>;
-  due: Map<number, number>;
-  introduced: Map<number, number>;
-}> {
-  const wordCount = new Map<number, number>();
-  const learned = new Map<number, number>();
-  const due = new Map<number, number>();
-  const introduced = new Map<number, number>();
-  if (deckIds.length === 0) return { wordCount, learned, due, introduced };
-
-  const counts = await db
-    .select({ deckId: wordsTable.deckId, n: sql<number>`count(*)::int` })
-    .from(wordsTable)
-    .where(inArray(wordsTable.deckId, deckIds))
-    .groupBy(wordsTable.deckId);
-  for (const c of counts) wordCount.set(c.deckId, Number(c.n));
-
-  const states = await db
-    .select({
-      deckId: wordsTable.deckId,
-      memoryLevel: userCardStateTable.memoryLevel,
-      dueAt: userCardStateTable.dueAt,
-    })
-    .from(userCardStateTable)
-    .innerJoin(wordsTable, eq(wordsTable.id, userCardStateTable.wordId))
-    .where(and(eq(userCardStateTable.userId, userId), inArray(wordsTable.deckId, deckIds)));
-
-  const now = Date.now();
-  for (const st of states) {
-    introduced.set(st.deckId, (introduced.get(st.deckId) ?? 0) + 1);
-    if (st.memoryLevel >= LEARNED_LEVEL) learned.set(st.deckId, (learned.get(st.deckId) ?? 0) + 1);
-    if (st.dueAt.getTime() <= now) due.set(st.deckId, (due.get(st.deckId) ?? 0) + 1);
-  }
-  return { wordCount, learned, due, introduced };
-}
-
-// Колода, которую пользователю можно смотреть: системная, своя или назначенная
-// ему учителем. Возвращает и флаг владельца — по нему клиент решает, показывать
-// ли форму добавления слов, предпросмотр и отправку ученикам.
-async function loadViewableDeck(
-  user: { userId: number; role: string },
-  deckId: number,
-): Promise<
-  | { ok: true; deck: typeof decksTable.$inferSelect; isOwner: boolean; assigned: boolean }
-  | { ok: false; status: number; error: string }
-> {
-  if (!Number.isInteger(deckId)) return { ok: false, status: 400, error: "Некорректный номер колоды" };
-  const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));
-  if (!deck) return { ok: false, status: 404, error: "Колода не найдена" };
-
-  const [assignedRow] = await db.select({ id: deckAssignmentsTable.id }).from(deckAssignmentsTable)
-    .where(and(eq(deckAssignmentsTable.deckId, deckId), eq(deckAssignmentsTable.studentId, user.userId)));
-  const isOwner = deck.ownerId === user.userId;
-  const assigned = !!assignedRow;
-  if (!deck.isSystem && !isOwner && !assigned && user.role !== "admin") {
-    return { ok: false, status: 403, error: "Нет доступа к этой колоде" };
-  }
-  return { ok: true, deck, isOwner, assigned };
-}
-
-// ── Карточки для тренажёра ──────────────────────────────────────────────────
-// К каждой карточке сервер прикладывает готовое упражнение (см. lib/wordExercise)
-// и эмодзи-картинку. Клиент только показывает задание и проверяет ответ, поэтому
-// логика одна и та же во всех режимах: колода, общая сессия, «сложные слова»,
-// марафон.
-type WordRow = typeof wordsTable.$inferSelect;
-type StateRow = typeof userCardStateTable.$inferSelect;
-
-const SESSION_MAX_CARDS = 24; // короткая сессия: дольше ребёнок не удержит внимание
-const SESSION_MAX_NEW = 6;    // сколько новых слов максимум за одну сессию
-const HARD_MAX_CARDS = 20;
-
-// Часть речи, уровень и колода нужны для подбора отвлекающих вариантов:
-// buildExercise берёт дистракторы той же части речи и сначала из той же колоды,
-// затем из того же уровня CEFR (см. lib/wordExercise.ts). Поэтому сюда отдаём
-// полный пул — сужать его заранее по уровню больше не нужно, приоритеты
-// расставляются внутри подбора.
-function toWordLike(w: WordRow): WordLike {
-  return {
-    id: w.id,
-    english: w.english,
-    translationsRu: w.translationsRu,
-    partOfSpeech: w.partOfSpeech,
-    cefrLevel: w.cefrLevel,
-    deckId: w.deckId,
-  };
-}
-
-/** Карточка для клиента: слово + состояние ученика + готовое упражнение. */
-function trainerCard(w: WordRow, st: StateRow | undefined, pool: WordLike[], now: Date) {
-  const isNew = !st;
-  const memoryLevel = st?.memoryLevel ?? 0;
-  return clean({
-    id: w.id, deckId: w.deckId, english: w.english, partOfSpeech: w.partOfSpeech ?? undefined,
-    translationsRu: w.translationsRu, ipa: w.ipa ?? undefined, exampleEn: w.exampleEn ?? undefined,
-    exampleRu: w.exampleRu ?? undefined, cefrLevel: w.cefrLevel ?? undefined, emoji: w.emoji ?? undefined,
-    memoryLevel, introduced: st?.introduced ?? false, isNew,
-    exercise: buildExercise({ word: toWordLike(w), memoryLevel, isNew, pool, now }),
-  });
-}
-
-/**
- * Колоды, доступные ученику: системные + свои + назначенные учителем.
- * Скрытые колоды (hidden, например "misc_{level}") НЕ исключаются — их слова
- * должны попадать в сквозную сессию/марафон, только сама колода не видна
- * в списке колод на экране «Слова» (см. фильтр eq(decksTable.hidden, false)
- * в GET /flashcards/decks).
- */
-async function visibleDeckIds(userId: number): Promise<number[]> {
-  const assignments = await db.select({ deckId: deckAssignmentsTable.deckId })
-    .from(deckAssignmentsTable).where(eq(deckAssignmentsTable.studentId, userId));
-  const assigned = assignments.map((a) => a.deckId);
-  const decks = await db.select({ id: decksTable.id }).from(decksTable).where(or(
-    isNull(decksTable.ownerId),
-    eq(decksTable.ownerId, userId),
-    assigned.length > 0 ? inArray(decksTable.id, assigned) : sql`false`,
-  ));
-  return decks.map((d) => d.id);
-}
-
-/** Прогресс цели дня: сколько разных слов ученик уже прошёл сегодня. */
-async function dailyWordProgress(userId: number, goal: number, now: Date) {
-  const rows = await db.select({ wordId: reviewLogTable.wordId }).from(reviewLogTable)
-    .where(and(eq(reviewLogTable.userId, userId), gte(reviewLogTable.reviewedAt, startOfDay(now))));
-  const wordsToday = new Set(rows.map((r) => r.wordId)).size;
-  return { wordsToday, dailyWordGoal: goal, goalReached: wordsToday >= goal };
-}
-
-function stateForHard(st: StateRow) {
-  return {
-    wordId: st.wordId, memoryLevel: st.memoryLevel, lapses: st.lapses,
-    timesSeen: st.timesSeen, timesCorrect: st.timesCorrect,
-  };
-}
-
-/**
- * Очередь тренажёра по всем доступным колодам.
- *
- * scope = "all"  — сначала просроченные повторения, между ними новые слова
- *                  (в пределах дневной нормы и размера сессии);
- * scope = "hard" — только «сложные слова»: где были срывы или низкая точность.
- *
- * Раньше учить можно было лишь внутри одной колоды, а дневная норма считалась
- * по каждой колоде отдельно — ребёнку приходилось самому решать, куда зайти.
- *
- * Новые слова ограничены уровнем подготовки (levelsUpTo): слова колод выше
- * своего уровня впервые не показываем. Повторения фильтру не подчиняются —
- * однажды введённое слово обязано возвращаться, каким бы ни стал уровень.
- *
- * Выученные слова (уровень памяти ≥ LEARNED_LEVEL) сюда НЕ попадают: их место
- * в марафоне. Раздел «Учить слова» отвечает ровно за то, что обещает названием, —
- * за новое и плохо усвоенное. Слово, на котором ученик сорвался, падает ниже
- * порога и возвращается доучиваться само (см. lib/wordQueue.ts).
- */
-async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Date) {
-  const settings = await ensureSettings(userId);
-  const deckIds = await visibleDeckIds(userId);
-  const words = deckIds.length > 0
-    ? await db.select().from(wordsTable).where(inArray(wordsTable.deckId, deckIds))
-    : [];
-  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, userId));
-  const stateByWord = new Map(states.map((s) => [s.wordId, s]));
-
-  const all = words.map(toWordLike);
-
-  // Уровни, слова которых ученику можно давать впервые. Слово без уровня
-  // (своя колода, колода учителя, ручной ввод) проходит всегда: уровень ему
-  // никто не проставлял, и прятать его не за что.
-  const allowedLevels = new Set(levelsUpTo(settings.placementLevel));
-  const fitsLevel = (w: WordRow) => !w.cefrLevel || allowedLevels.has(w.cefrLevel);
-
-  let picked: WordRow[];
-  let newCount = 0;
-  let reviewCount = 0;
-
-  if (scope === "hard") {
-    const byId = new Map(words.map((w) => [w.id, w]));
-    picked = states
-      .filter((st) => isHardCard(stateForHard(st)))
-      .sort((a, b) => hardScore(stateForHard(b)) - hardScore(stateForHard(a)))
-      .map((st) => byId.get(st.wordId))
-      .filter((w): w is WordRow => Boolean(w))
-      .slice(0, HARD_MAX_CARDS);
-    reviewCount = picked.length;
-  } else {
-    // порядок датасета — это порядок обучения: сначала простые слова колоды
-    const ordered = [...words].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
-    const due: WordRow[] = [];
-    const fresh: WordRow[] = [];
-    for (const w of ordered) {
-      const st = stateByWord.get(w.id);
-      if (!st) { if (fitsLevel(w)) fresh.push(w); }
-      else if (needsMoreStudy(st, now)) due.push(w);
-    }
-    due.sort((a, b) => (stateByWord.get(a.id)!.dueAt.getTime() - stateByWord.get(b.id)!.dueAt.getTime()));
-
-    // Дневная норма новых слов — общая для сессии (в отличие от режима колоды,
-    // где она считается по каждой колоде отдельно).
-    const dayStart = startOfDay(now).getTime();
-    const introducedToday = states.filter((s) => s.createdAt.getTime() >= dayStart).length;
-    const remainingNew = Math.max(0, settings.dailyNewLimit - introducedToday);
-    const freshTaken = fresh.slice(0, Math.min(remainingNew, SESSION_MAX_NEW));
-    const dueTaken = due.slice(0, Math.max(0, SESSION_MAX_CARDS - freshTaken.length));
-    picked = interleaveQueue(dueTaken, freshTaken);
-    newCount = freshTaken.length;
-    reviewCount = dueTaken.length;
-  }
-
-  const progress = await dailyWordProgress(userId, settings.dailyWordGoal, now);
-  return clean({
-    scope,
-    deckId: -1,
-    deckTitle: scope === "hard" ? "Сложные слова" : "Учим слова",
-    isSystem: true,
-    needsIntro: false,
-    newCount,
-    reviewCount,
-    ...progress,
-    cards: picked.map((w) => trainerCard(w, stateByWord.get(w.id), all, now)),
-  });
 }
 
 type DictionaryEntry = { phonetic?: string; phonetics?: Array<{ text?: string }> };
@@ -473,44 +193,27 @@ const PLACEMENT_QUESTIONS: PQ[] = [
   { id: 15, section: "Vocabulary", question: "'Meticulous' most nearly means:", options: ["careless", "very careful and precise", "extremely fast", "lazy"], answer: 1 },
 ];
 
+/**
+ * Балл теста → уровень CEFR.
+ *
+ * Потолок — C1, хотя в CEFR есть и C2. Причина простая: каталог слов доходит
+ * ровно до C1. Пока тест выдавал C2, ученик с пятнадцатью верными ответами
+ * получал уровень, на котором нет ни одного слова: марафон оставался пустым
+ * навсегда, а перейти было некуда.
+ */
 function scoreToCefr(score: number): { level: string; message: string } {
-  // Пороги пропорциональны общему числу вопросов (сейчас 15).
   if (score <= 2) return { level: "A1", message: "Начальный уровень — начинаем с основ." };
   if (score <= 6) return { level: "A2", message: "Базовые знания — уверенное начало." };
   if (score <= 9) return { level: "B1", message: "Средний уровень — хорошая база." };
   if (score <= 12) return { level: "B2", message: "Уверенный уровень — свободнее в общении." };
-  if (score <= 14) return { level: "C1", message: "Продвинутый уровень." };
-  return { level: "C2", message: "Уровень, близкий к носителю." };
+  return { level: "C1", message: "Продвинутый уровень." };
 }
 
-// Порядок уровней CEFR — от начального к продвинутому.
-const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
-
-/**
- * Уровни, слова которых ученику можно показывать ВПЕРВЫЕ: его собственный и
- * все, что ниже.
- *
- * Раньше функция возвращала уровень и два сверху и нигде не использовалась.
- * В роли фильтра сессии такой запас пропускал ровно то, от чего фильтр и нужен:
- * в сквозной сессии слова всех колод сортируются по sortOrder, а он нумеруется
- * ВНУТРИ колоды — значит новичку первым же словом прилетало слово номер ноль
- * колоды верхнего уровня.
- *
- * Уровень не пройден — считаем ученика начинающим (A1), как и марафон.
- */
-function levelsUpTo(level: string | null | undefined): string[] {
-  const idx = level ? CEFR_ORDER.indexOf(level) : 0;
-  return CEFR_ORDER.slice(0, Math.max(0, idx) + 1);
-}
-
-// ── Настройки (создаём строку при первом обращении) ─────────────────────
-async function ensureSettings(userId: number) {
-  const [existing] = await db.select().from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, userId));
-  if (existing) return existing;
-  const [row] = await db.insert(flashcardSettingsTable).values({ userId }).onConflictDoNothing().returning();
-  if (row) return row;
-  const [again] = await db.select().from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, userId));
-  return again!;
+/** Какой из двух уровней выше. Пустые значения считаем самым низким. */
+function higherLevel(a: string | null | undefined, b: string): string {
+  const ia = a ? CEFR_ORDER.indexOf(a) : -1;
+  const ib = CEFR_ORDER.indexOf(b);
+  return ia > ib ? a! : b;
 }
 
 // ── GET /flashcards/settings ───────────────────────────────────────────
@@ -548,6 +251,13 @@ router.get("/flashcards/placement", requireAuth, async (_req, res) => {
 });
 
 // ── POST /flashcards/placement ──────────────────────────────────────
+//
+// ТЕСТ ПОДНИМАЕТ УРОВЕНЬ, НО НЕ ОПУСКАЕТ. Этот же тест открывается по кнопке
+// «Пройти тест на B1» из марафона — то есть ученик проходит его повторно, уже
+// имея уровень. Раньше результат записывался как есть: ответив хуже, чем в
+// первый раз (устал, торопился, попались другие вопросы), ребёнок терял
+// уровень, хотя экран обещал ровно обратное — «подтверди новый уровень».
+// Потерять выученное из-за одного неудачного теста нельзя.
 router.post("/flashcards/placement", requireAuth, async (req, res) => {
   const user = getUser(req);
   const { answers } = req.body as { answers: { id: number; choice: number }[] };
@@ -560,19 +270,33 @@ router.post("/flashcards/placement", requireAuth, async (req, res) => {
   for (const q of PLACEMENT_QUESTIONS) if (byId.get(q.id) === q.answer) score++;
   const { level, message } = scoreToCefr(score);
 
+  const settings = await ensureSettings(user.userId);
+  const applied = higherLevel(settings.placementLevel, level);
+  const keptHigher = applied !== level;
+
   await db.insert(placementResultsTable).values({
     userId: user.userId,
     score,
     total: PLACEMENT_QUESTIONS.length,
+    // В историю пишем то, что тест реально показал: она должна оставаться
+    // честной, даже если действующий уровень остался прежним.
     cefrLevel: level,
     answers: PLACEMENT_QUESTIONS.map((q) => byId.get(q.id) ?? -1),
   });
-  await ensureSettings(user.userId);
   await db.update(flashcardSettingsTable)
-    .set({ placementLevel: level, placementDone: true, updatedAt: new Date() })
+    .set({ placementLevel: applied, placementDone: true, updatedAt: new Date() })
     .where(eq(flashcardSettingsTable.userId, user.userId));
 
-  res.json({ score, total: PLACEMENT_QUESTIONS.length, cefrLevel: level, message });
+  res.json({
+    score,
+    total: PLACEMENT_QUESTIONS.length,
+    cefrLevel: applied,
+    // Что показал именно этот прогон — клиенту полезно для объяснения.
+    testedLevel: level,
+    message: keptHigher
+      ? `В этот раз получилось ${level}. Твой уровень остаётся ${applied} — понижать его за один тест мы не будем.`
+      : message,
+  });
 });
 
 // ── GET /flashcards/decks ────────────────────────────────────────────
@@ -612,9 +336,7 @@ router.get("/flashcards/decks", requireAuth, async (req, res) => {
   }
 
   // Имя владельца — для колод, назначенных ученику учителем: клиент показывает
-  // бейдж «От {ownerName}» (см. DeckCard в flashcards.tsx). Чужой владелец
-  // нужен только у назначенных колод, но тянем имя для всех decks.ownerId сразу
-  // одним запросом, а не по одному на колоду.
+  // бейдж «От {ownerName}». Тянем имена одним запросом, а не по одному на колоду.
   const ownerIds = [...new Set(decks.map((d) => d.ownerId).filter((id): id is number => id != null))];
   const ownerNameById = new Map<number, string>();
   if (ownerIds.length > 0) {
@@ -721,7 +443,7 @@ router.get("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
 // ── GET /flashcards/catalog/words (каталог слов для конструктора колоды) ──────
 //
 // Учитель набирал слова только руками — по одному или списком. При этом в базе
-// уже лежит готовый каталог: системные колоды по темам и уровням A1–C2. Здесь он
+// уже лежит готовый каталог: системные колоды по темам и уровням A1–C1. Здесь он
 // отдаётся с фильтрами и поиском, чтобы слова можно было отмечать галочками.
 //
 // Источник каталога — системные колоды (плюс свои, если includeOwn=1). Чужая
@@ -908,18 +630,6 @@ router.get("/flashcards/assignments", requireAuth, async (req, res) => {
     .where(eq(deckAssignmentsTable.studentId, studentId));
   res.json(rows.map((r) => r.deckId));
 });
-
-// проверка, что колода принадлежит пользователю и не системная
-async function assertOwnDeck(deckId: number, userId: number): Promise<{ ok: boolean; status?: number; error?: string }> {
-  if (!Number.isInteger(deckId)) return { ok: false, status: 400, error: "Некорректный номер колоды" };
-  const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));
-  if (!deck) return { ok: false, status: 404, error: "Колода не найдена" };
-  // Раньше на чужую колоду отвечали «Готовые колоды нельзя редактировать» —
-  // сообщение сбивало с толку, когда колода просто принадлежит другому.
-  if (deck.isSystem) return { ok: false, status: 403, error: "Готовые колоды нельзя редактировать" };
-  if (deck.ownerId !== userId) return { ok: false, status: 403, error: "Это чужая колода — её может менять только автор" };
-  return { ok: true };
-}
 
 // ── POST /flashcards/decks/:id/words (добавить слово в свою колоду) ──────────
 router.post("/flashcards/decks/:id/words", requireAuth, async (req, res) => {
@@ -1222,7 +932,7 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
         rows.push({ english, ru, ipa: cols[2], exEn: cols[3], exRu: cols[4] });
       }
     }
-  } catch (e) {
+  } catch {
     res.status(400).json({ error: "Не удалось разобрать данные импорта" });
     return;
   }
@@ -1276,321 +986,6 @@ router.post("/flashcards/decks/:id/import", requireAuth, async (req, res) => {
     .map((r) => r.english)
     .slice(0, 30);
   res.json({ added, skipped: rows.length - added, skippedWords });
-});
-
-// ── GET /flashcards/study/:deckId ────────────────────────────────────
-router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  const deckId = Number(req.params["deckId"]);
-  const [deck] = await db.select().from(decksTable).where(eq(decksTable.id, deckId));
-  if (!deck) { res.status(404).json({ error: "Deck not found" }); return; }
-
-  const settings = await ensureSettings(user.userId);
-  const words = await db.select().from(wordsTable).where(eq(wordsTable.deckId, deckId));
-  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, user.userId));
-  const stateByWord = new Map(states.map((s) => [s.wordId, s]));
-
-  // сколько новых слов уже введено сегодня В ЭТОЙ КОЛОДЕ — дневная норма
-  // считается отдельно для каждой колоды (не глобально), чтобы лимит одной
-  // колоды не блокировал изучение новых слов в других.
-  const nowDate = new Date();
-  const today = startOfDay(nowDate).getTime();
-  const deckWordIds = new Set(words.map((w) => w.id));
-  const introducedToday = states.filter(
-    (s) => s.createdAt.getTime() >= today && deckWordIds.has(s.wordId),
-  ).length;
-  const remainingNew = Math.max(0, settings.dailyNewLimit - introducedToday);
-
-  // Отвлекающие варианты берём из слов того же уровня во всех доступных колодах:
-  // внутри одной маленькой колоды похожих слов может не хватить на четыре
-  // варианта, и упражнение пришлось бы упрощать до знакомства.
-  const poolDeckIds = await visibleDeckIds(user.userId);
-  const poolWords = poolDeckIds.length > 0
-    ? await db.select().from(wordsTable).where(inArray(wordsTable.deckId, poolDeckIds))
-    : words;
-  const allPool = poolWords.map(toWordLike);
-
-  const now = nowDate.getTime();
-  const dueCards: any[] = [];
-  const newCards: any[] = [];
-  const ordered = [...words].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
-  for (const w of ordered) {
-    const st = stateByWord.get(w.id);
-    const card = trainerCard(w, st, allPool, nowDate);
-    if (st) {
-      if (st.dueAt.getTime() <= now) dueCards.push(card);
-    } else {
-      newCards.push(card);
-    }
-  }
-
-  const introducedInDeck = words.filter((w) => stateByWord.has(w.id)).length;
-  const needsIntro = deck.isSystem && introducedInDeck === 0;
-
-  const limitedNew = newCards.slice(0, remainingNew);
-  // повторения и новые слова идут вперемешку — так сессия не распадается на
-  // «скучный блок повторений» и «блок новых слов»
-  const cards = interleaveQueue(dueCards, limitedNew);
-  const progress = await dailyWordProgress(user.userId, settings.dailyWordGoal, nowDate);
-
-  res.json(clean({
-    deckId, deckTitle: deck.title, isSystem: deck.isSystem, needsIntro,
-    newCount: limitedNew.length, reviewCount: dueCards.length, ...progress, cards,
-  }));
-});
-
-// ── GET /flashcards/session ──────────────────────────────────────────
-// Сквозная сессия по всем колодам: одна кнопка «Учить слова» вместо обхода
-// колод вручную. Новые слова — по уровню подготовки, повторения — только те,
-// что ещё не выучены (выученные живут в марафоне; см. buildTrainerQueue).
-router.get("/flashcards/session", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  res.json(await buildTrainerQueue(user.userId, "all", new Date()));
-});
-
-// ── GET /flashcards/hard ─────────────────────────────────────────────
-// «Сложные слова»: то, на чём ребёнок регулярно спотыкается.
-router.get("/flashcards/hard", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  res.json(await buildTrainerQueue(user.userId, "hard", new Date()));
-});
-
-// ── POST /flashcards/review ────────────────────────────────────────
-const GRADES: Grade[] = ["again", "hard", "good", "easy"];
-
-router.post("/flashcards/review", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  const body = req.body as {
-    wordId: number;
-    grade?: Grade;
-    answer?: AnswerInfo;
-    mode?: string;
-    result?: "know" | "dont";
-  };
-  const wordId = Number(body.wordId);
-
-  // Оценку принимаем в трёх видах:
-  //   grade  — явная оценка (знакомство: «понятно» / «ещё раз»);
-  //   answer — сам ответ ученика: верно/неверно, попытки, время → оценку считает
-  //            сервер (одни правила для всех упражнений, см. lib/srs.ts);
-  //   result — старый формат know/dont: его присылает уже развёрнутый клиент,
-  //            поэтому поддержку оставляем, чтобы обновление не ломало прод.
-  let grade: Grade | null = null;
-  if (body.grade && GRADES.includes(body.grade)) grade = body.grade;
-  else if (body.answer && typeof body.answer.correct === "boolean") grade = gradeFromAnswer(body.answer);
-  else if (body.result === "know" || body.result === "dont") grade = gradeFromLegacy(body.result);
-
-  if (!wordId || !grade) {
-    res.status(400).json({ error: "wordId and grade (again|hard|good|easy) or answer.correct required" });
-    return;
-  }
-
-  const [word] = await db.select({ id: wordsTable.id }).from(wordsTable).where(eq(wordsTable.id, wordId));
-  if (!word) { res.status(404).json({ error: "Word not found" }); return; }
-
-  const now = new Date();
-  const settings = await ensureSettings(user.userId);
-  const [existing] = await db.select().from(userCardStateTable)
-    .where(and(eq(userCardStateTable.userId, user.userId), eq(userCardStateTable.wordId, wordId)));
-
-  const prevLevel = existing?.memoryLevel ?? 0;
-  const { level, dueAt, intervalMinutes } = nextReviewState(prevLevel, grade, now);
-  const correct = grade !== "again";
-  const legacyResult = legacyResultFromGrade(grade);
-
-  // Журнал до текущего ответа: нужен и для дневного потолка очков, и чтобы
-  // бонус за выученное слово начислялся один раз за всю историю.
-  const logs = await db.select().from(reviewLogTable).where(eq(reviewLogTable.userId, user.userId));
-  const learnedBefore = logs.some((l) => l.wordId === wordId && isLearned(l.memoryLevelAfter ?? 0));
-  const justLearned = reachedLearned(prevLevel, level) && !learnedBefore;
-
-  if (existing) {
-    await db.update(userCardStateTable).set({
-      memoryLevel: level, dueAt, lastResult: legacyResult,
-      timesSeen: existing.timesSeen + 1,
-      timesCorrect: existing.timesCorrect + (correct ? 1 : 0),
-      lapses: existing.lapses + (countsAsLapse(prevLevel, grade) ? 1 : 0),
-      introduced: true, updatedAt: now,
-    }).where(eq(userCardStateTable.id, existing.id));
-  } else {
-    await db.insert(userCardStateTable).values({
-      userId: user.userId, wordId, memoryLevel: level, dueAt, introduced: true,
-      timesSeen: 1, timesCorrect: correct ? 1 : 0, lastResult: legacyResult,
-    }).onConflictDoNothing();
-  }
-
-  await db.insert(reviewLogTable).values({
-    userId: user.userId, wordId, result: legacyResult, memoryLevelAfter: level, reviewedAt: now,
-  });
-
-  // Очки за слова: раньше карточки не давали ничего, очки приносили только
-  // задания. Дневной потолок не даёт «нафармить» баллы перелистыванием.
-  const earnedToday = pointsEarnedToday(logs, startOfDay(now));
-  const pointsEarned = awardablePoints(pointsForReview(grade, justLearned), earnedToday);
-  if (pointsEarned > 0) {
-    const [userRow] = await db.select({ totalPoints: usersTable.totalPoints })
-      .from(usersTable).where(eq(usersTable.id, user.userId));
-    await db.update(usersTable)
-      .set({ totalPoints: (userRow?.totalPoints ?? 0) + pointsEarned, updatedAt: now })
-      .where(eq(usersTable.id, user.userId));
-  }
-
-  const progress = await dailyWordProgress(user.userId, settings.dailyWordGoal, now);
-
-  res.json({
-    wordId, grade, memoryLevel: level, dueAt: dueAt.toISOString(), intervalMinutes,
-    learned: isLearned(level), justLearned, pointsEarned, ...progress,
-  });
-});
-
-// ── GET /flashcards/stats ────────────────────────────────────────────
-router.get("/flashcards/stats", requireAuth, async (req, res) => {
-  const user = getUser(req);
-
-  // По умолчанию — статистика самого пользователя. Учитель/родитель/админ может
-  // запросить статистику ученика через ?studentId= (раньше параметр игнорировался,
-  // и на профиле ученика показывалась статистика самого смотрящего).
-  const requested = Number(req.query["studentId"]);
-  const targetId = Number.isFinite(requested) && requested > 0 ? requested : user.userId;
-  if (targetId !== user.userId) {
-    const allowed = await canViewStudent(user, targetId);
-    if (!allowed) { res.status(403).json({ error: "Нет доступа к статистике этого ученика" }); return; }
-  }
-
-  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, targetId));
-  const logs = await db.select().from(reviewLogTable).where(eq(reviewLogTable.userId, targetId));
-
-  // CEFR-уровень из placement-теста (для отображения учителю/родителю).
-  const [settings] = await db.select().from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, targetId));
-  const placementLevel = settings?.placementLevel ?? null;
-
-  const totalWords = states.length;
-  const totalLearned = states.filter((s) => s.memoryLevel >= LEARNED_LEVEL).length;
-  const totalReviews = logs.length;
-  const correct = logs.filter((l) => l.result === "know").length;
-  const accuracy = totalReviews > 0 ? Math.round((correct / totalReviews) * 100) : 0;
-
-  // Когда каждое слово впервые дошло до «выучено». Раньше день засчитывался по
-  // условию memoryLevelAfter === LEARNED_LEVEL: при перескоке уровня (оценка
-  // «легко») слово в статистику не попадало, а при каждом повторе выученного —
-  // попадало снова.
-  const firstLearnedAt = new Map<number, Date>();
-  for (const l of [...logs].sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime())) {
-    if (isLearned(l.memoryLevelAfter ?? 0) && !firstLearnedAt.has(l.wordId)) {
-      firstLearnedAt.set(l.wordId, l.reviewedAt);
-    }
-  }
-
-  // агрегат по последним 14 дням
-  const days: { date: string; learned: number; reviews: number; correct: number }[] = [];
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  const byDay = new Map<string, { reviews: number; correct: number; learned: number }>();
-  const bump = (key: string, patch: Partial<{ reviews: number; correct: number; learned: number }>) => {
-    const e = byDay.get(key) ?? { reviews: 0, correct: 0, learned: 0 };
-    e.reviews += patch.reviews ?? 0;
-    e.correct += patch.correct ?? 0;
-    e.learned += patch.learned ?? 0;
-    byDay.set(key, e);
-  };
-  for (const l of logs) bump(fmt(l.reviewedAt), { reviews: 1, correct: l.result === "know" ? 1 : 0 });
-  for (const at of firstLearnedAt.values()) bump(fmt(at), { learned: 1 });
-
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = fmt(d);
-    const e = byDay.get(key) ?? { reviews: 0, correct: 0, learned: 0 };
-    days.push({ date: key, learned: e.learned, reviews: e.reviews, correct: e.correct });
-  }
-
-  // Сегодняшний срез: прогресс к цели дня по словам и число сложных слов —
-  // это же видят учитель и родитель, когда открывают статистику ученика.
-  const dayStart = startOfDay().getTime();
-  const logsToday = logs.filter((l) => l.reviewedAt.getTime() >= dayStart);
-  const wordsToday = new Set(logsToday.map((l) => l.wordId)).size;
-  const learnedToday = [...firstLearnedAt.values()].filter((at) => at.getTime() >= dayStart).length;
-  const hardCount = states.filter((st) => isHardCard(stateForHard(st))).length;
-  const dailyWordGoal = settings?.dailyWordGoal ?? 10;
-
-  res.json({
-    totalLearned, totalWords, totalReviews, accuracy, daily: days, placementLevel,
-    wordsToday, learnedToday, reviewsToday: logsToday.length,
-    dailyWordGoal, goalReached: wordsToday >= dailyWordGoal, hardCount,
-  });
-});
-
-// ── GET /flashcards/marathon ────────────────────────────────────────
-// «Марафон слов» — зал повторений: сюда попадают ТОЛЬКО выученные слова уровня
-// (уровень памяти ≥ LEARNED_LEVEL). Всё, что ещё не усвоено, живёт в разделе
-// «Учить слова», иначе разделы делают одно и то же и ребёнок не понимает, чем
-// они отличаются.
-//
-// Порядок задаёт интервальное повторение: сортируем по dueAt, а он уезжает тем
-// дальше, чем выше уровень памяти (неделя на 4-м уровне, 30 дней на 5-м). Так
-// само собой получается «чем лучше знаешь слово, тем реже оно попадается» —
-// отдельного счётчика для этого не нужно. Отдаём порцией (MARATHON_MAX_CARDS),
-// а не все слова уровня разом: на старших уровнях это сотни карточек в одном
-// ответе, которые ребёнок всё равно не пройдёт за раз.
-//
-// Счётчики прогресса по уровню (answeredWords, accuracy, eligible) считаются по
-// ВСЕМ словам уровня, а не по выученным: иначе переход на следующий уровень
-// открывался бы по одной-единственной выученной карточке.
-const MARATHON_PASS = 75; // порог точности (%) для перехода на новый уровень
-
-router.get("/flashcards/marathon", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  const settings = await ensureSettings(user.userId);
-  const level = settings.placementLevel ?? "A1";
-  const idx = CEFR_ORDER.indexOf(level);
-  const nextLevel = idx >= 0 && idx < CEFR_ORDER.length - 1 ? CEFR_ORDER[idx + 1] : null;
-
-  // слова уровня только из готовых (системных) колод
-  const rows = await db
-    .select()
-    .from(wordsTable)
-    .innerJoin(decksTable, eq(wordsTable.deckId, decksTable.id))
-    .where(and(eq(decksTable.isSystem, true), eq(wordsTable.cefrLevel, level)));
-  const words = rows.map((r) => r.words);
-
-  const states = await db.select().from(userCardStateTable).where(eq(userCardStateTable.userId, user.userId));
-  const stateByWord = new Map(states.map((s) => [s.wordId, s]));
-
-  let seen = 0;
-  let correct = 0;
-  let answeredWords = 0; // сколько разных слов уровня пользователь уже отвечал
-  for (const w of words) {
-    const st = stateByWord.get(w.id);
-    if (!st) continue;
-    seen += st.timesSeen;
-    correct += st.timesCorrect;
-    if (st.timesSeen > 0) answeredWords++;
-  }
-
-  const now = new Date();
-  const allPool = words.map(toWordLike);
-
-  // Отбор и порядок — в lib/wordQueue.ts (модуль без БД, покрыт тестами).
-  const { picked, learnedCount, dueNow } = pickMarathonCards(
-    words,
-    (w) => stateByWord.get(w.id),
-    now,
-    MARATHON_MAX_CARDS,
-  );
-  const cards = picked.map((w) => trainerCard(w, stateByWord.get(w.id), allPool, now));
-
-  const totalWords = words.length;
-  const accuracy = seen > 0 ? Math.round((correct / seen) * 100) : 0;
-  const eligible =
-    totalWords > 0 && answeredWords >= totalWords && accuracy >= MARATHON_PASS && nextLevel !== null;
-  const progress = await dailyWordProgress(user.userId, settings.dailyWordGoal, now);
-
-  res.json(clean({
-    level, nextLevel: nextLevel ?? undefined, totalWords, answeredWords,
-    // сколько слов уровня уже выучено (весь зал повторений) и сколько из них
-    // созрело к повторению прямо сейчас — по ним клиент объясняет пустой экран
-    learnedCount, dueNow,
-    seen, correct, accuracy, threshold: MARATHON_PASS, eligible, ...progress, cards,
-  }));
 });
 
 export default router;
