@@ -26,6 +26,7 @@ import type { SeedDeck } from "./flashcards-data";
 import { A1_FIXES } from "./example-fixes-a1";
 import { A2_FIXES } from "./example-fixes-a2";
 import { B1_FIXES } from "./example-fixes-b1";
+import { SENSE_BASE_FIXES } from "./example-fixes-senses";
 
 export type ExampleFix = {
   exEn?: string;
@@ -39,10 +40,15 @@ export type ExampleFix = {
 // сломанным примером, и правка должна доехать до всех копий. Из-за этого ключи
 // между файлами уровней не должны пересекаться — при слиянии дубликат молча
 // перетёрся бы. За этим следит pnpm validate:examples.
+//
+// SENSE_BASE_FIXES идёт последним и побеждает намеренно: это правки базовых
+// карточек многозначных слов, где второй смысл вынесен в отдельную фразу
+// (см. sense-phrases.ts). Пофайловые правки уровня о втором значении не знают.
 export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
   ...A1_FIXES,
   ...A2_FIXES,
   ...B1_FIXES,
+  ...SENSE_BASE_FIXES,
 };
 
 export function fixFor(en: string): ExampleFix | undefined {
