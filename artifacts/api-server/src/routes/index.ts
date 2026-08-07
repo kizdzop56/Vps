@@ -15,8 +15,8 @@ import connectionsRouter from "./connections";
 import calendarRouter from "./calendar";
 import gamificationRouter from "./gamification";
 import notificationsRouter from "./notifications";
-import flashcardsGuardRouter from "./flashcardsGuard";
 import flashcardsRouter from "./flashcards";
+import flashcardsLearnRouter from "./flashcardsLearn";
 import flashcardsAnswerRouter from "./flashcardsAnswer";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
@@ -47,15 +47,14 @@ router.use(gamificationRouter);
 // Лента событий ученика: /notifications. Своё пространство путей, ни с чем не
 // пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
 router.use(notificationsRouter);
-// ВНИМАНИЕ: страж обязан стоять ПЕРЕД flashcardsRouter. Express отдаёт запрос
-// первому подходящему обработчику, и если поменять эти две строки местами,
-// проверка доступа к чужой колоде просто перестанет вызываться — тихо, без
-// единой ошибки в логах. Подробности — в flashcardsGuard.ts.
-router.use(flashcardsGuardRouter);
+// Раздел «Слова» разделён надвое: колоды, каталог, импорт и назначения — в
+// flashcards, сам тренажёр (очередь, ответы, статистика, марафон) — в
+// flashcardsLearn. Пути не пересекаются, поэтому порядок значения не имеет.
+// Общее для обеих половин лежит в lib/flashcardsCore.ts.
 router.use(flashcardsRouter);
+router.use(flashcardsLearnRouter);
 // Проверка свободного ответа (письмо и произношение): /flashcards/check-answer.
-// Путь не пересекается с маршрутами flashcardsRouter, поэтому порядок роли не
-// играет; вынесен отдельно, чтобы не растить flashcards.ts дальше.
+// Путь не пересекается с остальными; вынесен отдельно по той же причине.
 router.use(flashcardsAnswerRouter);
 router.use(messagingRouter);
 router.use(ttsRouter);
