@@ -217,6 +217,15 @@ function todayKey(): string {
 /**
  * Переносит отложенную цель в активную, если сутки уже сменились.
  * Возвращает актуальную пару целей — её и отдаём клиенту.
+ *
+ * ГРАБЛИ, из-за которых цель применялась мгновенно.
+ * Раньше при смене суток без ожидающего переноса (next равен активной цели)
+ * функция выходила сразу и дату НЕ трогала. Отметка застревала на позапрошлом
+ * дне, а PATCH ниже сохранял её как есть — и первый же вызов этой функции после
+ * смены цели видел «дата меньше сегодняшней» и применял новую цель немедленно.
+ *
+ * Поэтому сегодняшний день штампуется ВСЕГДА, когда сутки сменились: перенос
+ * состоялся, даже если переносить было нечего.
  */
 async function resolveDailyGoal(user: {
   id: number;
@@ -236,7 +245,17 @@ async function resolveDailyGoal(user: {
     return { active: user.dailyGoalMinutes, next };
   }
 
-  if (user.dailyGoalAppliedDate >= today || next === user.dailyGoalMinutes) {
+  // Сегодня перенос уже был (или день ещё не сменился) — ничего не делаем.
+  if (user.dailyGoalAppliedDate >= today) {
+    return { active: user.dailyGoalMinutes, next };
+  }
+
+  // Сутки сменились. Переносить может быть нечего, но отметку всё равно
+  // передвигаем: иначе она протухнет и следующая смена цели применится сразу.
+  if (next === user.dailyGoalMinutes) {
+    await db.update(usersTable)
+      .set({ dailyGoalAppliedDate: today, updatedAt: new Date() })
+      .where(eq(usersTable.id, user.id));
     return { active: user.dailyGoalMinutes, next };
   }
 
@@ -731,9 +750,13 @@ router.patch("/gamification/daily-goal", requireAuth, async (req, res) => {
   await db.update(usersTable)
     .set({
       nextDailyGoalMinutes: minutes,
-      // Если перенос ещё ни разу не выполнялся, фиксируем сегодняшний день —
-      // иначе ближайший же запрос статистики применил бы новую цель сразу.
-      dailyGoalAppliedDate: current.dailyGoalAppliedDate ?? todayKey(),
+      // Отметку ставим СЕГОДНЯШНИМ днём всегда, а не только когда её нет.
+      // Выбор сделан сегодня — значит, перенос причитается завтра. Раньше здесь
+      // сохранялась прежняя дата (current.dailyGoalAppliedDate ?? today), и если
+      // она успела протухнуть, ближайший GET /gamification/stats считал, что
+      // сутки давно сменились, и применял новую цель немедленно: задачи
+      // оставались вчерашними, а время в шапке менялось на глазах.
+      dailyGoalAppliedDate: todayKey(),
       updatedAt: new Date(),
     })
     .where(eq(usersTable.id, user.userId));
