@@ -1,0 +1,35 @@
+# Проверка датасета раздела «Слова».
+#
+# Запускается вручную (Actions → Проверка слов → Run workflow) и на каждый push,
+# который меняет датасет или правки примеров. Оба скрипта читают файлы как
+# текст, без зависимостей и без tsc, поэтому pnpm install здесь не нужен —
+# прогон занимает секунды.
+#
+# validate-examples не роняет сборку из-за незаполненных примеров (это работа в
+# процессе, а не поломка), но падает на реальных ошибках: ключ правки, которого
+# нет в датасете, и один ключ в двух файлах уровней.
+name: Проверка слов
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/src/data/**"
+      - "scripts/validate-flashcards.mjs"
+      - "scripts/validate-examples.mjs"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Примеры употребления
+        run: node scripts/validate-examples.mjs
+
+      - name: Датасет карточек
+        run: node scripts/validate-flashcards.mjs

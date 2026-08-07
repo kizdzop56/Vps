@@ -8,17 +8,40 @@ import { db, decksTable, wordsTable } from "@workspace/db";
 import { and, eq, isNull, inArray } from "drizzle-orm";
 import { SEED_DECKS, emojiFor } from "./data/flashcards-data";
 import { VOCAB_DECKS } from "./data/vocabulary-index";
+import { applyExampleFixes, fixFor } from "./data/example-fixes";
+import { applyPolysemous, isAmbiguous } from "./data/polysemous";
 
 // Ручные тематические колоды (flashcards-data.ts) + колоды, наполненные
 // импортёром реального словаря (scripts/src/import-vocabulary.ts). Импортёр
 // пишет в отдельные vocabulary-{level}.ts именно затем, чтобы не раздувать
 // flashcards-data.ts до неуправляемого размера.
-const ALL_DECKS = [...SEED_DECKS, ...VOCAB_DECKS];
+//
+// Сверху накладываются два слоя ручной работы. Каталог автогенерирован, внутри
+// него правки не живут — их затрёт следующий прогон генератора:
+//   example-fixes.ts — исправленные примеры, части речи, транскрипции;
+//   polysemous.ts    — многозначные слова: одиночная карточка убирается, каждый
+//                      смысл заводится отдельным словосочетанием.
+// Порядок важен: сначала правим то, что в каталоге есть, потом убираем
+// одиночные карточки многозначных слов и добавляем фразы.
+const {
+  decks: ALL_DECKS,
+  problems: PHRASE_PROBLEMS,
+  removed: AMBIGUOUS_DROPPED,
+  added: PHRASES_ADDED,
+} = applyPolysemous(applyExampleFixes([...SEED_DECKS, ...VOCAB_DECKS]));
 
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
   let emojiFilled = 0;
+  let examplesFixed = 0;
+  let ambiguousRemoved = 0;
+
+  // Карточка, которая не доехала до базы, ничему не научит, а заметить это по
+  // приложению почти невозможно — поэтому говорим вслух.
+  for (const problem of PHRASE_PROBLEMS) {
+    console.warn(`  ⚠️  Flashcards: карточка-фраза не добавлена — ${problem}`);
+  }
 
   for (let i = 0; i < ALL_DECKS.length; i++) {
     const d = ALL_DECKS[i]!;
@@ -68,10 +91,34 @@ export async function seedFlashcards(): Promise<void> {
     }
 
     // Какие слова уже есть в колоде — не дублируем
-    const present = await db
-      .select({ id: wordsTable.id, english: wordsTable.english, emoji: wordsTable.emoji })
+    const rows = await db
+      .select({
+        id: wordsTable.id,
+        english: wordsTable.english,
+        emoji: wordsTable.emoji,
+        partOfSpeech: wordsTable.partOfSpeech,
+        ipa: wordsTable.ipa,
+        exampleEn: wordsTable.exampleEn,
+        exampleRu: wordsTable.exampleRu,
+      })
       .from(wordsTable)
       .where(eq(wordsTable.deckId, deckId));
+
+    // Одиночные карточки многозначных слов, оставшиеся от прежних прогонов.
+    // Оставить их нельзя: карточка «chest» учит одному переводу из двух, и
+    // рядом с фразами это ещё и путает. Удаление каскадом уносит прогресс
+    // учеников ПО ЭТИМ карточкам (user_card_state) — другие слова не задеты,
+    // но потеря настоящая, поэтому перечисляем слова вслух.
+    const obsolete = rows.filter((w) => isAmbiguous(w.english));
+    if (obsolete.length > 0) {
+      await db.delete(wordsTable).where(inArray(wordsTable.id, obsolete.map((w) => w.id)));
+      ambiguousRemoved += obsolete.length;
+      console.warn(
+        `  ⚠️  Flashcards: из колоды "${d.theme}" удалены одиночные карточки многозначных слов (прогресс по ним сброшен): ${obsolete.map((w) => w.english).join(", ")}`,
+      );
+    }
+
+    const present = rows.filter((w) => !isAmbiguous(w.english));
     const have = new Set(present.map((w) => w.english.toLowerCase()));
 
     // Картинки-подсказки для слов, которые уже лежат в базе: карта эмодзи
@@ -83,6 +130,31 @@ export async function seedFlashcards(): Promise<void> {
       if (!emoji || row.emoji === emoji) continue;
       await db.update(wordsTable).set({ emoji }).where(eq(wordsTable.id, row.id));
       emojiFilled++;
+    }
+
+    // Ручные правки примеров — та же история, что с картинками: слово уже лежит
+    // в базе, а сид существующие слова не обновляет, поэтому исправленный пример
+    // сам собой не доедет. Пишем только поля, которые правка задаёт явно, и
+    // только когда значение действительно отличается: прогресс ученика
+    // (user_card_state) живёт в отдельной таблице и не задевается.
+    for (const row of present) {
+      const fix = fixFor(row.english);
+      if (!fix) continue;
+
+      const patch: Partial<{
+        partOfSpeech: string;
+        ipa: string;
+        exampleEn: string;
+        exampleRu: string;
+      }> = {};
+      if (fix.pos !== undefined && row.partOfSpeech !== fix.pos) patch.partOfSpeech = fix.pos;
+      if (fix.ipa !== undefined && row.ipa !== fix.ipa) patch.ipa = fix.ipa;
+      if (fix.exEn !== undefined && row.exampleEn !== fix.exEn) patch.exampleEn = fix.exEn;
+      if (fix.exRu !== undefined && row.exampleRu !== fix.exRu) patch.exampleRu = fix.exRu;
+      if (Object.keys(patch).length === 0) continue;
+
+      await db.update(wordsTable).set(patch).where(eq(wordsTable.id, row.id));
+      examplesFixed++;
     }
 
     const toInsert = d.words
@@ -133,5 +205,6 @@ export async function seedFlashcards(): Promise<void> {
     );
   }
 
-  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled}, устаревших колод удалено ${stale.length} (всего колод в датасете ${ALL_DECKS.length}).`);
+  console.log(`  🎴  Flashcards: колод создано ${decksCreated}, слов добавлено ${wordsAdded}, картинок проставлено ${emojiFilled}, примеров исправлено ${examplesFixed}, устаревших колод удалено ${stale.length} (всего колод в датасете ${ALL_DECKS.length}).`);
+  console.log(`  🔀  Многозначные слова: одиночных карточек убрано из датасета ${AMBIGUOUS_DROPPED}, добавлено словосочетаний ${PHRASES_ADDED}, удалено из базы ${ambiguousRemoved}.`);
 }
