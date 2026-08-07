@@ -5,13 +5,15 @@
 // него живёт до следующего прогона генератора. Примеры там взяты из Викисловаря
 // по значению, которое не всегда совпадает со значением карточки — ровно та
 // проблема, о которой предупреждает WORDS.md: перевод от одного значения,
-// пример от другого. Отсюда три вида брака:
+// пример от другого. Отсюда четыре вида брака:
 //
 //   1. примера нет вовсе (exEn/exRu — пустые строки);
 //   2. пример не про то значение: jam «варенье» → пример про пробку,
-//      spring «весна» → пример про вывих, then → пример на than;
+//      spring «весна» → пример про вывих, chest «грудь» → про сундук;
 //   3. пример нельзя показывать ребёнку: tea → про марихуану, sad → про
-//      наркотики, town → про пистолеты, bad → про похищение детей.
+//      наркотики, town → про пистолеты, bad → про похищение детей;
+//   4. производная форма получила пример базового слова: карточка breathing
+//      «дыхание» показывала предложение про рыб и жабры.
 //
 // Правки собираются руками, батчами, по одному файлу на уровень, и
 // накладываются поверх датасета при сидинге (см. seed-flashcards.ts).
@@ -23,6 +25,7 @@
 import type { SeedDeck } from "./flashcards-data";
 import { A1_FIXES } from "./example-fixes-a1";
 import { A2_FIXES } from "./example-fixes-a2";
+import { B1_FIXES } from "./example-fixes-b1";
 
 export type ExampleFix = {
   exEn?: string;
@@ -36,7 +39,11 @@ export type ExampleFix = {
 // сломанным примером, и правка должна доехать до всех копий. Из-за этого ключи
 // между файлами уровней не должны пересекаться — при слиянии дубликат молча
 // перетёрся бы. За этим следит pnpm validate:examples.
-export const EXAMPLE_FIXES: Record<string, ExampleFix> = { ...A1_FIXES, ...A2_FIXES };
+export const EXAMPLE_FIXES: Record<string, ExampleFix> = {
+  ...A1_FIXES,
+  ...A2_FIXES,
+  ...B1_FIXES,
+};
 
 export function fixFor(en: string): ExampleFix | undefined {
   return EXAMPLE_FIXES[en.trim().toLowerCase()];
