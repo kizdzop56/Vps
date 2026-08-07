@@ -1,10 +1,20 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Подсказка по вкладке: затемнённый экран, крупный маскот, реплика и кнопка.
+//
+// Окно устроено так, чтобы главным на экране был ПЕРСОНАЖ: карточки нет вовсе,
+// маскот занимает почти всю ширину, ниже — имя градиентом, заголовок, реплика
+// в неоновом пузыре и одна кнопка.
+//
+// Размеры считаются от ТЕКУЩЕГО окна (useWindowDimensions), а не через
+// Dimensions.get на момент импорта: со вторым при повороте телефона числа
+// оставались от прежней ориентации, и маскот уезжал за край.
+// ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useRef } from "react";
 import {
-  View, Text, TouchableOpacity, Animated, StyleSheet, Modal, Dimensions,
+  View, Text, Animated, StyleSheet, Modal, useWindowDimensions,
 } from "react-native";
 import { WavingMascot, MASCOT_RATIO } from "@/components/WavingMascot";
-
-const { width: W, height: H } = Dimensions.get("window");
+import { ChunkyCta } from "@/components/ui/ChunkyCta";
 
 export type TabGuideTab =
   | "assignments"
@@ -87,6 +97,7 @@ export function TabGuide({
   mascotName = "Снежа",
   onClose,
 }: TabGuideProps) {
+  const { width: W, height: H } = useWindowDimensions();
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
@@ -106,10 +117,11 @@ export function TabGuide({
   if (!visible || !info) return null;
 
   const cardW = Math.min(W - 40, 380);
-  // Mascot nearly fills the screen, capped so the text still fits.
+  // Маскот почти во всю ширину, но по высоте ограничен: ниже должны поместиться
+  // имя, заголовок, реплика и кнопка.
   let mascotW = Math.min(W - 12, 460);
   let mascotH = Math.round(mascotW / MASCOT_RATIO);
-  const maxH = H * 0.56;
+  const maxH = H * 0.5;
   if (mascotH > maxH) {
     mascotH = Math.round(maxH);
     mascotW = Math.round(mascotH * MASCOT_RATIO);
@@ -124,12 +136,11 @@ export function TabGuide({
             { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
           ]}
         >
-          {/* Mascot — transparent waving animation, large. */}
+          {/* Маскот — крупно, прозрачный фон. */}
           <View style={{ marginBottom: -8 }}>
             <WavingMascot width={mascotW} height={mascotH} />
           </View>
 
-          {/* Name */}
           <Text
             style={[
               styles.nameLabel,
@@ -145,12 +156,10 @@ export function TabGuide({
             {mascotName}
           </Text>
 
-          {/* Title */}
           <Text style={styles.title}>
             {info.emoji}{"  "}{info.title}
           </Text>
 
-          {/* Description — neon-bordered bubble */}
           <View
             style={[
               styles.bubble,
@@ -164,10 +173,9 @@ export function TabGuide({
             <Text style={styles.desc}>{info.description}</Text>
           </View>
 
-          {/* CTA */}
-          <TouchableOpacity style={[styles.btn, { width: cardW }]} onPress={onClose} activeOpacity={0.85}>
-            <Text style={styles.btnText}>Понятно! 👍</Text>
-          </TouchableOpacity>
+          {/* Кнопка объёмная: как всё нажимаемое в приложении. Эмодзи нет —
+              палец вверх ничего не добавляет к слову «Понятно». */}
+          <ChunkyCta label="Понятно" onPress={onClose} width={cardW} />
         </Animated.View>
       </View>
     </Modal>
@@ -175,9 +183,11 @@ export function TabGuide({
 }
 
 const styles = StyleSheet.create({
+  // Затемнение плотное: через полупрозрачное просвечивал экран под окном, и
+  // белый зверь на пёстрой карточке терял силуэт.
   overlay: {
     flex: 1,
-    backgroundColor: "#000000b8",
+    backgroundColor: "#000000e6",
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 20,
@@ -219,14 +229,4 @@ const styles = StyleSheet.create({
     textAlign: "center",
     color: "#ede9ff",
   },
-  btn: {
-    width: "100%",
-    borderRadius: 16,
-    paddingVertical: 15,
-    alignItems: "center",
-    backgroundColor: "#8b5cf6",
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.35)",
-  },
-  btnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
 });
