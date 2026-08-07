@@ -1,6 +1,6 @@
 /**
  * Тесты планировщика интервального повторения и начисления очков за слова.
- * Запуск: pnpm exec tsx --test artifacts/api-server/src/lib/srs.test.ts
+ * Запуск: pnpm --filter @workspace/api-server test
  *
  * Зависимостей нет — только node:test и node:assert, поэтому тест не тянет
  * за собой ни БД, ни express.
@@ -13,12 +13,14 @@ import {
   LEARNED_BONUS_POINTS,
   LEARNED_LEVEL,
   MAX_MEMORY_LEVEL,
+  POINTS_BY_GRADE,
   awardablePoints,
   cardAccuracy,
   countsAsLapse,
   gradeFromAnswer,
   gradeFromLegacy,
   hardScore,
+  isGrade,
   isHardCard,
   isLearned,
   legacyResultFromGrade,
@@ -31,6 +33,7 @@ import {
   type CardStateLike,
   type ReviewLogLike,
 } from "./srs";
+import { startOfLocalDay } from "./timeStats";
 
 const NOW = new Date("2026-07-30T12:00:00.000Z");
 const minutesBetween = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / 60_000);
@@ -136,6 +139,14 @@ test("совместимость со старым форматом know/dont", 
   assert.equal(legacyResultFromGrade("again"), "dont");
 });
 
+test("оценкой считается только известное значение", () => {
+  assert.equal(isGrade("good"), true);
+  assert.equal(isGrade("again"), true);
+  assert.equal(isGrade("know"), false);
+  assert.equal(isGrade(null), false);
+  assert.equal(isGrade(undefined), false);
+});
+
 // ── очки ────────────────────────────────────────────────────────────────────
 
 test("очки за ответ: ошибка ноль, трудно меньше, чем знаю, бонус за выученное", () => {
@@ -157,11 +168,32 @@ test("начисленное за сегодня считается по жур�
   });
   const dayStart = startOfDay(NOW);
   const logs = [
-    log(1, "know", 1, "2026-07-29T10:00:00.000Z"), // вчера — не считаем
+    log(1, "know", 1, "2026-07-28T10:00:00.000Z"), // позавчера — не считаем
     log(1, "know", 2, NOW.toISOString()),
     log(2, "dont", 0, NOW.toISOString()),          // ошибка — 0 очков
   ];
   assert.equal(pointsEarnedToday(logs, dayStart), 2);
+});
+
+test("оценка из журнала точнее result: за «трудно» одно очко, а не два", () => {
+  const dayStart = startOfDay(NOW);
+  const logs: ReviewLogLike[] = [
+    { wordId: 1, result: "know", grade: "hard", memoryLevelAfter: 2, reviewedAt: NOW },
+    { wordId: 2, result: "know", grade: "good", memoryLevelAfter: 2, reviewedAt: NOW },
+    { wordId: 3, result: "know", grade: "easy", memoryLevelAfter: 2, reviewedAt: NOW },
+    { wordId: 4, result: "dont", grade: "again", memoryLevelAfter: 0, reviewedAt: NOW },
+  ];
+  const expected = POINTS_BY_GRADE.hard + POINTS_BY_GRADE.good + POINTS_BY_GRADE.easy;
+  assert.equal(pointsEarnedToday(logs, dayStart), expected);
+});
+
+test("запись без оценки считается по result — как и начислялось в своё время", () => {
+  const dayStart = startOfDay(NOW);
+  const logs: ReviewLogLike[] = [
+    { wordId: 1, result: "know", grade: null, memoryLevelAfter: 2, reviewedAt: NOW },
+    { wordId: 2, result: "know", memoryLevelAfter: 2, reviewedAt: NOW },
+  ];
+  assert.equal(pointsEarnedToday(logs, dayStart), POINTS_BY_GRADE.good * 2);
 });
 
 test("бонус за «выучено» учитывается один раз на слово", () => {
@@ -177,10 +209,21 @@ test("бонус за «выучено» учитывается один раз 
 test("бонус за слово, выученное вчера, сегодня повторно не начисляется", () => {
   const dayStart = startOfDay(NOW);
   const logs: ReviewLogLike[] = [
-    { wordId: 9, result: "know", memoryLevelAfter: LEARNED_LEVEL, reviewedAt: new Date("2026-07-29T09:00:00.000Z") },
+    { wordId: 9, result: "know", memoryLevelAfter: LEARNED_LEVEL, reviewedAt: new Date("2026-07-28T09:00:00.000Z") },
     { wordId: 9, result: "know", memoryLevelAfter: MAX_MEMORY_LEVEL, reviewedAt: new Date("2026-07-30T09:00:00.000Z") },
   ];
   assert.equal(pointsEarnedToday(logs, dayStart), 2);
+});
+
+test("по одним сегодняшним записям бонус не повторяется: помогает learnedBefore", () => {
+  const dayStart = startOfDay(NOW);
+  // Роут читает только сегодняшний журнал: слово 9 в нём выглядит как впервые
+  // достигшее порога, хотя выучено оно было раньше.
+  const todayOnly: ReviewLogLike[] = [
+    { wordId: 9, result: "know", grade: "good", memoryLevelAfter: MAX_MEMORY_LEVEL, reviewedAt: NOW },
+  ];
+  assert.equal(pointsEarnedToday(todayOnly, dayStart), 2 + LEARNED_BONUS_POINTS);
+  assert.equal(pointsEarnedToday(todayOnly, dayStart, new Set([9])), 2);
 });
 
 // ── сложные слова ───────────────────────────────────────────────────────────
@@ -210,10 +253,12 @@ test("сортировка сложных: больше срывов и ошиб
   assert.ok(hardScore(worse) > hardScore(better));
 });
 
-test("начало суток обнуляет время", () => {
-  const d = startOfDay(new Date("2026-07-30T23:45:12.000Z"));
-  assert.equal(d.getHours(), 0);
-  assert.equal(d.getMinutes(), 0);
-  assert.equal(d.getSeconds(), 0);
-  assert.equal(d.getMilliseconds(), 0);
+test("сутки режутся по часовому поясу приложения, а не процесса", () => {
+  // Проверять через getHours() нельзя: это зона процесса, и на сервере в UTC
+  // тест проверял бы совпадение зон, а не саму функцию.
+  const at = new Date("2026-07-30T23:45:12.000Z");
+  assert.equal(startOfDay(at).getTime(), startOfLocalDay(at).getTime());
+  // Начало суток не в будущем и не дальше суток назад.
+  const diff = at.getTime() - startOfDay(at).getTime();
+  assert.ok(diff >= 0 && diff < 24 * 60 * 60 * 1000);
 });
