@@ -5,6 +5,15 @@
 // подробностей заводить незачем: из него всегда возвращаются назад в список,
 // а лист умеет это без навигации и без нового маршрута.
 //
+// ── ГРАБЛИ: colors.background здесь НЕЛЬЗЯ ──────────────────────────────────
+// В этом продукте colors.background равен "transparent": сквозной градиент
+// рисуется один раз в корневом макете и просвечивает через все экраны. Для
+// экрана это правильно, для модального листа — нет. С прозрачной подложкой
+// сквозь лист просвечивал профиль: чёрный заголовок ложился на фиолетовую шапку
+// и переставал читаться, а белые карточки висели в воздухе.
+//
+// Для сплошных поверхностей в палитре есть отдельный токен — colors.sheet.
+//
 // ── Как устроена строка ─────────────────────────────────────────────────────
 // Сверху мелким цветным текстом — ТИП события («Новая медаль», «Новое задание»),
 // под ним крупно — СУТЬ («Первый шаг», название задания). Наоборот было бы
@@ -14,7 +23,7 @@
 // Дата и время стоят у каждой строки, а не только в подробностях: «когда это
 // было» — первый вопрос к любой истории.
 //
-// Непрочитанное помечено точкой и светлой подложкой. Открытие строки гасит
+// Непрочитанное помечено точкой и фиолетовой заливкой. Открытие строки гасит
 // счётчик у колокольчика.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -75,9 +84,11 @@ function Row({
         flexDirection: "row", alignItems: "flex-start", gap: 12,
         paddingVertical: 13, paddingHorizontal: 14,
         borderRadius: radii.md,
-        backgroundColor: notification.read ? colors.card : colors.primary + "12",
+        // Прочитанное — светло-сиреневая подложка, непрочитанное заметно ярче.
+        // Белым по белому листу карточка не отличалась бы от фона.
+        backgroundColor: notification.read ? colors.accent : colors.primary + "1a",
         borderWidth: 1,
-        borderColor: notification.read ? colors.border : colors.primary + "33",
+        borderColor: notification.read ? colors.border : colors.primary + "40",
         marginBottom: 10,
         opacity: pressed ? 0.85 : 1,
       })}
@@ -183,14 +194,28 @@ export function NotificationCenter({ visible, onClose, focusId }: NotificationCe
         <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel="Закрыть" />
 
         <View style={{
-          backgroundColor: colors.background,
+          // ИМЕННО colors.sheet: colors.background прозрачен (см. шапку файла).
+          backgroundColor: colors.sheet,
           borderTopLeftRadius: radii.lg,
           borderTopRightRadius: radii.lg,
           paddingHorizontal: 18,
-          paddingTop: 16,
+          paddingTop: 10,
           paddingBottom: Math.max(insets.bottom, 14) + 10,
           maxHeight: "86%",
+          // Тень вверх: край листа виден на любом фоне, а не только на тёмном.
+          shadowColor: accents.indigoDeep,
+          shadowOffset: { width: 0, height: -8 },
+          shadowOpacity: 0.28,
+          shadowRadius: 24,
+          elevation: 24,
         }}>
+          {/* Полоска-ручка: привычный признак того, что панель выдвижная. */}
+          <View style={{
+            width: 40, height: 4, borderRadius: 2,
+            backgroundColor: colors.border,
+            alignSelf: "center", marginBottom: 12,
+          }} />
+
           {/* Шапка: назад из подробностей, заголовок, «прочитать все», закрыть. */}
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
             {selected ? (
