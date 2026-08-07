@@ -16,6 +16,20 @@
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
 //
+// ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
+// «Верно!» и «Неверно» показываются внутри карточки задания, под самим
+// заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
+// ответа, и рядом с ним стояла ещё кнопка «Дальше» — три несвязанных блока
+// подряд. Ученик смотрит на карточку, ответ должен появляться там же.
+//
+// ── Верное листается само, ошибка — нет ─────────────────────────────────────
+// Верный ответ не требует разбора: карточка уходит сама через NEXT_DELAY_OK, и
+// кнопка «Дальше» для этого не нужна.
+//
+// Ошибка — наоборот, самая полезная секунда тренировки, и отмерять её таймером
+// нельзя: одному хватит взгляда, другому надо перечитать и проговорить.
+// Поэтому после ошибки карточка стоит, пока ученик сам не нажмёт «Дальше».
+//
 // ── Свободный ответ проверяет сервер ────────────────────────────────────────
 // Для письма и произношения ответ не сравнивается здесь: этим занимается
 // POST /flashcards/check-answer. Иначе веб и натив разойдутся в трактовке
@@ -70,15 +84,13 @@ import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
 import { accents, gradients, radii, chunky } from "@/constants/theme";
 
 // Пауза после верного ответа: карточка не улетает мгновенно, за это время
-// доигрывает озвучка правильного слова. Кто не хочет ждать — жмёт «Дальше».
+// доигрывает озвучка правильного слова.
 const NEXT_DELAY_OK = 1200;
-const NEXT_DELAY_BAD = 1900; // после ошибки даём время прочитать верный ответ
 // Опечатку показываем дольше верного ответа: ребёнок должен успеть прочитать,
 // как слово пишется правильно.
 const NEXT_DELAY_TYPO = 2200;
-// «Не знаю» — единственный случай, когда ученик заведомо видит ответ впервые.
-// Держим карточку дольше всего: это не проверка, а показ.
-const NEXT_DELAY_GIVEUP = 2600;
+// Технический пропуск (мигнула сеть): в оценку не идёт, держать нечего.
+const NEXT_DELAY_INFO = 1600;
 
 /**
  * Запас под последней кнопкой экрана.
@@ -89,10 +101,28 @@ const NEXT_DELAY_GIVEUP = 2600;
  */
 const BOTTOM_SAFE_SPACE = 40;
 
+/** Толщина нижней грани у поверхностей итогового экрана. */
+const EDGE = 6;
+
 type Phase = "loading" | "run" | "done";
-// retry — промежуточная реакция на первую ошибку в сборке слова: даём собрать
-// заново, поэтому верный ответ показывать нельзя.
-type Feedback = { correct: boolean; picked?: number; retry?: boolean; typo?: boolean; note?: string } | null;
+
+/**
+ * Итог ответа по текущей карточке.
+ *
+ * retry  — первая ошибка в сборке слова: даём собрать заново, поэтому верный
+ *          ответ показывать нельзя;
+ * gaveUp — ученик нажал «Не знаю»: промах засчитан, но ругать не за что;
+ * info   — ответ не проверен (мигнула сеть). В оценку не идёт.
+ */
+type Feedback = {
+  correct: boolean;
+  picked?: number;
+  retry?: boolean;
+  typo?: boolean;
+  gaveUp?: boolean;
+  info?: boolean;
+  note?: string;
+} | null;
 
 /** Что сейчас делает микрофон. */
 type SpeakState = "idle" | "listening" | "checking";
@@ -252,8 +282,8 @@ export function WordTrainer({
   }, [pos, cards.length, resetCardState]);
 
   /**
-   * Тап по «Дальше» до истечения паузы: не заставляем ждать доигрывания —
-   * обрываем звук и листаем сразу.
+   * Тап по «Дальше»: обрываем звук и листаем сразу, не дожидаясь таймера (он
+   * есть только у верного ответа).
    */
   const skipToNext = React.useCallback(() => {
     if (timer.current) {
@@ -263,9 +293,19 @@ export function WordTrainer({
     goNext();
   }, [goNext]);
 
-  /** Отправить результат карточки и перейти к следующей. */
+  /**
+   * Отправить результат карточки на сервер.
+   *
+   * delay = null означает «карточку не листать»: так работает разбор ошибки —
+   * ученик уходит дальше сам, когда прочитал верный ответ.
+   */
   const submit = React.useCallback(
-    (payload: { correct: boolean } | { grade: Grade }, mode: ExerciseType, delay: number, attemptsOverride?: number) => {
+    (
+      payload: { correct: boolean } | { grade: Grade },
+      mode: ExerciseType,
+      delay: number | null,
+      attemptsOverride?: number,
+    ) => {
       if (!card) return;
       const isCorrect = "correct" in payload ? payload.correct : payload.grade !== "again";
       setAnswered((n) => n + 1);
@@ -294,7 +334,7 @@ export function WordTrainer({
         .catch(() => { /* сеть могла мигнуть — тренировку не прерываем */ });
 
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(goNext, delay);
+      timer.current = delay === null ? null : setTimeout(goNext, delay);
     },
     [card, attempts, hintUsed, goNext],
   );
@@ -304,8 +344,11 @@ export function WordTrainer({
     if (feedback || !card) return;
     const correct = index === exercise.answerIndex;
     setFeedback({ correct, picked: index });
-    submit({ correct }, exercise.type, correct ? NEXT_DELAY_OK : NEXT_DELAY_BAD);
-    if (correct && speechAvailable() && exercise.type !== "intro") speakWord(card.id, card.english);
+    // Ошибка ждёт ученика: карточку не листаем.
+    submit({ correct }, exercise.type, correct ? NEXT_DELAY_OK : null);
+    // Верное слово озвучиваем в любом случае: после ошибки услышать его даже
+    // важнее, чем после попадания.
+    if (speechAvailable() && exercise.type !== "intro") speakWord(card.id, card.english);
   }, [feedback, card, exercise, submit]);
 
   const answerLetters = React.useMemo(() => (exercise.answer ?? "").toLowerCase().split(""), [exercise.answer]);
@@ -330,8 +373,8 @@ export function WordTrainer({
       return;
     }
     setFeedback({ correct });
-    submit({ correct }, "build", correct ? NEXT_DELAY_OK : NEXT_DELAY_BAD);
-    if (correct && card && speechAvailable()) speakWord(card.id, card.english);
+    submit({ correct }, "build", correct ? NEXT_DELAY_OK : null);
+    if (card && speechAvailable()) speakWord(card.id, card.english);
   }, [feedback, exercise.letters, built, answerLetters, attempts, submit, card]);
 
   const undoLetter = React.useCallback(() => {
@@ -349,22 +392,21 @@ export function WordTrainer({
    *
    * Показываем верный ответ, озвучиваем его и засчитываем полный промах —
    * попыток отдаём максимум, чтобы система повторений вернула слово скоро.
-   * Наугад набитые буквы дали бы тот же промах, но без показа ответа: смысла в
-   * этом нет никакого.
+   * Карточку не листаем: ученик впервые видит ответ, ему нужно время.
    */
   const giveUp = React.useCallback((mode: ExerciseType) => {
     if (!card || feedback) return;
     cancelListening();
     speechRef.current = null;
     const expected = exercise.answer ?? exercise.options?.[exercise.answerIndex ?? 0] ?? "";
-    setFeedback({ correct: false, note: `Ответ: ${expected}` });
-    submit({ correct: false }, mode, NEXT_DELAY_GIVEUP, 3);
+    setFeedback({ correct: false, gaveUp: true, note: `Правильный ответ: ${expected}` });
+    submit({ correct: false }, mode, null, 3);
     if (speechAvailable()) speakWord(card.id, card.english);
   }, [card, feedback, exercise.answer, exercise.options, exercise.answerIndex, submit]);
 
-  /** Показать вердикт сервера по свободному ответу и закрыть карточку. */
+  /** Показать вердикт сервера по свободному ответу. */
   const applyVerdict = React.useCallback(
-    (verdict: AnswerCheck, mode: ExerciseType, usedAttempts: number, note?: string) => {
+    (verdict: AnswerCheck, mode: ExerciseType, usedAttempts: number, wrongNote?: string) => {
       const expected = verdict.expected?.[0] ?? exercise.answer ?? "";
       setFeedback({
         correct: verdict.correct,
@@ -372,19 +414,26 @@ export function WordTrainer({
         // Опечатку показываем отдельной строкой: ответ принят, но написание надо
         // запомнить правильное.
         note: verdict.correct
-          ? (verdict.typo ? `Почти точно: ${expected}` : undefined)
-          : note ?? `Верный ответ: ${expected}`,
+          ? (verdict.typo ? `Правильно пишется: ${expected}` : undefined)
+          : wrongNote ?? `Правильный ответ: ${expected}`,
       });
       submit(
         { correct: verdict.correct },
         mode,
-        verdict.correct ? (verdict.typo ? NEXT_DELAY_TYPO : NEXT_DELAY_OK) : NEXT_DELAY_BAD,
+        verdict.correct ? (verdict.typo ? NEXT_DELAY_TYPO : NEXT_DELAY_OK) : null,
         usedAttempts,
       );
-      if (verdict.correct && card && speechAvailable()) speakWord(card.id, card.english);
+      if (card && speechAvailable()) speakWord(card.id, card.english);
     },
     [exercise.answer, submit, card],
   );
+
+  /** Ответ не проверен: сеть мигнула. В оценку не идёт, листается сам. */
+  const skipUnchecked = React.useCallback(() => {
+    setFeedback({ correct: true, info: true, note: `Правильный ответ: ${exercise.answer ?? ""}` });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(goNext, NEXT_DELAY_INFO);
+  }, [exercise.answer, goNext]);
 
   /**
    * Письменный ответ: отправляем на проверку серверу.
@@ -404,15 +453,12 @@ export function WordTrainer({
       const verdict = await fc.checkAnswer(card.id, mode, value);
       applyVerdict(verdict, mode, attempts);
     } catch {
-      // Сеть могла мигнуть. Засчитывать ошибку за это нельзя: ребёнок не
-      // виноват. Показываем верный ответ и идём дальше без оценки.
-      setFeedback({ correct: true, note: `Ответ: ${exercise.answer ?? ""}` });
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+      // Сеть могла мигнуть. Засчитывать ошибку за это нельзя: ребёнок не виноват.
+      skipUnchecked();
     } finally {
       setChecking(false);
     }
-  }, [card, feedback, checking, typed, exercise.type, exercise.answer, attempts, applyVerdict, goNext]);
+  }, [card, feedback, checking, typed, exercise.type, attempts, applyVerdict, skipUnchecked]);
 
   /** Итог записи: пришёл после того, как ученик нажал «Стоп». */
   const handleSpeechResult = React.useCallback(async (result: SpeechResult) => {
@@ -463,16 +509,14 @@ export function WordTrainer({
         verdict,
         "speak",
         attempts,
-        verdict.correct ? undefined : `Верное произношение: ${exercise.answer ?? ""}`,
+        `Верное произношение: ${exercise.answer ?? ""}`,
       );
     } catch {
-      setFeedback({ correct: true, note: `Ответ: ${exercise.answer ?? ""}` });
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+      skipUnchecked();
     } finally {
       setSpeakState((s) => (s === "checking" ? "idle" : s));
     }
-  }, [card, attempts, exercise.answer, applyVerdict, goNext]);
+  }, [card, attempts, exercise.answer, applyVerdict, skipUnchecked]);
 
   /** Начать запись. Останавливает её сам ученик кнопкой «Стоп». */
   const beginListening = React.useCallback(() => {
@@ -500,13 +544,18 @@ export function WordTrainer({
     session.stop();
   }, []);
 
-  /** Не получается произнести — пусть напишет. Тупика быть не должно. */
+  /** Не получается произнести — показываем ответ и ждём ученика. */
   const skipSpeaking = React.useCallback(() => {
     if (!card || feedback) return;
     cancelListening();
     speechRef.current = null;
-    setFeedback({ correct: false, note: `Верное произношение: ${exercise.answer ?? ""}` });
-    submit({ correct: false }, "speak", NEXT_DELAY_BAD, exercise.maxAttempts ?? 3);
+    setFeedback({
+      correct: false,
+      gaveUp: true,
+      note: `Верное произношение: ${exercise.answer ?? ""}`,
+    });
+    submit({ correct: false }, "speak", null, exercise.maxAttempts ?? 3);
+    if (speechAvailable()) speakWord(card.id, card.english);
   }, [card, feedback, exercise.answer, exercise.maxAttempts, submit]);
 
   // ── экраны состояний ──
@@ -551,6 +600,36 @@ export function WordTrainer({
   /** Микрофон в этой карточке рабочий: есть в системе и не запрещён. */
   const micUsable = speechInput && !micBlocked;
   const maxSpeakAttempts = exercise.maxAttempts ?? 3;
+
+  /**
+   * Как показать итог ответа. Пять состояний, и каждое должно звучать по-своему:
+   * «неверно» и «ты не знал» — разные вещи, а несостоявшаяся проверка вообще не
+   * оценка.
+   */
+  const verdict = !feedback ? null
+    : feedback.retry
+      ? { color: colors.warning, icon: "repeat" as GlyphName, title: "Почти! Собери ещё раз", detail: undefined as string | undefined }
+    : feedback.info
+      ? { color: colors.warning, icon: "alert" as GlyphName, title: "Не удалось проверить", detail: feedback.note }
+    : feedback.gaveUp
+      ? { color: colors.warning, icon: "help" as GlyphName, title: "Запомни это слово", detail: feedback.note }
+    : feedback.correct
+      ? (feedback.typo
+        ? { color: colors.warning, icon: "check" as GlyphName, title: "Почти верно", detail: feedback.note }
+        : { color: okColor, icon: "check" as GlyphName, title: "Верно!", detail: undefined as string | undefined })
+    : {
+        color: colors.destructive,
+        icon: "close" as GlyphName,
+        title: "Неверно",
+        detail: feedback.note ?? `Правильный ответ: ${exercise.options?.[exercise.answerIndex ?? 0] ?? exercise.answer ?? ""}`,
+      };
+
+  /**
+   * Кнопка «Дальше» есть только там, где карточка сама не листается: после
+   * ошибки и после «Не знаю». Верный ответ разбирать нечего — он уходит сам,
+   * и кнопка под ним была мебелью.
+   */
+  const needsNextButton = Boolean(feedback && !feedback.retry && !feedback.info && !feedback.correct);
 
   /** Поле письменного ответа: используется и в typeRu/typeEn, и как запасной
       сценарий произношения. */
@@ -759,89 +838,69 @@ export function WordTrainer({
               <View
                 style={{
                   minHeight: 54, width: "100%", borderRadius: radii.sm + 2, borderWidth: 2, borderStyle: "dashed",
-                  borderColor: feedback
-                    ? (feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive)
-                    : "rgba(99,102,241,0.35)",
+                  borderColor: verdict?.color ?? "rgba(99,102,241,0.35)",
                   alignItems: "center", justifyContent: "center", paddingHorizontal: 10,
                 }}
               >
                 <Text style={{
                   fontSize: 26, fontWeight: "900", letterSpacing: 2,
-                  color: feedback && !feedback.correct && !feedback.retry ? colors.destructive : colors.foreground,
+                  color: colors.foreground,
                 }}>
                   {builtWord || "…"}
                 </Text>
               </View>
-              {hintUsed && (
+              {hintUsed && !feedback && (
                 <Text style={{ marginTop: 8, fontSize: 15, color: colors.mutedForeground, letterSpacing: 2 }}>
                   {answerLetters.map((l, i) => (i === 0 ? l : "•")).join(" ")}
                 </Text>
               )}
             </View>
           )}
+
+          {/* ИТОГ ОТВЕТА — на самой карточке, под заданием. Ученик смотрит сюда,
+              и ответ должен появляться здесь же, а не отдельной строкой ниже. */}
+          {verdict && (
+            <View style={{
+              width: "100%", marginTop: 18, paddingTop: 15,
+              borderTopWidth: 1, borderTopColor: colors.border,
+              alignItems: "center",
+            }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
+                {/* Цвет состояния — в круглом значке, а не заливкой под текстом:
+                    контраст заголовка не должен зависеть от исхода ответа. */}
+                <View style={{
+                  width: 28, height: 28, borderRadius: 14,
+                  alignItems: "center", justifyContent: "center",
+                  backgroundColor: verdict.color,
+                }}>
+                  <Glyph name={verdict.icon} size={17} color="#ffffff" />
+                </View>
+                <Text style={{ fontSize: 18, fontWeight: "900", color: verdict.color, flexShrink: 1 }}>
+                  {verdict.title}
+                </Text>
+              </View>
+              {!!verdict.detail && (
+                <Text style={{
+                  marginTop: 9, fontSize: 16, fontWeight: "800", lineHeight: 23,
+                  color: colors.foreground, textAlign: "center",
+                }}>
+                  {verdict.detail}
+                </Text>
+              )}
+            </View>
+          )}
         </Animated.View>
 
-        {/* реакция на ответ */}
-        {feedback && !isBuild && (
-          <View style={{ marginTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 }}>
-            <Glyph
-              name={feedback.correct ? "check" : "close"}
-              size={17}
-              color={feedback.correct ? (feedback.typo ? colors.warning : okColor) : colors.destructive}
-            />
-            <Text
-              style={{
-                fontSize: 15, fontWeight: "900", flexShrink: 1,
-                color: feedback.correct ? (feedback.typo ? colors.warning : okColor) : colors.destructive,
-              }}
-            >
-              {feedback.note
-                ?? (feedback.correct
-                  ? "Верно!"
-                  : `Верный ответ: ${exercise.options?.[exercise.answerIndex ?? 0] ?? exercise.answer ?? ""}`)}
-            </Text>
-          </View>
-        )}
-        {feedback && isBuild && (
-          <View style={{ marginTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 }}>
-            <Glyph
-              name={feedback.correct ? "check" : feedback.retry ? "repeat" : "close"}
-              size={17}
-              color={feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive}
-            />
-            <Text
-              style={{
-                fontSize: 15, fontWeight: "900", flexShrink: 1,
-                color: feedback.correct ? okColor : feedback.retry ? colors.warning : colors.destructive,
-              }}
-            >
-              {feedback.correct
-                ? "Верно!"
-                : feedback.retry
-                  ? "Почти! Попробуй собрать ещё раз"
-                  : feedback.note ?? `Верный ответ: ${exercise.answer ?? ""}`}
-            </Text>
-          </View>
-        )}
-
-        {/* Пауза перед следующей карточкой нужна, чтобы доиграла озвучка
-            верного слова. Нетерпеливых не держим: тап по «Дальше» обрывает
-            звук и листает сразу. При retry кнопки нет — там продолжается
-            та же карточка. */}
-        {feedback && !feedback.retry && (
-          <TouchableOpacity
+        {/* «Дальше» стоит сразу под карточкой, а не в конце экрана: после ошибки
+            это единственное действие, и до него не должно быть скролла. */}
+        {needsNextButton && (
+          <ChunkyButton
+            label="Дальше"
+            icon="arrowRight"
+            center
             onPress={skipToNext}
-            activeOpacity={0.85}
-            accessibilityLabel="Следующая карточка"
-            style={{
-              marginTop: 12, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 7,
-              borderRadius: radii.pill, paddingHorizontal: 18, paddingVertical: 10,
-              backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
-            }}
-          >
-            <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 14 }}>Дальше</Text>
-            <Glyph name="arrowRight" size={16} color={colors.mutedForeground} />
-          </TouchableOpacity>
+            style={{ marginTop: 16 }}
+          />
         )}
 
         {/* варианты ответа */}
@@ -999,11 +1058,13 @@ export function WordTrainer({
                 />
               ))}
             </View>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16, justifyContent: "center", alignItems: "flex-start" }}>
-              <SmallButton icon="backspace" label="Стереть" onPress={undoLetter} colors={colors} disabled={built.length === 0 || Boolean(feedback)} />
-              {!hintUsed && <SmallButton icon="help" label="Подсказка" onPress={showHint} colors={colors} disabled={Boolean(feedback)} />}
-              <SmallButton icon="close" label="Не знаю" onPress={() => giveUp("build")} colors={colors} disabled={Boolean(feedback)} />
-            </View>
+            {!feedback && (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16, justifyContent: "center", alignItems: "flex-start" }}>
+                <SmallButton icon="backspace" label="Стереть" onPress={undoLetter} colors={colors} disabled={built.length === 0} />
+                {!hintUsed && <SmallButton icon="help" label="Подсказка" onPress={showHint} colors={colors} />}
+                <SmallButton icon="close" label="Не знаю" onPress={() => giveUp("build")} colors={colors} />
+              </View>
+            )}
           </>
         )}
 
@@ -1181,9 +1242,17 @@ function LetterKey({
 // ── итоги сессии ────────────────────────────────────────────────────────────
 //
 // Наградный экран, а не отчёт. Поэтому все поверхности здесь физические: у
-// каждой есть цветная нижняя грань, как у клавиш и панели вкладок. Плоские
-// белые прямоугольники читались как таблица успеваемости — ровно то, чем этот
-// экран быть не должен.
+// каждой есть цветная нижняя грань, как у клавиш и панели вкладок.
+//
+// ── Плитки выложены рядами, а не потоком ────────────────────────────────────
+// Раньше плитки лежали в одном flexWrap-контейнере с шириной 47%. Пока их было
+// ровно четыре, сетка держалась случайно: стоило одной пропасть, и последняя
+// повисала огрызком в половину ширины. Теперь плитки заранее разбиты на ряды по
+// две, и одиночная плитка растягивается на весь ряд.
+//
+// ── Плитка «очков» показывается не всегда ───────────────────────────────────
+// «+0 очков» — не награда, а напоминание, что наградой тут и не пахло. Если за
+// сессию очков не начислено, плитки просто нет.
 function SessionSummary({
   colors, insets, background, answered, correctCount, points, learned, progress, emptyQueue, onExit,
 }: {
@@ -1211,6 +1280,28 @@ function SessionSummary({
       : gradients.action;
   const heroEdge = emptyQueue ? "#6366f1" : goalReached ? "#b45309" : accents.indigoDeep;
 
+  type TileSpec = {
+    key: string;
+    icon: GlyphName;
+    tint: string;
+    edge: string;
+    value: React.ReactNode;
+    label: string;
+  };
+
+  const tiles: TileSpec[] = [
+    { key: "words", icon: "cards", tint: colors.primary, edge: accents.indigoDeep, value: answered, label: "слов пройдено" },
+    { key: "accuracy", icon: "target", tint: accents.amber, edge: "#b45309", value: `${accuracy}%`, label: "правильных" },
+    // Очки показываем, только если они есть: см. комментарий выше.
+    ...(points > 0
+      ? [{ key: "points", icon: "star" as GlyphName, tint: accents.magenta, edge: "#a21caf", value: `+${points}`, label: "очков" }]
+      : []),
+    { key: "learned", icon: "check", tint: colors.success, edge: accents.violetDeep, value: learned, label: "выучено" },
+  ];
+
+  const rows: TileSpec[][] = [];
+  for (let i = 0; i < tiles.length; i += 2) rows.push(tiles.slice(i, i + 2));
+
   return (
     <ScrollView
       contentContainerStyle={{
@@ -1225,11 +1316,13 @@ function SessionSummary({
       style={{ backgroundColor: background }}
     >
       <View style={{ alignItems: "center" }}>
-        {/* Трофей тоже объёмный: под градиентом лежит грань, как у медали. */}
-        <View>
+        {/* Трофей объёмный: под градиентом лежит грань, как у медали.
+            Наклон стоит на КОНТЕЙНЕРЕ, а не на градиенте: иначе грань остаётся
+            ровной, корпус едет — и снизу торчит косой хвост. */}
+        <View style={{ width: 96, height: 96 + EDGE, transform: [{ rotate: "-4deg" }] }}>
           <View style={{
-            position: "absolute", left: 0, right: 0, top: 6, height: 96,
-            borderRadius: radii.xl, backgroundColor: heroEdge, opacity: 0.55,
+            position: "absolute", left: 0, top: EDGE, width: 96, height: 96,
+            borderRadius: radii.xl, backgroundColor: heroEdge,
           }} />
           <LinearGradient
             colors={heroGradient as unknown as string[]}
@@ -1238,7 +1331,6 @@ function SessionSummary({
             style={{
               width: 96, height: 96, borderRadius: radii.xl,
               alignItems: "center", justifyContent: "center",
-              transform: [{ rotate: "-4deg" }],
               borderWidth: 2, borderColor: "rgba(255,255,255,0.65)",
               shadowColor: goalReached ? accents.amber : colors.primary,
               shadowOffset: { width: 0, height: 8 },
@@ -1260,19 +1352,37 @@ function SessionSummary({
 
       {!emptyQueue && (
         <>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 22 }}>
-            <SummaryCard colors={colors} icon="cards" tint={colors.primary} edge={accents.indigoDeep} value={answered} label="слов пройдено" />
-            <SummaryCard colors={colors} icon="target" tint={accents.amber} edge="#b45309" value={`${accuracy}%`} label="правильных" />
-            <SummaryCard colors={colors} icon="star" tint={accents.magenta} edge="#a21caf" value={`+${points}`} label="очков" />
-            <SummaryCard colors={colors} icon="check" tint={colors.success} edge={accents.violetDeep} value={learned} label="выучено" />
-          </View>
+          {rows.map((row, rowIndex) => (
+            <View
+              key={row.map((t) => t.key).join("-")}
+              // alignItems по умолчанию stretch: плитки одного ряда получают
+              // одинаковую высоту, даже если подпись переносится на две строки.
+              style={{ flexDirection: "row", gap: 12, marginTop: rowIndex === 0 ? 22 : 12 }}
+            >
+              {row.map((tile) => (
+                <SummaryCard
+                  key={tile.key}
+                  colors={colors}
+                  icon={tile.icon}
+                  tint={tile.tint}
+                  edge={tile.edge}
+                  value={tile.value}
+                  label={tile.label}
+                />
+              ))}
+              {/* Нечётная плитка не должна растягиваться на весь ряд: сетка
+                  держится распоркой, а не шириной в процентах. */}
+              {row.length === 1 && <View style={{ flex: 1 }} />}
+            </View>
+          ))}
 
           {progress && (
             <ChunkySurface
               colors={colors}
               edge={goalReached ? "#b45309" : accents.violetDeep}
               glow={goalReached ? accents.gold : accents.violetDeep}
-              style={{ marginTop: 20, padding: 16 }}
+              padding={16}
+              style={{ marginTop: 20 }}
             >
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 11 }}>
                 <Text style={{ fontSize: 14, fontWeight: "800", color: colors.foreground }}>Цель дня</Text>
@@ -1301,34 +1411,43 @@ function SessionSummary({
  * В RN у одного View не может быть двух теней, поэтому «толщину» рисуем
  * настоящим прямоугольником под корпусом — тем же приёмом, что в ChunkyButton
  * и MedalTile. Корпус остаётся белым: цвет живёт по краям, под текстом его нет.
+ *
+ * ГРАБЛИ. Внутренний отступ задаётся параметром padding, а НЕ через style:
+ * style приходит на обёртку, отжимает корпус внутрь со всех сторон, и нижний
+ * слой начинает торчать рамкой по всему периметру вместо одной грани снизу.
+ * Именно так «Цель дня» обзавелась коричневой окантовкой.
  */
 function ChunkySurface({
-  colors, edge, glow, style, children,
+  colors, edge, glow, padding = 14, style, children,
 }: {
   colors: any;
   edge: string;
   glow: string;
+  padding?: number;
   style?: any;
   children: React.ReactNode;
 }) {
   return (
     <View style={style}>
+      {/* bottom: 0 при резерве EDGE снизу — грань заканчивается ровно по низу
+          обёртки. С bottom: -EDGE она вылезала за её пределы и наезжала на
+          соседний блок. */}
       <View style={{
-        position: "absolute", left: 0, right: 0, top: 6, bottom: -6,
-        borderRadius: radii.md, backgroundColor: edge, opacity: 0.45,
+        position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
+        borderRadius: radii.md, backgroundColor: edge, opacity: 0.5,
       }} />
       <View style={{
         backgroundColor: colors.card,
         borderRadius: radii.md,
         borderWidth: 1.5, borderColor: "rgba(99,102,241,0.18)",
-        padding: 14,
+        padding,
         shadowColor: glow, shadowOffset: { width: 0, height: 6 },
         shadowOpacity: 0.2, shadowRadius: 16, elevation: 4,
       }}>
         {children}
       </View>
       {/* Резерв под грань, чтобы соседний блок на неё не наезжал. */}
-      <View style={{ height: 6 }} />
+      <View style={{ height: EDGE }} />
     </View>
   );
 }
@@ -1336,9 +1455,9 @@ function ChunkySurface({
 /**
  * Плитка результата: значок в градиентной плашке, крупное число, подпись.
  *
- * Значок раньше лежал в бледном квадрате того же цвета (tint + "1f") — на белом
- * корпусе он почти не читался. Теперь плашка залита градиентом и слегка
- * повёрнута: это наградный экран, строгая сетка ему не идёт.
+ * flex: 1 и на обёртке, и на корпусе — так плитки ряда получают одинаковую
+ * ширину и одинаковую высоту. Ширина в процентах этого не давала: подпись из
+ * двух строк делала одну плитку выше соседней.
  */
 function SummaryCard({
   colors, icon, tint, edge, value, label,
@@ -1352,13 +1471,14 @@ function SummaryCard({
   label: string;
 }) {
   return (
-    <View style={{ width: "47%", flexGrow: 1 }}>
+    <View style={{ flex: 1 }}>
       {/* Нижняя грань. */}
       <View style={{
-        position: "absolute", left: 0, right: 0, top: 6, bottom: -6,
-        borderRadius: radii.md, backgroundColor: edge, opacity: 0.45,
+        position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
+        borderRadius: radii.md, backgroundColor: edge, opacity: 0.5,
       }} />
       <View style={{
+        flex: 1,
         backgroundColor: colors.card, borderRadius: radii.md,
         borderWidth: 1.5, borderColor: "rgba(99,102,241,0.18)",
         padding: 15,
@@ -1372,7 +1492,6 @@ function SummaryCard({
           style={{
             width: 36, height: 36, borderRadius: radii.sm,
             alignItems: "center", justifyContent: "center",
-            transform: [{ rotate: "-5deg" }],
             borderWidth: 1.5, borderColor: "rgba(255,255,255,0.6)",
             shadowColor: tint, shadowOffset: { width: 0, height: 4 },
             shadowOpacity: 0.35, shadowRadius: 8, elevation: 3,
@@ -1388,7 +1507,7 @@ function SummaryCard({
         </Text>
         <Text style={{ fontSize: 12, fontWeight: "600", color: colors.mutedForeground, marginTop: 1 }}>{label}</Text>
       </View>
-      <View style={{ height: 6 }} />
+      <View style={{ height: EDGE }} />
     </View>
   );
 }
