@@ -11,6 +11,10 @@
 //
 // ПРИ ЛЮБОЙ ПРАВКЕ МЕНЯТЬ ОБА ФАЙЛА. Расхождение выглядит для ученика как
 // «день закрыт, а очки не пришли».
+//
+// Заголовки задач здесь тоже продублированы, слово в слово. Они нужны ленте
+// уведомлений: сообщение «задача дня выполнена» обязано называть задачу ровно
+// так же, как карточка цели дня в профиле.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type QuestKind = "words" | "newWords" | "assignment" | "voice";
@@ -29,6 +33,16 @@ export function pointsForGoal(minutes: number): number {
   return Math.max(10, Math.round((minutes / 15) * 25));
 }
 
+/** Русское склонение по числу. Копия клиентской: заголовки должны совпадать. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2]!;
+  const last = abs % 10;
+  if (last === 1) return forms[0]!;
+  if (last >= 2 && last <= 4) return forms[1]!;
+  return forms[2]!;
+}
+
 /** Вариация djb2: одна дата — одно число, без состояния и без random. */
 function seedFromDate(dateKey: string): number {
   let h = 5381;
@@ -43,6 +57,22 @@ function goalTier(minutes: number): 0 | 1 | 2 | 3 {
   if (minutes >= 20) return 2;
   if (minutes >= 15) return 1;
   return 0;
+}
+
+/** Заголовок задачи. Слово в слово как в utils/dailyQuests.ts. */
+function questTitle(kind: QuestKind, target: number): string {
+  switch (kind) {
+    case "words":
+      return `Повторить ${target} ${plural(target, ["слово", "слова", "слов"])}`;
+    case "newWords":
+      return `Выучить ${target} ${plural(target, ["новое слово", "новых слова", "новых слов"])}`;
+    case "assignment":
+      return target === 1
+        ? "Выполнить задание от учителя"
+        : `Выполнить ${target} ${plural(target, ["задание", "задания", "заданий"])}`;
+    case "voice":
+      return "Поговорить с тьютором";
+  }
 }
 
 export interface DailyPlanInput {
@@ -70,7 +100,21 @@ export interface PendingItem {
   target: number;
 }
 
-export interface DailyPlanResult {
+/** Пункт дня целиком: и закрытый, и нет. */
+export interface PlannedTask {
+  kind: QuestKind | "time";
+  title: string;
+  current: number;
+  target: number;
+  done: boolean;
+}
+
+export interface ServerDailyPlan {
+  dateKey: string;
+  /** Цель по времени — шапка дня, не задача. */
+  time: PlannedTask;
+  /** Учебные задачи: от двух до четырёх. */
+  quests: PlannedTask[];
   /** Закрыты и время, и все задачи. Только в этом случае положены очки. */
   allDone: boolean;
   /** Награда за день. */
@@ -79,56 +123,91 @@ export interface DailyPlanResult {
   pending: PendingItem[];
 }
 
+export interface DailyPlanResult {
+  allDone: boolean;
+  reward: number;
+  pending: PendingItem[];
+}
+
 /**
- * Считает, закрыт ли день целиком, и сколько за него причитается.
+ * День целиком: цель по времени и список задач с отметками о выполнении.
+ *
+ * Нужен там, где важно не только «всё ли закрыто», но и ЧТО именно закрыто:
+ * лента уведомлений сообщает о каждой отдельной задаче.
  */
-export function evaluateDailyPlan(input: DailyPlanInput): DailyPlanResult {
+export function buildServerDailyPlan(input: DailyPlanInput): ServerDailyPlan {
   const seed = seedFromDate(input.dateKey);
   const activeTarget = Math.max(5, input.activeGoalMinutes || 15);
   const tier = goalTier(input.activeGoalMinutes);
 
-  const pending: PendingItem[] = [];
-
   const minutes = Math.max(0, input.todayMinutes);
-  if (minutes < activeTarget) {
-    pending.push({ kind: "time", current: minutes, target: activeTarget });
-  }
+  const time: PlannedTask = {
+    kind: "time",
+    title: `Провести в приложении ${activeTarget} ${plural(activeTarget, ["минуту", "минуты", "минут"])}`,
+    current: minutes,
+    target: activeTarget,
+    done: minutes >= activeTarget,
+  };
 
   const baseCount = 2 + (seed % 3);
   const count = Math.min(4, Math.max(2, baseCount + (tier >= 2 ? 1 : 0)));
 
-  const targets: { kind: QuestKind; current: number; target: number }[] = [];
+  const raw: { kind: QuestKind; current: number; target: number }[] = [];
 
   const wordGoal =
     Math.max(5, input.dailyWordGoal || 10) + (tier >= 1 ? 2 : 0) + (tier >= 3 ? 3 : 0);
-  targets.push({ kind: "words", current: input.wordsToday, target: wordGoal });
+  raw.push({ kind: "words", current: input.wordsToday, target: wordGoal });
 
   const pool: QuestKind[] = ["assignment", "newWords", "voice"];
   const offset = seed % pool.length;
 
-  for (let i = 0; i < pool.length && targets.length < count; i++) {
+  for (let i = 0; i < pool.length && raw.length < count; i++) {
     const kind = pool[(i + offset) % pool.length]!;
 
     if (kind === "assignment") {
-      targets.push({ kind, current: input.todayCompletions, target: tier >= 2 ? 2 : 1 });
+      raw.push({ kind, current: input.todayCompletions, target: tier >= 2 ? 2 : 1 });
       continue;
     }
 
     if (kind === "newWords") {
-      targets.push({ kind, current: input.learnedToday, target: 2 + tier });
+      raw.push({ kind, current: input.learnedToday, target: 2 + tier });
       continue;
     }
 
-    targets.push({ kind, current: input.todayVoiceSessions, target: tier >= 3 ? 2 : 1 });
+    raw.push({ kind, current: input.todayVoiceSessions, target: tier >= 3 ? 2 : 1 });
   }
 
-  for (const t of targets) {
-    if (t.current < t.target) pending.push(t);
+  const quests: PlannedTask[] = raw.map((t) => ({
+    kind: t.kind,
+    title: questTitle(t.kind, t.target),
+    current: t.current,
+    target: t.target,
+    done: t.current >= t.target,
+  }));
+
+  const pending: PendingItem[] = [];
+  if (!time.done) pending.push({ kind: "time", current: time.current, target: time.target });
+  for (const q of quests) {
+    if (!q.done) pending.push({ kind: q.kind, current: q.current, target: q.target });
   }
 
   return {
+    dateKey: input.dateKey,
+    time,
+    quests,
     allDone: pending.length === 0,
     reward: pointsForGoal(activeTarget),
     pending,
   };
+}
+
+/**
+ * Считает, закрыт ли день целиком, и сколько за него причитается.
+ *
+ * Обёртка над buildServerDailyPlan: выдаче очков список задач не нужен, ей
+ * важно только «всё закрыто или нет».
+ */
+export function evaluateDailyPlan(input: DailyPlanInput): DailyPlanResult {
+  const plan = buildServerDailyPlan(input);
+  return { allDone: plan.allDone, reward: plan.reward, pending: plan.pending };
 }
