@@ -9,22 +9,34 @@ import { and, eq, isNull, inArray } from "drizzle-orm";
 import { SEED_DECKS, emojiFor } from "./data/flashcards-data";
 import { VOCAB_DECKS } from "./data/vocabulary-index";
 import { applyExampleFixes, fixFor } from "./data/example-fixes";
+import { applySensePhrases } from "./data/sense-phrases";
 
 // Ручные тематические колоды (flashcards-data.ts) + колоды, наполненные
 // импортёром реального словаря (scripts/src/import-vocabulary.ts). Импортёр
 // пишет в отдельные vocabulary-{level}.ts именно затем, чтобы не раздувать
 // flashcards-data.ts до неуправляемого размера.
 //
-// Сверху накладывается слой ручных правок примеров (example-fixes.ts): каталог
-// автогенерирован, поэтому правки нельзя держать внутри него — их затрёт
-// следующий прогон генератора.
-const ALL_DECKS = applyExampleFixes([...SEED_DECKS, ...VOCAB_DECKS]);
+// Сверху накладываются два слоя ручной работы. Каталог автогенерирован, внутри
+// него правки не живут — их затрёт следующий прогон генератора:
+//   example-fixes.ts — исправленные примеры, части речи, транскрипции;
+//   sense-phrases.ts — второе значение многозначного слова отдельной фразой.
+// Порядок важен: сначала правим то, что в каталоге есть, потом добавляем
+// недостающие смыслы (иначе правка могла бы попасть в новую карточку-фразу).
+const { decks: ALL_DECKS, problems: PHRASE_PROBLEMS } = applySensePhrases(
+  applyExampleFixes([...SEED_DECKS, ...VOCAB_DECKS]),
+);
 
 export async function seedFlashcards(): Promise<void> {
   let decksCreated = 0;
   let wordsAdded = 0;
   let emojiFilled = 0;
   let examplesFixed = 0;
+
+  // Карточка, которая не доехала до базы, ничему не научит, а заметить это по
+  // приложению почти невозможно — поэтому говорим вслух.
+  for (const problem of PHRASE_PROBLEMS) {
+    console.warn(`  ⚠️  Flashcards: карточка-фраза не добавлена — ${problem}`);
+  }
 
   for (let i = 0; i < ALL_DECKS.length; i++) {
     const d = ALL_DECKS[i]!;
