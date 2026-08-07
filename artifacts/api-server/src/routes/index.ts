@@ -15,6 +15,7 @@ import connectionsRouter from "./connections";
 import calendarRouter from "./calendar";
 import gamificationRouter from "./gamification";
 import flashcardsRouter from "./flashcards";
+import flashcardsAnswerRouter from "./flashcardsAnswer";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
 import maintenanceRouter from "./maintenance";
@@ -42,6 +43,10 @@ router.use(connectionsRouter);
 router.use(calendarRouter);
 router.use(gamificationRouter);
 router.use(flashcardsRouter);
+// Проверка свободного ответа (письмо и произношение): /flashcards/check-answer.
+// Путь не пересекается с маршрутами flashcardsRouter, поэтому порядок роли не
+// играет; вынесен отдельно, чтобы не растить flashcards.ts дальше.
+router.use(flashcardsAnswerRouter);
 router.use(messagingRouter);
 router.use(ttsRouter);
 // Обслуживание данных — не часть приложения, поэтому последним: инструмент не
