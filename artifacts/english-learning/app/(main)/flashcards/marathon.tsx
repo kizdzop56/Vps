@@ -3,6 +3,20 @@
 // приложение сообщает, что уровень можно повысить, и ведёт на тест-подтверждение
 // (после верного прохождения теста уровень меняется — уже реализованная функция).
 //
+// ── Точность и прогресс — РАЗНЫЕ величины ───────────────────────────────────
+// Точность считается только по словам, на которые ученик уже отвечал: пока
+// слово не показали, ответа по нему нет. Поэтому «точность 93%» при 120
+// пройденных из 1060 — это честно, но рядом друг с другом два процента читаются
+// как одно и то же.
+//
+// Раньше полоса заполнялась ПО ТОЧНОСТИ, а подпись под ней говорила о
+// пройденных словах — выходило «93% марафона пройдено», хотя 940 слов не
+// тронуты. Полоса обязана показывать то же, о чём говорит её подпись.
+//
+// Теперь: полоса = пройденные слова, а точность подписана числом отвеченных
+// слов и порогом перехода. Порог относится к точности, поэтому и стоит рядом с
+// ней, а не размечает полосу прогресса.
+//
 // Эмодзи на экране не используются: значки — глифы из своего набора.
 // Оформление собрано из GameKit: физические кнопки, плитки с цветной тенью.
 //
@@ -27,6 +41,15 @@ import { accents, gradients, radii } from "@/constants/theme";
 const HINT_SIZE = 12;
 const HINT_LINE = 18;
 const HINT_ICON = 14;
+
+/** Русское склонение по числу. */
+function pluralRu(n: number, one: string, few: string, many: string) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
 
 export default function MarathonScreen() {
   const colors = useColors();
@@ -87,6 +110,10 @@ export default function MarathonScreen() {
   }
 
   // ── экран-обзор ──
+  const left = data ? Math.max(0, data.totalWords - data.answeredWords) : 0;
+  const donePct = data && data.totalWords > 0 ? data.answeredWords / data.totalWords : 0;
+  const passing = data ? data.accuracy >= data.threshold : false;
+
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: 120 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 18 }}>
@@ -110,15 +137,16 @@ export default function MarathonScreen() {
       ) : (
         <>
           {/* карточка уровня и точности */}
-          <Tile glow={data.accuracy >= data.threshold ? accents.gold : accents.violetDeep} style={{ padding: 18, marginBottom: 16 }}>
+          <Tile glow={passing ? accents.gold : accents.violetDeep} style={{ padding: 18, marginBottom: 16 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 15 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                {/* Уровень в градиентном шильде: главный объект экрана. */}
+                {/* Шильд уровня стоит ровно: наклон остался от прежнего вида и
+                    был единственным кривым элементом на экране. */}
                 <LinearGradient
                   colors={gradients.action as unknown as string[]}
                   start={{ x: 0.1, y: 0 }}
                   end={{ x: 0.9, y: 1 }}
-                  style={{ width: 52, height: 52, borderRadius: radii.sm + 3, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-4deg" }] }}
+                  style={{ width: 52, height: 52, borderRadius: radii.sm + 3, alignItems: "center", justifyContent: "center" }}
                 >
                   <Glyph name="route" size={26} color="#fff" />
                 </LinearGradient>
@@ -131,33 +159,27 @@ export default function MarathonScreen() {
                 <Text style={{ fontSize: 11, color: colors.mutedForeground, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1 }}>Точность</Text>
                 <Text style={{
                   fontSize: 24, fontWeight: "900", letterSpacing: -0.5, fontVariant: ["tabular-nums"],
-                  color: data.accuracy >= data.threshold ? accents.amber : colors.foreground,
+                  color: passing ? accents.amber : colors.foreground,
                 }}>
                   {data.accuracy}%
+                </Text>
+                {/* Главное пояснение: точность посчитана НЕ по всему марафону, а
+                    по тем словам, на которые ученик успел ответить. */}
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
+                  по {data.answeredWords} {pluralRu(data.answeredWords, "слову", "словам", "словам")}
                 </Text>
               </View>
             </View>
 
-            {/* прогресс точности относительно порога */}
-            <View>
-              <XpBar
-                progress={data.accuracy / 100}
-                height={12}
-                colors={data.accuracy >= data.threshold ? [accents.gold, accents.amber] : undefined}
-              />
-              {/* Засечка порога прямо на полосе: видно, сколько ещё не хватает. */}
-              <View
-                pointerEvents="none"
-                style={{
-                  position: "absolute", top: -3, bottom: -3,
-                  left: `${Math.min(100, data.threshold)}%`,
-                  width: 2, borderRadius: 1,
-                  backgroundColor: colors.foreground, opacity: 0.35,
-                }}
-              />
-            </View>
+            {/* Полоса показывает ПРОЙДЕННЫЕ СЛОВА — то же, о чём подпись ниже.
+                Засечки порога здесь нет: порог относится к точности, а не к
+                прогрессу, и размечать им эту полосу нечем. */}
+            <XpBar progress={donePct} height={12} />
             <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 9, fontVariant: ["tabular-nums"] }}>
-              Пройдено слов: {data.answeredWords} из {data.totalWords} · порог перехода — {data.threshold}%
+              Пройдено {data.answeredWords} из {data.totalWords} · осталось {left}
+            </Text>
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
+              Для перехода на следующий уровень: все слова и точность не ниже {data.threshold}%
             </Text>
           </Tile>
 
@@ -192,7 +214,7 @@ export default function MarathonScreen() {
             <>
               <ChunkyButton
                 label="Начать марафон"
-                sublabel={`${data.totalWords - data.answeredWords} слов ещё не пройдено`}
+                sublabel={`${left} ${pluralRu(left, "слово", "слова", "слов")} ещё не пройдено`}
                 icon="play"
                 chevron
                 onPress={() => setStarted(true)}
@@ -204,7 +226,7 @@ export default function MarathonScreen() {
                   <Glyph name="compass" size={HINT_ICON} color={colors.mutedForeground} />
                 </View>
                 <Text style={{ flex: 1, fontSize: HINT_SIZE, lineHeight: HINT_LINE, color: colors.mutedForeground }}>
-                  В марафоне встречаются все слова твоего уровня. Когда ты пройдёшь их все с точностью не ниже {data.threshold}%, откроется переход на следующий уровень.
+                  В марафоне встречаются все слова твоего уровня. Точность считается по тем словам, на которые ты уже отвечал, — сейчас это {data.answeredWords} из {data.totalWords}.
                 </Text>
               </View>
             </>
