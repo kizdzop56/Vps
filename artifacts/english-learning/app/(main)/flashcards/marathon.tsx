@@ -63,6 +63,14 @@ export default function MarathonScreen() {
   const q = useQuery({ queryKey: ["fc-marathon"], queryFn: fc.getMarathon });
   const data = q.data;
 
+  // Выход в раздел «Слова» задан явным адресом, а не router.back(). В навигации
+  // по вкладкам «назад» возвращает на ПЕРВУЮ вкладку («Задания»), а не на
+  // предыдущий экран. Здесь это особенно заметно: панель вкладок на марафоне
+  // скрыта, и стрелка — единственный выход.
+  const backToWords = React.useCallback(() => {
+    router.replace("/flashcards");
+  }, [router]);
+
   // Один раз за заход уведомляем ученика, что он готов перейти на новый уровень.
   React.useEffect(() => {
     if (started || !data?.eligible || !data.nextLevel || notifiedRef.current) return;
@@ -97,6 +105,8 @@ export default function MarathonScreen() {
           loader={loadQueue}
           title={`Марафон ${data?.level ?? ""}`.trim()}
           onExit={() => {
+            // Возвращаемся на обзор марафона — там сразу видно, как изменилась
+            // точность после прогона. Это по-прежнему раздел «Слова».
             setStarted(false);
             notifiedRef.current = false; // после сессии снова разрешаем уведомление
             q.refetch();
@@ -119,7 +129,7 @@ export default function MarathonScreen() {
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 18 }}>
         {/* Стрелка «назад» — chevron из набора, развёрнутый на 180°. */}
         <Pressable
-          onPress={() => router.back()}
+          onPress={backToWords}
           accessibilityRole="button"
           accessibilityLabel="Назад"
           hitSlop={10}

@@ -19,13 +19,22 @@ export default function SessionScreen() {
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
   }, [qc]);
 
+  // Выход задан явным адресом, а не router.back(). В навигации по вкладкам
+  // «назад» означает возврат на ПЕРВУЮ вкладку (у ученика это «Задания»), а не
+  // на экран, откуда пришли. Replace, а не push: завершённая тренировка не
+  // должна оставаться в истории.
+  const exit = React.useCallback(() => {
+    refreshLists();
+    router.replace("/flashcards");
+  }, [refreshLists, router]);
+
   return (
     <View style={{ flex: 1 }}>
       <WordTrainer
         loader={loadQueue}
         title="Учим слова"
         onFinished={refreshLists}
-        onExit={() => { refreshLists(); router.back(); }}
+        onExit={exit}
       />
     </View>
   );

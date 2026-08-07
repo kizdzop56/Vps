@@ -18,13 +18,19 @@ export default function HardWordsScreen() {
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
   }, [qc]);
 
+  // См. session.tsx: router.back() в табах уводит на первую вкладку.
+  const exit = React.useCallback(() => {
+    refreshLists();
+    router.replace("/flashcards");
+  }, [refreshLists, router]);
+
   return (
     <View style={{ flex: 1 }}>
       <WordTrainer
         loader={loadQueue}
         title="Сложные слова"
         onFinished={refreshLists}
-        onExit={() => { refreshLists(); router.back(); }}
+        onExit={exit}
       />
     </View>
   );
