@@ -22,6 +22,21 @@
 // («Кот.» против «кот», опечатка против ошибки), и один и тот же ответ получит
 // разные оценки на разных устройствах.
 //
+// ── Запись речи заканчивает ученик ──────────────────────────────────────────
+// Кнопка микрофона — переключатель: нажал, сказал, нажал «Стоп». Автоматическая
+// остановка по тишине здесь не работает: ребёнок читает задание, примеряется,
+// набирает воздух — и всё это время распознавание уже считает, что фраза
+// закончилась. Попытка сгорала до того, как он открывал рот.
+//
+// Пустая расшифровка попытку НЕ тратит: это не ошибка ученика, а неудачная
+// запись. Тратятся только попытки, где действительно что-то прозвучало.
+//
+// ── Тупиков быть не должно ──────────────────────────────────────────────────
+// В каждом упражнении со свободным ответом есть выход: «Не знаю» в письме и
+// сборке, «Не получается» в произношении. Незнакомое слово — нормальная часть
+// учёбы, и признаться в этом должно быть проще, чем наугад набивать буквы.
+// Такой ответ засчитывается как полный промах: слово вернётся скоро.
+//
 // ── Цвет состояния не трогает текст ─────────────────────────────────────────
 // Клавиша ответа НИКОГДА не заливается цветом состояния целиком. Раньше
 // заливка шла на всю площадь, и под красным или фиолетовым терялся сам текст
@@ -43,7 +58,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { fc, speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
 import type { AnswerCheck, Exercise, ExerciseType, Grade, TrainerCard, TrainerQueue } from "@/hooks/useFlashcards";
-import { cancelListening, isSpeechInputAvailable, listenOnce } from "@/hooks/useSpeechInput";
+import {
+  cancelListening,
+  isSpeechInputAvailable,
+  startListening,
+  type SpeechResult,
+  type SpeechSession,
+} from "@/hooks/useSpeechInput";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, XpBar, GoalPips } from "@/components/ui/GameKit";
 import { accents, gradients, radii, chunky } from "@/constants/theme";
@@ -55,6 +76,9 @@ const NEXT_DELAY_BAD = 1900; // после ошибки даём время пр
 // Опечатку показываем дольше верного ответа: ребёнок должен успеть прочитать,
 // как слово пишется правильно.
 const NEXT_DELAY_TYPO = 2200;
+// «Не знаю» — единственный случай, когда ученик заведомо видит ответ впервые.
+// Держим карточку дольше всего: это не проверка, а показ.
+const NEXT_DELAY_GIVEUP = 2600;
 
 /**
  * Запас под последней кнопкой экрана.
@@ -112,7 +136,14 @@ export function WordTrainer({
   const [typed, setTyped] = React.useState("");
   const [checking, setChecking] = React.useState(false);
   const [speakState, setSpeakState] = React.useState<SpeakState>("idle");
+  /** Живая расшифровка во время записи: видно, что микрофон слышит. */
+  const [partial, setPartial] = React.useState("");
+  /** Итоговая расшифровка последней попытки. */
   const [heard, setHeard] = React.useState<string | null>(null);
+  /** Подсказка под микрофоном: ничего не услышали, нет доступа и т. п. */
+  const [micHint, setMicHint] = React.useState<string | null>(null);
+  /** Микрофон недоступен или запрещён — карточка переходит на письменный ответ. */
+  const [micBlocked, setMicBlocked] = React.useState(false);
 
   // итоги сессии
   const [answered, setAnswered] = React.useState(0);
@@ -124,6 +155,8 @@ export function WordTrainer({
   const shownAt = React.useRef<number>(Date.now());
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const finishedRef = React.useRef(false);
+  /** Идущая запись речи: нужна, чтобы остановить её по кнопке «Стоп». */
+  const speechRef = React.useRef<SpeechSession | null>(null);
   // Лёгкий «вдох» карточки при появлении: только opacity и scale, чтобы
   // анимация ушла в нативный драйвер и не грузила JS-поток.
   const cardIn = React.useRef(new Animated.Value(0)).current;
@@ -202,7 +235,11 @@ export function WordTrainer({
     setTyped("");
     setChecking(false);
     setSpeakState("idle");
+    setPartial("");
     setHeard(null);
+    setMicHint(null);
+    setMicBlocked(false);
+    speechRef.current = null;
   }, []);
 
   const goNext = React.useCallback(() => {
@@ -307,6 +344,24 @@ export function WordTrainer({
     setAttempts((a) => Math.max(a, 2));
   }, []);
 
+  /**
+   * «Не знаю»: ученик честно признаётся, что не помнит слово.
+   *
+   * Показываем верный ответ, озвучиваем его и засчитываем полный промах —
+   * попыток отдаём максимум, чтобы система повторений вернула слово скоро.
+   * Наугад набитые буквы дали бы тот же промах, но без показа ответа: смысла в
+   * этом нет никакого.
+   */
+  const giveUp = React.useCallback((mode: ExerciseType) => {
+    if (!card || feedback) return;
+    cancelListening();
+    speechRef.current = null;
+    const expected = exercise.answer ?? exercise.options?.[exercise.answerIndex ?? 0] ?? "";
+    setFeedback({ correct: false, note: `Ответ: ${expected}` });
+    submit({ correct: false }, mode, NEXT_DELAY_GIVEUP, 3);
+    if (speechAvailable()) speakWord(card.id, card.english);
+  }, [card, feedback, exercise.answer, exercise.options, exercise.answerIndex, submit]);
+
   /** Показать вердикт сервера по свободному ответу и закрыть карточку. */
   const applyVerdict = React.useCallback(
     (verdict: AnswerCheck, mode: ExerciseType, usedAttempts: number, note?: string) => {
@@ -331,12 +386,19 @@ export function WordTrainer({
     [exercise.answer, submit, card],
   );
 
-  /** Письменный ответ: отправляем на проверку серверу. */
+  /**
+   * Письменный ответ: отправляем на проверку серверу.
+   *
+   * Режим считаем от языка ответа, а не «typeEn или иначе typeRu»: у запасного
+   * сценария произношения (микрофон недоступен) тип упражнения speak, но пишет
+   * ученик по-английски. Со старым условием сервер сверял английское слово со
+   * списком русских переводов и всегда возвращал ошибку.
+   */
   const submitTyped = React.useCallback(async () => {
     if (!card || feedback || checking) return;
     const value = typed.trim();
     if (!value) return;
-    const mode = exercise.type === "typeEn" ? "typeEn" : "typeRu";
+    const mode: "typeRu" | "typeEn" = exercise.type === "typeRu" ? "typeRu" : "typeEn";
     setChecking(true);
     try {
       const verdict = await fc.checkAnswer(card.id, mode, value);
@@ -352,25 +414,40 @@ export function WordTrainer({
     }
   }, [card, feedback, checking, typed, exercise.type, exercise.answer, attempts, applyVerdict, goNext]);
 
-  /** Произношение: слушаем и отправляем расшифровку на проверку. */
-  const startListening = React.useCallback(async () => {
-    if (!card || feedback || speakState !== "idle") return;
-    setHeard(null);
-    setSpeakState("listening");
-    const result = await listenOnce("en-US");
+  /** Итог записи: пришёл после того, как ученик нажал «Стоп». */
+  const handleSpeechResult = React.useCallback(async (result: SpeechResult) => {
+    speechRef.current = null;
+    setPartial("");
 
-    if (result.ok === false && result.reason === "unavailable") {
-      // Распознавания нет — упражнение не должно превратиться в тупик.
+    // Микрофона нет или браузер не дал доступ. Это не ошибка ученика и не повод
+    // засчитывать промах: карточка переходит на письменный ответ.
+    if (!result.ok && (result.reason === "unavailable" || result.reason === "denied")) {
       setSpeakState("idle");
+      setMicBlocked(true);
       setHeard(null);
-      setFeedback({ correct: true, note: "Микрофон недоступен — послушай и повтори вслух" });
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(goNext, NEXT_DELAY_OK);
+      setMicHint(result.reason === "denied"
+        ? "Нет доступа к микрофону. Напиши слово по-английски."
+        : "Микрофон недоступен на этом устройстве. Напиши слово по-английски.");
       return;
     }
 
     const transcript = result.ok ? result.transcript : "";
-    setHeard(transcript || null);
+    if (!transcript) {
+      // Ничего не прозвучало. Попытку НЕ тратим: сгоревшие «за молчание»
+      // попытки — ровно то, из-за чего упражнение было непроходимым.
+      setSpeakState("idle");
+      setHeard(null);
+      setMicHint("Ничего не услышал. Нажми на микрофон, скажи слово и нажми «Стоп».");
+      return;
+    }
+
+    if (!card) {
+      setSpeakState("idle");
+      return;
+    }
+
+    setHeard(transcript);
+    setMicHint(null);
     setSpeakState("checking");
 
     try {
@@ -379,6 +456,7 @@ export function WordTrainer({
         // Попытки ещё есть: это не ошибка, а просьба повторить.
         setAttempts((a) => a + 1);
         setSpeakState("idle");
+        setMicHint("Пока не то. Послушай слово и попробуй ещё раз.");
         return;
       }
       applyVerdict(
@@ -394,11 +472,39 @@ export function WordTrainer({
     } finally {
       setSpeakState((s) => (s === "checking" ? "idle" : s));
     }
-  }, [card, feedback, speakState, exercise.answer, attempts, applyVerdict, goNext]);
+  }, [card, attempts, exercise.answer, applyVerdict, goNext]);
+
+  /** Начать запись. Останавливает её сам ученик кнопкой «Стоп». */
+  const beginListening = React.useCallback(() => {
+    if (!card || feedback || speakState !== "idle") return;
+    // Озвучка не должна попасть в микрофон.
+    stopSpeaking();
+    setHeard(null);
+    setMicHint(null);
+    setPartial("");
+    setSpeakState("listening");
+    speechRef.current = startListening({
+      lang: "en-US",
+      onPartial: setPartial,
+      onDone: (result) => { void handleSpeechResult(result); },
+    });
+  }, [card, feedback, speakState, handleSpeechResult]);
+
+  /** «Стоп»: закончить запись и отправить услышанное на проверку. */
+  const finishListening = React.useCallback(() => {
+    const session = speechRef.current;
+    if (!session) return;
+    // Последний кусок расшифровки приходит уже после stop() — до него держим
+    // «Проверяю…», чтобы кнопку нельзя было нажать дважды.
+    setSpeakState("checking");
+    session.stop();
+  }, []);
 
   /** Не получается произнести — пусть напишет. Тупика быть не должно. */
   const skipSpeaking = React.useCallback(() => {
     if (!card || feedback) return;
+    cancelListening();
+    speechRef.current = null;
     setFeedback({ correct: false, note: `Верное произношение: ${exercise.answer ?? ""}` });
     submit({ correct: false }, "speak", NEXT_DELAY_BAD, exercise.maxAttempts ?? 3);
   }, [card, feedback, exercise.answer, exercise.maxAttempts, submit]);
@@ -442,6 +548,56 @@ export function WordTrainer({
   const isSpeak = exercise.type === "speak";
   const isChoice = !isIntro && !isBuild && !isTyping && !isSpeak;
   const promptLabel = PROMPT_LABEL[exercise.type];
+  /** Микрофон в этой карточке рабочий: есть в системе и не запрещён. */
+  const micUsable = speechInput && !micBlocked;
+  const maxSpeakAttempts = exercise.maxAttempts ?? 3;
+
+  /** Поле письменного ответа: используется и в typeRu/typeEn, и как запасной
+      сценарий произношения. */
+  const typingBlock = (placeholder: string) => (
+    <>
+      <TextInput
+        value={typed}
+        onChangeText={setTyped}
+        onSubmitEditing={submitTyped}
+        editable={!checking}
+        autoCapitalize="none"
+        autoCorrect={false}
+        // Автоподсказки клавиатуры сделали бы упражнение бессмысленным:
+        // телефон допишет слово за ребёнка.
+        autoComplete="off"
+        spellCheck={false}
+        returnKeyType="done"
+        placeholder={placeholder}
+        placeholderTextColor={colors.mutedForeground}
+        accessibilityLabel="Поле ответа"
+        style={{
+          backgroundColor: colors.card,
+          borderWidth: 2, borderColor: typed.trim() ? colors.primary : colors.border,
+          borderRadius: radii.md, paddingHorizontal: 16, paddingVertical: 15,
+          fontSize: 19, fontWeight: "700", color: colors.foreground,
+        }}
+      />
+      <ChunkyButton
+        label={checking ? "Проверяем…" : "Проверить"}
+        icon="check"
+        onPress={submitTyped}
+        disabled={checking || !typed.trim()}
+        style={{ marginTop: 12 }}
+      />
+      {/* Выход из незнакомого слова: честное «не знаю» вместо набитых наугад
+          букв. Ответ показывается и озвучивается. */}
+      <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "flex-start", marginTop: 4 }}>
+        <SmallButton
+          icon="help"
+          label="Не знаю"
+          onPress={() => giveUp(exercise.type)}
+          colors={colors}
+          disabled={checking}
+        />
+      </View>
+    </>
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: background, paddingTop: insets.top + 8 }}>
@@ -663,7 +819,7 @@ export function WordTrainer({
                 ? "Верно!"
                 : feedback.retry
                   ? "Почти! Попробуй собрать ещё раз"
-                  : `Верный ответ: ${exercise.answer ?? ""}`}
+                  : feedback.note ?? `Верный ответ: ${exercise.answer ?? ""}`}
             </Text>
           </View>
         )}
@@ -715,70 +871,72 @@ export function WordTrainer({
         {/* письменный ответ */}
         {isTyping && !feedback && (
           <View style={{ marginTop: 18 }}>
-            <TextInput
-              value={typed}
-              onChangeText={setTyped}
-              onSubmitEditing={submitTyped}
-              editable={!checking}
-              autoCapitalize="none"
-              autoCorrect={false}
-              // Автоподсказки клавиатуры сделали бы упражнение бессмысленным:
-              // телефон допишет слово за ребёнка.
-              autoComplete="off"
-              spellCheck={false}
-              returnKeyType="done"
-              placeholder={exercise.answerLang === "en" ? "Напиши по-английски" : "Напиши перевод"}
-              placeholderTextColor={colors.mutedForeground}
-              accessibilityLabel="Поле ответа"
-              style={{
-                backgroundColor: colors.card,
-                borderWidth: 2, borderColor: typed.trim() ? colors.primary : colors.border,
-                borderRadius: radii.md, paddingHorizontal: 16, paddingVertical: 15,
-                fontSize: 19, fontWeight: "700", color: colors.foreground,
-              }}
-            />
-            <ChunkyButton
-              label={checking ? "Проверяем…" : "Проверить"}
-              icon="check"
-              onPress={submitTyped}
-              disabled={checking || !typed.trim()}
-              style={{ marginTop: 12 }}
-            />
+            {typingBlock(exercise.answerLang === "en" ? "Напиши по-английски" : "Напиши перевод")}
           </View>
         )}
 
         {/* произношение */}
         {isSpeak && !feedback && (
           <View style={{ marginTop: 18, alignItems: "center" }}>
-            {speechInput ? (
+            {micUsable ? (
               <>
+                {/* Одна кнопка на два состояния: начать запись и остановить её.
+                    Автоматическая остановка по тишине здесь не работает — см.
+                    комментарий в hooks/useSpeechInput.ts. */}
                 <TouchableOpacity
-                  onPress={startListening}
-                  disabled={speakState !== "idle"}
+                  onPress={speakState === "listening" ? finishListening : beginListening}
+                  disabled={speakState === "checking"}
                   activeOpacity={0.85}
-                  accessibilityLabel="Произнести слово"
+                  accessibilityRole="button"
+                  accessibilityLabel={speakState === "listening" ? "Остановить запись" : "Начать запись"}
                 >
                   <LinearGradient
-                    colors={gradients.action as unknown as string[]}
+                    colors={(speakState === "listening" ? gradients.fire : gradients.action) as unknown as string[]}
                     start={{ x: 0.1, y: 0 }}
                     end={{ x: 0.9, y: 1 }}
                     style={{
                       alignItems: "center", justifyContent: "center",
                       width: 116, height: 116, borderRadius: 58,
-                      opacity: speakState === "idle" ? 1 : 0.65,
-                      shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
+                      opacity: speakState === "checking" ? 0.65 : 1,
+                      shadowColor: speakState === "listening" ? accents.amber : colors.primary,
+                      shadowOffset: { width: 0, height: 8 },
                       shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
                     }}
                   >
-                    {speakState === "checking"
-                      ? <ActivityIndicator size="large" color="#ffffff" />
-                      : <Glyph name={speakState === "listening" ? "sound" : "mic"} size={44} color="#ffffff" />}
+                    {speakState === "checking" ? (
+                      <ActivityIndicator size="large" color="#ffffff" />
+                    ) : speakState === "listening" ? (
+                      // Квадрат «стоп»: рисуем прямо здесь, отдельного глифа для
+                      // одной кнопки заводить незачем.
+                      <View style={{ width: 34, height: 34, borderRadius: 9, backgroundColor: "#ffffff" }} />
+                    ) : (
+                      <Glyph name="mic" size={44} color="#ffffff" />
+                    )}
                   </LinearGradient>
                 </TouchableOpacity>
 
-                <Text style={{ marginTop: 14, fontSize: 15, fontWeight: "800", color: colors.foreground, textAlign: "center" }}>
-                  {speakState === "listening" ? "Слушаю…" : speakState === "checking" ? "Проверяю…" : "Нажми и произнеси слово"}
+                <Text style={{ marginTop: 14, fontSize: 16, fontWeight: "900", color: colors.foreground, textAlign: "center" }}>
+                  {speakState === "listening" ? "Идёт запись" : speakState === "checking" ? "Проверяю…" : "Нажми и произнеси слово"}
                 </Text>
+
+                {speakState === "listening" && (
+                  <>
+                    <Text style={{ marginTop: 4, fontSize: 13, color: colors.mutedForeground, textAlign: "center" }}>
+                      Скажи слово и нажми «Стоп»
+                    </Text>
+                    {/* Живая расшифровка: ребёнок должен видеть, что его слышат,
+                        иначе он не понимает, работает микрофон или нет. */}
+                    <Text
+                      numberOfLines={2}
+                      style={{
+                        marginTop: 10, minHeight: 22, fontSize: 16, fontWeight: "800",
+                        color: partial ? colors.primary : colors.mutedForeground, textAlign: "center",
+                      }}
+                    >
+                      {partial || "…"}
+                    </Text>
+                  </>
+                )}
 
                 {/* Что именно услышало распознавание. Без этого ребёнок не
                     понимает, ошибся он или микрофон, и следующая попытка
@@ -789,12 +947,18 @@ export function WordTrainer({
                   </Text>
                 )}
 
+                {!!micHint && speakState === "idle" && (
+                  <Text style={{ marginTop: 8, fontSize: 13, color: colors.mutedForeground, textAlign: "center", lineHeight: 19 }}>
+                    {micHint}
+                  </Text>
+                )}
+
                 <Text style={{ marginTop: 10, fontSize: 13, fontWeight: "800", color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-                  Попытка {Math.min(attempts, exercise.maxAttempts ?? 3)} из {exercise.maxAttempts ?? 3}
+                  Попытка {Math.min(attempts, maxSpeakAttempts)} из {maxSpeakAttempts}
                 </Text>
 
                 {speakState === "idle" && (
-                  <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", alignItems: "flex-start", gap: 10, marginTop: 14 }}>
                     {speechAvailable() && (
                       <SmallButton
                         icon="sound"
@@ -808,38 +972,13 @@ export function WordTrainer({
                 )}
               </>
             ) : (
-              // Распознавания нет — вместо тупика предлагаем написать слово.
+              // Микрофона нет или доступ запрещён — вместо тупика предлагаем
+              // написать слово.
               <View style={{ width: "100%" }}>
-                <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 }}>
-                  Микрофон недоступен на этом устройстве. Напиши слово по-английски.
+                <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20, marginBottom: 12 }}>
+                  {micHint ?? "Микрофон недоступен на этом устройстве. Напиши слово по-английски."}
                 </Text>
-                <TextInput
-                  value={typed}
-                  onChangeText={setTyped}
-                  onSubmitEditing={submitTyped}
-                  editable={!checking}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="off"
-                  spellCheck={false}
-                  returnKeyType="done"
-                  placeholder="Напиши по-английски"
-                  placeholderTextColor={colors.mutedForeground}
-                  accessibilityLabel="Поле ответа"
-                  style={{
-                    backgroundColor: colors.card,
-                    borderWidth: 2, borderColor: typed.trim() ? colors.primary : colors.border,
-                    borderRadius: radii.md, paddingHorizontal: 16, paddingVertical: 15, marginTop: 12,
-                    fontSize: 19, fontWeight: "700", color: colors.foreground,
-                  }}
-                />
-                <ChunkyButton
-                  label={checking ? "Проверяем…" : "Проверить"}
-                  icon="check"
-                  onPress={submitTyped}
-                  disabled={checking || !typed.trim()}
-                  style={{ marginTop: 12 }}
-                />
+                {typingBlock("Напиши по-английски")}
               </View>
             )}
           </View>
@@ -860,9 +999,10 @@ export function WordTrainer({
                 />
               ))}
             </View>
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 16, justifyContent: "center" }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16, justifyContent: "center", alignItems: "flex-start" }}>
               <SmallButton icon="backspace" label="Стереть" onPress={undoLetter} colors={colors} disabled={built.length === 0 || Boolean(feedback)} />
               {!hintUsed && <SmallButton icon="help" label="Подсказка" onPress={showHint} colors={colors} disabled={Boolean(feedback)} />}
+              <SmallButton icon="close" label="Не знаю" onPress={() => giveUp("build")} colors={colors} disabled={Boolean(feedback)} />
             </View>
           </>
         )}
@@ -1261,23 +1401,55 @@ function Centered({ children, background }: { children: React.ReactNode; backgro
   );
 }
 
+/**
+ * Мелкая кнопка действия: «Стереть», «Подсказка», «Послушать», «Не знаю».
+ *
+ * Раньше это была плоская пилюля с тонкой рамкой — единственное место в
+ * тренажёре, где кнопка не ощущалась кнопкой. Теперь у неё та же физика, что у
+ * клавиш ответа и ChunkyButton: нижняя грань отдельным слоем, корпус проседает
+ * при нажатии и грань схлопывается.
+ *
+ * Грань светло-фиолетовая, а не в цвет текста: этих кнопок на экране до трёх, и
+ * цветными они перетянули бы внимание с самого задания.
+ */
 function SmallButton({
   icon, label, onPress, colors, disabled,
 }: { icon: GlyphName; label: string; onPress: () => void; colors: any; disabled?: boolean }) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.85}
-      disabled={disabled}
-      style={{
-        flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radii.pill,
-        paddingHorizontal: 16, paddingVertical: 11,
-        backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
-        opacity: disabled ? 0.45 : 1,
-      }}
-    >
-      <Glyph name={icon} size={16} color={colors.mutedForeground} />
-      <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>{label}</Text>
-    </TouchableOpacity>
+    <View style={{ opacity: disabled ? 0.45 : 1 }}>
+      {/* Нижняя грань: отдельный слой под корпусом — у View в RN не может быть
+          двух теней, поэтому толщину рисуем настоящим прямоугольником. */}
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 4, bottom: 0,
+        borderRadius: radii.pill, backgroundColor: "rgba(160,140,220,0.45)",
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(4)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ disabled: !!disabled }}
+          style={{
+            flexDirection: "row", alignItems: "center", gap: 7,
+            borderRadius: radii.pill, paddingHorizontal: 16, paddingVertical: 11,
+            backgroundColor: colors.card,
+            borderWidth: 1.5, borderColor: "rgba(99,102,241,0.2)",
+          }}
+        >
+          <Glyph name={icon} size={16} color={colors.mutedForeground} />
+          <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>{label}</Text>
+        </Pressable>
+      </Animated.View>
+      {/* Резерв под грань, чтобы соседний ряд на неё не наезжал. */}
+      <View style={{ height: 4 }} />
+    </View>
   );
 }
