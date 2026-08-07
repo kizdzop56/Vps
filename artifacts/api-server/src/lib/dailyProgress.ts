@@ -24,7 +24,7 @@ import {
   flashcardSettingsTable,
 } from "@workspace/db";
 import { and, eq, gt, gte, sql } from "drizzle-orm";
-import { liveSessionMinutes, localDayKey, sessionMinutes, startOfLocalDay } from "./timeStats";
+import { localDayKey, sessionMinutes, startOfLocalDay } from "./timeStats";
 import { isLearned, startOfDay } from "./srs";
 
 /**
@@ -49,7 +49,6 @@ export async function computeDailyProgress(userId: number): Promise<DailyProgres
   const [user] = await db
     .select({
       id: usersTable.id,
-      totalTimeMinutes: usersTable.totalTimeMinutes,
       dailyGoalMinutes: usersTable.dailyGoalMinutes,
     })
     .from(usersTable)
@@ -59,8 +58,10 @@ export async function computeDailyProgress(userId: number): Promise<DailyProgres
   const todayStart = startOfLocalDay();
 
   // ── Время ──
-  // У открытой сессии засчитывается только время, подтверждённое heartbeat:
-  // иначе брошенная вкладка закрывает цель дня сама по себе.
+  // sessionMinutes сам разбирается с открытой сессией: живой засчитывается
+  // календарное время, брошенной — только подтверждённое heartbeat. Разворачивать
+  // это здесь вручную нельзя: два выражения для одного числа разъедутся, и лента
+  // объявит цель закрытой раньше, чем сервер согласится выдать за неё очки.
   const sessions = await db
     .select()
     .from(timeSessionsTable)
@@ -69,7 +70,7 @@ export async function computeDailyProgress(userId: number): Promise<DailyProgres
   const todayMinutes = Math.round(
     sessions
       .filter((s) => s.startedAt >= todayStart)
-      .reduce((sum, s) => sum + (s.endedAt === null ? liveSessionMinutes(s) : sessionMinutes(s)), 0),
+      .reduce((sum, s) => sum + sessionMinutes(s), 0),
   );
 
   // ── Задания и разговоры за сегодня ──
