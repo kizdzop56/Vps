@@ -75,7 +75,7 @@ export const placementResultsTable = pgTable("placement_results", {
   userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   score: integer("score").notNull(),
   total: integer("total").notNull(),
-  cefrLevel: text("cefr_level").notNull(), // A1..C2
+  cefrLevel: text("cefr_level").notNull(), // A1..C1 (C2 в каталоге слов нет)
   answers: jsonb("answers").$type<number[]>(),
   takenAt: timestamp("taken_at").notNull().defaultNow(),
 });
@@ -97,6 +97,19 @@ export const reviewLogTable = pgTable("review_log", {
   userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   wordId: integer("word_id").notNull().references(() => wordsTable.id, { onDelete: "cascade" }),
   result: text("result").notNull(),        // "know" | "dont"
+  /**
+   * Оценка ответа: again | hard | good | easy.
+   *
+   * result отвечает только на вопрос «верно или нет», а очки начисляются по
+   * четырёхступенчатой оценке (hard — 1 очко, good и easy — 2). Дневной потолок
+   * считается по этому же журналу, и пока оценки здесь не было, любой know
+   * принимался за good — потолок упирался раньше, чем ученик реально набирал
+   * свои 60 очков.
+   *
+   * Nullable: у записей, сделанных до появления колонки, оценки нет, и расчёт
+   * для них по-прежнему идёт по result (см. pointsEarnedToday в lib/srs.ts).
+   */
+  grade: text("grade"),
   memoryLevelAfter: integer("memory_level_after"),
   reviewedAt: timestamp("reviewed_at").notNull().defaultNow(),
 });

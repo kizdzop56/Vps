@@ -28,7 +28,18 @@
 // Словосочетания и слова длиннее MAX_BUILD_LENGTH из букв не собираются —
 // вместо этого аудирование или choiceEn.
 //
-// Отдельная забота — отвлекающие варианты. Раньше они выдавали себя формой:
+// ── Нехватка вариантов не отменяет проверку ─────────────────────────────────
+// Дистракторов может не набраться: маленькая колода, редкая часть речи, слово
+// непохожей формы. Раньше в этом случае возвращался intro — «знакомство» с
+// кнопкой «Понятно, запомнил». Для нового слова это верно, для знакомого —
+// катастрофа: ребёнок сам ставит себе оценку, слово получает good без единой
+// проверки и уезжает на неделю вперёд.
+//
+// Теперь недобор вариантов уводит в СВОБОДНЫЙ ответ (см. fallbackExercise):
+// написать перевод, собрать слово, написать слово. Их проверяет сервер, и
+// качество подборки дистракторов на честность оценки больше не влияет.
+//
+// Отдельная забота — сами отвлекающие варианты. Раньше они выдавали себя формой:
 // среди однословных ответов стояло словосочетание, один вариант был втрое
 // длиннее прочих, у кого-то оставалась точка на конце. Ребёнок отбрасывал
 // лишнее по внешнему виду и попадал в верный ответ, не вспомнив слово. Теперь
@@ -43,7 +54,7 @@
 // Если кандидатов не хватает, критерии ослабляются по лесенке TIERS
 // (смысл → длина → часть речи), но совпадение формы не отпускается никогда.
 //
-// Модуль чистый (без БД и express) — тесты в wordExercise.test.ts.
+// Модуль без БД и express — тесты в wordExercise.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 import { LEARNED_LEVEL } from "./srs";
 import { SPEAK_MAX_ATTEMPTS } from "./answerCheck";
@@ -461,6 +472,64 @@ export function interleaveQueue<T>(due: T[], fresh: T[], everyN: number = 3): T[
   return out;
 }
 
+// ── Готовые упражнения ───────────────────────────────────────────────────────
+
+/** Письменный перевод: показываем слово, ждём русский ответ. */
+function typeRuExercise(word: WordLike, translation: string): Exercise {
+  return {
+    type: "typeRu",
+    prompt: word.english,
+    answer: translation,
+    accept: word.translationsRu.map((t) => t.trim()).filter(Boolean),
+    answerLang: "ru",
+  };
+}
+
+/** Письмо по-английски: показываем перевод, ждём слово. */
+function typeEnExercise(word: WordLike, translation: string): Exercise {
+  return {
+    type: "typeEn",
+    prompt: translation,
+    answer: word.english.trim(),
+    accept: [word.english.trim()],
+    answerLang: "en",
+  };
+}
+
+/** Сборка слова из букв: показываем перевод, ответ набирается плитками. */
+function buildLettersExercise(word: WordLike, translation: string, rng: () => number): Exercise {
+  return {
+    type: "build",
+    prompt: translation,
+    answer: word.english.trim(),
+    letters: letterTiles(word.english, rng),
+  };
+}
+
+/**
+ * Что дать, когда вариантов ответа не набралось.
+ *
+ * ЗАЧЕМ. Раньше здесь возвращался intro. Для нового слова это правильно, а для
+ * знакомого — подмена: intro показывает «Показать перевод» и «Понятно,
+ * запомнил», то есть ребёнок ставит себе оценку сам. Слово получало good без
+ * всякой проверки и уезжало на неделю вперёд. Недобор дистракторов — проблема
+ * подборки, а не повод отменить проверку знания.
+ *
+ * Свободный ответ дистракторов не требует вовсе, поэтому он и берётся:
+ * написать перевод, собрать слово из букв, написать слово по-английски.
+ * Проверяет его сервер (POST /flashcards/check-answer).
+ *
+ * intro остаётся последней строчкой — для карточки, у которой нет перевода:
+ * ни спросить, ни проверить нечего.
+ */
+function fallbackExercise(word: WordLike, translation: string, rng: () => number): Exercise {
+  if (!translation) return { type: "intro", prompt: word.english };
+  if (isTypeable(translation)) return typeRuExercise(word, translation);
+  if (isBuildable(word.english)) return buildLettersExercise(word, translation, rng);
+  if (isTypeable(word.english)) return typeEnExercise(word, translation);
+  return { type: "intro", prompt: word.english };
+}
+
 /**
  * Готовое упражнение для карточки.
  *
@@ -497,30 +566,18 @@ export function buildExercise(opts: {
   }
 
   if (type === "build") {
-    return { type, prompt: translation, answer: word.english.trim(), letters: letterTiles(word.english, rng) };
+    return buildLettersExercise(word, translation, rng);
   }
 
   // Свободный ответ: вариантов не даём вовсе. accept — все допустимые написания;
   // сравнение делает сервер (POST /flashcards/check-answer), клиент лишь
   // показывает верный вариант после проверки.
   if (type === "typeRu") {
-    return {
-      type,
-      prompt: word.english,
-      answer: translation,
-      accept: word.translationsRu.map((t) => t.trim()).filter(Boolean),
-      answerLang: "ru",
-    };
+    return typeRuExercise(word, translation);
   }
 
   if (type === "typeEn") {
-    return {
-      type,
-      prompt: translation,
-      answer: word.english.trim(),
-      accept: [word.english.trim()],
-      answerLang: "en",
-    };
+    return typeEnExercise(word, translation);
   }
 
   if (type === "speak") {
@@ -553,7 +610,7 @@ export function buildExercise(opts: {
     );
     return options.length >= MIN_OPTION_COUNT
       ? { type, prompt: translation, options, answerIndex, answer }
-      : { type: "intro", prompt: word.english };
+      : fallbackExercise(word, translation, rng);
   }
 
   // choiceRu и listen отличаются только тем, показываем ли само слово: варианты
@@ -566,6 +623,6 @@ export function buildExercise(opts: {
     OPTION_COUNT,
     target,
   );
-  if (options.length < MIN_OPTION_COUNT) return { type: "intro", prompt: word.english };
+  if (options.length < MIN_OPTION_COUNT) return fallbackExercise(word, translation, rng);
   return { type, prompt: word.english, options, answerIndex, answer };
 }

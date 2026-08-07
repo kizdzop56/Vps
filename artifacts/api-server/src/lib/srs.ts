@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Интервальное повторение слов: планировщик, начисление очков и отбор «сложных»
-// слов. Модуль чистый (без БД и express), поэтому покрывается тестами напрямую —
+// слов. Модуль без БД и express, поэтому покрывается тестами напрямую —
 // см. srs.test.ts.
 //
 // Уровень памяти (memoryLevel) остаётся 0–5, как в схеме user_card_state:
@@ -13,6 +13,8 @@
 // уровень сразу на две ступени, из-за чего ребёнок, споткнувшийся на выученном
 // слове, откатывался в самое начало и терял мотивацию.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { startOfLocalDay } from "./timeStats";
 
 /** Оценка ответа. Совпадает по смыслу с Anki: again → hard → good → easy. */
 export type Grade = "again" | "hard" | "good" | "easy";
@@ -135,6 +137,11 @@ export function legacyResultFromGrade(grade: Grade): LegacyResult {
   return grade === "again" ? "dont" : "know";
 }
 
+/** Строка из журнала — валидная оценка? */
+export function isGrade(value: unknown): value is Grade {
+  return value === "again" || value === "hard" || value === "good" || value === "easy";
+}
+
 // ── Очки за слова ───────────────────────────────────────────────────────────
 // Раньше за карточки не начислялось ничего: очки давали только задания
 // (routes/submissions.ts), поэтому изучение слов ребёнку ничего не «стоило».
@@ -157,23 +164,47 @@ export function pointsForReview(grade: Grade, justLearned: boolean): number {
 export type ReviewLogLike = {
   wordId: number;
   result: string;
+  /**
+   * Оценка ответа, если она сохранена. У записей, сделанных до появления
+   * колонки review_log.grade, её нет — тогда считаем по result.
+   */
+  grade?: string | null;
   memoryLevelAfter: number | null;
   reviewedAt: Date;
 };
+
+/** Очки за одну запись журнала. Оценка точнее, result — запасной путь. */
+function pointsForLog(log: ReviewLogLike): number {
+  if (isGrade(log.grade)) return POINTS_BY_GRADE[log.grade];
+  // Старая запись: известно только «верно/неверно». Верный ответ по умолчанию
+  // стоит как good — это ровно то, что начислялось таким записям в своё время.
+  return log.result === "know" ? POINTS_BY_GRADE.good : 0;
+}
 
 /**
  * Сколько очков за слова уже начислено сегодня. Считаем по журналу повторений
  * (review_log) теми же правилами, что и при начислении, — так дневной потолок
  * работает без отдельной колонки в БД.
  *
- * logs — записи журнала пользователя (можно передать все, фильтрация внутри).
+ * @param logs записи журнала. Достаточно СЕГОДНЯШНИХ, если передать
+ *   learnedBefore — множество слов, выученных раньше. Полная история тоже
+ *   принимается: тогда learnedBefore не нужен, всё вычислится из неё самой.
+ * @param dayStart начало суток (см. startOfDay — граница локальная).
+ * @param learnedBefore слова, уже доходившие до «выучено» ДО dayStart. Нужны,
+ *   чтобы бонус за выученное слово не начислился второй раз: в сегодняшних
+ *   записях слово, взятое ещё вчера, выглядит как впервые достигшее порога.
  */
-export function pointsEarnedToday(logs: ReviewLogLike[], dayStart: Date): number {
+export function pointsEarnedToday(
+  logs: ReviewLogLike[],
+  dayStart: Date,
+  learnedBefore: ReadonlySet<number> = new Set<number>(),
+): number {
   const startMs = dayStart.getTime();
   // Бонус за «выучено» даём один раз на слово — по первой записи, где уровень
-  // достиг LEARNED_LEVEL. Поэтому сначала ищем такие записи по всей истории.
+  // достиг LEARNED_LEVEL.
   const firstLearnedAt = new Map<number, number>();
   for (const log of [...logs].sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime())) {
+    if (learnedBefore.has(log.wordId)) continue;
     if (isLearned(log.memoryLevelAfter ?? 0) && !firstLearnedAt.has(log.wordId)) {
       firstLearnedAt.set(log.wordId, log.reviewedAt.getTime());
     }
@@ -183,7 +214,7 @@ export function pointsEarnedToday(logs: ReviewLogLike[], dayStart: Date): number
   for (const log of logs) {
     const at = log.reviewedAt.getTime();
     if (at < startMs) continue;
-    if (log.result === "know") total += POINTS_BY_GRADE.good;
+    total += pointsForLog(log);
     if (firstLearnedAt.get(log.wordId) === at) total += LEARNED_BONUS_POINTS;
   }
   return total;
@@ -229,9 +260,15 @@ export function hardScore(state: CardStateLike): number {
   return state.lapses * 10 + errors * 3 + (MAX_MEMORY_LEVEL - clampLevel(state.memoryLevel));
 }
 
-/** Начало текущих суток (локальная зона сервера) — как в routes/flashcards.ts. */
+/**
+ * Начало суток — по часовому поясу ПРИЛОЖЕНИЯ (APP_TIMEZONE), а не процесса.
+ *
+ * Раньше здесь стоял new Date() + setHours(0,0,0,0), то есть зона сервера. На
+ * Render это UTC, и для Минска сутки резались в 3 часа ночи. Хуже того, рядом
+ * жил startOfLocalDay() из timeStats с правильной границей, и обе функции
+ * вызывались в одном расчёте дня: время в приложении считалось от полуночи, а
+ * слова — от трёх ночи. Граница суток в приложении должна быть одна.
+ */
 export function startOfDay(now: Date = new Date()): Date {
-  const d = new Date(now.getTime());
-  d.setHours(0, 0, 0, 0);
-  return d;
+  return startOfLocalDay(now);
 }

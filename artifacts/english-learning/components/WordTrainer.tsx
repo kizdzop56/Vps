@@ -16,6 +16,19 @@
 // Оценку ученик не выставляет: на сервер уходит сам ответ (верно/неверно, число
 // попыток, время, была ли подсказка), а оценку по нему считает srs.ts.
 //
+// ── Ошибка возвращается В ЭТОЙ ЖЕ СЕССИИ ────────────────────────────────────
+// Ошибся — слово встаёт обратно в очередь через RETRY_GAP карточек. Раньше оно
+// уходило в интервальное повторение и всплывало через день: единственный
+// момент, когда ребёнок точно помнит верный ответ (только что прочитал его),
+// не использовался никак.
+//
+// Три ограничения, без которых стало бы хуже:
+//   • один возврат на слово за сессию (RETRY_LIMIT_PER_WORD) — иначе на трудном
+//     слове можно застрять в петле и не дойти до конца;
+//   • повтор НЕ идёт в счётчики итогов: точность считается по первым попыткам,
+//     иначе цифра перестаёт что-либо значить;
+//   • на сервер повтор уходит обычным ответом — это настоящее повторение.
+//
 // ── Слово звучит ОДИН раз за карточку ───────────────────────────────────────
 // Автоматическая озвучка запускается ровно в одном месте — при появлении
 // карточки. После ответа звук сам не играет: для этого в блоке итога есть
@@ -109,6 +122,19 @@ const NEXT_DELAY_TYPO = 2200;
 const NEXT_DELAY_INFO = 1600;
 
 /**
+ * Через сколько карточек вернуть слово, на котором ошиблись.
+ *
+ * Три — не «поскорее» и не «когда-нибудь». Сразу следующей карточкой ответ
+ * ещё стоит перед глазами, и это проверка памяти длиной в две секунды. Через
+ * десяток — след уже остыл, а до конца короткой сессии слово может и не
+ * дожить.
+ */
+const RETRY_GAP = 3;
+
+/** Сколько раз одно слово может вернуться за сессию. */
+const RETRY_LIMIT_PER_WORD = 1;
+
+/**
  * Запас под последней кнопкой экрана.
  *
  * Кнопка вплотную к нижнему краю нажимается через раз: на айфонах там живёт
@@ -123,17 +149,27 @@ const EDGE = 6;
 type Phase = "loading" | "run" | "done";
 
 /**
+ * Место в очереди сессии.
+ *
+ * retry — это повторный показ слова, на котором ученик только что ошибся.
+ * Отдельный флаг, а не пометка на самой карточке: одно и то же слово стоит в
+ * очереди дважды, и различать показы нужно по месту, а не по слову.
+ */
+type QueueItem = { card: TrainerCard; retry: boolean };
+
+/**
  * Итог ответа по текущей карточке.
  *
- * retry  — первая ошибка в сборке слова: даём собрать заново, поэтому верный
- *          ответ показывать нельзя;
+ * again  — первая ошибка в сборке слова: даём собрать заново, поэтому верный
+ *          ответ показывать нельзя (поле retryBuild);
  * gaveUp — ученик нажал «Не знаю»: промах засчитан, но ругать не за что;
  * info   — ответ не проверен (мигнула сеть). В оценку не идёт.
  */
 type Feedback = {
   correct: boolean;
   picked?: number;
-  retry?: boolean;
+  /** Промежуточная реакция на первую ошибку в сборке слова. */
+  retryBuild?: boolean;
   typo?: boolean;
   gaveUp?: boolean;
   info?: boolean;
@@ -167,7 +203,7 @@ export function WordTrainer({
   const [queue, setQueue] = React.useState<TrainerQueue | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [phase, setPhase] = React.useState<Phase>("loading");
-  const [cards, setCards] = React.useState<TrainerCard[]>([]);
+  const [items, setItems] = React.useState<QueueItem[]>([]);
   const [pos, setPos] = React.useState(0);
 
   // знакомство: перевод скрыт до нажатия
@@ -203,13 +239,29 @@ export function WordTrainer({
   const finishedRef = React.useRef(false);
   /** Идущая запись речи: нужна, чтобы остановить её по кнопке «Стоп». */
   const speechRef = React.useRef<SpeechSession | null>(null);
+
+  /**
+   * Живая очередь.
+   *
+   * ГРАБЛИ. goNext раньше сравнивал позицию с items.length из замыкания. Стоит
+   * вставить карточку в очередь — и замыкание держит старую длину: сессия
+   * завершается на одну карточку раньше, а вставленный повтор никто не видит.
+   * Поэтому длину и содержимое очереди читаем через ref, а состояние остаётся
+   * только для отрисовки.
+   */
+  const itemsRef = React.useRef<QueueItem[]>([]);
+  /** Слова, уже возвращённые за эту сессию: петля повторов недопустима. */
+  const retriedRef = React.useRef<Map<number, number>>(new Map());
+
   // Лёгкий «вдох» карточки при появлении: только opacity и scale, чтобы
   // анимация ушла в нативный драйвер и не грузила JS-поток.
   const cardIn = React.useRef(new Animated.Value(0)).current;
 
-  const card = cards[pos];
+  const item = items[pos];
+  const card = item?.card;
+  const isRetryCard = Boolean(item?.retry);
   const exercise: Exercise = card?.exercise ?? { type: "intro", prompt: card?.english ?? "" };
-  const total = cards.length;
+  const total = items.length;
 
   // Распознавание речи проверяем один раз: результат не меняется в течение
   // сессии, а вызов лезет в globalThis.
@@ -221,6 +273,12 @@ export function WordTrainer({
     speakWord(card.id, card.english);
   }, [card]);
 
+  /** Обновить очередь сразу и в ref, и в состоянии. */
+  const applyItems = React.useCallback((next: QueueItem[]) => {
+    itemsRef.current = next;
+    setItems(next);
+  }, []);
+
   // ── загрузка очереди ──
   React.useEffect(() => {
     let alive = true;
@@ -228,11 +286,14 @@ export function WordTrainer({
       .then((q) => {
         if (!alive) return;
         setQueue(q);
-        setCards(q.cards ?? []);
+        const next = (q.cards ?? []).map((c) => ({ card: c, retry: false }));
+        itemsRef.current = next;
+        retriedRef.current = new Map();
+        setItems(next);
         if (q.wordsToday !== undefined && q.dailyWordGoal !== undefined) {
           setProgress({ wordsToday: q.wordsToday, dailyWordGoal: q.dailyWordGoal });
         }
-        setPhase((q.cards ?? []).length === 0 ? "done" : "run");
+        setPhase(next.length === 0 ? "done" : "run");
       })
       .catch(() => alive && setError("Не удалось загрузить слова."));
     return () => { alive = false; };
@@ -298,10 +359,42 @@ export function WordTrainer({
     stopSpeaking(); // звук предыдущей карточки не тянем на следующую
     cancelListening();
     resetCardState();
-    const next = pos + 1;
-    if (next >= cards.length) setPhase("done");
-    else setPos(next);
-  }, [pos, cards.length, resetCardState]);
+    setPos((prev) => {
+      const next = prev + 1;
+      // Длину берём из ref: в состоянии она могла ещё не обновиться после
+      // вставки повтора.
+      if (next >= itemsRef.current.length) {
+        setPhase("done");
+        return prev;
+      }
+      return next;
+    });
+  }, [resetCardState]);
+
+  /**
+   * Поставить слово обратно в очередь — через RETRY_GAP карточек.
+   *
+   * Возврат ровно один на слово: иначе на трудном слове сессия закольцуется.
+   * Упражнение берём то же самое: смысл повтора в том, чтобы ребёнок сделал
+   * ровно то, что не получилось, пока помнит верный ответ.
+   */
+  const scheduleRetry = React.useCallback((wordId: number) => {
+    const used = retriedRef.current.get(wordId) ?? 0;
+    if (used >= RETRY_LIMIT_PER_WORD) return;
+
+    const queueNow = itemsRef.current;
+    const current = queueNow[pos];
+    if (!current) return;
+
+    retriedRef.current.set(wordId, used + 1);
+    const at = Math.min(queueNow.length, pos + 1 + RETRY_GAP);
+    const next = [
+      ...queueNow.slice(0, at),
+      { card: current.card, retry: true },
+      ...queueNow.slice(at),
+    ];
+    applyItems(next);
+  }, [pos, applyItems]);
 
   /**
    * Тап по «Дальше»: обрываем звук и листаем сразу, не дожидаясь таймера (он
@@ -320,6 +413,12 @@ export function WordTrainer({
    *
    * delay = null означает «карточку не листать»: так работает разбор ошибки —
    * ученик уходит дальше сам, когда прочитал верный ответ.
+   *
+   * СЧЁТЧИКИ ИТОГОВ НЕ ВИДЯТ ПОВТОРОВ. Точность — это доля верных ответов с
+   * первого раза. Если засчитывать вторую попытку, цифра перестанет что-либо
+   * значить, а «слов пройдено» превратится в «показов карточек». На сервер
+   * повтор при этом уходит как обычный ответ: для интервального повторения он
+   * настоящий.
    */
   const submit = React.useCallback(
     (
@@ -330,8 +429,13 @@ export function WordTrainer({
     ) => {
       if (!card) return;
       const isCorrect = "correct" in payload ? payload.correct : payload.grade !== "again";
-      setAnswered((n) => n + 1);
-      if (isCorrect) setCorrectCount((n) => n + 1);
+
+      if (!isRetryCard) {
+        setAnswered((n) => n + 1);
+        if (isCorrect) setCorrectCount((n) => n + 1);
+        // Ошибку возвращаем в эту же сессию, пока верный ответ на экране.
+        if (!isCorrect) scheduleRetry(card.id);
+      }
 
       const body = "correct" in payload
         ? {
@@ -358,7 +462,7 @@ export function WordTrainer({
       if (timer.current) clearTimeout(timer.current);
       timer.current = delay === null ? null : setTimeout(goNext, delay);
     },
-    [card, attempts, hintUsed, goNext],
+    [card, isRetryCard, attempts, hintUsed, goNext, scheduleRetry],
   );
 
   // ── обработчики упражнений ──
@@ -390,7 +494,7 @@ export function WordTrainer({
       // первая ошибка в сборке — даём собрать заново, оценка станет «трудно»
       setAttempts(2);
       setBuilt([]);
-      setFeedback({ correct: false, retry: true });
+      setFeedback({ correct: false, retryBuild: true });
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setFeedback(null), 900);
       return;
@@ -627,7 +731,7 @@ export function WordTrainer({
    * оценка.
    */
   const verdict = !feedback ? null
-    : feedback.retry
+    : feedback.retryBuild
       ? { color: colors.warning, icon: "repeat" as GlyphName, title: "Почти! Собери ещё раз", detail: undefined as string | undefined }
     : feedback.info
       ? { color: colors.warning, icon: "alert" as GlyphName, title: "Не удалось проверить", detail: feedback.note }
@@ -649,16 +753,16 @@ export function WordTrainer({
    * ошибки и после «Не знаю». Верный ответ разбирать нечего — он уходит сам,
    * и кнопка под ним была мебелью.
    */
-  const needsNextButton = Boolean(feedback && !feedback.retry && !feedback.info && !feedback.correct);
+  const needsNextButton = Boolean(feedback && !feedback.retryBuild && !feedback.info && !feedback.correct);
 
   /**
    * Кнопка «Прослушать» в блоке итога.
    *
    * Заменяет автоматическую озвучку после ответа: слово звучит, только когда
-   * ученик сам этого захотел. У промежуточной подсказки в сборке (retry) её
-   * нет — там верный ответ ещё не показан, и подсказывать его звуком нельзя.
+   * ученик сам этого захотел. У промежуточной подсказки в сборке её нет — там
+   * верный ответ ещё не показан, и подсказывать его звуком нельзя.
    */
-  const canReplayAnswer = Boolean(feedback && !feedback.retry) && speechAvailable();
+  const canReplayAnswer = Boolean(feedback && !feedback.retryBuild) && speechAvailable();
 
   /** Поле письменного ответа: используется и в typeRu/typeEn, и как запасной
       сценарий произношения. */
@@ -743,6 +847,23 @@ export function WordTrainer({
         }}
         keyboardShouldPersistTaps="handled"
       >
+        {/* Метка повтора: без неё непонятно, почему слово вернулось так скоро. */}
+        {isRetryCard ? (
+          <View style={{ flexDirection: "row", justifyContent: "center", marginBottom: 8 }}>
+            <View style={{
+              flexDirection: "row", alignItems: "center", gap: 6,
+              backgroundColor: colors.warning + "1f",
+              borderRadius: radii.pill,
+              paddingHorizontal: 12, paddingVertical: 5,
+            }}>
+              <Glyph name="repeat" size={13} color={colors.warning} />
+              <Text style={{ fontSize: 11.5, fontWeight: "900", color: colors.warning }}>
+                Повтор — это слово только что не получилось
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
         <Text style={{ fontSize: 11, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 1.2, textAlign: "center" }}>
           {promptLabel}
         </Text>
@@ -914,6 +1035,13 @@ export function WordTrainer({
                   color: colors.foreground, textAlign: "center",
                 }}>
                   {verdict.detail}
+                </Text>
+              )}
+              {/* Обещание вернуть слово: ребёнок должен знать, что промах не
+                  «списан», а отработается прямо сейчас. */}
+              {!feedback?.correct && !feedback?.retryBuild && !feedback?.info && !isRetryCard && (
+                <Text style={{ marginTop: 8, fontSize: 12.5, color: colors.mutedForeground, textAlign: "center" }}>
+                  Это слово вернётся через пару карточек
                 </Text>
               )}
               {/* Звук после ответа — только по нажатию. Автоматически слово
@@ -1303,6 +1431,9 @@ function LetterKey({
 // Наградный экран, а не отчёт. Поэтому все поверхности здесь физические: у
 // каждой есть цветная нижняя грань, как у клавиш и панели вкладок.
 //
+// Счётчики считают ПЕРВЫЕ попытки: повторы, вернувшиеся в сессию после ошибки,
+// сюда не попадают (см. submit). Иначе точность перестала бы что-либо значить.
+//
 // ── Плитки выложены рядами, а не потоком ────────────────────────────────────
 // Раньше плитки лежали в одном flexWrap-контейнере с шириной 47%. Пока их было
 // ровно четыре, сетка держалась случайно: стоило одной пропасть, и последняя
@@ -1350,7 +1481,7 @@ function SessionSummary({
 
   const tiles: TileSpec[] = [
     { key: "words", icon: "cards", tint: colors.primary, edge: accents.indigoDeep, value: answered, label: "слов пройдено" },
-    { key: "accuracy", icon: "target", tint: accents.amber, edge: "#b45309", value: `${accuracy}%`, label: "правильных" },
+    { key: "accuracy", icon: "target", tint: accents.amber, edge: "#b45309", value: `${accuracy}%`, label: "с первого раза" },
     // Очки показываем, только если они есть: см. комментарий выше.
     ...(points > 0
       ? [{ key: "points", icon: "star" as GlyphName, tint: accents.magenta, edge: "#a21caf", value: `+${points}`, label: "очков" }]

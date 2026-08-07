@@ -1,6 +1,6 @@
 /**
  * Тесты подбора упражнений и вариантов ответа для тренажёра слов.
- * Запуск: pnpm exec tsx --test artifacts/api-server/src/lib/wordExercise.test.ts
+ * Запуск: pnpm --filter @workspace/api-server test
  *
  * Зависимостей нет — только node:test и node:assert.
  */
@@ -15,6 +15,7 @@ import {
   cardSeed,
   interleaveQueue,
   isBuildable,
+  isFreeAnswer,
   lengthClose,
   letterTiles,
   mainTranslation,
@@ -401,10 +402,17 @@ test("buildExercise: к словосочетанию не подмешивают
   assert.equal(ex.options!.includes("спать"), false);
 });
 
-test("buildExercise: если форма ни с кем не совпала — знакомство вместо кривого выбора", () => {
+test("buildExercise: нет подходящих вариантов — свободный ответ, а не самооценка", () => {
+  // Вокруг только словосочетания: к одиночному слову их подставлять нельзя,
+  // набор вариантов не собирается. Знакомое слово при этом обязано остаться
+  // ПРОВЕРЯЕМЫМ — intro означал бы «поставь себе оценку сам».
   const pool = [full(41, "breakfast", ["завтрак"], "noun", "A1", 5), ...ROUTINE.slice(0, 3)];
   const ex = buildExercise({ word: pool[0]!, memoryLevel: 0, isNew: false, pool, now: NOW });
-  assert.equal(ex.type, "intro");
+  assert.notEqual(ex.type, "intro");
+  assert.equal(ex.type, "typeRu");
+  assert.equal(ex.prompt, "breakfast");
+  assert.ok(ex.accept!.includes("завтрак"));
+  assert.ok(isFreeAnswer(ex.type), "свободный ответ проверяет сервер");
 });
 
 test("buildExercise: длины вариантов остаются близкими", () => {
@@ -510,10 +518,19 @@ test("само слово не попадает в свои же вариант�
   assert.equal(ex.options!.filter((o) => o === "яблоко").length, 0);
 });
 
-test("если подходящих слов нет совсем — падаем в знакомство, а не в пустой выбор", () => {
+test("пустая подборка не отменяет проверку: слово просят написать", () => {
   const only = [POOL[0]!];
-  // wordId=1 → choiceRu → pool пуст → intro
+  // wordId=1 → choiceEn → кроме самого слова в пуле никого → вариантов нет.
   const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: only, now: NOW });
+  assert.notEqual(ex.type, "intro", "знакомое слово не должно оценивать себя само");
+  assert.equal(ex.type, "typeRu");
+  assert.equal(ex.prompt, "apple");
+  assert.deepEqual(ex.accept, ["яблоко"]);
+});
+
+test("без перевода проверить нечего — только знакомство", () => {
+  const empty = word(99, "apple", []);
+  const ex = buildExercise({ word: empty, memoryLevel: 1, isNew: false, pool: [empty], now: NOW });
   assert.equal(ex.type, "intro");
 });
 

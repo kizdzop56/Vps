@@ -17,11 +17,10 @@
 // Про «чем чаще отвечаешь верно, тем реже слово попадается»: отдельная механика
 // для этого не нужна — её уже даёт интервальное повторение. Верный ответ
 // поднимает уровень, а вместе с ним интервал (1 неделя на 4-м уровне, 30 дней
-// на 5-м), и dueAt уезжает дальше. Поэтому марафон просто сортирует по dueAt:
-// впереди то, что созрело раньше всех, а недавно отвеченное честно ждёт свой
-// срок в хвосте.
+// на 5-м), и dueAt уезжает дальше. Марафон отдаёт только те слова, чей срок
+// НАСТУПИЛ, и сортирует их по dueAt: впереди то, что созрело раньше всех.
 //
-// Модуль чистый (без БД и express) — тесты в wordQueue.test.ts.
+// Модуль без БД и express — тесты в wordQueue.test.ts.
 import { LEARNED_LEVEL } from "./srs";
 
 /** Минимальный уровень памяти для попадания в марафон. */
@@ -47,6 +46,11 @@ export function belongsToMarathon(state: QueueState | undefined): boolean {
   return !!state && state.memoryLevel >= MARATHON_MIN_LEVEL;
 }
 
+/** Срок повторения наступил. */
+export function isDue(state: QueueState | undefined, now: Date): boolean {
+  return !!state && state.dueAt.getTime() <= now.getTime();
+}
+
 /**
  * Слово нужно доучивать: оно введено, ещё не выучено и срок повторения подошёл.
  *
@@ -56,7 +60,7 @@ export function belongsToMarathon(state: QueueState | undefined): boolean {
 export function needsMoreStudy(state: QueueState | undefined, now: Date): boolean {
   if (!state) return false;
   if (belongsToMarathon(state)) return false;
-  return state.dueAt.getTime() <= now.getTime();
+  return isDue(state, now);
 }
 
 /**
@@ -75,9 +79,17 @@ export function compareByDue<T>(getState: (item: T) => QueueState | undefined) {
 }
 
 /**
- * Отбор карточек марафона: только выученные, по возрастанию срока, не больше
- * лимита. Возвращает и полное число выученных слов — клиенту нужно показать,
- * сколько всего в зале повторений, а не только текущую порцию.
+ * Отбор карточек марафона: выученные слова, У КОТОРЫХ НАСТУПИЛ СРОК, по
+ * возрастанию dueAt и не больше лимита.
+ *
+ * Условие срока здесь принципиальное. Без него, пока выученных слов меньше
+ * лимита, в порцию попадало всё подряд — включая слово, отвеченное пять минут
+ * назад. Интервальное повторение при этом переставало что-либо значить.
+ *
+ * Возвращает ещё два счётчика: сколько всего слов в зале повторений
+ * (learnedCount) и сколько из них созрело прямо сейчас (dueNow). По ним клиент
+ * объясняет пустой марафон: «всё повторено, приходи позже» — это нормальное
+ * состояние, а не ошибка.
  */
 export function pickMarathonCards<T>(
   items: T[],
@@ -86,7 +98,7 @@ export function pickMarathonCards<T>(
   limit: number = MARATHON_MAX_CARDS,
 ): { picked: T[]; learnedCount: number; dueNow: number } {
   const learned = items.filter((item) => belongsToMarathon(getState(item)));
-  const dueNow = learned.filter((item) => getState(item)!.dueAt.getTime() <= now.getTime()).length;
-  const picked = [...learned].sort(compareByDue(getState)).slice(0, Math.max(0, limit));
-  return { picked, learnedCount: learned.length, dueNow };
+  const due = learned.filter((item) => isDue(getState(item), now));
+  const picked = [...due].sort(compareByDue(getState)).slice(0, Math.max(0, limit));
+  return { picked, learnedCount: learned.length, dueNow: due.length };
 }
