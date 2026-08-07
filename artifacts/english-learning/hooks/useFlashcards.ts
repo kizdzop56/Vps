@@ -105,6 +105,8 @@ export type MarathonQueue = Partial<DailyWordProgress> & {
   nextLevel?: string;
   totalWords: number;
   answeredWords: number;
+  /** Сколько слов уровня надо пройти для перехода (доля от totalWords). */
+  answeredTarget?: number;
   /** Сколько слов уровня уже выучено — весь зал повторений. */
   learnedCount?: number;
   /** Сколько из них созрело к повторению прямо сейчас. */
@@ -112,6 +114,10 @@ export type MarathonQueue = Partial<DailyWordProgress> & {
   seen: number;
   correct: number;
   accuracy: number;
+  /** По скольким последним ответам посчитана точность. */
+  recentAnswers?: number;
+  /** Меньше этого числа ответов — точность не считается основанием. */
+  minAnswers?: number;
   threshold: number;
   eligible: boolean;
   cards: TrainerCard[];
