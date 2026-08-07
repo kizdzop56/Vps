@@ -126,6 +126,32 @@ function CalendarTabIcon({ color }: { color: string }) {
 const TAB_SEEN_PREFIX = "tab_first_visit_v2_";
 const GUIDE_TABS = new Set<string>(Object.keys(TAB_GUIDE_CONTENT));
 
+/**
+ * Экраны, на которых панели вкладок быть не должно.
+ *
+ * Панель плавающая: она лежит ПОВЕРХ содержимого, а не в потоке. На обычных
+ * экранах это нормально — там внизу оставлен запас. Но полноэкранные режимы
+ * (тренажёр слов, просмотр задания, чат) верстают контент на всю высоту, и
+ * панель просто закрывает его нижнюю часть: доскроллить нельзя, потому что
+ * скроллить нечего — панель висит сверху.
+ *
+ * Именно так пропадала кнопка «Готово» на итогах тренировки и последний
+ * вариант ответа во время самой тренировки. У всех этих экранов есть свой
+ * выход (крестик в шапке), поэтому навигация по вкладкам им не нужна.
+ */
+const FULLSCREEN_ROUTES = [
+  "assignment/[id]",
+  "submission-review/[id]",
+  "chat/[userId]",
+  "flashcards/placement",
+  // Тренажёр слов во всех вариантах: одна колода, сквозная сессия, сложные
+  // слова и марафон — это один и тот же экран, отличается только очередь.
+  "flashcards/study/[deckId]",
+  "flashcards/session",
+  "flashcards/hard",
+  "flashcards/marathon",
+];
+
 interface CustomTabBarProps {
   state: any;
   descriptors: any;
@@ -159,14 +185,7 @@ function CustomTabBar({
   const insets = useSafeAreaInsets();
 
   const currentRouteName = state.routes[state.index]?.name ?? "";
-  const hideTabBar = [
-    "assignment/[id]",
-    "submission-review/[id]",
-    "flashcards/study/[deckId]",
-    "flashcards/placement",
-    "chat/[userId]",
-  ].includes(currentRouteName);
-  if (hideTabBar) return null;
+  if (FULLSCREEN_ROUTES.includes(currentRouteName)) return null;
 
   const visibleRoutes = state.routes.filter(
     (route: any) => descriptors[route.key].options.tabBarIcon !== undefined
