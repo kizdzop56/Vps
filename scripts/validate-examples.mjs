@@ -5,9 +5,10 @@
 // Зачем: пример на карточке — единственное место, где ученик видит, как слово
 // живёт в речи. В автогенерированном каталоге (vocabulary-{level}.ts) часть
 // карточек осталась без примера, и правятся они не в самом каталоге, а слоем
-// scripts/src/data/example-fixes.ts (генератор затирает каталог целиком).
-// Скрипт показывает, сколько ещё не покрыто, и ловит опечатки в ключах правок:
-// ключ, которого нет в датасете, — молча потерянная правка.
+// scripts/src/data/example-fixes*.ts (генератор затирает каталог целиком).
+// Скрипт показывает, сколько ещё не покрыто, и ловит две ошибки, которые иначе
+// проходят молча: ключ правки, которого нет в датасете, и один ключ в двух
+// файлах уровней (при слиянии карт он перетирается).
 //
 // Зависимостей нет и tsc не нужен: файлы читаются как текст, как и в
 // validate-flashcards.mjs.
@@ -17,7 +18,6 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.resolve(here, "src/data");
-const FIXES = path.join(DATA, "example-fixes.ts");
 const SHOW = 12; // сколько слов показывать в списке по каждому уровню
 
 // Карточка в датасете — однострочный литерал без вложенных фигурных скобок,
@@ -27,12 +27,14 @@ const WORD_RE =
   /\{\s*en:\s*"((?:[^"\\]|\\.)*)"[^}]*?exEn:\s*"((?:[^"\\]|\\.)*)"\s*,\s*exRu:\s*"((?:[^"\\]|\\.)*)"\s*,\s*cefr:\s*"([A-C][12])"/g;
 const FIX_KEY_RE = /^\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*)):\s*\{/gm;
 
-const files = readdirSync(DATA)
+const dataFiles = readdirSync(DATA);
+const catalogFiles = dataFiles
   .filter((f) => f === "flashcards-data.ts" || /^vocabulary-[a-c][12]\.ts$/.test(f))
   .sort();
+const fixFiles = dataFiles.filter((f) => /^example-fixes-[a-c][12]\.ts$/.test(f)).sort();
 
 const words = new Map(); // слово → { levels:Set, empty:boolean }
-for (const file of files) {
+for (const file of catalogFiles) {
   const src = readFileSync(path.join(DATA, file), "utf8");
   for (const m of src.matchAll(WORD_RE)) {
     const [, en, exEn, exRu, cefr] = m;
@@ -49,11 +51,19 @@ if (words.size === 0) {
   process.exit(1);
 }
 
-const fixSrc = readFileSync(FIXES, "utf8");
-const fixed = new Set();
-for (const m of fixSrc.matchAll(FIX_KEY_RE)) fixed.add((m[1] ?? m[2]).trim().toLowerCase());
-// Служебные объекты в том же файле (тип ExampleFix и т.п.) ключами не считаем.
-for (const junk of ["exen", "exru", "pos", "ipa"]) fixed.delete(junk);
+const errors = [];
+const fixed = new Map(); // ключ → файл, в котором объявлен
+for (const file of fixFiles) {
+  const src = readFileSync(path.join(DATA, file), "utf8");
+  for (const m of src.matchAll(FIX_KEY_RE)) {
+    const key = (m[1] ?? m[2]).trim().toLowerCase();
+    // Служебные объекты в тех же файлах (тип ExampleFix и т.п.) ключами не считаем.
+    if (["exen", "exru", "pos", "ipa"].includes(key)) continue;
+    const seen = fixed.get(key);
+    if (seen) errors.push(`ключ "${key}" объявлен дважды: ${seen} и ${file} — при слиянии карт один перетрёт другой`);
+    else fixed.set(key, file);
+  }
+}
 
 const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
 const byLevel = new Map(LEVELS.map((l) => [l, { total: 0, empty: [], covered: 0 }]));
@@ -69,16 +79,16 @@ for (const [word, { levels, empty }] of words) {
   }
 }
 
-console.log(`Файлов датасета: ${files.length}, уникальных карточек: ${words.size}`);
-console.log(`Ручных правок: ${fixed.size}\n`);
+console.log(`Файлов каталога: ${catalogFiles.length}, уникальных карточек: ${words.size}`);
+console.log(`Файлов правок: ${fixFiles.length}, правок всего: ${fixed.size}\n`);
 
 let remaining = 0;
 for (const level of LEVELS) {
   const { total, empty, covered } = byLevel.get(level);
   if (total === 0) continue;
   remaining += empty.length;
-  const done = covered + (total - empty.length - covered);
-  const pct = total === 0 ? 100 : Math.round((done / total) * 100);
+  const withExample = total - empty.length;
+  const pct = Math.round((withExample / total) * 100);
   console.log(`${level}: карточек ${total}, без примера ${empty.length + covered} (правками закрыто ${covered}), с примером ${pct}%`);
   if (empty.length > 0) {
     console.log(`   осталось: ${empty.slice(0, SHOW).join(", ")}${empty.length > SHOW ? `, … ещё ${empty.length - SHOW}` : ""}`);
@@ -86,10 +96,14 @@ for (const level of LEVELS) {
 }
 
 // Ключ правки, которого нет в датасете — опечатка: правка не применится никогда.
-const unknown = [...fixed].filter((w) => !words.has(w));
-if (unknown.length > 0) {
-  console.log(`\n❌ ключи правок, которых нет в датасете (${unknown.length}): ${unknown.join(", ")}`);
-  console.log("   поправьте ключ в scripts/src/data/example-fixes.ts — иначе правка не применится");
+for (const [key, file] of fixed) {
+  if (!words.has(key)) errors.push(`"${key}" (${file}): такого слова нет в датасете — правка не применится`);
+}
+
+if (errors.length > 0) {
+  console.log("");
+  for (const e of errors) console.log(`❌ ${e}`);
+  console.log(`\n===== ошибок: ${errors.length} =====`);
   process.exit(1);
 }
 
