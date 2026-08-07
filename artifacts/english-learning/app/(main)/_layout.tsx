@@ -12,6 +12,7 @@ import authStorage from "@/utils/authStorage";
 import { TabGuide, TAB_GUIDE_CONTENT, type TabGuideTab } from "@/components/TabGuide";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlacementTest } from "@/components/PlacementTest";
+import { NotificationHost } from "@/components/NotificationHost";
 import { fc, apiFetch } from "@/hooks/useFlashcards";
 import { Glyph } from "@/components/ui/Glyph";
 import { accents } from "@/constants/theme";
@@ -537,6 +538,13 @@ function MainLayoutInner() {
         <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/preview/[id]" options={{ href: null }} />
       </Tabs>
+
+      {/* Всплывающее окно события. Стоит здесь, а не на конкретном экране:
+          медаль или заявка должны догнать ученика на любой вкладке. Оно
+          абсолютное и с zIndex, поэтому порядок в разметке значения не имеет.
+          Только для учеников: остальным ролям такие события не приходят, а
+          опрос ленты раз в минуту им бы всё равно достался. */}
+      {isStudent && <NotificationHost />}
 
       {showPlacement && (
         <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.background }}>
