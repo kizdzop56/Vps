@@ -29,14 +29,19 @@ const STYLE = [
   '.bar{height:10px;border-radius:6px;background:#ddd6fe;overflow:hidden;margin:14px 0 6px}',
   '.bar i{display:block;height:100%;width:0;background:#7c3aed;transition:width .3s}',
   '.stat{font-size:13px;color:#6b628f;margin:10px 0 14px}',
+  '.head{font-size:12px;font-weight:800;color:#4c1d95;margin:16px 0 8px;',
+  'text-transform:uppercase;letter-spacing:.8px}',
   '.item{background:#fff;border:1px solid #e6e0f8;border-left:4px solid #10b981;',
   'border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}',
+  // Цвет полосы = вид карточки: слово, фраза, идиома.
+  '.item.word{border-left-color:#6366f1}',
   '.item.idiom{border-left-color:#f59e0b}',
   '.pick{display:flex;gap:10px;align-items:flex-start}',
   '.pick input{flex:0 0 auto;width:22px;height:22px;margin:2px 0 0;padding:0}',
   '.deck{color:#8b7fb0;font-size:11px;text-transform:uppercase;letter-spacing:.6px}',
   '.w{font-weight:800;font-size:15px}',
   '.tr{color:#4c1d95;font-weight:700}',
+  '.def{color:#8b7fb0;font-size:12px;margin-top:2px}',
   '.en{color:#1e1b3a;font-style:italic;margin-top:4px}',
   '.ru{color:#6b628f}',
   '.mark{color:#059669;font-size:11px;margin-top:3px}',
@@ -61,7 +66,7 @@ const ESC =
   "function esc(s){return String(s==null?'':s).split('&').join('&amp;').split('<').join('&lt;');}";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Конструктор фраз
+// Конструктор карточек
 // ─────────────────────────────────────────────────────────────────────────────
 const PHRASES_SCRIPT = [
   "(function(){",
@@ -75,45 +80,62 @@ const PHRASES_SCRIPT = [
   "var list=document.getElementById('list');",
   "var found=[];",
   "function busy(on){bFind.disabled=on;bAdd.disabled=on||!found.length;}",
-  // Карточка с галочкой. Фразы с записью носителя отмечаем заранее: в Tatoeba
-  // озвучивают вычитанные предложения, то есть это ещё и признак качества.
-  "function card(it,i,extra){",
-  "var d=document.createElement('div');d.className='item'+(extra||'');",
-  "var mark=it.hasAudio?'<div class=mark>есть запись носителя</div>':'';",
-  "var ex=it.exampleEn?'<div class=en>'+esc(it.exampleEn)+'</div>'",
-  "+'<div class=ru>'+esc(it.exampleRu||'')+'</div>':'';",
-  "d.innerHTML='<label class=pick><input type=checkbox data-i='+i",
-  "+(it.hasAudio?' checked':'')+'>'",
-  "+'<span><span class=w>'+esc(it.en)+'</span>'",
-  "+'<div class=tr>'+esc(it.ru)+'</div>'+ex+mark+'</span></label>';",
-  "list.appendChild(d);}",
-  "function idiomBlock(it){",
-  "var d=document.createElement('div');d.className='item idiom';",
-  "var syn=it.synonyms&&it.synonyms.length",
-  "?'<div class=ru>то же, что: '+esc(it.synonyms.join(', '))+'</div>':'';",
-  "var ex=it.exampleEn?'<div class=en>'+esc(it.exampleEn)+'</div>'",
-  "+'<div class=ru>'+esc(it.exampleRu||'')+'</div>':'';",
-  "d.innerHTML='<div class=deck>фразеологизм: значение, не дословно</div>'",
-  "+'<div class=w>'+esc(it.phrase)+'</div>'",
-  "+'<div class=tr>'+esc(it.meaningRu)+'</div>'",
-  "+'<div class=ru>'+esc(it.meaning)+'</div>'+syn+ex;",
+  "function head(text){",
+  "var d=document.createElement('div');d.className='head';",
+  "d.textContent=text;list.appendChild(d);}",
+  // Общий вид карточки с галочкой. checked ставим там, где источник сам
+  // подсказывает качество: у фраз это запись носителя, у слова - первое
+  // значение (порядок в Викисловаре примерно соответствует частоте).
+  "function card(o){",
+  "var d=document.createElement('div');",
+  "d.className='item'+(o.kind?' '+o.kind:'');",
+  "var parts='<label class=pick><input type=checkbox data-i='+o.i",
+  "+(o.checked?' checked':'')+'><span>';",
+  "if(o.note)parts+='<div class=deck>'+esc(o.note)+'</div>';",
+  "parts+='<span class=w>'+esc(o.en)+'</span>';",
+  "parts+='<div class=tr>'+esc(o.ru)+'</div>';",
+  "if(o.def)parts+='<div class=def>'+esc(o.def)+'</div>';",
+  "if(o.exampleEn)parts+='<div class=en>'+esc(o.exampleEn)+'</div>'",
+  "+'<div class=ru>'+esc(o.exampleRu||'')+'</div>';",
+  "if(o.mark)parts+='<div class=mark>'+esc(o.mark)+'</div>';",
+  "d.innerHTML=parts+'</span></label>';",
   "list.appendChild(d);}",
   "function find(){",
   "var q=qEl.value.trim();",
   "if(!q){stat.textContent='Введите слово или конструкцию.';return;}",
   "list.innerHTML='';found=[];busy(true);",
-  "stat.textContent='Ищу живые фразы: '+q+'\\u2026';",
+  "stat.textContent='Ищу: '+q+'\\u2026';",
   "fetch('/api/maintenance/phrases/find?key='+encodeURIComponent(key)",
   "+'&q='+encodeURIComponent(q),{cache:'no-store'}).then(function(r){",
   "if(!r.ok)throw new Error('сервер ответил '+r.status);return r.json();",
   "}).then(function(d){",
-  // Идиома идёт первой: у неё показывается значение, а не перевод фразы.
-  "if(d.idiom){idiomBlock(d.idiom);",
+  // 1. Идиома: показываем смысл, а не дословный перевод.
+  "if(d.idiom){",
+  "head('фразеологизм: значение, не дословно');",
   "found.push({en:d.idiom.phrase,ru:d.idiom.meaningRu,",
-  "exampleEn:d.idiom.exampleEn,exampleRu:d.idiom.exampleRu,hasAudio:false});",
-  "card(found[0],0,' idiom');}",
-  "for(var i=0;i<d.phrases.length;i++){found.push(d.phrases[i]);",
-  "card(d.phrases[i],found.length-1);}",
+  "exampleEn:d.idiom.exampleEn,exampleRu:d.idiom.exampleRu});",
+  "card({i:found.length-1,kind:'idiom',checked:true,en:d.idiom.phrase,",
+  "ru:d.idiom.meaningRu,def:d.idiom.meaning,",
+  "exampleEn:d.idiom.exampleEn,exampleRu:d.idiom.exampleRu,",
+  "mark:d.idiom.synonyms&&d.idiom.synonyms.length",
+  "?'то же, что: '+d.idiom.synonyms.join(', '):''});}",
+  // 2. Значения слова: перевод и пример из одной записи словаря.
+  "if(d.words&&d.words.length){",
+  "head('значения слова: перевод и пример из одной статьи');",
+  "for(var j=0;j<d.words.length;j++){var w=d.words[j];",
+  "var ru=w.ru.slice(0,3).join(', ');",
+  "found.push({en:w.display,ru:ru,exampleEn:w.exampleEn,",
+  "exampleRu:w.exampleRu,partOfSpeech:w.partOfSpeech});",
+  "card({i:found.length-1,kind:'word',checked:j===0,en:w.display,ru:ru,",
+  "def:w.definition,exampleEn:w.exampleEn,exampleRu:w.exampleRu,",
+  "note:j===0?'основное значение':''});}}",
+  // 3. Фразы: живая речь, главное для разговора.
+  "if(d.phrases&&d.phrases.length){",
+  "head('живые фразы: оба текста написаны людьми');",
+  "for(var i=0;i<d.phrases.length;i++){var p=d.phrases[i];",
+  "found.push({en:p.en,ru:p.ru});",
+  "card({i:found.length-1,checked:p.hasAudio,en:p.en,ru:p.ru,",
+  "mark:p.hasAudio?'есть запись носителя':''});}}",
   "busy(false);",
   "if(!found.length){",
   "list.innerHTML='<div class=empty>Ничего не нашлось. Попробуй другое слово.</div>';",
@@ -146,13 +168,13 @@ const PHRASES_SCRIPT = [
 ].join('');
 
 const PHRASES_BODY = [
-  '<h1>Колоды из фраз</h1>',
-  '<div class=sub>Единица обучения - целая фраза, а не слово. У фразы одно',
-  ' значение, поэтому неверного перевода тут быть не может: и английское',
-  ' предложение, и русский перевод написаны людьми (Tatoeba).',
-  ' Для устойчивых выражений отдельно показывается <b>значение</b> из',
-  ' Викисловаря - дословного перевода идиом здесь нет нигде.</div>',
-  '<div class=row><input id=q placeholder=\'слово или конструкция: can sing\'></div>',
+  '<h1>Конструктор карточек</h1>',
+  '<div class=sub>Вводишь слово или конструкцию - получаешь всё сразу:',
+  ' <b>значения слова</b> (перевод и пример из одной статьи Викисловаря),',
+  ' <b>живые фразы</b> с ним (предложение и перевод написаны людьми) и,',
+  ' если это устойчивое выражение, его <b>смысл</b>.',
+  ' Дословного перевода идиом здесь нет нигде.</div>',
+  '<div class=row><input id=q placeholder=\'change или can sing\'></div>',
   '<div class=row><input id=deck value=\'Фразы для разговора\'></div>',
   '<div class=row><button id=find>Найти</button>',
   '<button id=add class=ghost>Добавить</button></div>',
@@ -160,7 +182,7 @@ const PHRASES_BODY = [
   '<div id=list></div>',
 ].join('');
 
-export const PHRASES_PAGE = page('Колоды из фраз', PHRASES_BODY, PHRASES_SCRIPT);
+export const PHRASES_PAGE = page('Конструктор карточек', PHRASES_BODY, PHRASES_SCRIPT);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Примеры к словам старого каталога
