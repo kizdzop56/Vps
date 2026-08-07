@@ -6,25 +6,24 @@
 // что открывается (строка сложных слов); остальное неподвижно.
 //
 // ── Про график ──────────────────────────────────────────────────────────────
-// Столбец = повторения за день, поделённые на верные (фиолетовый) и ошибки
-// (розовый). Раньше это было нечитаемо по трём причинам, и все три исправлены:
+// ЧИСЛА НАПИСАНЫ, А НЕ ЗАКОДИРОВАНЫ ВЫСОТОЙ. Над каждым столбцом стоит
+// количество повторений за день, под ним розовым — ошибки, если они были.
+// Ребёнок не должен вычислять значение по высоте столбика и тем более
+// сопоставлять его с засечкой на оси.
 //
-// 1. Ошибки терялись. При точности 91% розовая часть — волосок в пару
-//    пикселей. Теперь у ненулевых ошибок есть минимальная высота (MIN_SEG):
-//    одна ошибка обязана быть видна, даже если верных двадцать.
-// 2. Не было масштаба. Столбец без оси не отвечает на вопрос «это пять
-//    повторений или пятьдесят». Добавлены две линии сетки с подписями.
-// 3. Точные числа взять было негде. Теперь по столбцу можно ткнуть — над
-//    графиком появляется разбор дня. Без выбора там стоит итог за 14 дней.
+// Отсюда то, чего здесь НЕТ и что было в прошлой версии:
+//   • сетки с подписями оси — цифра над столбцом точнее любой засечки;
+//   • разбора дня по нажатию — прятать числа за тап значит прятать их совсем:
+//     график, в который надо тыкать, никто не разглядывает;
+//   • приглушения соседних столбцов — эффект ради эффекта.
 //
-// ── ГРАБЛИ: ширина графика ──────────────────────────────────────────────────
-// Ширину НЕЛЬЗЯ считать формулой из Dimensions. Так было раньше:
+// Главные два числа (верно и ошибки за две недели) вынесены плитками НАД
+// графиком: их не нужно собирать взглядом из четырнадцати столбиков.
 //
-//   const chartW = screenW - 32 - 28;   // экран минус отступы
-//   <Svg width={chartW + padLeft} />    // ...и ещё 24 сверху
-//
-// Svg получался шире карточки, последний столбец упирался в край и обрезался.
-// Теперь ширину измеряет onLayout, а место под подписи оси живёт ВНУТРИ неё.
+// ── Почему не SVG ───────────────────────────────────────────────────────────
+// Столбцы — обычные View во flex-колонках. Ширина делится сама, и вычислять её
+// негде: именно эта арифметика (ширина экрана минус отступы, плюс поле под ось)
+// в прошлый раз дала Svg шире карточки, и последний столбец обрезался.
 //
 // Эмодзи на экране нет: значки — глифы из своего набора (components/ui/Glyph).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +35,6 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Rect, Line, Circle, Text as SvgText } from "react-native-svg";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc } from "@/hooks/useFlashcards";
@@ -51,23 +49,11 @@ const NATIVE_DRIVER = Platform.OS !== "web";
 const EDGE = 5;
 const EDGE_LIGHT = "#c9bdf0";
 
-/** Высота поля графика без подписей. */
-const CHART_H = 190;
+/** Высота самого высокого столбца. */
+const BAR_MAX_H = 96;
 
 /** Минимальная высота ненулевого сегмента: одна ошибка обязана быть видна. */
-const MIN_SEG = 4;
-
-const MONTHS = [
-  "января", "февраля", "марта", "апреля", "мая", "июня",
-  "июля", "августа", "сентября", "октября", "ноября", "декабря",
-];
-
-/** «2026-08-07» → «7 августа». */
-function formatDay(iso: string): string {
-  const [, m, d] = iso.split("-");
-  const month = MONTHS[Number(m) - 1] ?? "";
-  return `${Number(d)} ${month}`;
-}
+const MIN_SEG = 5;
 
 /** Русское склонение по числу. */
 function plural(n: number, forms: [string, string, string]): string {
@@ -331,202 +317,142 @@ function StatGrid({ colors, stats }: any) {
 
 type Day = { date: string; reviews: number; correct: number };
 
-/** График повторений с разбором дня и итогом за период. */
+/**
+ * История за две недели: два итоговых числа и столбцы по дням.
+ *
+ * Итоги стоят НАД графиком отдельными плитками: «сколько всего верно и сколько
+ * ошибок» — главный вопрос к этому блоку, и складывать четырнадцать столбиков
+ * глазами ради него никто не будет.
+ */
 function HistoryCard({ colors, daily }: { colors: any; daily: Day[] }) {
-  /** Ширину измеряем, а не вычисляем: см. «ГРАБЛИ» в шапке файла. */
-  const [width, setWidth] = React.useState(0);
-  const [picked, setPicked] = React.useState<number | null>(null);
-
   const totals = React.useMemo(() => {
     const reviews = daily.reduce((sum, d) => sum + d.reviews, 0);
     const correct = daily.reduce((sum, d) => sum + d.correct, 0);
     return { reviews, correct, wrong: reviews - correct };
   }, [daily]);
 
-  const day = picked !== null ? daily[picked] : null;
+  const max = Math.max(1, ...daily.map((d) => d.reviews));
 
   return (
     <Chunky>
       <View style={cardBody(colors, { padding: 14 })}>
-        {/* Строка разбора. Без выбора — итог за период; с выбором — конкретный
-            день. Место занято всегда, поэтому карточка не прыгает по высоте. */}
-        <View style={{ minHeight: 42, marginBottom: 10 }}>
-          {day ? (
-            <>
-              <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
-                {formatDay(day.date)}
-              </Text>
-              <Text style={{ fontSize: 12.5, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
-                {day.reviews === 0
-                  ? "В этот день занятий не было"
-                  : `${day.reviews} ${plural(day.reviews, ["повторение", "повторения", "повторений"])}: ${day.correct} верно, ${day.reviews - day.correct} ${plural(day.reviews - day.correct, ["ошибка", "ошибки", "ошибок"])}`}
-              </Text>
-            </>
-          ) : (
-            <>
-              <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
-                Всего за 14 дней
-              </Text>
-              <Text style={{ fontSize: 12.5, color: colors.mutedForeground, marginTop: 3, fontVariant: ["tabular-nums"] }}>
-                {totals.reviews === 0
-                  ? "Пока пусто — нажми на столбец, чтобы увидеть день"
-                  : `${totals.reviews} ${plural(totals.reviews, ["повторение", "повторения", "повторений"])} · нажми на столбец, чтобы увидеть день`}
-              </Text>
-            </>
-          )}
+        {/* Итоги периода. Число крупное, подпись мелкая: спрашивают о числе. */}
+        <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
+          <TotalPill
+            colors={colors}
+            value={totals.correct}
+            label={plural(totals.correct, ["верный ответ", "верных ответа", "верных ответов"])}
+            tint={accents.violetDeep}
+          />
+          <TotalPill
+            colors={colors}
+            value={totals.wrong}
+            label={plural(totals.wrong, ["ошибка", "ошибки", "ошибок"])}
+            tint={accents.magenta}
+          />
         </View>
 
-        <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-          {width > 0 && (
-            <DailyBars
-              daily={daily}
-              colors={colors}
-              width={width}
-              picked={picked}
-              onPick={(i) => setPicked((prev) => (prev === i ? null : i))}
-            />
-          )}
+        {/* Столбцы. Колонки flex — ширина делится сама, считать нечего. */}
+        <View style={{ flexDirection: "row", alignItems: "flex-end" }}>
+          {daily.map((d) => {
+            const wrong = d.reviews - d.correct;
+            // Высоты сегментов считаются по отдельности, а не «доля от общей»:
+            // у ненулевого есть минимум, иначе одна ошибка на двадцать верных
+            // превращается в невидимую полоску.
+            const correctH = d.correct > 0 ? Math.max(MIN_SEG, (d.correct / max) * BAR_MAX_H) : 0;
+            const wrongH = wrong > 0 ? Math.max(MIN_SEG, (wrong / max) * BAR_MAX_H) : 0;
+            const label = d.date.slice(8, 10);
+
+            return (
+              <View key={d.date} style={{ flex: 1, alignItems: "center" }}>
+                {/* Число повторений прямо над столбцом: главное здесь оно, а
+                    не высота. Пустой день числа не получает — ноль в ряду
+                    цифр читается как данные, хотя это их отсутствие. */}
+                <Text style={{
+                  fontSize: 8.5, fontWeight: "900", marginBottom: 3,
+                  color: d.reviews > 0 ? colors.foreground : "transparent",
+                  fontVariant: ["tabular-nums"],
+                }}>
+                  {d.reviews > 0 ? d.reviews : "0"}
+                </Text>
+
+                {/* Ошибки сверху: глаз сравнивает вершины столбцов, и розовая
+                    шапка сразу отвечает, был ли в этот день промах. */}
+                {wrongH > 0 && (
+                  <View style={{
+                    width: 11, height: wrongH,
+                    borderTopLeftRadius: 3, borderTopRightRadius: 3,
+                    backgroundColor: accents.magenta,
+                  }} />
+                )}
+                {correctH > 0 && (
+                  <View style={{
+                    width: 11, height: correctH,
+                    borderTopLeftRadius: wrongH > 0 ? 0 : 3,
+                    borderTopRightRadius: wrongH > 0 ? 0 : 3,
+                    backgroundColor: accents.violetDeep,
+                  }} />
+                )}
+                {/* Пустой день не исчезает: провал в занятиях — тоже факт. */}
+                {d.reviews === 0 && (
+                  <View style={{ width: 11, height: 3, borderRadius: 2, backgroundColor: colors.border }} />
+                )}
+
+                {/* Число ошибок подписью: цвет говорит «были», цифра — сколько. */}
+                <Text style={{
+                  fontSize: 8.5, fontWeight: "800", marginTop: 4, minHeight: 11,
+                  color: wrong > 0 ? accents.magenta : "transparent",
+                  fontVariant: ["tabular-nums"],
+                }}>
+                  {wrong > 0 ? wrong : "0"}
+                </Text>
+
+                <Text style={{
+                  fontSize: 9, fontWeight: "700", color: colors.mutedForeground,
+                  fontVariant: ["tabular-nums"],
+                }}>
+                  {label}
+                </Text>
+              </View>
+            );
+          })}
         </View>
 
-        {/* Легенда с числами: сам цвет ничего не сообщает, пока рядом нет
-            количества. Раньше здесь стояли только слова «правильно» и «ошибки». */}
-        <View style={{ flexDirection: "row", gap: 18, marginTop: 12, justifyContent: "center" }}>
-          <Legend colors={colors} color={accents.violetDeep} label="верно" value={totals.correct} />
-          <Legend colors={colors} color={accents.magenta} label="ошибки" value={totals.wrong} />
-        </View>
+        <Text style={{
+          fontSize: 11.5, color: colors.mutedForeground,
+          textAlign: "center", marginTop: 10, lineHeight: 16,
+        }}>
+          Сверху — сколько повторений за день, снизу розовым — сколько из них с ошибкой
+        </Text>
       </View>
     </Chunky>
   );
 }
 
-function DailyBars({
-  daily, colors, width, picked, onPick,
-}: {
-  daily: Day[];
-  colors: any;
-  width: number;
-  picked: number | null;
-  onPick: (i: number) => void;
-}) {
-  const n = Math.max(1, daily.length);
-  const max = Math.max(1, ...daily.map((d) => d.reviews));
-
-  // Место под подписи: слева ось, снизу даты, сверху воздух под верхний столбец.
-  const padLeft = 26;
-  const padBottom = 20;
-  const padTop = 8;
-
-  const baseY = CHART_H - padBottom;
-  const plotH = baseY - padTop;
-  const plotW = width - padLeft;
-  const slot = plotW / n;
-  const bw = Math.min(18, slot * 0.58);
-
-  /** Две линии сетки: середина и потолок. Больше — рябит, меньше — нет шкалы. */
-  const ticks = [max, Math.round(max / 2)].filter((v, i, arr) => v > 0 && arr.indexOf(v) === i);
-
+/** Итоговое число за период: крупная цифра, мелкая подпись, цветная грань. */
+function TotalPill({
+  colors, value, label, tint,
+}: { colors: any; value: number; label: string; tint: string }) {
   return (
-    <Svg width={width} height={CHART_H}>
-      {ticks.map((t) => {
-        const y = baseY - (t / max) * plotH;
-        return (
-          <React.Fragment key={`tick-${t}`}>
-            <Line
-              x1={padLeft} y1={y} x2={width} y2={y}
-              stroke={colors.border} strokeWidth={1} strokeDasharray="3 4"
-            />
-            <SvgText
-              x={padLeft - 6} y={y + 3.5}
-              fontSize={9} fontWeight="700"
-              fill={colors.mutedForeground} textAnchor="end"
-            >
-              {t}
-            </SvgText>
-          </React.Fragment>
-        );
-      })}
-
-      <Line x1={padLeft} y1={baseY} x2={width} y2={baseY} stroke={colors.border} strokeWidth={1.5} />
-
-      {daily.map((d, i) => {
-        const x = padLeft + i * slot + (slot - bw) / 2;
-        const isPicked = picked === i;
-        const dim = picked !== null && !isPicked;
-        const wrong = d.reviews - d.correct;
-
-        // Высоты считаем по отдельности, а не «доля от общей»: у ненулевого
-        // сегмента есть минимум, иначе одна ошибка на двадцать верных
-        // превращается в невидимую полоску.
-        const correctH = d.correct > 0 ? Math.max(MIN_SEG, (d.correct / max) * plotH) : 0;
-        const wrongH = wrong > 0 ? Math.max(MIN_SEG, (wrong / max) * plotH) : 0;
-
-        const label = d.date.slice(8, 10);
-        // Подписи через одну: на 14 днях они наезжали друг на друга.
-        const showLabel = i % 2 === 1 || i === daily.length - 1;
-
-        return (
-          <React.Fragment key={d.date}>
-            {/* Прозрачная колонка на всю высоту: попасть пальцем в тонкий
-                столбец невозможно, а в слот целиком — легко. */}
-            <Rect
-              x={padLeft + i * slot} y={padTop} width={slot} height={plotH + padBottom}
-              fill="transparent"
-              onPress={() => onPick(i)}
-            />
-
-            {isPicked && (
-              <Rect
-                x={padLeft + i * slot} y={padTop - 4} width={slot} height={plotH + 8}
-                rx={6} fill={colors.primary} opacity={0.1}
-              />
-            )}
-
-            {d.reviews === 0 ? (
-              // Пустой день не пропадает: провал в занятиях — тоже факт, и на
-              // графике он должен читаться, а не выглядеть как отсутствие данных.
-              <Circle cx={x + bw / 2} cy={baseY - 2} r={1.8} fill={colors.border} />
-            ) : (
-              <>
-                {/* Верные снизу — они основание дня. Ошибки сверху: глаз
-                    сравнивает вершины столбцов, и ошибки должны быть там. */}
-                <Rect
-                  x={x} y={baseY - correctH} width={bw} height={correctH}
-                  rx={3} fill={accents.violetDeep} opacity={dim ? 0.3 : 1}
-                />
-                {wrongH > 0 && (
-                  <Rect
-                    x={x} y={baseY - correctH - wrongH} width={bw} height={wrongH}
-                    rx={3} fill={accents.magenta} opacity={dim ? 0.3 : 1}
-                  />
-                )}
-              </>
-            )}
-
-            {(showLabel || isPicked) && (
-              <SvgText
-                x={x + bw / 2} y={CHART_H - 5}
-                fontSize={9} fontWeight={isPicked ? "900" : "700"}
-                fill={isPicked ? colors.primary : colors.mutedForeground}
-                textAnchor="middle"
-              >
-                {label}
-              </SvgText>
-            )}
-          </React.Fragment>
-        );
-      })}
-    </Svg>
-  );
-}
-
-function Legend({ colors, color, label, value }: { colors: any; color: string; label: string; value: number }) {
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-      <View style={{ width: 11, height: 11, borderRadius: 4, backgroundColor: color }} />
-      <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground, fontVariant: ["tabular-nums"] }}>
-        {value}
-      </Text>
-      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.mutedForeground }}>{label}</Text>
+    <View style={{
+      flex: 1, flexDirection: "row", alignItems: "center", gap: 10,
+      backgroundColor: tint + "14",
+      borderRadius: radii.sm,
+      borderWidth: 1, borderColor: tint + "33",
+      paddingVertical: 10, paddingHorizontal: 12,
+    }}>
+      <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: tint }} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={{
+          fontSize: 20, fontWeight: "900", letterSpacing: -0.6,
+          color: colors.foreground, fontVariant: ["tabular-nums"],
+        }}>
+          {value}
+        </Text>
+        <Text style={{ fontSize: 10.5, fontWeight: "700", color: colors.mutedForeground }} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
     </View>
   );
 }
