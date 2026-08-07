@@ -51,6 +51,11 @@ import {
   interleaveQueue,
   type WordLike,
 } from "../lib/wordExercise";
+import {
+  MARATHON_MAX_CARDS,
+  needsMoreStudy,
+  pickMarathonCards,
+} from "../lib/wordQueue";
 
 const router = Router();
 
@@ -79,7 +84,8 @@ async function canViewStudent(viewer: { userId: number; role: string }, studentI
 }
 
 // Интервальное повторение, оценки и очки живут в ../lib/srs.ts (модуль без БД,
-// покрыт тестами srs.test.ts). Подбор упражнений — в ../lib/wordExercise.ts.
+// покрыт тестами srs.test.ts). Подбор упражнений — в ../lib/wordExercise.ts,
+// разделение режимов «Учить слова» / «Марафон» — в ../lib/wordQueue.ts.
 
 // Английское слово или короткая фраза латиницей. Один и тот же критерий
 // используют автоматическая проверка слова, ручное добавление и импорт.
@@ -256,6 +262,11 @@ function stateForHard(st: StateRow) {
  * Новые слова ограничены уровнем подготовки (levelsUpTo): слова колод выше
  * своего уровня впервые не показываем. Повторения фильтру не подчиняются —
  * однажды введённое слово обязано возвращаться, каким бы ни стал уровень.
+ *
+ * Выученные слова (уровень памяти ≥ LEARNED_LEVEL) сюда НЕ попадают: их место
+ * в марафоне. Раздел «Учить слова» отвечает ровно за то, что обещает названием, —
+ * за новое и плохо усвоенное. Слово, на котором ученик сорвался, падает ниже
+ * порога и возвращается доучиваться само (см. lib/wordQueue.ts).
  */
 async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Date) {
   const settings = await ensureSettings(userId);
@@ -295,7 +306,7 @@ async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Dat
     for (const w of ordered) {
       const st = stateByWord.get(w.id);
       if (!st) { if (fitsLevel(w)) fresh.push(w); }
-      else if (st.dueAt.getTime() <= now.getTime()) due.push(w);
+      else if (needsMoreStudy(st, now)) due.push(w);
     }
     due.sort((a, b) => (stateByWord.get(a.id)!.dueAt.getTime() - stateByWord.get(b.id)!.dueAt.getTime()));
 
@@ -1330,7 +1341,8 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
 
 // ── GET /flashcards/session ──────────────────────────────────────────
 // Сквозная сессия по всем колодам: одна кнопка «Учить слова» вместо обхода
-// колод вручную. Новые слова — по уровню подготовки (см. buildTrainerQueue).
+// колод вручную. Новые слова — по уровню подготовки, повторения — только те,
+// что ещё не выучены (выученные живут в марафоне; см. buildTrainerQueue).
 router.get("/flashcards/session", requireAuth, async (req, res) => {
   const user = getUser(req);
   res.json(await buildTrainerQueue(user.userId, "all", new Date()));
@@ -1508,10 +1520,21 @@ router.get("/flashcards/stats", requireAuth, async (req, res) => {
 });
 
 // ── GET /flashcards/marathon ────────────────────────────────────────
-// «Марафон слов»: все слова из готовых (системных) колод, соответствующие
-// текущему уровню знаний пользователя. Считаем точность ответов именно по этим
-// словам; когда пройдены все слова уровня и точность ≥ порога — приложение
-// сообщает, что можно перейти на следующий уровень (подтверждается тестом).
+// «Марафон слов» — зал повторений: сюда попадают ТОЛЬКО выученные слова уровня
+// (уровень памяти ≥ LEARNED_LEVEL). Всё, что ещё не усвоено, живёт в разделе
+// «Учить слова», иначе разделы делают одно и то же и ребёнок не понимает, чем
+// они отличаются.
+//
+// Порядок задаёт интервальное повторение: сортируем по dueAt, а он уезжает тем
+// дальше, чем выше уровень памяти (неделя на 4-м уровне, 30 дней на 5-м). Так
+// само собой получается «чем лучше знаешь слово, тем реже оно попадается» —
+// отдельного счётчика для этого не нужно. Отдаём порцией (MARATHON_MAX_CARDS),
+// а не все слова уровня разом: на старших уровнях это сотни карточек в одном
+// ответе, которые ребёнок всё равно не пройдёт за раз.
+//
+// Счётчики прогресса по уровню (answeredWords, accuracy, eligible) считаются по
+// ВСЕМ словам уровня, а не по выученным: иначе переход на следующий уровень
+// открывался бы по одной-единственной выученной карточке.
 const MARATHON_PASS = 75; // порог точности (%) для перехода на новый уровень
 
 router.get("/flashcards/marathon", requireAuth, async (req, res) => {
@@ -1535,19 +1558,25 @@ router.get("/flashcards/marathon", requireAuth, async (req, res) => {
   let seen = 0;
   let correct = 0;
   let answeredWords = 0; // сколько разных слов уровня пользователь уже отвечал
+  for (const w of words) {
+    const st = stateByWord.get(w.id);
+    if (!st) continue;
+    seen += st.timesSeen;
+    correct += st.timesCorrect;
+    if (st.timesSeen > 0) answeredWords++;
+  }
+
   const now = new Date();
   const allPool = words.map(toWordLike);
-  const cards = words.map((w) => {
-    const st = stateByWord.get(w.id);
-    if (st) {
-      seen += st.timesSeen;
-      correct += st.timesCorrect;
-      if (st.timesSeen > 0) answeredWords++;
-    }
-    return trainerCard(w, st, allPool, now);
-  });
-  // сначала слабо усвоенные слова (низкий уровень памяти) — их важнее подтянуть
-  cards.sort((a: any, b: any) => (a.memoryLevel ?? 0) - (b.memoryLevel ?? 0));
+
+  // Отбор и порядок — в lib/wordQueue.ts (модуль без БД, покрыт тестами).
+  const { picked, learnedCount, dueNow } = pickMarathonCards(
+    words,
+    (w) => stateByWord.get(w.id),
+    now,
+    MARATHON_MAX_CARDS,
+  );
+  const cards = picked.map((w) => trainerCard(w, stateByWord.get(w.id), allPool, now));
 
   const totalWords = words.length;
   const accuracy = seen > 0 ? Math.round((correct / seen) * 100) : 0;
@@ -1557,6 +1586,9 @@ router.get("/flashcards/marathon", requireAuth, async (req, res) => {
 
   res.json(clean({
     level, nextLevel: nextLevel ?? undefined, totalWords, answeredWords,
+    // сколько слов уровня уже выучено (весь зал повторений) и сколько из них
+    // созрело к повторению прямо сейчас — по ним клиент объясняет пустой экран
+    learnedCount, dueNow,
     seen, correct, accuracy, threshold: MARATHON_PASS, eligible, ...progress, cards,
   }));
 });
