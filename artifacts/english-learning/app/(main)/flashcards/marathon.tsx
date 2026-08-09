@@ -47,6 +47,41 @@ const HINT_SIZE = 12;
 const HINT_LINE = 18;
 const HINT_ICON = 14;
 
+/**
+ * Падение рендера этого экрана было НЕВИДИМЫМ.
+ *
+ * Своей ловушки у роута не было: при ошибке React разворачивал дерево, а
+ * навигатор оставался на последнем живом экране — то есть на вкладке «Слова».
+ * Снаружи это выглядело как «нажимаю Марафон, меня выкидывает в Слова», и
+ * докопаться до причины было нельзя: продовая сборка идёт без source maps, в
+ * стеке одни `entry-….js:1421:900`.
+ *
+ * Expo Router подхватывает экспорт ErrorBoundary для конкретного роута. Тот же
+ * приём уже стоит на самой вкладке «Слова» (app/(main)/flashcards.tsx) — здесь
+ * его просто забыли. Выход в «Слова» обязателен: панель вкладок на этом экране
+ * скрыта, и без кнопки он стал бы тупиком.
+ */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
+  return (
+    <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 80, gap: 14 }}>
+      <Text style={{ fontSize: 20, fontWeight: "900", color: "#e11d48" }}>Марафон не открылся</Text>
+      <Text style={{ fontSize: 13, lineHeight: 20, color: "#5b4f8e" }}>
+        {error?.message ?? "Неизвестная ошибка"}
+      </Text>
+      {!!error?.stack && (
+        <Text style={{ fontSize: 10, lineHeight: 15, color: "#8b7fb0" }}>{error.stack}</Text>
+      )}
+      <ChunkyButton
+        label="Попробовать снова"
+        icon="repeat"
+        center
+        onPress={() => { void retry(); }}
+        style={{ alignSelf: "flex-start", minWidth: 220 }}
+      />
+    </ScrollView>
+  );
+}
+
 /** Русское склонение по числу. */
 function pluralRu(n: number, one: string, few: string, many: string) {
   const mod10 = n % 10;
@@ -89,17 +124,18 @@ export default function MarathonScreen() {
   // приводит его к форме очереди (без «знакомства» — сразу тренировка).
   const loadQueue = React.useCallback(async (): Promise<TrainerQueue> => {
     const m = await fc.getMarathon();
+    const cards = m.cards ?? [];
     return {
       deckId: -1,
       deckTitle: `Марафон ${m.level}`,
       isSystem: true,
       needsIntro: false,
-      newCount: m.cards.filter((c) => c.isNew).length,
-      reviewCount: m.cards.filter((c) => !c.isNew).length,
+      newCount: cards.filter((c) => c.isNew).length,
+      reviewCount: cards.filter((c) => !c.isNew).length,
       wordsToday: m.wordsToday,
       dailyWordGoal: m.dailyWordGoal,
       goalReached: m.goalReached,
-      cards: m.cards,
+      cards,
     };
   }, []);
 
@@ -125,14 +161,17 @@ export default function MarathonScreen() {
   }
 
   // ── экран-обзор ──
-  const left = data ? Math.max(0, data.totalWords - data.answeredWords) : 0;
   const donePct = data && data.totalWords > 0 ? data.answeredWords / data.totalWords : 0;
   const passing = data ? data.accuracy >= data.threshold : false;
 
   // Зал повторений. Старый сервер этих полей не присылал — тогда считаем по
   // самой очереди, чтобы обновление клиента не обогнало обновление сервера.
+  //
+  // Вопросительный знак после cards не лишний: `data?.cards.length` защищало
+  // только от отсутствия data. Пустой массив сервер шлёт всегда, но одного
+  // ответа без поля хватило бы, чтобы уронить весь экран.
   const learnedCount = data?.learnedCount ?? 0;
-  const dueNow = data?.dueNow ?? data?.cards.length ?? 0;
+  const dueNow = data?.dueNow ?? data?.cards?.length ?? 0;
   // Сколько слов надо пройти для перехода. Раньше требовались ВСЕ.
   const answeredTarget = data?.answeredTarget ?? data?.totalWords ?? 0;
   const recentAnswers = data?.recentAnswers ?? 0;
@@ -158,7 +197,17 @@ export default function MarathonScreen() {
       {q.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       ) : !data ? (
-        <Text style={{ color: colors.mutedForeground }}>Не удалось загрузить марафон.</Text>
+        // Сетевую ошибку показываем текстом, а не пустотой: пустой экран
+        // неотличим от «здесь ничего нет».
+        <Tile glow={colors.destructive} style={{ padding: 18 }}>
+          <Text style={{ fontSize: 15, fontWeight: "900", color: colors.destructive, marginBottom: 8 }}>
+            Марафон не загрузился
+          </Text>
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginBottom: 14 }}>
+            {(q.error as any)?.message ?? "Проверь соединение и попробуй ещё раз."}
+          </Text>
+          <ChunkyButton label="Повторить" icon="repeat" center onPress={() => { void q.refetch(); }} />
+        </Tile>
       ) : (
         <>
           {/* карточка уровня и точности */}
