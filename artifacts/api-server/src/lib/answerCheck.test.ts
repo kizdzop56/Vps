@@ -77,11 +77,14 @@ test("основа — это слово без ОДНОГО окончания"
 });
 
 test("короткие слова не режем: там окончание — это само слово", () => {
+  // Обе стороны границы. Основа ровно в MIN_STEM_LENGTH букв — уже можно.
+  assert.equal(stemRu("плох").length, MIN_STEM_LENGTH);
+  assert.equal(stemRu("плохой"), "плох");
+  // Короче — слово остаётся целым.
+  assert.equal(stemRu("дома"), "дома");
   assert.equal(stemRu("кот"), "кот");
   assert.equal(stemRu("мышь"), "мышь");
   assert.equal(stemRu("есть"), "есть");
-  // Основа короче предела — значит, слово осталось целым.
-  assert.ok(stemRu("дома").length < MIN_STEM_LENGTH + 1);
 
   // И, главное, разные короткие слова не слипаются.
   assert.equal(checkWritten("кит", ["кот"]).correct, false);
