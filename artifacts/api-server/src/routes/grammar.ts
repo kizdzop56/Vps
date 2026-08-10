@@ -4,42 +4,71 @@
 // Маршруты:
 //   GET  /grammar/overview        — режимы, времена и сколько заданий доступно
 //   GET  /grammar/session         — подборка заданий (?mode=&tense=)
-//   POST /grammar/check           — проверка ответа с разбором ошибки
+//   POST /grammar/check           — проверка ответа, разбор ошибки, очки
+//   GET  /grammar/stats           — точность по темам: что даётся хуже всего
 //
 // ── Уровень один на всё приложение ──────────────────────────────────────────
 // Берётся из flashcard_settings.placement_level — оттуда же, откуда его берут
 // слова. Свой уровень для грамматики был бы вторым источником правды: ученик
 // проходит тест один раз, а уровней у него становится два, и они разъезжаются.
 //
-// ── БД не трогается ─────────────────────────────────────────────────────────
-// Ни таблиц, ни миграций: задания лежат в коде, а прогресс на этом шаге не
-// хранится — сессия считает попытки сама и показывает итог. Так раздел
-// выкатывается без риска для базы; хранение добавим, когда станет ясно, что
-// именно стоит хранить (какие формы даются тяжелее всего — вот это полезно,
-// а «сколько заходов сделано» никому не нужно).
+// ── Что хранится ────────────────────────────────────────────────────────────
+// Одна строка на ответ в grammar_log: задание, режим, тема, способ ответа,
+// результат и начисленные очки. Ровно то, из чего считаются дневной потолок и
+// «слабые места», и ничего больше: «сколько заходов сделано» никому не нужно.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
+import { db } from "@workspace/db";
+import { usersTable, grammarLogTable } from "@workspace/db";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import { ensureSettings } from "../lib/flashcardsCore";
-import { LEVEL_ORDER, fitsLevel, verbsUpTo, type CefrLevel } from "../lib/grammar/verbs";
-import { TENSES } from "../lib/grammar/tenses";
+import { startOfDay } from "../lib/srs";
+import { LEVEL_ORDER, fitsLevel, verbByBase, verbsUpTo, type CefrLevel } from "../lib/grammar/verbs";
+import { TENSES, tenseById } from "../lib/grammar/tenses";
 import { ASSEMBLE_TASKS, TENSE_GAP_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
 import {
   SESSION_SIZE,
   buildGrammarSession,
   checkGrammarAnswer,
+  findTask,
   type GrammarMode,
 } from "../lib/grammar/engine";
+import {
+  DAILY_GRAMMAR_POINTS_CAP,
+  awardableGrammarPoints,
+  pointsForAnswer,
+  topicStats,
+  type GrammarInput,
+} from "../lib/grammar/points";
 
 const router = Router();
 
 /** Ответ длиннее этого — не ответ, а вставленный текст. */
 const MAX_ANSWER_LEN = 200;
 
+/** Сколько последних ответов читаем для статистики по темам. */
+const STATS_LIMIT = 600;
+
 const MODES: GrammarMode[] = ["verbs", "tense", "build"];
+const INPUTS: GrammarInput[] = ["type", "choice", "assemble"];
 
 function isMode(value: unknown): value is GrammarMode {
   return typeof value === "string" && MODES.includes(value as GrammarMode);
+}
+
+/**
+ * Способ ответа приходит от клиента, и подделать его можно.
+ *
+ * Так и оставлено осознанно: ставки отличаются на ОДНО очко при дневном потолке
+ * 30, то есть выгода от подлога — три очка за час занятий. Проверка обошлась бы
+ * несоизмеримо дороже: сервер не помнит выданные сессии, и пришлось бы хранить
+ * состав каждой. Неизвестное значение считаем самым дешёвым.
+ */
+function readInput(value: unknown): GrammarInput {
+  return typeof value === "string" && INPUTS.includes(value as GrammarInput)
+    ? (value as GrammarInput)
+    : "choice";
 }
 
 /**
@@ -50,6 +79,28 @@ async function levelOf(userId: number): Promise<CefrLevel> {
   const settings = await ensureSettings(userId);
   const raw = settings.placementLevel ?? "A1";
   return (LEVEL_ORDER.includes(raw as CefrLevel) ? raw : "A1") as CefrLevel;
+}
+
+/** Сколько очков за грамматику начислено сегодня. */
+async function earnedToday(userId: number): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${grammarLogTable.pointsEarned}), 0)::int` })
+    .from(grammarLogTable)
+    .where(and(
+      eq(grammarLogTable.userId, userId),
+      gte(grammarLogTable.answeredAt, startOfDay()),
+    ));
+  return Number(row?.total ?? 0);
+}
+
+/** Тема задания: время или глагол. По ней собирается статистика. */
+function topicOf(taskId: string): { mode: GrammarMode; topic: string | null } | null {
+  const found = findTask(taskId);
+  if (!found) return null;
+  if (found.kind === "tense") return { mode: "tense", topic: found.task.tense };
+  if (found.kind === "verbs") return { mode: "verbs", topic: found.task.base };
+  // У сборки предложений темы нет: это порядок слов вообще, а не одно правило.
+  return { mode: "build", topic: null };
 }
 
 // ── GET /grammar/overview ───────────────────────────────────────────────────
@@ -76,9 +127,14 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
     taskCount: tenseTasks.filter((x) => x.tense === t.id).length,
   }));
 
+  const today = await earnedToday(user.userId);
+
   res.json({
     level,
     sessionSize: SESSION_SIZE,
+    // Прогресс дня по разделу: сколько очков уже взято и где потолок.
+    pointsToday: today,
+    pointsCap: DAILY_GRAMMAR_POINTS_CAP,
     modes: [
       {
         id: "verbs",
@@ -130,9 +186,11 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
 // мог бы прислать свой «правильный ответ» и засчитать себе что угодно. Ровно та
 // же причина, что у проверки свободного ответа в словах.
 router.post("/grammar/check", requireAuth, async (req, res) => {
-  const body = req.body as { taskId?: unknown; given?: unknown };
+  const user = getUser(req);
+  const body = req.body as { taskId?: unknown; given?: unknown; input?: unknown };
   const taskId = typeof body.taskId === "string" ? body.taskId.trim() : "";
   const given = typeof body.given === "string" ? body.given.slice(0, MAX_ANSWER_LEN) : "";
+  const input = readInput(body.input);
 
   if (!taskId) {
     res.status(400).json({ error: "taskId required" });
@@ -140,12 +198,107 @@ router.post("/grammar/check", requireAuth, async (req, res) => {
   }
 
   const verdict = checkGrammarAnswer(taskId, given);
-  if (!verdict) {
+  const meta = topicOf(taskId);
+  if (!verdict || !meta) {
     res.status(404).json({ error: "Задание не найдено" });
     return;
   }
 
-  res.json(verdict);
+  // Очки: ставка по способу ответа, дальше дневной потолок.
+  const earned = await earnedToday(user.userId);
+  const pointsEarned = awardableGrammarPoints(
+    pointsForAnswer(input, verdict.correct),
+    earned,
+  );
+
+  await db.insert(grammarLogTable).values({
+    userId: user.userId,
+    taskId,
+    mode: meta.mode,
+    topic: meta.topic,
+    input,
+    correct: verdict.correct,
+    typo: verdict.typo,
+    pointsEarned,
+  });
+
+  if (pointsEarned > 0) {
+    const [row] = await db
+      .select({ totalPoints: usersTable.totalPoints })
+      .from(usersTable)
+      .where(eq(usersTable.id, user.userId));
+    await db
+      .update(usersTable)
+      .set({ totalPoints: (row?.totalPoints ?? 0) + pointsEarned, updatedAt: new Date() })
+      .where(eq(usersTable.id, user.userId));
+  }
+
+  res.json({
+    ...verdict,
+    pointsEarned,
+    pointsToday: earned + pointsEarned,
+    pointsCap: DAILY_GRAMMAR_POINTS_CAP,
+  });
+});
+
+// ── GET /grammar/stats ──────────────────────────────────────────────────────
+//
+// Точность по темам за последние ответы: слабое вперёд. Единственная статистика,
+// ради которой стоит вести журнал — по ней видно, чем заняться. Счётчик заходов
+// в этот ответ намеренно не входит.
+router.get("/grammar/stats", requireAuth, async (req, res) => {
+  const user = getUser(req);
+
+  const logs = await db
+    .select({
+      topic: grammarLogTable.topic,
+      mode: grammarLogTable.mode,
+      correct: grammarLogTable.correct,
+      answeredAt: grammarLogTable.answeredAt,
+    })
+    .from(grammarLogTable)
+    .where(eq(grammarLogTable.userId, user.userId))
+    .orderBy(sql`${grammarLogTable.answeredAt} desc`)
+    .limit(STATS_LIMIT);
+
+  const stats = topicStats(logs);
+
+  // Название темы понятным текстом: id времени и первая форма глагола ученику
+  // ничего не говорят. Подставляем здесь, а не на клиенте: и правила, и таблица
+  // форм живут на сервере.
+  const named = stats.map((s) => {
+    if (s.mode === "tense") {
+      const tense = tenseById(s.topic);
+      return { ...s, title: tense?.title ?? s.topic, subtitle: tense?.titleRu ?? "" };
+    }
+    const verb = verbByBase(s.topic);
+    return {
+      ...s,
+      title: s.topic,
+      subtitle: verb ? `${verb.past[0]} · ${verb.participle[0]} — ${verb.ru}` : "",
+    };
+  });
+
+  const [totals] = await db
+    .select({
+      answers: sql<number>`count(*)::int`,
+      correct: sql<number>`count(*) filter (where ${grammarLogTable.correct})::int`,
+    })
+    .from(grammarLogTable)
+    .where(eq(grammarLogTable.userId, user.userId));
+
+  const answers = Number(totals?.answers ?? 0);
+  const correct = Number(totals?.correct ?? 0);
+
+  res.json({
+    answers,
+    correct,
+    accuracy: answers > 0 ? Math.round((correct / answers) * 100) : 0,
+    pointsToday: await earnedToday(user.userId),
+    pointsCap: DAILY_GRAMMAR_POINTS_CAP,
+    topics: named,
+    weak: named.filter((t) => t.weak),
+  });
 });
 
 export default router;

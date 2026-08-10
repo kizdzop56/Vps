@@ -18,6 +18,18 @@
 // 4. «Не знаю» есть всегда: иначе единственный выход из незнакомого задания —
 //    набить наугад и получить ошибку.
 //
+// ── Очки показаны в трёх местах, и это не дублирование ──────────────────────
+// Начисление без обратной связи не работает: очки, которых не видно, для ребёнка
+// не существуют. Каждое место отвечает на свой вопрос:
+//   шапка   — сколько я уже взял за этот заход;
+//   вердикт — за что дали именно сейчас («+2»);
+//   итоги   — сколько вышло всего.
+//
+// Дневной потолок показывается ТОЛЬКО когда он достигнут, и формулировкой «на
+// сегодня достаточно», а не отказом. Постоянная строка «12 из 30» превратила бы
+// занятие в выработку нормы, а упёршийся в потолок без объяснения решит, что
+// что-то сломалось.
+//
 // ── Панель вкладок остаётся ─────────────────────────────────────────────────
 // Экран не полноэкранный (его нет в FULLSCREEN_ROUTES): панель видна, и уйти по
 // вкладкам можно не ища выход. Поэтому отступы берутся из screenTop/screenBottom
@@ -35,6 +47,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { grammar, type GrammarCard, type GrammarSession, type GrammarVerdict } from "@/hooks/useGrammar";
 import { Glyph } from "@/components/ui/Glyph";
@@ -78,6 +91,7 @@ export default function GrammarTrainer() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const qc = useQueryClient();
   const params = useLocalSearchParams<{ mode?: string; tense?: string }>();
 
   const mode = (params.mode === "tense" || params.mode === "build" ? params.mode : "verbs") as
@@ -99,6 +113,9 @@ export default function GrammarTrainer() {
   const [checking, setChecking] = React.useState(false);
   const [answered, setAnswered] = React.useState(0);
   const [correctCount, setCorrectCount] = React.useState(0);
+  const [points, setPoints] = React.useState(0);
+  /** Потолок дня достигнут: сообщаем один раз, а не считаем норму вслух. */
+  const [capped, setCapped] = React.useState(false);
 
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -123,8 +140,13 @@ export default function GrammarTrainer() {
   // выбор времени — уводить сразу в корень раздела значит поставить ученика на
   // два шага дальше того места, откуда он пришёл.
   const exit = React.useCallback(() => {
+    // Очки ушли в общий счёт, а статистика тем изменилась: экраны, которые их
+    // показывают, обязаны перечитать данные.
+    qc.invalidateQueries({ queryKey: ["grammar-overview"] });
+    qc.invalidateQueries({ queryKey: ["grammar-stats"] });
+    qc.invalidateQueries({ queryKey: ["gamification-stats"] });
     router.replace(mode === "tense" ? "/flashcards/tenses" : "/flashcards");
-  }, [router, mode]);
+  }, [router, mode, qc]);
 
   const resetCard = React.useCallback(() => {
     setTyped("");
@@ -151,9 +173,13 @@ export default function GrammarTrainer() {
     if (!card || checking || verdict) return;
     setChecking(true);
     try {
-      const v = await grammar.check(card.id, given);
+      // Способ ответа влияет на ставку очков: письмо дороже выбора.
+      const v = await grammar.check(card.id, given, card.input);
       setVerdict(v);
       setAnswered((n) => n + 1);
+      setPoints((n) => n + (v.pointsEarned ?? 0));
+      // Потолок: верный ответ есть, а очков за него нет.
+      if (v.correct && (v.pointsEarned ?? 0) === 0) setCapped(true);
       if (v.correct) {
         setCorrectCount((n) => n + 1);
         // Верный ответ уходит сам. Ошибка ждёт, пока ученик прочитает разбор.
@@ -214,7 +240,7 @@ export default function GrammarTrainer() {
 
         {answered > 0 ? (
           <>
-            <View style={{ flexDirection: "row", gap: 12, marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", gap: 12, marginBottom: 12 }}>
               <Tile glow={colors.primary} style={{ flex: 1, alignItems: "center", paddingVertical: 18 }}>
                 <Text style={{ fontSize: 28, fontWeight: "900", color: colors.foreground }}>{answered}</Text>
                 <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>заданий</Text>
@@ -224,8 +250,26 @@ export default function GrammarTrainer() {
                 <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>с первого раза</Text>
               </Tile>
             </View>
+
+            {/* Плитка очков — только когда они есть. Ноль в наградной плитке —
+                это не награда, тот же приём, что на итогах тренировки слов. */}
+            {points > 0 && (
+              <Tile glow={accents.magenta} style={{ alignItems: "center", paddingVertical: 18, marginBottom: 12 }}>
+                <Text style={{ fontSize: 28, fontWeight: "900", color: colors.foreground }}>{`+${points}`}</Text>
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>очков</Text>
+              </Tile>
+            )}
+
+            {capped && (
+              <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginBottom: 12 }}>
+                Очки за грамматику на сегодня закончились — дальше занятие идёт без
+                них. Это не ограничение занятий, а защита от накрутки: завтра
+                счётчик начнётся заново.
+              </Text>
+            )}
+
             <ChunkyButton label="Ещё заход" icon="repeat" onPress={() => {
-              setPos(0); setDone(false); setAnswered(0); setCorrectCount(0); resetCard();
+              setPos(0); setDone(false); setAnswered(0); setCorrectCount(0); setPoints(0); resetCard();
             }} style={{ marginBottom: 12 }} />
           </>
         ) : (
@@ -262,7 +306,7 @@ export default function GrammarTrainer() {
       }}
       keyboardShouldPersistTaps="handled"
     >
-      {/* Шапка: выход, название режима, прогресс */}
+      {/* Шапка: выход, название режима, прогресс, очки за заход */}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10 }}>
         <Pressable onPress={exit} hitSlop={10} accessibilityRole="button" accessibilityLabel="Выйти">
           <Glyph name="close" size={24} color={colors.foreground} />
@@ -275,6 +319,13 @@ export default function GrammarTrainer() {
             {pos + 1} из {cards.length} · уровень {card.level}
           </Text>
         </View>
+        {/* Счётчик очков за заход. Появляется с первым начислением: нулевой
+            счётчик в шапке — это обещание, которое пока не выполнено. */}
+        {points > 0 && (
+          <Text style={{ fontSize: 15, fontWeight: "900", color: colors.primary, fontVariant: ["tabular-nums"] }}>
+            {`+${points}`}
+          </Text>
+        )}
       </View>
       <XpBar progress={cards.length > 0 ? (pos + 1) / cards.length : 0} height={8} shine={false} />
 
@@ -325,6 +376,13 @@ export default function GrammarTrainer() {
               <Text style={{ fontSize: 16, fontWeight: "900", color: verdict.correct ? colors.success : colors.destructive }}>
                 {verdict.correct ? (verdict.typo ? "Верно, но с опечаткой" : "Верно!") : "Неверно"}
               </Text>
+              {/* За что дали именно сейчас. Рядом с вердиктом, а не в шапке:
+                  связь «ответил верно → получил» должна быть видна сразу. */}
+              {!!verdict.pointsEarned && verdict.pointsEarned > 0 && (
+                <Text style={{ fontSize: 15, fontWeight: "900", color: accents.magenta, fontVariant: ["tabular-nums"] }}>
+                  {`+${verdict.pointsEarned}`}
+                </Text>
+              )}
             </View>
 
             {!verdict.correct && verdict.expected.length > 0 && (

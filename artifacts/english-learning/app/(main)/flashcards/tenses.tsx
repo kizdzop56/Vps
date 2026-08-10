@@ -12,6 +12,20 @@
 // украшение: повторить теорию можно, не заходя в задания, а формула позволяет
 // узнать время, даже если название забыто.
 //
+// ── Он же подсказывает, ЧТО брать ───────────────────────────────────────────
+// Шесть времён на равных выбрать не помогают: ученик берёт первое или привычное,
+// то есть как раз то, что уже умеет. Поэтому у каждого времени показана его
+// собственная точность по последним ответам, а темы с проваленной точностью
+// поднимаются наверх и помечаются.
+//
+// Порядок меняется только когда есть чем: пока ответов мало, список остаётся в
+// программном порядке (от простого к сложному). Перетасовать его по двум
+// случайным ошибкам — значит выдать шум за диагноз.
+//
+// Статистика грузится ОТДЕЛЬНЫМ запросом, и её отсутствие ничего не ломает:
+// экран работает и без неё, просто без цифр. Ставить выбор темы в зависимость от
+// второстепенного запроса нельзя.
+//
 // ── Чего здесь нет ──────────────────────────────────────────────────────────
 // Времён выше уровня ученика: сервер их просто не отдаёт. Запертая кнопка с
 // замком в списке из шести штук раздражает и ничему не учит.
@@ -24,7 +38,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { grammar, type TenseInfo } from "@/hooks/useGrammar";
+import { grammar, type TenseInfo, type TopicStat } from "@/hooks/useGrammar";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill, Tile } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
@@ -58,6 +72,8 @@ export default function TensesScreen() {
   const router = useRouter();
 
   const q = useQuery({ queryKey: ["grammar-overview"], queryFn: grammar.getOverview });
+  // Статистика второстепенна: без неё экран работает, просто без цифр.
+  const statsQ = useQuery({ queryKey: ["grammar-stats"], queryFn: grammar.getStats });
   const data = q.data;
 
   /** Какое время раскрыто: правило показывается по нажатию, а не всё сразу. */
@@ -69,7 +85,27 @@ export default function TensesScreen() {
     router.replace("/flashcards");
   }, [router]);
 
-  const tenses = (data?.tenses ?? []).filter((t) => t.taskCount > 0);
+  /** Точность по id времени. Пусто — ответов ещё не было. */
+  const statByTense = React.useMemo(() => {
+    const map = new Map<string, TopicStat>();
+    for (const s of statsQ.data?.topics ?? []) {
+      if (s.mode === "tense") map.set(s.topic, s);
+    }
+    return map;
+  }, [statsQ.data]);
+
+  // Слабое вперёд. Внутри групп порядок программный (как пришёл с сервера): от
+  // простого времени к сложному.
+  const tenses = React.useMemo(() => {
+    const list = (data?.tenses ?? []).filter((t) => t.taskCount > 0);
+    return [...list].sort((a, b) => {
+      const wa = statByTense.get(a.id)?.weak ? 1 : 0;
+      const wb = statByTense.get(b.id)?.weak ? 1 : 0;
+      return wb - wa;
+    });
+  }, [data?.tenses, statByTense]);
+
+  const weakCount = tenses.filter((t) => statByTense.get(t.id)?.weak).length;
 
   return (
     <ScrollView
@@ -97,8 +133,9 @@ export default function TensesScreen() {
       </View>
 
       <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginBottom: 16 }}>
-        Выбери одно время: задания пойдут подряд на его правила. Нажми на карточку,
-        чтобы сначала повторить теорию.
+        {weakCount > 0
+          ? "Сверху — то, что пока даётся хуже всего. Нажми на карточку, чтобы повторить правило."
+          : "Выбери одно время: задания пойдут подряд на его правила. Нажми на карточку, чтобы сначала повторить теорию."}
       </Text>
 
       {q.isLoading ? (
@@ -124,8 +161,13 @@ export default function TensesScreen() {
       ) : (
         tenses.map((t: TenseInfo) => {
           const shown = open === t.id;
+          const stat = statByTense.get(t.id);
           return (
-            <Tile key={t.id} glow={accents.indigoDeep} style={{ padding: 15, marginBottom: 12 }}>
+            <Tile
+              key={t.id}
+              glow={stat?.weak ? colors.warning : accents.indigoDeep}
+              style={{ padding: 15, marginBottom: 12 }}
+            >
               <Pressable
                 onPress={() => setOpen(shown ? null : t.id)}
                 accessibilityRole="button"
@@ -134,18 +176,34 @@ export default function TensesScreen() {
               >
                 <View style={{
                   width: ICON, height: ICON, borderRadius: radii.sm + 3,
-                  backgroundColor: colors.primary + "18",
+                  backgroundColor: (stat?.weak ? colors.warning : colors.primary) + "18",
                   alignItems: "center", justifyContent: "center",
                 }}>
-                  <Glyph name="clock" size={Math.round(ICON * 0.46)} color={colors.primary} />
+                  <Glyph
+                    name="clock"
+                    size={Math.round(ICON * 0.46)}
+                    color={stat?.weak ? colors.warning : colors.primary}
+                  />
                 </View>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground }}>{t.title}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                    <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground }}>{t.title}</Text>
+                    {/* Метка только у слабых: пометить всё — значит не пометить
+                        ничего. */}
+                    {stat?.weak && <Pill text="нужно повторить" tone="warn" />}
+                  </View>
                   <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>{t.titleRu}</Text>
                   {/* Формула: по ней время узнаётся без названия. */}
                   <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.primary, marginTop: 4 }}>
                     {t.formula}
                   </Text>
+                  {/* Своя точность по этому времени. Строка появляется только
+                      когда есть ответы: «0% по 0 ответам» — не информация. */}
+                  {!!stat && stat.answers > 0 && (
+                    <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 4, fontVariant: ["tabular-nums"] }}>
+                      {`Точность ${stat.accuracy}% по последним ${stat.answers}`}
+                    </Text>
+                  )}
                 </View>
                 <View style={{ alignItems: "flex-end", gap: 6 }}>
                   <Pill text={t.level} tone="soft" color={colors.primary} />
@@ -179,6 +237,7 @@ export default function TensesScreen() {
                 label="Тренировать"
                 icon="play"
                 center
+                tone={stat?.weak ? "warm" : "primary"}
                 onPress={() => router.push(`/flashcards/grammar/tense?tense=${t.id}`)}
                 style={{ marginTop: 12 }}
               />
