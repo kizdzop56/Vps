@@ -1,6 +1,5 @@
 import { Redirect, Tabs } from "expo-router";
 import { View, Text, TouchableOpacity, Platform, AppState, ActivityIndicator } from "react-native";
-import { Image as ExpoImage } from "expo-image";
 import { useColors } from "@/hooks/useColors";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { useEffect, useRef, useCallback, useState } from "react";
@@ -561,11 +560,18 @@ function MainLayoutInner() {
         </View>
       )}
 
-      <ExpoImage
-        source={require("@/assets/images/mascot_full.png")}
-        style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
-        cachePolicy="memory"
-      />
+      {/* ЗДЕСЬ БЫЛ скрытый предзагрузчик маскота: картинка 0×0 с
+          mascot_full.png и cachePolicy="memory". Убран, и вот почему.
+
+          Кэш только в памяти умирал при перезагрузке страницы. Грелась НЕ ТА
+          поза: приветствие с серией показывает «celebrate», а качался «wave».
+          И главное — эти 876 КБ качались одновременно с тем, что показывают на
+          экране: на 3G предзагрузчик сам отбирал канал у нужной картинки и
+          ровно поэтому маскот не прорисовывался.
+
+          Прогрев кэша — идея правильная, но не так: не на старте, не всей
+          галереей и не на медленной сети. Пока картинка кэшируется на диск при
+          первом показе — см. AnimatedMascotImage. */}
 
       <TabGuide
         tabName={guideState.tabName}
