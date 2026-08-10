@@ -136,7 +136,7 @@ function gapOptions(base: string, answer: string, rng: () => number): string[] {
 
 /** Дистракторы для времени: та же форма, но от других времён. */
 function tenseOptions(task: TenseGapTask, rng: () => number): string[] {
-  const answer = task.accept[0]!;
+  const answer = task.accept[0] ?? "";
   const base = task.base;
   const verb = verbByBase(base);
   const past = verb?.past[0] ?? edForm(base);
@@ -243,7 +243,10 @@ export function buildGrammarSession(opts: {
   return {
     total: pool.length,
     cards: picked.map((t: VerbGapTask, i) => {
+      // Верный ответ достаём в переменную: в проекте включена строгая проверка
+      // индексов, и answers[0] прямо в тернарнике имел бы тип string|undefined.
       const answers = verbGapAnswers(t);
+      const main = answers[0];
       const choice = (i + 1) % CHOICE_EVERY === 0;
       const cardRng = mulberry32(daySeed(now) + i * 313 + t.id.length);
       return {
@@ -254,7 +257,7 @@ export function buildGrammarSession(opts: {
         ru: t.ru,
         base: t.base,
         input: choice ? ("choice" as const) : ("type" as const),
-        options: choice && answers[0] ? gapOptions(t.base, answers[0], cardRng) : undefined,
+        options: choice && main ? gapOptions(t.base, main, cardRng) : undefined,
         hint: verbFormHint(t),
       };
     }),
