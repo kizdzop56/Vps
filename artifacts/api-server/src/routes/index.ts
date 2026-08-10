@@ -18,6 +18,7 @@ import notificationsRouter from "./notifications";
 import flashcardsRouter from "./flashcards";
 import flashcardsLearnRouter from "./flashcardsLearn";
 import flashcardsAnswerRouter from "./flashcardsAnswer";
+import practiceRouter from "./practice";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
 import maintenanceRouter from "./maintenance";
@@ -56,6 +57,9 @@ router.use(flashcardsLearnRouter);
 // Проверка свободного ответа (письмо и произношение): /flashcards/check-answer.
 // Путь не пересекается с остальными; вынесен отдельно по той же причине.
 router.use(flashcardsAnswerRouter);
+// Тренажёры грамматики: /practice/... Пока один режим — «Собери предложение».
+// Своё пространство путей, порядок значения не имеет.
+router.use(practiceRouter);
 router.use(messagingRouter);
 router.use(ttsRouter);
 // Обслуживание данных — не часть приложения, поэтому последним: инструмент не
