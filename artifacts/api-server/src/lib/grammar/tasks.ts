@@ -7,7 +7,7 @@
 //   assemble — собрать предложение по русскому переводу.
 //
 // ── Соответствие уровню ─────────────────────────────────────────────────────
-// Четыре правила, и каждое проверяется тестом, а не обещанием в комментарии:
+// Пять правил, и каждое проверяется тестом, а не обещанием в комментарии:
 //
 //   1. длина предложения не больше лимита уровня (MAX_WORDS). На A1 длинная
 //      фраза непонятна сама по себе, сколько бы простой ни была грамматика;
@@ -15,7 +15,9 @@
 //      withdraw;
 //   3. третья форма (для Present Perfect) появляется только с B1 — там, где
 //      это время и вводится программой;
-//   4. время задания не выше уровня задания.
+//   4. время задания не выше уровня задания;
+//   5. в задании РОВНО ОДИН пропуск. Движок подставляет ответ в один пропуск, и
+//      второй прочерк означал бы, что ученик видит одно, а проверяется другое.
 //
 // ── Почему у verbGap нет поля с ответом ─────────────────────────────────────
 // Ответ вычисляется из таблицы форм по базовому глаголу. Если продублировать
@@ -149,6 +151,9 @@ export const VERB_GAP_TASKS: VerbGapTask[] = [
 ];
 
 // ── Времена ─────────────────────────────────────────────────────────────────
+// В пропуск встаёт ВСЯ форма целиком: «is reading», «have been». Поэтому
+// пропуск один, а служебные слова (never, just, already) стоят рядом с ним
+// открытым текстом — ученик видит их и понимает, какое время требуется.
 
 export const TENSE_GAP_TASKS: TenseGapTask[] = [
   // Present Simple (A1)
@@ -194,8 +199,8 @@ export const TENSE_GAP_TASKS: TenseGapTask[] = [
   { id: "pp-2", level: "B1", tense: "present_perfect", text: `She ${GAP} this book three times.`, base: "read", accept: ["has read"], ru: "Она читала эту книгу три раза." },
   { id: "pp-3", level: "B1", tense: "present_perfect", text: `We ${GAP} here since 2015.`, base: "live", accept: ["have lived", "'ve lived"], ru: "Мы живём здесь с 2015 года." },
   { id: "pp-4", level: "B1", tense: "present_perfect", text: `He ${GAP} his passport again.`, base: "lose", accept: ["has lost"], ru: "Он снова потерял свой паспорт." },
-  { id: "pp-5", level: "B1", tense: "present_perfect", text: `They ${GAP} never ${GAP} to Japan.`, base: "be", accept: ["have been", "'ve been"], ru: "Они никогда не были в Японии." },
-  { id: "pp-6", level: "B1", tense: "present_perfect", text: `I ${GAP} just ${GAP} the news.`, base: "hear", accept: ["have heard", "'ve heard"], ru: "Я только что услышал новость." },
+  { id: "pp-5", level: "B1", tense: "present_perfect", text: `They ${GAP} to Japan twice.`, base: "be", accept: ["have been", "'ve been"], ru: "Они были в Японии дважды." },
+  { id: "pp-6", level: "B1", tense: "present_perfect", text: `I ${GAP} the news already.`, base: "hear", accept: ["have heard", "'ve heard"], ru: "Я уже слышал эту новость." },
 
   // Past Continuous (B1)
   { id: "pcn-1", level: "B1", tense: "past_continuous", text: `I ${GAP} when the phone rang.`, base: "sleep", accept: ["was sleeping"], ru: "Я спал, когда зазвонил телефон." },
