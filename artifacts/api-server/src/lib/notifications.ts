@@ -18,11 +18,21 @@
 // когда галочка реально встала. У остальных событий время берётся из исходной
 // строки (unlocked_at, created_at, assigned_at), то есть точное.
 //
-// ── Первый заход молчит ─────────────────────────────────────────────────────
+// ── Первый заход глушит ПРЕДЫСТОРИЮ, а не первое событие ────────────────────
 // У ученика с сорока медалями и двадцатью заданиями первая же сборка выдала бы
-// шестьдесят всплывающих окон подряд. Поэтому если уведомлений нет вообще ни
-// одного, вся первая порция пишется сразу прочитанной и показанной: история
-// есть, окон нет.
+// шестьдесят всплывающих окон подряд, поэтому накопленное пишется сразу
+// прочитанным и показанным: история есть, окон нет.
+//
+// ГРАБЛИ: раньше под это правило попадала вся первая порция целиком. «Первый
+// заход» определяется по отсутствию строк в базе, а строки не появятся, пока
+// источники ничего не отдают — у нового ученика нет ни медалей, ни заданий.
+// Значит, первое настоящее событие (закрытая задача дня) тоже уходило в тишину:
+// в истории оно есть, окна не было. Ровно на это и было похоже «уведомления не
+// приходят».
+//
+// Теперь глушится только то, что случилось раньше BACKFILL_AGE_MS назад. Свежее
+// всплывает как обычно, но не больше FIRST_SYNC_LOUD окон за первый заход — на
+// случай ученика, который набрал десяток медалей за один день.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { db } from "@workspace/db";
@@ -73,6 +83,18 @@ const SOURCE_LIMIT = 40;
  * ленте, а хвост истории заводить незачем: его никто не откроет.
  */
 const MAX_NEW_PER_SYNC = 60;
+
+/**
+ * Что на первом заходе считается предысторией.
+ *
+ * Двенадцать часов, а не «начало суток»: событие вчера в 23:50 на первом заходе
+ * в 8 утра — уже новость позавчерашняя, а вот закрытая полчаса назад задача дня
+ * должна всплыть, даже если ученик открыл ленту впервые.
+ */
+const BACKFILL_AGE_MS = 12 * 60 * 60 * 1000;
+
+/** Сколько свежих событий разрешено всплыть на самом первом заходе. */
+const FIRST_SYNC_LOUD = 3;
 
 /**
  * Как часто пересчитывать задачи дня.
@@ -292,12 +314,11 @@ export async function syncNotifications(userId: number): Promise<void> {
 
   const known = new Set(existing.map((r) => r.dedupeKey));
   // Ни одного уведомления — значит, лента для этого ученика открывается
-  // впервые. Всё накопленное пишем сразу прочитанным: история нужна, шквал
-  // всплывающих окон — нет.
-  const silent = existing.length === 0;
+  // впервые. Тихо пишем только предысторию, не всё подряд (см. шапку файла).
+  const firstSync = existing.length === 0;
 
   const now = Date.now();
-  const questsAreDue = silent || (now - (lastQuestSync.get(userId) ?? 0)) > QUEST_SYNC_TTL_MS;
+  const questsAreDue = firstSync || (now - (lastQuestSync.get(userId) ?? 0)) > QUEST_SYNC_TTL_MS;
 
   const sources: Promise<Draft[]>[] = [
     collectAchievements(userId),
@@ -329,11 +350,18 @@ export async function syncNotifications(userId: number): Promise<void> {
 
   if (fresh.length === 0) return;
 
-  const stamp = silent ? new Date() : null;
+  const stampedAt = new Date();
+  let loudLeft = firstSync ? FIRST_SYNC_LOUD : Number.POSITIVE_INFINITY;
 
-  await db
-    .insert(notificationsTable)
-    .values(fresh.map((d) => ({
+  const rows = fresh.map((d) => {
+    const at = d.createdAt ?? stampedAt;
+    // Порядок уже «свежее вперёд», поэтому квота на громкие окна достаётся
+    // самым новым событиям, а не случайным.
+    const old = now - at.getTime() > BACKFILL_AGE_MS;
+    const silent = firstSync && (old || loudLeft <= 0);
+    if (firstSync && !silent) loudLeft -= 1;
+
+    return {
       userId,
       kind: d.kind,
       dedupeKey: d.dedupeKey,
@@ -341,10 +369,15 @@ export async function syncNotifications(userId: number): Promise<void> {
       body: d.body,
       detail: d.detail,
       meta: d.meta ?? {},
-      createdAt: d.createdAt ?? new Date(),
-      readAt: stamp,
-      seenAt: stamp,
-    })))
+      createdAt: at,
+      readAt: silent ? stampedAt : null,
+      seenAt: silent ? stampedAt : null,
+    };
+  });
+
+  await db
+    .insert(notificationsTable)
+    .values(rows)
     // Гонка двух одновременных запросов от одного ученика: оба соберут одно и
     // то же событие, второй просто ничего не вставит.
     .onConflictDoNothing();
