@@ -43,7 +43,7 @@ test("границы длины растут вместе с уровнем и �
 
 // ── что фильтр обязан отсечь ────────────────────────────────────────────────
 
-const A1_OK = { ru: "Я люблю яблоки", en: "I like red apples" };
+const A1_OK = { ru: "Я люблю красные яблоки", en: "I like red apples" };
 
 test("нормальное задание A1 проходит", () => {
   assert.deepEqual(validateTask(A1_OK, "A1"), { ok: true });
@@ -52,8 +52,7 @@ test("нормальное задание A1 проходит", () => {
 test("перепутанные местами языки не проходят", () => {
   // Самая частая ошибка модели: ru и en заполнены наоборот.
   const swapped = { ru: "I like red apples", en: "Я люблю яблоки" };
-  const verdict = validateTask(swapped, "A1");
-  assert.equal(verdict.ok, false);
+  assert.equal(validateTask(swapped, "A1").ok, false);
 });
 
 test("пустые поля не проходят", () => {
@@ -111,10 +110,11 @@ test("сложное предложение не проходит на A1", () =
 test("запрещённые темы не проходят ни на одном уровне", () => {
   const bad = [
     { ru: "Мой отец пьёт пиво по вечерам", en: "My father drinks beer in the evening" },
-    { ru: "Солдат нёс ружьё", en: "The soldier carried a gun with him" },
-    { ru: "Его дедушка умер зимой", en: "His grandfather died last winter" },
-    { ru: "Президент выступил на выборах", en: "The president spoke at the election" },
-    { ru: "Она очень глупая", en: "She is very stupid today" },
+    { ru: "Солдат нёс с собой ружьё", en: "The soldier carried a gun with him" },
+    { ru: "Его дедушка умер прошлой зимой", en: "His grandfather died last winter" },
+    { ru: "Президент выступил перед выборами", en: "The president spoke before the election" },
+    { ru: "Она сегодня очень глупая", en: "She is very stupid today" },
+    { ru: "Он играл в казино", en: "He played in the casino yesterday" },
   ];
   for (const task of bad) {
     for (const level of ["A1", "A2", "B1", "B2", "C1"] as const) {
@@ -124,22 +124,45 @@ test("запрещённые темы не проходят ни на одном
 });
 
 test("этикет ловится и по русскому переводу, даже если английский чистый", () => {
-  const sneaky = { ru: "Он выпил вино", en: "He drank it quickly" };
+  const sneaky = { ru: "Он быстро выпил вино", en: "He drank it quickly" };
   assert.equal(validateTask(sneaky, "A2").ok, false);
 });
 
-test("фильтр этикета не срабатывает внутри других слов", () => {
-  // Это важнее, чем кажется: пропущенное плохое слово заметит пользователь и
-  // скажет, а выброшенное нормальное задание не заметит никто — заданий просто
-  // станет меньше без всякой причины.
-  assert.equal(hasBannedContent("The lesson has begun"), null);      // begun ≠ gun
-  assert.equal(hasBannedContent("The soup is warm"), null);          // warm ≠ war
-  assert.equal(hasBannedContent("She has a useful skill"), null);    // skill ≠ kill
-  assert.equal(hasBannedContent("I bought a new shirt"), null);      // shirt / hit
-  assert.equal(hasBannedContent("Мы собрали урожай"), null);
-  // А сами слова — ловятся.
+test("английские слова ищутся целиком, а не внутри других слов", () => {
+  // Пропущенное плохое слово заметит пользователь и скажет. Выброшенное
+  // НОРМАЛЬНОЕ задание не заметит никто — заданий просто станет меньше.
+  assert.equal(hasBannedContent("The lesson has begun"), null);       // begun ≠ gun
+  assert.equal(hasBannedContent("The soup is warm"), null);           // warm ≠ war
+  assert.equal(hasBannedContent("She has a useful skill"), null);     // skill ≠ kill
+  assert.equal(hasBannedContent("What is the date today"), null);     // дата, не свидание
+  assert.equal(hasBannedContent("I bought a bar of chocolate"), null);
+  assert.equal(hasBannedContent("My father is a police officer"), null);
+  assert.equal(hasBannedContent("Where is the toilet"), null);
+  assert.equal(hasBannedContent("Please shut the door"), null);
+  assert.equal(hasBannedContent("He hit the ball hard"), null);
+  assert.equal(hasBannedContent("This is a fat cat"), null);
+});
+
+test("русские стемы не залезают в соседние слова", () => {
+  // Каждое из этих слов ловилось прошлой версией фильтра.
+  assert.equal(hasBannedContent("Я люблю виноград"), null);      // вино
+  assert.equal(hasBannedContent("Он очень богатый"), null);      // бог
+  assert.equal(hasBannedContent("Мы открыли ворота"), null);     // вор
+  assert.equal(hasBannedContent("Она пошла в библиотеку"), null); // библи
+  assert.equal(hasBannedContent("Мама купила курицу"), null);    // курит
+  assert.equal(hasBannedContent("Я пью воду"), null);            // водка
+  assert.equal(hasBannedContent("Кровать стоит у окна"), null);  // кровь
+  assert.equal(hasBannedContent("Это твой выбор"), null);        // выборы
+  assert.equal(hasBannedContent("Надо убирать комнату"), null);  // убить
+  assert.equal(hasBannedContent("Толстая книга на столе"), null);
+});
+
+test("сами запрещённые слова при этом ловятся", () => {
   assert.equal(hasBannedContent("He has a gun"), "gun");
-  assert.equal(hasBannedContent("Была война"), "война");
+  assert.equal(hasBannedContent("Он пил пиво"), "пиво");
+  assert.equal(hasBannedContent("Он выпил вина"), "вино");
+  assert.equal(hasBannedContent("Дедушка умер"), "умер");
+  assert.equal(hasBannedContent("Он был пьяный"), "пьян");
 });
 
 // ── плитки ──────────────────────────────────────────────────────────────────
@@ -172,7 +195,7 @@ test("в наборе плиток есть все нужные слова и е
 test("слово из предложения не попадает в лишние плитки", () => {
   // Иначе на поле два одинаковых слова и одно из них «неверное» — ученик
   // ткнёт не в ту плитку и получит ошибку за верный ответ.
-  const tokens = buildTokens("I like red apples", ["red", "apples", "green"], 7);
+  const tokens = buildTokens("I like red apples", ["red", "apples", "green", "water"], 7);
   const counts = new Map<string, number>();
   for (const t of tokens) counts.set(t.toLowerCase(), (counts.get(t.toLowerCase()) ?? 0) + 1);
   assert.equal(counts.get("red"), 1);
@@ -205,8 +228,8 @@ test("сокращение и полная форма — один ответ", 
 test("неверный порядок слов — ошибка с номером первого расхождения", () => {
   const v = checkSentence("I red like apples", "I like red apples");
   assert.equal(v.correct, false);
-  // Первое и второе слово совпали бы, если бы порядок был верен: расходится
-  // второе. По этому номеру экран подсвечивает место, а не просто ругается.
+  // Первое слово совпало, второе разошлось. По этому номеру экран подсвечивает
+  // место, а не просто ругается.
   assert.equal(v.firstWrongWord, 2);
 });
 
