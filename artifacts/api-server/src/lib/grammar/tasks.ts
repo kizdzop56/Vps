@@ -21,7 +21,7 @@
 //
 // ── Почему у verbGap нет поля с ответом ─────────────────────────────────────
 // Ответ вычисляется из таблицы форм по базовому глаголу. Если продублировать
-// его здесь, рано или поздно таблица и задание разойдутся — и ученик получит
+// его здесь, рано или поздно таблица и задания разойдутся — и ученик получит
 // «неверно» на верном ответе. Один источник правды на все формы.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,9 @@ export type AssembleTask = {
   /**
    * Лишние слова-ловушки. Не «побольше слов», а именно те формы, которые
    * ученик перепутает: goes рядом с go, was рядом с is.
+   *
+   * Ровно по одному слову: плитки нарезаются по словам, и ловушка из двух слов
+   * была бы вдвое шире остальных — то есть выдавала бы себя без знания языка.
    */
   extra?: string[];
 };
@@ -242,7 +245,7 @@ export const ASSEMBLE_TASKS: AssembleTask[] = [
   // B1
   { id: "as-b1-1", level: "B1", ru: "Я живу в этом городе уже десять лет.", en: "I have lived in this city for ten years.", extra: ["live", "since"] },
   { id: "as-b1-2", level: "B1", ru: "Она читала книгу, когда зазвонил телефон.", en: "She was reading a book when the phone rang.", extra: ["read", "ringing"] },
-  { id: "as-b1-3", level: "B1", ru: "Если будет дождь, мы останемся дома.", en: "If it rains, we will stay at home.", extra: ["will rain", "stayed"] },
+  { id: "as-b1-3", level: "B1", ru: "Если будет дождь, мы останемся дома.", en: "If it rains, we will stay at home.", extra: ["rain", "stayed"] },
   { id: "as-b1-4", level: "B1", ru: "Он сказал, что уже закончил работу.", en: "He said that he had already finished the work.", extra: ["has", "finish"] },
   { id: "as-b1-5", level: "B1", ru: "Мне нужно больше времени, чтобы всё понять.", en: "I need more time to understand everything.", extra: ["needs", "understood"] },
   { id: "as-b1-6", level: "B1", ru: "Этот мост был построен сто лет назад.", en: "This bridge was built a hundred years ago.", extra: ["is", "build"] },
