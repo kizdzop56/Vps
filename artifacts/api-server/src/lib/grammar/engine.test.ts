@@ -1,0 +1,386 @@
+// Тесты раздела «Составлять». Без БД и express: node:test + node:assert.
+//
+//   pnpm --filter @workspace/api-server test
+//
+// Половина файла — не про код, а про ДАННЫЕ. Просьба была «строго проверь, чтобы
+// предложения соответствовали уровню», а обещание в комментарии проверкой не
+// является: банк будет расти, и правило должно падать само, без ревизора.
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { IRREGULAR_VERBS, LEVEL_ORDER, verbByBase, type CefrLevel } from "./verbs";
+import { TENSES, diagnose, tenseById } from "./tenses";
+import {
+  ASSEMBLE_TASKS,
+  GAP,
+  MAX_WORDS,
+  PARTICIPLE_FROM,
+  TENSE_GAP_TASKS,
+  VERB_GAP_TASKS,
+} from "./tasks";
+import {
+  CHOICE_EVERY,
+  allForms,
+  assembleMistake,
+  buildGrammarSession,
+  checkGrammarAnswer,
+  edForm,
+  ingForm,
+  sentenceTiles,
+  thirdPerson,
+  verbGapAnswers,
+} from "./engine";
+
+const rank = (l: CefrLevel) => LEVEL_ORDER.indexOf(l);
+const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
+const gaps = (s: string) => s.split(GAP).length - 1;
+
+// ── Таблица глаголов ────────────────────────────────────────────────────────
+
+test("у каждого глагола есть обе формы и перевод", () => {
+  for (const v of IRREGULAR_VERBS) {
+    assert.ok(v.base.length > 1, `${v.base}: пустая первая форма`);
+    assert.ok(v.past.length > 0, `${v.base}: нет второй формы`);
+    assert.ok(v.participle.length > 0, `${v.base}: нет третьей формы`);
+    assert.ok(v.ru.trim().length > 0, `${v.base}: нет перевода`);
+    assert.ok(LEVEL_ORDER.includes(v.level), `${v.base}: неизвестный уровень`);
+  }
+});
+
+test("глаголы не повторяются", () => {
+  const seen = new Set<string>();
+  for (const v of IRREGULAR_VERBS) {
+    assert.equal(seen.has(v.base), false, `${v.base} встречается дважды`);
+    seen.add(v.base);
+  }
+});
+
+// ── Времена ─────────────────────────────────────────────────────────────────
+
+test("у каждого времени есть правило, примеры употребления и маркеры", () => {
+  for (const t of TENSES) {
+    assert.ok(t.rule.length > 80, `${t.id}: правило слишком короткое, чтобы что-то объяснить`);
+    assert.ok(t.usage.length >= 2, `${t.id}: меньше двух случаев употребления`);
+    assert.ok(t.markers.length >= 3, `${t.id}: мало слов-маркеров`);
+    assert.ok(t.titleRu.trim().length > 0, `${t.id}: нет русского названия`);
+  }
+});
+
+// ── Уровни: то, о чём была просьба «строго проверь» ──────────────────────────
+
+test("предложение не длиннее лимита своего уровня", () => {
+  for (const t of VERB_GAP_TASKS) {
+    assert.ok(
+      wordCount(t.text) <= MAX_WORDS[t.level],
+      `${t.id}: ${wordCount(t.text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
+    );
+  }
+  for (const t of TENSE_GAP_TASKS) {
+    assert.ok(
+      wordCount(t.text) <= MAX_WORDS[t.level],
+      `${t.id}: ${wordCount(t.text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
+    );
+  }
+  for (const t of ASSEMBLE_TASKS) {
+    assert.ok(
+      wordCount(t.en) <= MAX_WORDS[t.level],
+      `${t.id}: ${wordCount(t.en)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
+    );
+  }
+});
+
+test("глагол задания есть в таблице и не выше уровня задания", () => {
+  for (const t of VERB_GAP_TASKS) {
+    const verb = verbByBase(t.base);
+    assert.ok(verb, `${t.id}: глагола «${t.base}» нет в таблице форм`);
+    assert.ok(
+      rank(verb!.level) <= rank(t.level),
+      `${t.id}: глагол ${t.base} уровня ${verb!.level} в задании уровня ${t.level}`,
+    );
+  }
+});
+
+test("третья форма не появляется раньше B1", () => {
+  for (const t of VERB_GAP_TASKS) {
+    if (t.form !== "participle") continue;
+    assert.ok(
+      rank(t.level) >= rank(PARTICIPLE_FROM),
+      `${t.id}: третья форма на уровне ${t.level}, а Present Perfect вводится с ${PARTICIPLE_FROM}`,
+    );
+  }
+});
+
+test("время задания существует и не выше уровня задания", () => {
+  for (const t of TENSE_GAP_TASKS) {
+    const tense = tenseById(t.tense);
+    assert.ok(tense, `${t.id}: неизвестное время «${t.tense}»`);
+    assert.ok(
+      rank(tense!.level) <= rank(t.level),
+      `${t.id}: время ${tense!.title} уровня ${tense!.level} в задании уровня ${t.level}`,
+    );
+  }
+});
+
+test("в задании ровно один пропуск", () => {
+  for (const t of [...VERB_GAP_TASKS, ...TENSE_GAP_TASKS]) {
+    assert.equal(gaps(t.text), 1, `${t.id}: пропусков ${gaps(t.text)}, а должен быть один`);
+  }
+});
+
+test("номера заданий уникальны по всем банкам", () => {
+  // Проверка ответа ищет задание по номеру в трёх банках подряд. Одинаковый
+  // номер в двух банках означает, что ответ сверят с чужим заданием.
+  const ids = [...VERB_GAP_TASKS, ...TENSE_GAP_TASKS, ...ASSEMBLE_TASKS].map((t) => t.id);
+  assert.equal(new Set(ids).size, ids.length, "есть повторяющиеся номера заданий");
+});
+
+test("у каждого задания есть русский перевод", () => {
+  for (const t of [...VERB_GAP_TASKS, ...TENSE_GAP_TASKS, ...ASSEMBLE_TASKS]) {
+    assert.ok(t.ru.trim().length > 0, `${t.id}: нет перевода`);
+  }
+});
+
+test("у заданий на время ответ не пустой и согласован с самим временем", () => {
+  for (const t of TENSE_GAP_TASKS) {
+    assert.ok(t.accept.length > 0, `${t.id}: нет ответа`);
+    const main = t.accept[0]!;
+    if (t.tense === "future_simple") {
+      assert.ok(/^(will|'ll)\s/.test(main), `${t.id}: в будущем времени ожидается will`);
+    }
+    if (t.tense === "present_perfect") {
+      assert.ok(/^(have|has|'ve)\s/.test(main), `${t.id}: в Present Perfect ожидается have/has`);
+    }
+    if (t.tense === "present_continuous" || t.tense === "past_continuous") {
+      assert.ok(/ing$/.test(main), `${t.id}: в длительном времени ожидается -ing`);
+    }
+  }
+});
+
+test("ловушка в сборке — одно слово, которого нет в самом предложении", () => {
+  for (const t of ASSEMBLE_TASKS) {
+    const own = new Set(sentenceTiles(t.en).map((w) => w.toLowerCase()));
+    for (const extra of t.extra ?? []) {
+      assert.equal(wordCount(extra), 1, `${t.id}: ловушка «${extra}» из нескольких слов`);
+      assert.equal(
+        own.has(extra.toLowerCase()),
+        false,
+        `${t.id}: ловушка «${extra}» есть в самом предложении — она нужна для ответа`,
+      );
+    }
+  }
+});
+
+// ── Формы ───────────────────────────────────────────────────────────────────
+
+test("третье лицо: -s, -es и y → ies", () => {
+  assert.equal(thirdPerson("work"), "works");
+  assert.equal(thirdPerson("go"), "goes");
+  assert.equal(thirdPerson("watch"), "watches");
+  assert.equal(thirdPerson("study"), "studies");
+  // play — гласная перед y, поэтому просто -s
+  assert.equal(thirdPerson("play"), "plays");
+});
+
+test("-ing: немая e пропадает, короткая согласная удваивается", () => {
+  assert.equal(ingForm("make"), "making");
+  assert.equal(ingForm("run"), "running");
+  assert.equal(ingForm("read"), "reading");
+  assert.equal(ingForm("go"), "going");
+});
+
+test("-ed по тем же правилам", () => {
+  assert.equal(edForm("work"), "worked");
+  assert.equal(edForm("live"), "lived");
+  assert.equal(edForm("study"), "studied");
+  assert.equal(edForm("stop"), "stopped");
+});
+
+// ── Подбор заданий ──────────────────────────────────────────────────────────
+
+const NOW = new Date("2026-08-10T12:00:00.000Z");
+
+test("ученик получает только задания своего уровня и ниже", () => {
+  for (const level of LEVEL_ORDER) {
+    for (const mode of ["verbs", "tense", "build"] as const) {
+      const { cards } = buildGrammarSession({ mode, level, now: NOW });
+      for (const c of cards) {
+        assert.ok(
+          rank(c.level) <= rank(level),
+          `${mode}/${level}: пришло задание уровня ${c.level}`,
+        );
+      }
+    }
+  }
+});
+
+test("на A2 третья форма не встречается вовсе", () => {
+  const { cards } = buildGrammarSession({ mode: "verbs", level: "A2", now: NOW });
+  for (const c of cards) {
+    const task = VERB_GAP_TASKS.find((t) => t.id === c.id)!;
+    assert.notEqual(task.form, "participle", `${c.id}: третья форма на A2`);
+  }
+});
+
+test("в режиме времени приходят задания только выбранного времени", () => {
+  const { cards } = buildGrammarSession({ mode: "tense", level: "B1", tense: "past_simple", now: NOW });
+  assert.ok(cards.length > 0, "пустая подборка");
+  for (const c of cards) assert.equal(c.tense, "past_simple");
+});
+
+test("ученик в основном пишет сам, вариантами даётся каждое третье задание", () => {
+  const { cards } = buildGrammarSession({ mode: "verbs", level: "B1", now: NOW, size: 6 });
+  const choices = cards.filter((c) => c.input === "choice");
+  assert.equal(choices.length, Math.floor(6 / CHOICE_EVERY));
+  for (const c of choices) {
+    assert.ok((c.options?.length ?? 0) >= 2, `${c.id}: вариантов меньше двух`);
+    // Верный ответ обязан быть среди вариантов, иначе задание нерешаемо.
+    const answers = verbGapAnswers(VERB_GAP_TASKS.find((t) => t.id === c.id)!);
+    assert.ok(
+      c.options!.some((o) => answers.includes(o)),
+      `${c.id}: верного ответа нет среди вариантов`,
+    );
+  }
+});
+
+test("дистракторы — другие формы того же глагола, а не случайные слова", () => {
+  const { cards } = buildGrammarSession({ mode: "verbs", level: "B2", now: NOW, size: 12 });
+  for (const c of cards) {
+    if (c.input !== "choice") continue;
+    const forms = new Set(allForms(c.base!));
+    for (const o of c.options!) {
+      assert.ok(forms.has(o), `${c.id}: вариант «${o}» не форма глагола ${c.base}`);
+    }
+  }
+});
+
+test("в сборке есть все нужные слова плюс ловушки", () => {
+  const { cards } = buildGrammarSession({ mode: "build", level: "A1", now: NOW });
+  for (const c of cards) {
+    const task = ASSEMBLE_TASKS.find((t) => t.id === c.id)!;
+    const need = sentenceTiles(task.en);
+    const tiles = [...(c.tiles ?? [])];
+    for (const w of need) {
+      const at = tiles.indexOf(w);
+      assert.ok(at >= 0, `${c.id}: не хватает плитки «${w}»`);
+      tiles.splice(at, 1); // одно слово — одна плитка
+    }
+  }
+});
+
+test("подбор детерминирован в течение дня", () => {
+  const a = buildGrammarSession({ mode: "verbs", level: "B1", now: NOW });
+  const b = buildGrammarSession({ mode: "verbs", level: "B1", now: new Date(NOW.getTime() + 3 * 3600_000) });
+  assert.deepEqual(a.cards.map((c) => c.id), b.cards.map((c) => c.id));
+});
+
+// ── Проверка ответа ─────────────────────────────────────────────────────────
+
+test("верная форма принимается, неизвестное задание — null", () => {
+  const ok = checkGrammarAnswer("vg-a1-1", "went");
+  assert.equal(ok?.correct, true);
+  assert.equal(ok?.typo, false);
+  assert.equal(checkGrammarAnswer("нет-такого", "went"), null);
+});
+
+test("регистр и лишние пробелы не влияют", () => {
+  assert.equal(checkGrammarAnswer("vg-a1-1", "  Went ")?.correct, true);
+});
+
+test("принимается любой равноправный вариант формы", () => {
+  // burn: burnt и burned оба верны, спорить с учебником нельзя.
+  const verb = verbByBase("burn")!;
+  assert.ok(verb.past.includes("burnt") && verb.past.includes("burned"));
+});
+
+test("другая форма глагола НЕ прощается как опечатка", () => {
+  // pst-5: нужно lived. «lives» отличается на одну букву, но это другое время,
+  // и прощать это — значит превратить упражнение в формальность.
+  const wrong = checkGrammarAnswer("pst-5", "lives");
+  assert.equal(wrong?.correct, false);
+  // А вот обычная описка прощается: «bough» — не форма глагола buy.
+  const typo = checkGrammarAnswer("pst-2", "bough");
+  assert.equal(typo?.correct, true);
+  assert.equal(typo?.typo, true);
+});
+
+test("после ошибки приходит предложение целиком с верным ответом", () => {
+  const v = checkGrammarAnswer("vg-a1-1", "go");
+  assert.equal(v?.correct, false);
+  assert.equal(v?.full, "I went to school yesterday.");
+  assert.ok(v?.expected.includes("went"));
+  // Правило прилагается: ошибка на второй форме разбирается по Past Simple.
+  assert.equal(v?.rule?.title, "Past Simple");
+});
+
+// ── Разбор ошибки ───────────────────────────────────────────────────────────
+
+test("Present Simple: назван пропуск -s, а не «неверно»", () => {
+  const tense = tenseById("present_simple")!;
+  const d = diagnose("go", "goes", tense, "go");
+  assert.ok(d, "ошибка не опознана");
+  assert.match(d!.headline, /-s/);
+});
+
+test("Past Simple: первая форма вместо второй", () => {
+  const tense = tenseById("past_simple")!;
+  const d = diagnose("go", "went", tense, "go");
+  assert.ok(d);
+  assert.match(d!.headline, /первая форма/);
+});
+
+test("Past Simple: -ed приклеено к неправильному глаголу", () => {
+  const tense = tenseById("past_simple")!;
+  const d = diagnose("goed", "went", tense, "go");
+  assert.ok(d);
+  assert.match(d!.headline, /-ed/);
+});
+
+test("Present Perfect: have вместо has и вторая форма вместо третьей", () => {
+  const tense = tenseById("present_perfect")!;
+  const a = diagnose("have read", "has read", tense, "read");
+  assert.ok(a);
+  assert.match(a!.headline, /has/);
+
+  const b = diagnose("has saw", "has seen", tense, "see");
+  assert.ok(b);
+  assert.match(b!.headline, /третья форма/);
+});
+
+test("длительное время: пропущен be или пропущено -ing", () => {
+  const tense = tenseById("present_continuous")!;
+  const noBe = diagnose("sleeping", "is sleeping", tense, "sleep");
+  assert.ok(noBe);
+  assert.match(noBe!.headline, /be/);
+
+  const noIng = diagnose("is sleep", "is sleeping", tense, "sleep");
+  assert.ok(noIng);
+  assert.match(noIng!.headline, /ing/);
+});
+
+test("будущее: пропущено will", () => {
+  const tense = tenseById("future_simple")!;
+  const d = diagnose("call", "will call", tense, "call");
+  assert.ok(d);
+  assert.match(d!.headline, /will/);
+});
+
+test("верный ответ не разбирается", () => {
+  const tense = tenseById("past_simple")!;
+  assert.equal(diagnose("went", "went", tense, "go"), null);
+});
+
+test("сборка: те же слова в другом порядке — это про порядок слов", () => {
+  const m = assembleMistake("I to school go every day", "I go to school every day.");
+  assert.ok(m);
+  assert.match(m!.headline, /порядок/);
+});
+
+test("сборка: пропущенное и лишнее слово называются прямо", () => {
+  const missing = assembleMistake("I go school every day", "I go to school every day.");
+  assert.ok(missing);
+  assert.match(missing!.headline, /to/);
+
+  const wrongForm = assembleMistake("She like red apples", "She likes red apples.");
+  assert.ok(wrongForm);
+  assert.match(wrongForm!.headline, /likes/);
+});
