@@ -151,6 +151,11 @@ const FULLSCREEN_ROUTES = [
   "flashcards/session",
   "flashcards/hard",
   "flashcards/marathon",
+  // Тренажёр раздела «Составлять». Внизу экрана поле ответа и «Проверить» —
+  // плавающая панель накрыла бы их, и ответить было бы нечем. Экран выбора
+  // режима (flashcards/grammar) в список НЕ входит: это обычный список, из
+  // него нормально уходить по вкладкам.
+  "flashcards/grammar/[mode]",
 ];
 
 interface CustomTabBarProps {
@@ -537,6 +542,10 @@ function MainLayoutInner() {
         <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />
         <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/preview/[id]" options={{ href: null }} />
+        {/* Раздел «Составлять»: выбор режима и сам тренажёр. Без этих записей
+            экраны попали бы в панель вкладок отдельными кнопками. */}
+        <Tabs.Screen name="flashcards/grammar" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/grammar/[mode]" options={{ href: null }} />
       </Tabs>
 
       {/* Всплывающее окно события. Стоит здесь, а не на конкретном экране:
