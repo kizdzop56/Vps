@@ -5,14 +5,29 @@
 // медаль или заявка должны догнать ученика там, где он есть, а не ждать, пока
 // он зайдёт в профиль.
 //
-// ── Три правила, из которых собрано поведение ───────────────────────────────
+// ── Четыре правила, из которых собрано поведение ────────────────────────────
 // 1. Окно уходит само. Уведомление — не диалог, оно ничего не спрашивает.
 //    Закрывать его руками каждый раз — работа, которую мы придумали читателю.
-// 2. Не больше трёх подряд. Если за раз пришло восемь событий, восемь окон
-//    подряд — это уже не уведомление, а блокировка экрана. Лишние сразу
-//    помечаются показанными и остаются только в истории.
-// 3. «Показано» ставится при ПОЯВЛЕНИИ, а не при закрытии. Иначе перезагрузка
-//    страницы в середине показа вернула бы то же самое окно снова.
+//
+// 2. Подряд не больше трёх. Восемь окон друг за другом — это не уведомление, а
+//    блокировка экрана.
+//
+// 3. НО лишние не выбрасываются. Раньше всё сверх трёх помечалось показанным и
+//    не показывалось никогда: ученик получал пять медалей, видел две, а три
+//    молча оказывались только в истории. Ровно это и выглядело как «уведомления
+//    не приходят». Теперь лишние остаются непоказанными и всплывают позже —
+//    после паузы или при следующем открытии приложения.
+//
+// 4. «Показано» ставится в момент ПОЯВЛЕНИЯ окна. Не при закрытии — иначе
+//    перезагрузка страницы вернула бы то же окно снова. И не при постановке в
+//    очередь — иначе перезагрузка между постановкой и показом теряет
+//    уведомление совсем.
+//
+// ── Очередь в состоянии, а не в ref ─────────────────────────────────────────
+// Изменение ref не вызывает перерисовку, поэтому эффект показа не запускался бы
+// сам — раньше он срабатывал только потому, что рядом менялся unseen от
+// преждевременной отметки. Это работало по совпадению; стоило убрать
+// преждевременную отметку, и очередь перестала бы разбираться вовсе.
 //
 // Панель вкладок плавает поверх содержимого, поэтому и окно тоже абсолютное:
 // сдвигать содержимое экрана ради временной плашки нельзя — вёрстка прыгнет.
@@ -36,45 +51,57 @@ const SHOW_MS = 4500;
 /** Пауза между окнами: без неё второе выезжает раньше, чем ушло первое. */
 const GAP_MS = 350;
 
-/** Сколько окон показываем подряд. Остальное — только в истории. */
+/** Сколько окон показываем подряд, прежде чем взять паузу. */
 const MAX_IN_A_ROW = 3;
+
+/**
+ * Пауза после серии из MAX_IN_A_ROW окон.
+ *
+ * Нужна, чтобы «не больше трёх подряд» не превратилось в «остальное потеряли»:
+ * очередь не выбрасывается, а ждёт. Сорок пять секунд — достаточно, чтобы
+ * ученик успел вернуться к своему делу, и мало, чтобы новость не устарела.
+ */
+const BURST_PAUSE_MS = 45_000;
+
+/**
+ * Потолок очереди. Всё сверх остаётся непоказанным и придёт при следующем
+ * открытии: держать в памяти сотню окон незачем, а терять их нельзя.
+ */
+const QUEUE_LIMIT = 8;
 
 export function NotificationHost() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { unseen, markSeen } = useNotifications(true);
 
+  const [queue, setQueue] = React.useState<AppNotification[]>([]);
   const [current, setCurrent] = React.useState<AppNotification | null>(null);
   const [centerOpen, setCenterOpen] = React.useState(false);
   const [focusId, setFocusId] = React.useState<number | null>(null);
 
-  const queue = React.useRef<AppNotification[]>([]);
   /** Что уже забрали в очередь: страховка от повторного попадания. */
   const taken = React.useRef<Set<number>>(new Set());
+  /** Сколько окон показано в текущей серии. Дошло до предела — пауза. */
+  const burst = React.useRef(0);
   const hideTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const nextTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const slide = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => () => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    if (nextTimer.current) clearTimeout(nextTimer.current);
   }, []);
 
-  // Новые события → в очередь. Лишние гасим сразу: они уже в истории.
+  // Новые события → в очередь. Лишние НЕ помечаем показанными: они всплывут
+  // позже, а не исчезнут (см. правило 3 в шапке).
   React.useEffect(() => {
-    const fresh = unseen.filter((n) => !taken.current.has(n.id));
+    const free = QUEUE_LIMIT - queue.length - (current ? 1 : 0);
+    if (free <= 0) return;
+
+    const fresh = unseen.filter((n) => !taken.current.has(n.id)).slice(0, free);
     if (fresh.length === 0) return;
 
     for (const n of fresh) taken.current.add(n.id);
-
-    const free = Math.max(0, MAX_IN_A_ROW - queue.current.length - (current ? 1 : 0));
-    const show = fresh.slice(0, free);
-    const skip = fresh.slice(free);
-
-    queue.current.push(...show);
-    if (skip.length > 0) markSeen(skip.map((n) => n.id));
-    if (show.length > 0) markSeen(show.map((n) => n.id));
-  }, [unseen, current, markSeen]);
+    setQueue((q) => [...q, ...fresh]);
+  }, [unseen, queue.length, current]);
 
   const hide = React.useCallback(() => {
     if (hideTimer.current) {
@@ -90,20 +117,29 @@ export function NotificationHost() {
   // null), поэтому отдельного «показать следующее» не нужно.
   React.useEffect(() => {
     if (current) return;
-    if (queue.current.length === 0) return;
+    const next = queue[0];
+    if (!next) return;
 
-    if (nextTimer.current) clearTimeout(nextTimer.current);
-    nextTimer.current = setTimeout(() => {
-      const next = queue.current.shift();
-      if (!next) return;
+    // Серия закончилась — ждём дольше, а не выбрасываем остаток.
+    const pause = burst.current >= MAX_IN_A_ROW;
+    const timer = setTimeout(() => {
+      if (pause) burst.current = 0;
+      burst.current += 1;
+
+      setQueue((q) => q.slice(1));
       setCurrent(next);
+      // Отметка ровно в момент появления: см. правило 4 в шапке.
+      markSeen([next.id]);
+
       slide.setValue(0);
       Animated.timing(slide, {
         toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE_DRIVER,
       }).start();
       hideTimer.current = setTimeout(() => hide(), SHOW_MS);
-    }, GAP_MS);
-  }, [current, unseen, slide, hide]);
+    }, pause ? BURST_PAUSE_MS : GAP_MS);
+
+    return () => clearTimeout(timer);
+  }, [current, queue, slide, hide, markSeen]);
 
   const openDetails = React.useCallback(() => {
     if (!current) return;
