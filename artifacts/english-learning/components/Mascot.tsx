@@ -15,10 +15,11 @@
 // ложилась поверх карточек профиля, а белый зверь на пёстром фоне терял силуэт
 // и выглядел как не прорисовавшаяся картинка.
 //
-// Размер маскота считается от окна: ширина почти во весь экран, но высота
-// ограничена долей экрана, иначе на низких телефонах пузырь с текстом уезжает
-// под кнопку. Пропорция берётся из WavingMascot (MASCOT_RATIO), чтобы
-// картинка не растягивалась.
+// ── Размер ──────────────────────────────────────────────────────────────────
+// Считается от СВОБОДНОГО МЕСТА, а не долей экрана: резервируем ровно столько,
+// сколько нужно имени, пузырю и кнопке, остальное отдаём персонажу (см.
+// mascotBox в WavingMascot.tsx). Прежние 44 % высоты давали маскота шириной
+// около 190 пикселей — меньше половины ширины пузыря с текстом.
 //
 // Поза зависит от настроения: радость, грусть, раздумье — это разные картинки
 // из AnimatedMascotImage, а не одна и та же с разным смайликом.
@@ -30,8 +31,8 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
-import { AnimatedMascotImage, type MascotPose } from "@/components/AnimatedMascotImage";
-import { MASCOT_RATIO } from "@/components/WavingMascot";
+import { AnimatedMascotImage, POSE_RATIO, type MascotPose } from "@/components/AnimatedMascotImage";
+import { mascotBox } from "@/components/WavingMascot";
 import { ChunkyCta } from "@/components/ui/ChunkyCta";
 
 export type MascotMood = "happy" | "celebrate" | "sad" | "thinking" | "wave" | "sleep";
@@ -64,6 +65,17 @@ const MOOD_GLOW: Record<MascotMood, string> = {
   wave:      "#a855f7",
   sleep:     "#7c8cf8",
 };
+
+/**
+ * Сколько места по вертикали занимает всё, что стоит НИЖЕ маскота: имя,
+ * пузырь с репликой (реплики бывают в три-четыре строки), кнопка и отступы
+ * окна. Слегка с запасом: недобор режет текст, а перебор лишь чуть уменьшает
+ * картинку.
+ */
+const RESERVED_BELOW = 280;
+
+/** Кнопка действия — это ещё один ряд под пузырём. */
+const RESERVED_ACTION = 70;
 
 /**
  * Цена дня серии и её потолок. ДОЛЖНЫ совпадать с сервером
@@ -112,19 +124,12 @@ export function MascotModal({
   const glow = MOOD_GLOW[mood];
   const cardW = Math.min(W - 40, 380);
 
-  // Маскот почти во всю ширину, но по высоте не больше 44 % экрана: ниже
-  // должны поместиться имя, реплика и кнопка.
-  let mascotW = Math.min(W - 24, 420);
-  let mascotH = pose === "lie"
-    ? Math.round(mascotW * 0.56)
-    : Math.round(mascotW / MASCOT_RATIO);
-  const maxH = H * 0.44;
-  if (mascotH > maxH) {
-    mascotH = Math.round(maxH);
-    mascotW = pose === "lie"
-      ? Math.round(mascotH / 0.56)
-      : Math.round(mascotH * MASCOT_RATIO);
-  }
+  const hasAction = !!actionLabel && !!onAction;
+  const { width: mascotW, height: mascotH } = mascotBox({
+    W, H,
+    reserved: RESERVED_BELOW + (hasAction ? RESERVED_ACTION : 0),
+    ratio: POSE_RATIO[pose],
+  });
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -173,12 +178,12 @@ export function MascotModal({
             <Text style={styles.messageText}>{message}</Text>
           </TouchableOpacity>
 
-          {actionLabel && onAction && (
+          {hasAction && (
             <ChunkyCta
-              label={actionLabel}
+              label={actionLabel!}
               tone="ghost"
               width={cardW}
-              onPress={() => { onAction(); onClose(); }}
+              onPress={() => { onAction!(); onClose(); }}
               style={{ marginBottom: 4 }}
             />
           )}

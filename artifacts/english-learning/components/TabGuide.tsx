@@ -8,12 +8,17 @@
 // Размеры считаются от ТЕКУЩЕГО окна (useWindowDimensions), а не через
 // Dimensions.get на момент импорта: со вторым при повороте телефона числа
 // оставались от прежней ориентации, и маскот уезжал за край.
+//
+// Высота маскота — не доля экрана, а остаток: сколько нужно тексту и кнопке,
+// столько и резервируется (mascotBox в WavingMascot.tsx). Прежняя половина
+// экрана не учитывала длину подсказки, и самая длинная из них («Успеваемость»,
+// восемь строк) на низком телефоне упиралась в кнопку.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useRef } from "react";
 import {
   View, Text, Animated, StyleSheet, Modal, useWindowDimensions,
 } from "react-native";
-import { WavingMascot, MASCOT_RATIO } from "@/components/WavingMascot";
+import { WavingMascot, mascotBox } from "@/components/WavingMascot";
 import { ChunkyCta } from "@/components/ui/ChunkyCta";
 
 export type TabGuideTab =
@@ -84,6 +89,24 @@ export const TAB_GUIDE_CONTENT: Record<TabGuideTab, TabGuideInfo> = {
   },
 };
 
+/**
+ * Сколько места по вертикали занимает всё, что стоит НИЖЕ маскота: имя,
+ * заголовок, пузырь с подсказкой и кнопка вместе с отступами окна.
+ *
+ * Подсказки разной длины, поэтому резерв считается от самой длинной строки: у
+ * «Успеваемости» это восемь строк на узком экране. Переоценка лишь чуть
+ * уменьшает картинку, недооценка режет текст.
+ */
+const RESERVED_BASE = 200;
+const LINE_HEIGHT = 24;
+/** Сколько символов помещается в строку пузыря на телефоне. */
+const CHARS_PER_LINE = 34;
+
+function reservedFor(description: string): number {
+  const lines = Math.ceil(description.length / CHARS_PER_LINE);
+  return RESERVED_BASE + lines * LINE_HEIGHT;
+}
+
 interface TabGuideProps {
   tabName: TabGuideTab | null;
   visible: boolean;
@@ -117,15 +140,10 @@ export function TabGuide({
   if (!visible || !info) return null;
 
   const cardW = Math.min(W - 40, 380);
-  // Маскот почти во всю ширину, но по высоте ограничен: ниже должны поместиться
-  // имя, заголовок, реплика и кнопка.
-  let mascotW = Math.min(W - 12, 460);
-  let mascotH = Math.round(mascotW / MASCOT_RATIO);
-  const maxH = H * 0.5;
-  if (mascotH > maxH) {
-    mascotH = Math.round(maxH);
-    mascotW = Math.round(mascotH * MASCOT_RATIO);
-  }
+  const { width: mascotW, height: mascotH } = mascotBox({
+    W, H,
+    reserved: reservedFor(info.description),
+  });
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
