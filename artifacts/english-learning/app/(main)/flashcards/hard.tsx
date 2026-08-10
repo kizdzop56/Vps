@@ -18,10 +18,13 @@ export default function HardWordsScreen() {
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
   }, [qc]);
 
-  // См. session.tsx: router.back() в табах уводит на первую вкладку.
+  // Адрес задан явно: router.back() в табах уводит на первую вкладку (см.
+  // session.tsx). Ведём в «Слова», а не в /flashcards — с переносом экрана
+  // слов этот адрес стал оглавлением режимов, и выход из тренировки
+  // забрасывал бы ученика на два шага дальше, чем он пришёл.
   const exit = React.useCallback(() => {
     refreshLists();
-    router.replace("/flashcards");
+    router.replace("/flashcards/words");
   }, [refreshLists, router]);
 
   return (
