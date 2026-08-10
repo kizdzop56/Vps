@@ -9,6 +9,21 @@
 // Три почти одинаковых экрана означали бы, что одну и ту же ошибку придётся
 // починить три раза.
 //
+// ── ПОЧЕМУ ЭКРАН МОНТИРУЕТСЯ ЗАНОВО ─────────────────────────────────────────
+// Все три режима живут на одном маршруте. Уход через панель вкладок экран не
+// размонтирует, а вход в другой режим меняет только параметр — тот же компонент,
+// то же состояние. Однажды это дало мешанину на экране: предложение из сборки
+// предложений, перевод и подсказка из времён, разбор ошибки из третьего места и
+// счётчик «2 из 8» от прошлого захода. Загрузка заданий висела на [mode, tense]
+// и приносила новую подборку, а вердикт, номер карточки и счётчики оставались
+// прежними.
+//
+// Дописать сброс девяти переменных в тот же эффект — решение на один раз: оно
+// работает до следующей добавленной переменной, о которой забудут. Поэтому
+// маршрут разделён на два компонента: внешний читает параметры и монтирует
+// тренажёр с key, внутренний ничего о параметрах не знает. Другой режим, другое
+// время или повторный вход — другой key, и React выбрасывает состояние целиком.
+//
 // ── Что перенесено из тренажёра слов ────────────────────────────────────────
 // 1. Верный ответ листается сам, ошибка НЕ листается никогда. Разбор ошибки —
 //    самая полезная секунда занятия, отмерять её таймером нельзя.
@@ -45,11 +60,11 @@ import React from "react";
 import {
   View, Text, Pressable, ScrollView, ActivityIndicator, TextInput, Platform,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { grammar, type GrammarCard, type GrammarSession, type GrammarVerdict } from "@/hooks/useGrammar";
+import { grammar, type GrammarCard, type GrammarMode, type GrammarSession, type GrammarVerdict } from "@/hooks/useGrammar";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile, XpBar } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
@@ -61,7 +76,7 @@ const NEXT_DELAY_OK = 1200;
 /** Прочерк на месте пропуска: длиннее, чем «___», иначе его не видно. */
 const BLANK = "______";
 
-const TITLES: Record<string, string> = {
+const TITLES: Record<GrammarMode, string> = {
   verbs: "Неправильные глаголы",
   tense: "Времена",
   build: "Собери предложение",
@@ -87,16 +102,44 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
   );
 }
 
-export default function GrammarTrainer() {
+/**
+ * Маршрут: читает параметры и монтирует тренажёр заново на каждый заход.
+ *
+ * Вся работа этого компонента — key. Он и есть исправление мешанины на экране:
+ * состояние прошлого захода физически не может дожить до следующего.
+ */
+export default function GrammarTrainerRoute() {
+  const params = useLocalSearchParams<{ mode?: string; tense?: string }>();
+
+  const mode: GrammarMode =
+    params.mode === "tense" || params.mode === "build" ? params.mode : "verbs";
+  const tense = typeof params.tense === "string" ? params.tense : undefined;
+
+  // Счётчик заходов. Нужен для возврата в ТОТ ЖЕ режим: параметры не изменились,
+  // key без него остался бы прежним, и ученик снова увидел бы разбор ошибки, с
+  // которого ушёл. Он пришёл заниматься, а не перечитывать свой прошлый промах.
+  const [visit, setVisit] = React.useState(0);
+  const mounted = React.useRef(false);
+  useFocusEffect(
+    React.useCallback(() => {
+      // Первый фокус — это и есть монтирование, второй раз стартовать не нужно:
+      // иначе задания грузились бы дважды на каждом открытии.
+      if (!mounted.current) {
+        mounted.current = true;
+        return;
+      }
+      setVisit((v) => v + 1);
+    }, []),
+  );
+
+  return <GrammarTrainer key={`${mode}:${tense ?? ""}:${visit}`} mode={mode} tense={tense} />;
+}
+
+function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
-  const params = useLocalSearchParams<{ mode?: string; tense?: string }>();
-
-  const mode = (params.mode === "tense" || params.mode === "build" ? params.mode : "verbs") as
-    | "verbs" | "tense" | "build";
-  const tense = typeof params.tense === "string" ? params.tense : undefined;
 
   const [session, setSession] = React.useState<GrammarSession | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -120,6 +163,8 @@ export default function GrammarTrainer() {
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
+  // Загрузка одна на весь срок жизни компонента: режим и время меняться не
+  // могут — при их смене компонент монтируется заново (см. key в маршруте).
   React.useEffect(() => {
     let alive = true;
     grammar.getSession(mode, tense)
@@ -313,7 +358,7 @@ export default function GrammarTrainer() {
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
-            {TITLES[mode] ?? "Задания"}
+            {TITLES[mode]}
           </Text>
           <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
             {pos + 1} из {cards.length} · уровень {card.level}
