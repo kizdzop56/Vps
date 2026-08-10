@@ -23,9 +23,13 @@ export default function SessionScreen() {
   // «назад» означает возврат на ПЕРВУЮ вкладку (у ученика это «Задания»), а не
   // на экран, откуда пришли. Replace, а не push: завершённая тренировка не
   // должна оставаться в истории.
+  //
+  // Ведём в «Слова», а не в /flashcards: последний адрес стал оглавлением
+  // режимов, и после тренировки ученик оказывался на выборе режима вместо
+  // своих колод.
   const exit = React.useCallback(() => {
     refreshLists();
-    router.replace("/flashcards");
+    router.replace("/flashcards/words");
   }, [refreshLists, router]);
 
   return (
