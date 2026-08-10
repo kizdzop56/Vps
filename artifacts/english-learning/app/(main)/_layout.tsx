@@ -132,9 +132,9 @@ const GUIDE_TABS = new Set<string>(Object.keys(TAB_GUIDE_CONTENT));
  *
  * Панель плавающая: она лежит ПОВЕРХ содержимого, а не в потоке. На обычных
  * экранах это нормально — там внизу оставлен запас. Но полноэкранные режимы
- * (тренажёр слов, просмотр задания, чат) верстают контент на всю высоту, и
- * панель просто закрывает его нижнюю часть: доскроллить нельзя, потому что
- * скроллить нечего — панель висит сверху.
+ * (тренажёры, просмотр задания, чат) верстают контент на всю высоту, и панель
+ * просто закрывает его нижнюю часть: доскроллить нельзя, потому что скроллить
+ * нечего — панель висит сверху.
  *
  * Именно так пропадала кнопка «Готово» на итогах тренировки и последний
  * вариант ответа во время самой тренировки. У всех этих экранов есть свой
@@ -151,6 +151,9 @@ const FULLSCREEN_ROUTES = [
   "flashcards/session",
   "flashcards/hard",
   "flashcards/marathon",
+  // Конструктор предложений: снизу набор плиток и кнопка «Проверить», панель
+  // легла бы прямо на них.
+  "flashcards/build",
 ];
 
 interface CustomTabBarProps {
@@ -531,9 +534,11 @@ function MainLayoutInner() {
         <Tabs.Screen name="friend/[id]" options={{ href: null }} />
         <Tabs.Screen name="teacher-results/[id]" options={{ href: null }} />
         <Tabs.Screen name="submission-review/[id]" options={{ href: null }} />
-        {/* Экран режима «Слова». Без этой записи он попал бы в панель отдельной
-            кнопкой: Tabs показывает в панели всё, что не помечено href: null. */}
+        {/* Экраны раздела «Учёба». Без записи здесь любой из них попал бы в
+            панель отдельной кнопкой: Tabs показывает всё, что не помечено
+            href: null. */}
         <Tabs.Screen name="flashcards/words" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/build" options={{ href: null }} />
         <Tabs.Screen name="flashcards/study/[deckId]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/session" options={{ href: null }} />
         <Tabs.Screen name="flashcards/hard" options={{ href: null }} />
