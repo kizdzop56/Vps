@@ -455,10 +455,13 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Вкладка раздела — ОГЛАВЛЕНИЕ режимов, а не сразу слова. Имя роута
+            остаётся "flashcards": на него завязаны подсказки вкладок и список
+            полноэкранных экранов, переименование стоило бы дороже пользы. */}
         <Tabs.Screen
           name="flashcards"
           options={isStudent
-            ? { title: "Слова", tabBarIcon: ({ color }) => <Glyph name="cards" size={22} color={color} /> }
+            ? { title: "Учёба", tabBarIcon: ({ color }) => <Glyph name="cards" size={22} color={color} /> }
             : { href: null }
           }
         />
@@ -528,6 +531,9 @@ function MainLayoutInner() {
         <Tabs.Screen name="friend/[id]" options={{ href: null }} />
         <Tabs.Screen name="teacher-results/[id]" options={{ href: null }} />
         <Tabs.Screen name="submission-review/[id]" options={{ href: null }} />
+        {/* Экран режима «Слова». Без этой записи он попал бы в панель отдельной
+            кнопкой: Tabs показывает в панели всё, что не помечено href: null. */}
+        <Tabs.Screen name="flashcards/words" options={{ href: null }} />
         <Tabs.Screen name="flashcards/study/[deckId]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/session" options={{ href: null }} />
         <Tabs.Screen name="flashcards/hard" options={{ href: null }} />
