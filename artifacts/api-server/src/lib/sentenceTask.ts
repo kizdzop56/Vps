@@ -62,7 +62,7 @@ export type LevelRule = {
 };
 
 /** Перфект: have/has/had + причастие. Ищем по вспомогательному глаголу. */
-const PERFECT = /\b(have|has|had|'ve|'s|'d)\s+(been|had|gone|done|seen|made|written|taken|given|found|come|got|known|[a-z]+ed)\b/i;
+const PERFECT = /\b(have|has|had|'ve|'d)\s+(been|had|gone|done|seen|made|written|taken|given|found|come|got|known|[a-z]+ed)\b/i;
 /** Пассив: to be + причастие + by. Без «by» слишком много ложных попаданий. */
 const PASSIVE = /\b(is|are|was|were|be|been|being)\s+([a-z]+ed|written|taken|made|given|done|built|sent|shown)\s+by\b/i;
 /** Условные и сослагательное. */
@@ -71,7 +71,7 @@ const CONDITIONAL = /\b(would|could have|should have|unless)\b/i;
 const REPORTED = /\b(said|told|asked)\s+(that|him|her|them|me|us)\b/i;
 /** Придаточные с относительными местоимениями. */
 const RELATIVE = /\b(which|whose|whom)\b/i;
-/** Продолженное время. */
+/** Продолженное время в прошлом. */
 const CONTINUOUS_PAST = /\b(was|were)\s+[a-z]+ing\b/i;
 
 export const LEVEL_RULES: Record<Cefr, LevelRule> = {
@@ -131,69 +131,92 @@ export const LEVEL_RULES: Record<Cefr, LevelRule> = {
 // пользуются дети, задания приходят от модели без вычитки, и одно предложение
 // про пиво в учебнике английского стоит доверия ко всему продукту.
 //
-// Ищем ПО ГРАНИЦАМ СЛОВА. Без этого «gun» находится внутри «begun», «war»
-// внутри «warm», а «kill» внутри «skill» — и фильтр начинает выбрасывать
-// нормальные задания, что заметить куда труднее, чем пропущенное.
+// ── Ложное срабатывание опаснее пропуска ────────────────────────────────────
+// Об этом легко не подумать, поэтому пишу прямо. Пропущенное плохое слово
+// увидит пользователь и скажет. А выброшенное НОРМАЛЬНОЕ задание не увидит
+// никто: заданий просто станет меньше, и виноват будет «плохой генератор».
+//
+// Отсюда два правила составления списков:
+//
+// 1. Слово попадает в список, только если оно однозначно про запрещённую тему.
+//    Поэтому здесь нет: date (календарная дата, «What is the date today?» —
+//    типовая фраза A1), bar («a bar of chocolate»), hit и beat («hit the ball»,
+//    «beat the eggs»), police («My father is a police officer» — обычная
+//    профессия), toilet («Where is the toilet?» учат все), shut («shut the
+//    door»), fat и толстый («толстая книга»), вор (внутри «ворота» и «ворона»),
+//    девушка и парень (по-русски это просто молодые люди).
+//
+// 2. Английские слова ищутся ЦЕЛИКОМ: иначе «gun» находится внутри «begun»,
+//    «war» внутри «warm», «kill» внутри «skill».
+//
+// 3. Русские — по стему, но с ограничением на длину окончания (см.
+//    MAX_RU_SUFFIX): «вином» и «вина» ловятся, «виноград» — нет.
 
 const BANNED_EN = [
   // алкоголь, курение, наркотики
-  "beer", "wine", "vodka", "whisky", "whiskey", "alcohol", "drunk", "pub", "bar",
-  "cigarette", "cigarettes", "smoke", "smoking", "tobacco", "vape", "drug", "drugs",
+  "beer", "wine", "vodka", "whisky", "whiskey", "alcohol", "drunk", "pub",
+  "cigarette", "cigarettes", "smoking", "tobacco", "vape", "drug", "drugs",
   // оружие и насилие
-  "gun", "guns", "rifle", "pistol", "knife", "weapon", "weapons", "bomb", "war",
-  "kill", "killed", "kills", "murder", "shoot", "shot", "fight", "beat", "hit",
-  "blood", "wound", "hurt", "suicide", "die", "died", "dead", "death", "funeral", "grave",
+  "gun", "guns", "rifle", "pistol", "weapon", "weapons", "bomb", "war",
+  "kill", "killed", "kills", "murder", "shoot", "fight", "fighting",
+  "suicide", "die", "died", "dead", "death", "funeral", "grave",
   // политика и религия
   "politics", "political", "president", "election", "government", "minister",
-  "protest", "revolution", "church", "god", "pray", "prayer", "religion", "muslim",
+  "protest", "revolution", "god", "prayer", "religion", "muslim",
   "christian", "jewish", "bible", "quran",
-  // деньги-ставки и криминал
-  "casino", "gamble", "gambling", "bet", "lottery", "steal", "stole", "thief",
-  "police", "prison", "jail", "crime", "criminal", "drunk",
-  // интимное и телесное
-  "sex", "sexy", "kiss", "naked", "nude", "pregnant", "toilet", "underwear",
-  "girlfriend", "boyfriend", "date", "dating", "divorce",
+  // ставки и криминал
+  "casino", "gamble", "gambling", "lottery", "steal", "stole", "thief",
+  "prison", "jail", "crime", "criminal",
+  // интимное
+  "sex", "sexy", "kiss", "naked", "nude", "pregnant", "underwear",
+  "girlfriend", "boyfriend", "dating", "divorce",
   // оскорбления
-  "stupid", "idiot", "fool", "ugly", "fat", "hate", "disgusting", "shut",
-];
-
-const BANNED_RU = [
-  "пиво", "вино", "водка", "виски", "алкоголь", "пьяный", "бар", "паб",
-  "сигарет", "курит", "курить", "табак", "наркотик",
-  "пистолет", "ружьё", "ружье", "нож", "оружие", "бомба", "война",
-  "убил", "убить", "убийство", "стрелял", "драка", "драться", "избил",
-  "кровь", "рана", "самоубийство", "умер", "умерла", "смерть", "мёртвый",
-  "мертвый", "похорон", "могила",
-  "политик", "политика", "президент", "выборы", "правительство", "министр",
-  "протест", "революция", "церковь", "бог", "молит", "религия", "библия", "коран",
-  "казино", "ставка", "ставки", "лотерея", "украл", "воровать", "вор",
-  "полиция", "тюрьма", "преступ",
-  "секс", "поцелу", "голый", "беременн", "туалет", "бельё", "белье",
-  "девушка", "парень", "свидание", "развод",
-  "глупый", "идиот", "дурак", "уродлив", "толстый", "ненавиж", "ненавид", "противн",
+  "stupid", "idiot", "ugly", "hate", "disgusting",
 ];
 
 /**
- * Есть ли в тексте запрещённая тема.
+ * Сколько букв окончания допускается после русского стема.
  *
- * Русские слова ищем по началу слова ("курит" поймает "курить" и "курите"), а
- * английские целиком: у английских форм окончаний мало, а ложных вхождений
- * внутрь других слов много.
+ * Три — это все падежные и родовые окончания («вином», «вина», «войны»), но
+ * уже не корень другого слова: у «виноград» после «вино» стоит «град», четыре
+ * буквы.
+ */
+export const MAX_RU_SUFFIX = 3;
+
+/** Стемы записаны через Е: текст приводится к Е перед поиском. */
+const BANNED_RU = [
+  "пиво", "пива", "вино", "водка", "водки", "виски", "алкогол", "пьян",
+  "сигарет", "курит", "курить", "табак", "наркотик",
+  "пистолет", "ружь", "оруж", "бомба", "война", "войны",
+  "убил", "убить", "убийств", "стрелял", "драка", "драть", "избил",
+  "кровь", "самоубийств", "умер", "смерт", "мертв", "похорон", "могила",
+  "политик", "президент", "выборы", "правительств", "министр",
+  "протест", "революц", "церкв", "молитв", "религи", "библи", "коран",
+  "казино", "лотере", "украл", "воровать", "тюрьм", "преступ",
+  "секс", "поцелу", "голый", "беременн", "развод",
+  "глупый", "идиот", "дурак", "уродлив", "ненавиж", "ненавид",
+];
+
+/**
+ * Есть ли в тексте запрещённая тема. Возвращает найденное слово — оно уходит в
+ * лог, чтобы было видно, что именно модель делает не так.
  */
 export function hasBannedContent(text: string): string | null {
-  const lower = text.toLowerCase().replace(/ё/g, "ё");
+  const lower = text.toLowerCase().replace(/ё/g, "е");
   for (const word of BANNED_EN) {
     if (new RegExp(`\\b${word}\\b`, "i").test(lower)) return word;
   }
   for (const stem of BANNED_RU) {
-    if (new RegExp(`(^|[^а-яё])${stem}`, "i").test(lower)) return stem;
+    // Стем стоит в начале слова, а после него — не больше MAX_RU_SUFFIX букв.
+    const re = new RegExp(`(^|[^а-я])${stem}[а-я]{0,${MAX_RU_SUFFIX}}(?![а-я])`, "i");
+    if (re.test(lower)) return stem;
   }
   return null;
 }
 
 // ── Разбор предложения ──────────────────────────────────────────────────────
 
-/** Слова предложения без знаков препинания по краям. */
+/** Слова предложения. */
 export function words(sentence: string): string[] {
   return sentence.trim().split(/\s+/).filter(Boolean);
 }
@@ -203,8 +226,8 @@ export function wordCount(sentence: string): number {
 }
 
 /**
- * Плитки для сборки: слова предложения с сохранением знаков препинания внутри
- * (don't, I'm), но без точки в конце — точку ученик не собирает.
+ * Плитки для сборки: слова предложения с сохранением апострофа внутри (don't,
+ * I'm), но без точки в конце — точку ученик не собирает.
  *
  * Запятая остаётся приклеенной к слову: отдельная плитка с запятой выглядит
  * мусором, а поставить её в нужное место всё равно нельзя иначе.
@@ -235,7 +258,6 @@ const CONTRACTIONS: [RegExp, string][] = [
   [/\b(he|she|it|that|there|who|what)'s\b/g, "$1 is"],
   [/\b(you|we|they)'re\b/g, "$1 are"],
   [/\b(i|you|we|they)'ve\b/g, "$1 have"],
-  [/\b(he|she|it)'s\s+(been|got)\b/g, "$1 has $2"],
   [/\b(i|you|he|she|it|we|they)'ll\b/g, "$1 will"],
   [/\b(i|you|he|she|it|we|they)'d\b/g, "$1 would"],
   [/\bdon't\b/g, "do not"],
@@ -245,7 +267,7 @@ const CONTRACTIONS: [RegExp, string][] = [
   [/\baren't\b/g, "are not"],
   [/\bwasn't\b/g, "was not"],
   [/\bweren't\b/g, "were not"],
-  [/\bcan't\b/g, "cannot"],
+  [/\bcan't\b/g, "can not"],
   [/\bcannot\b/g, "can not"],
   [/\bwon't\b/g, "will not"],
   [/\bhaven't\b/g, "have not"],
@@ -416,7 +438,7 @@ export function shuffle<T>(items: T[], rng: () => number): T[] {
  *
  * Ноль лишних — и задание решается пересбором всего набора: раз все слова
  * нужны, думать над выбором не приходится. Слишком много — экран превращается
- * в поиск среди мусора. Две-три держат баланс: выбор есть, поле обозримо.
+ * в поиск среди мусора. Две-четыре держат баланс: выбор есть, поле обозримо.
  */
 export function decoyCount(sentenceWords: number): number {
   if (sentenceWords <= 4) return 2;
@@ -431,6 +453,10 @@ export function decoyCount(sentenceWords: number): number {
  * как нужные. Взять их из словаря наугад нельзя: слово другого регистра или
  * другой части речи сразу отсекается на глаз, и лишняя плитка перестаёт
  * работать.
+ *
+ * Слово, которое уже есть в предложении, лишним не берётся: иначе на поле два
+ * одинаковых слова, одно из них «неверное», и ученик получает ошибку за верный
+ * ответ, ткнув не в ту плитку.
  */
 export function buildTokens(en: string, decoyPool: string[], seed: number): string[] {
   const rng = mulberry32(seed);
