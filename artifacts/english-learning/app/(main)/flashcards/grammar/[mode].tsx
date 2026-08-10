@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Тренажёр раздела «Составлять». Один экран на три режима:
+// Тренажёр раздела «Учёба». Один экран на три режима:
 //
 //   verbs — вставить форму неправильного глагола;
 //   tense — поставить глагол в заданное время (?tense=present_perfect);
@@ -18,6 +18,12 @@
 // 4. «Не знаю» есть всегда: иначе единственный выход из незнакомого задания —
 //    набить наугад и получить ошибку.
 //
+// ── Панель вкладок остаётся ─────────────────────────────────────────────────
+// Экран не полноэкранный (его нет в FULLSCREEN_ROUTES): панель видна, и уйти по
+// вкладкам можно не ища выход. Поэтому отступы берутся из screenTop/screenBottom
+// — панель плавает ПОВЕРХ содержимого, и без запаса она накрыла бы поле ответа и
+// кнопку «Проверить». Ровно так на итогах тренировки слов пропадала «Готово».
+//
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // Предложение рисуется ОДНИМ Text с подставленным прочерком, а не строкой из
 // кусков. Причины две: вложенный Text роняет Safari (см. шапку flashcards.tsx),
@@ -34,6 +40,7 @@ import { grammar, type GrammarCard, type GrammarSession, type GrammarVerdict } f
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile, XpBar } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import { screenBottom, screenTop } from "@/constants/layout";
 
 /** Пауза перед автопереходом после ВЕРНОГО ответа. */
 const NEXT_DELAY_OK = 1200;
@@ -111,11 +118,13 @@ export default function GrammarTrainer() {
   const cards: GrammarCard[] = session?.cards ?? [];
   const card = cards[pos];
 
-  // Выход задан явным адресом: router.back() в навигации по вкладкам
-  // возвращает на ПЕРВУЮ вкладку, а не на экран, откуда пришли.
+  // Выход задан явным адресом: router.back() в навигации по вкладкам возвращает
+  // на ПЕРВУЮ вкладку, а не на экран, откуда пришли. Из режима времён уходим на
+  // выбор времени — уводить сразу в корень раздела значит поставить ученика на
+  // два шага дальше того места, откуда он пришёл.
   const exit = React.useCallback(() => {
-    router.replace("/flashcards/grammar");
-  }, [router]);
+    router.replace(mode === "tense" ? "/flashcards/tenses" : "/flashcards");
+  }, [router, mode]);
 
   const resetCard = React.useCallback(() => {
     setTyped("");
@@ -171,7 +180,7 @@ export default function GrammarTrainer() {
   // ── экраны состояния ──
   if (error) {
     return (
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 24 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: screenTop(insets) }}>
         <Tile glow={colors.destructive} style={{ padding: 18 }}>
           <Text style={{ fontSize: 15, fontWeight: "900", color: colors.destructive, marginBottom: 8 }}>
             Задания не загрузились
@@ -194,7 +203,11 @@ export default function GrammarTrainer() {
   if (done) {
     const accuracy = answered > 0 ? Math.round((correctCount / answered) * 100) : 0;
     return (
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 24, paddingBottom: insets.bottom + 40 }}>
+      <ScrollView contentContainerStyle={{
+        paddingHorizontal: 16,
+        paddingTop: screenTop(insets),
+        paddingBottom: screenBottom(insets),
+      }}>
         <Text style={{ fontSize: 26, fontWeight: "900", color: colors.foreground, marginBottom: 16 }}>
           {answered > 0 ? "Заход закончен" : "Пока нет заданий"}
         </Text>
@@ -221,7 +234,7 @@ export default function GrammarTrainer() {
           </Text>
         )}
 
-        <ChunkyButton label="К режимам" icon="chevron" tone="dark" onPress={exit} />
+        <ChunkyButton label="Выйти" icon="chevron" tone="dark" onPress={exit} />
       </ScrollView>
     );
   }
@@ -242,7 +255,11 @@ export default function GrammarTrainer() {
 
   return (
     <ScrollView
-      contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: insets.bottom + 40 }}
+      contentContainerStyle={{
+        paddingHorizontal: 16,
+        paddingTop: screenTop(insets),
+        paddingBottom: screenBottom(insets),
+      }}
       keyboardShouldPersistTaps="handled"
     >
       {/* Шапка: выход, название режима, прогресс */}
