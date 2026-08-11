@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Раздел «Составлять»: неправильные глаголы, времена, сборка предложений.
+// Раздел «Составлять»: формы глаголов, неправильные глаголы, времена, сборка.
 //
 // Маршруты:
 //   GET  /grammar/overview        — режимы, времена и сколько заданий доступно
@@ -14,14 +14,16 @@
 //
 // ── Что хранится ────────────────────────────────────────────────────────────
 // Одна строка на ответ в grammar_log: задание, режим, тема, способ ответа,
-// результат и начисленные очки. Ровно то, из чего считаются дневной потолок и
-// «слабые места», и ничего больше: «сколько заходов сделано» никому не нужно.
+// результат и начисленные очки. Ровно то, из чего считаются дневной потолок,
+// «слабые места» и знакомость глагола, и ничего больше.
 //
-// ── Почему номер захода приходит от клиента ─────────────────────────────────
-// Сервер не помнит выданные сессии — и не должен: это состояние на каждого
-// ученика ради одной кнопки. Клиент считает заходы сам и присылает round;
-// подделать его можно, но выигрыш — увидеть другую порцию заданий, то есть
-// ровно то, что кнопка и делает бесплатно.
+// ── Почему номер захода приходит от клиента, а знакомость — нет ─────────────
+// Номер захода — это состояние одного экрана: клиент считает его сам, подделка
+// даёт ровно то, что кнопка «Ещё заход» и так делает бесплатно.
+//
+// Знакомость глагола считает СЕРВЕР, потому что она живёт в журнале и должна
+// переживать переустановку приложения. От неё зависит способ ответа в режиме
+// форм: незнакомый глагол — варианты, знакомый — письмо.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
@@ -33,6 +35,7 @@ import { startOfDay } from "../lib/srs";
 import { LEVEL_ORDER, fitsLevel, verbByBase, verbsUpTo, type CefrLevel } from "../lib/grammar/verbs";
 import { TENSES, tenseById } from "../lib/grammar/tenses";
 import { ASSEMBLE_TASKS, TENSE_GAP_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
+import { FORM_MASTERY_HITS, formTasksUpTo } from "../lib/grammar/forms";
 import {
   SESSION_SIZE,
   batchCount,
@@ -60,7 +63,7 @@ const STATS_LIMIT = 600;
 /** Потолок номера захода: дальше это уже не занятие, а перебор банка. */
 const MAX_ROUND = 50;
 
-const MODES: GrammarMode[] = ["verbs", "tense", "build"];
+const MODES: GrammarMode[] = ["forms", "verbs", "tense", "build"];
 const INPUTS: GrammarInput[] = ["type", "choice", "assemble"];
 
 function isMode(value: unknown): value is GrammarMode {
@@ -110,10 +113,43 @@ async function earnedToday(userId: number): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Глаголы, формы которых ученик уже знает.
+ *
+ * Знание = FORM_MASTERY_HITS верных ответов по этому глаголу в режиме форм. По
+ * таким глаголам спрашиваем письмом, по остальным даём варианты: выбирать среди
+ * четырёх форму, которую видишь впервые, ещё имеет смысл, а писать её наугад —
+ * нет.
+ *
+ * Считается по всей истории, а не по последним ответам: здесь не «в форме ли
+ * ученик сейчас», а «видел ли он этот глагол вообще».
+ */
+async function masteredVerbs(userId: number): Promise<Set<string>> {
+  const rows = await db
+    .select({
+      topic: grammarLogTable.topic,
+      hits: sql<number>`count(*)::int`,
+    })
+    .from(grammarLogTable)
+    .where(and(
+      eq(grammarLogTable.userId, userId),
+      eq(grammarLogTable.mode, "forms"),
+      eq(grammarLogTable.correct, true),
+    ))
+    .groupBy(grammarLogTable.topic);
+
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (row.topic && Number(row.hits) >= FORM_MASTERY_HITS) out.add(row.topic);
+  }
+  return out;
+}
+
 /** Тема задания: время или глагол. По ней собирается статистика. */
 function topicOf(taskId: string): { mode: GrammarMode; topic: string | null } | null {
   const found = findTask(taskId);
   if (!found) return null;
+  if (found.kind === "forms") return { mode: "forms", topic: found.task.verb.base };
   if (found.kind === "tense") return { mode: "tense", topic: found.task.tense };
   if (found.kind === "verbs") return { mode: "verbs", topic: found.task.base };
   // У сборки предложений темы нет: это порядок слов вообще, а не одно правило.
@@ -125,6 +161,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
   const user = getUser(req);
   const level = await levelOf(user.userId);
 
+  const formTasks = formTasksUpTo(level);
   const verbTasks = VERB_GAP_TASKS.filter((t) => fitsLevel(t.level, level));
   const tenseTasks = TENSE_GAP_TASKS.filter((t) => fitsLevel(t.level, level));
   const buildTasks = ASSEMBLE_TASKS.filter((t) => fitsLevel(t.level, level));
@@ -150,6 +187,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
   });
 
   const today = await earnedToday(user.userId);
+  const mastered = await masteredVerbs(user.userId);
 
   res.json({
     level,
@@ -159,9 +197,22 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
     pointsCap: DAILY_GRAMMAR_POINTS_CAP,
     modes: [
       {
+        id: "forms",
+        title: "Формы глаголов",
+        subtitle: "сами формы: «покупать» — buy — bought",
+        taskCount: formTasks.length,
+        batches: batchCount(formTasks.length, SESSION_SIZE),
+        verbCount: verbsUpTo(level).length,
+        // Сколько глаголов уже знакомы: по ним вопросы идут письмом.
+        knownVerbs: [...mastered].filter((b) => {
+          const verb = verbByBase(b);
+          return !!verb && fitsLevel(verb.level, level);
+        }).length,
+      },
+      {
         id: "verbs",
-        title: "Неправильные глаголы",
-        subtitle: "вставь нужную форму в предложение",
+        title: "Глагол в предложении",
+        subtitle: "вставить нужную форму: написать или выбрать",
         taskCount: verbTasks.length,
         batches: batchCount(verbTasks.length, SESSION_SIZE),
         verbCount: verbsUpTo(level).length,
@@ -191,15 +242,17 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
   const user = getUser(req);
   const mode = req.query["mode"];
   if (!isMode(mode)) {
-    res.status(400).json({ error: "mode: ожидается verbs, tense или build" });
+    res.status(400).json({ error: "mode: ожидается forms, verbs, tense или build" });
     return;
   }
 
   const level = await levelOf(user.userId);
   const tense = typeof req.query["tense"] === "string" ? String(req.query["tense"]) : undefined;
   const round = readRound(req.query["round"]);
+  // Лишний запрос делаем только там, где он влияет на подборку.
+  const mastered = mode === "forms" ? await masteredVerbs(user.userId) : undefined;
 
-  const session = buildGrammarSession({ mode, level, tense, round, now: new Date() });
+  const session = buildGrammarSession({ mode, level, tense, round, mastered, now: new Date() });
 
   // Пустая подборка — это не ошибка, а сообщение: на этом уровне заданий ещё
   // нет. Клиент объясняет её текстом, поэтому отвечаем 200 с нулём.

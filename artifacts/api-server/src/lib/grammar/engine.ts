@@ -1,10 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Движок раздела «Составлять»: подбор заданий, проверка ответа, разбор ошибки.
 //
-// Один движок на три режима — отличается только источник заданий:
-//   verbs   → VERB_GAP_TASKS   (форма неправильного глагола)
-//   tense   → TENSE_GAP_TASKS  (глагол в заданном времени)
-//   build   → ASSEMBLE_TASKS   (собрать предложение по переводу)
+// Один движок на четыре режима — отличается только источник заданий:
+//   forms   → таблица глаголов  (сама форма: «покупать» → buy → bought)
+//   verbs   → VERB_GAP_TASKS    (форма неправильного глагола в предложении)
+//   tense   → TENSE_GAP_TASKS   (глагол в заданном времени)
+//   build   → ASSEMBLE_TASKS    (собрать предложение по переводу)
+//
+// Порядок здесь не случайный: forms идёт до verbs, потому что вставить форму в
+// предложение может только тот, кто эту форму знает (см. шапку forms.ts).
 //
 // ── Опечатки здесь прощаются ИНАЧЕ, чем в словах ────────────────────────────
 // В словах одна опечатка в длинном слове — описка, и наказывать за неё нельзя
@@ -17,12 +21,22 @@
 // значит выбрана не та форма, это ошибка. Не совпал — обычная описка, прощаем.
 //
 // ── Письмо против выбора ────────────────────────────────────────────────────
-// По умолчанию ученик ПИШЕТ сам: выбор из четырёх — это узнавание, оно легче и
-// форму не закрепляет. Но постоянное письмо на незнакомой теме выматывает,
-// поэтому каждое третье задание даётся вариантами. Дистракторы — другие формы
-// того же глагола: случайное слово отбрасывается по виду, а не по знанию.
+// В заданиях с предложениями ученик по умолчанию ПИШЕТ сам, и лишь каждое третье
+// даётся вариантами: выбор из четырёх — это узнавание, оно легче и форму не
+// закрепляет, но постоянное письмо на незнакомой теме выматывает.
 //
-// Модуль без БД и express — тесты в engine.test.ts и rotation.test.ts.
+// В режиме форм правило другое: там способ ответа зависит от того, знает ли
+// ученик этот глагол. Первое знакомство — варианты (писать наугад нечего),
+// дальше письмо. Порог — FORM_MASTERY_HITS верных ответов по глаголу.
+//
+// ── Дистракторы у каждого режима свои, и это не прихоть ─────────────────────
+// Вопрос «как по-английски покупать» — про слово, поэтому ловушки это другие
+// ГЛАГОЛЫ (спутал buy с bring). Вопрос «вторая форма от buy» — про форму,
+// поэтому ловушки это другие формы ТОГО ЖЕ глагола плюс регуляризованное
+// «buyed». В предложениях набор шире: туда может встать и третье лицо, и -ing.
+//
+// Модуль без БД и express — тесты в engine.test.ts, rotation.test.ts,
+// forms.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { checkWritten, normalizeAnswer } from "../answerCheck";
@@ -38,8 +52,18 @@ import {
   type TenseGapTask,
   type VerbGapTask,
 } from "./tasks";
+import {
+  formAnswers,
+  formCard,
+  formLine,
+  formMistake,
+  formRule,
+  formTasksUpTo,
+  parseFormTask,
+  type FormTask,
+} from "./forms";
 
-export type GrammarMode = "verbs" | "tense" | "build";
+export type GrammarMode = "forms" | "verbs" | "tense" | "build";
 
 /** Сколько заданий в одном заходе. Как и в словах: короткая сессия. */
 export const SESSION_SIZE = 12;
@@ -97,8 +121,8 @@ export function edForm(base: string): string {
 }
 
 /**
- * Все формы глагола. Нужны для двух вещей: дистракторы к заданию с выбором и
- * отсечение «опечаток», которые на самом деле другая форма.
+ * Все формы глагола. Нужны для двух вещей: дистракторы в заданиях с
+ * предложениями и отсечение «опечаток», которые на самом деле другая форма.
  */
 export function allForms(base: string): string[] {
   const verb = verbByBase(base);
@@ -192,6 +216,67 @@ function gapOptions(base: string, answer: string, rng: () => number): string[] {
   return shuffle([answer, ...picked], rng);
 }
 
+/**
+ * Дистракторы к вопросу «как это будет по-английски»: другие ГЛАГОЛЫ.
+ *
+ * Здесь проверяется знание слова, а не формы, поэтому и ошибка должна быть
+ * содержательной: спутал buy с bring, а не выбрал buying вместо buy.
+ *
+ * Исключаются ВСЕ принимаемые ответы, а не только эталон: у put и lay один
+ * перевод, и lay среди «неправильных» вариантов дал бы зелёную галочку на
+ * варианте, помеченном как ловушка.
+ */
+function verbWordOptions(answers: string[], pool: FormTask[], rng: () => number): string[] {
+  const taken = new Set(answers.map(normalizeAnswer));
+  const others = [...new Set(pool.map((t) => t.verb.base))].filter(
+    (b) => !taken.has(normalizeAnswer(b)),
+  );
+  const picked = shuffle(others, rng).slice(0, OPTION_COUNT - 1);
+  return shuffle([answers[0] ?? "", ...picked], rng);
+}
+
+/**
+ * Дистракторы к вопросу о форме: только то, что реально можно спутать.
+ *
+ * Свои остальные формы плюс регуляризованная на -ed («buyed», «comed») — самая
+ * частая ошибка вообще. Третье лицо и -ing сюда НЕ идут: в вопросе про вторую
+ * форму они не ответ ни при каком раскладе, а у неправильных глаголов такой
+ * набор ещё и порождает мусор вроде «bing» от be — его ученик отбросит, не зная
+ * языка, и выбор перестанет быть выбором.
+ *
+ * Если своих форм не хватило, добираем формы других глаголов подборки: спутать
+ * went и bought — тоже осмысленная ошибка, и разбор называет её прямо.
+ */
+function formOptions(
+  task: FormTask,
+  answers: string[],
+  pool: FormTask[],
+  rng: () => number,
+): string[] {
+  const verb = task.verb;
+  const taken = new Set(answers.map(normalizeAnswer));
+  const own = [verb.base, ...verb.past, ...verb.participle, edForm(verb.base)].filter(
+    (f) => !taken.has(normalizeAnswer(f)),
+  );
+
+  const picked = shuffle([...new Set(own)], rng).slice(0, OPTION_COUNT - 1);
+
+  if (picked.length < OPTION_COUNT - 1) {
+    const used = new Set([...taken, ...picked.map(normalizeAnswer)]);
+    const alien = pool
+      .filter((t) => t.verb.base !== verb.base)
+      .map((t) => (task.kind === "participle" ? t.verb.participle[0] : t.verb.past[0]) ?? "")
+      .filter((f) => f && !used.has(normalizeAnswer(f)));
+    for (const f of shuffle([...new Set(alien)], rng)) {
+      if (picked.length >= OPTION_COUNT - 1) break;
+      picked.push(f);
+      used.add(normalizeAnswer(f));
+    }
+  }
+
+  return shuffle([answers[0] ?? "", ...picked], rng);
+}
+
 /** Дистракторы для времени: та же форма, но от других времён. */
 function tenseOptions(task: TenseGapTask, rng: () => number): string[] {
   const answer = task.accept[0] ?? "";
@@ -255,6 +340,11 @@ export function buildGrammarSession(opts: {
   size?: number;
   /** Номер захода за день: 0 — первый, дальше следующие порции банка. */
   round?: number;
+  /**
+   * Глаголы, которые ученик уже знает (режим forms): по ним спрашиваем письмом,
+   * по остальным — вариантами. Пусто — значит всё в первый раз.
+   */
+  mastered?: ReadonlySet<string>;
 }): GrammarSessionResult {
   const now = opts.now ?? new Date();
   const size = Math.max(1, opts.size ?? SESSION_SIZE);
@@ -264,6 +354,38 @@ export function buildGrammarSession(opts: {
 
   /** Плитки и варианты мешаются от НОМЕРА задания: одна карточка — один вид. */
   const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
+
+  if (opts.mode === "forms") {
+    const pool = formTasksUpTo(opts.level);
+    const picked = rotateBatch(pool, size, step, seed);
+    const mastered = opts.mastered ?? new Set<string>();
+    return {
+      total: pool.length,
+      round,
+      batches: batchCount(pool.length, size),
+      cards: picked.map((t: FormTask) => {
+        const answers = formAnswers(t);
+        const view = formCard(t);
+        // Знакомый глагол пишем, незнакомый выбираем. Порог — FORM_MASTERY_HITS.
+        const choice = !mastered.has(t.verb.base);
+        const rng = cardRng(t.id);
+        return {
+          id: t.id,
+          mode: "forms" as const,
+          level: t.level,
+          text: view.text,
+          ru: view.ru,
+          input: choice ? ("choice" as const) : ("type" as const),
+          options: !choice
+            ? undefined
+            : t.kind === "toEn"
+              ? verbWordOptions(answers, pool, rng)
+              : formOptions(t, answers, pool, rng),
+          hint: view.hint,
+        };
+      }),
+    };
+  }
 
   if (opts.mode === "build") {
     const pool = pickTasks(ASSEMBLE_TASKS, opts.level);
@@ -357,10 +479,15 @@ export type GrammarVerdict = {
 
 /** Найти задание по номеру в любом из банков. */
 export function findTask(id: string):
+  | { kind: "forms"; task: FormTask }
   | { kind: "verbs"; task: VerbGapTask }
   | { kind: "tense"; task: TenseGapTask }
   | { kind: "build"; task: AssembleTask }
   | null {
+  // Задания режима форм не лежат в массиве: их номер сам описывает глагол и
+  // форму, поэтому проверяется первым — по префиксу, без перебора банков.
+  const form = parseFormTask(id);
+  if (form) return { kind: "forms", task: form };
   const v = VERB_GAP_TASKS.find((t) => t.id === id);
   if (v) return { kind: "verbs", task: v };
   const t = TENSE_GAP_TASKS.find((x) => x.id === id);
@@ -412,6 +539,28 @@ function ruleOf(tense: Tense) {
 export function checkGrammarAnswer(id: string, given: string): GrammarVerdict | null {
   const found = findTask(id);
   if (!found) return null;
+
+  if (found.kind === "forms") {
+    const task = found.task;
+    const accept = formAnswers(task);
+    const { correct, typo } = checkStrict(given, accept, task.verb.base);
+    const verdict: GrammarVerdict = {
+      correct,
+      typo,
+      expected: accept,
+      // После ошибки крупной строкой показываются все три формы: ученику нужна
+      // не только верная, но и то, чем она отличается от соседних.
+      full: formLine(task.verb),
+    };
+    if (!correct) {
+      const mistake = formMistake(given, task);
+      if (mistake) verdict.mistake = mistake;
+      // Правило прилагается всегда: у неправильных глаголов его роль играет сама
+      // таблица форм, и в ней-то и весь смысл упражнения.
+      verdict.rule = formRule(task.verb);
+    }
+    return verdict;
+  }
 
   if (found.kind === "verbs") {
     const task = found.task;
