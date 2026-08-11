@@ -5,6 +5,13 @@
 // требования — и объём, и новизна — здесь превращены в проверки, потому что
 // обещание в комментарии банк не удержит: он будет расти правками, и правило
 // должно падать само.
+//
+// ── Что именно гарантируется ────────────────────────────────────────────────
+// Внутри круга повторов нет ВОВСЕ: круг — это несколько заходов подряд (для
+// сборки на A2 их четыре), и за него банк проходится целиком. На границе круга
+// банк тасуется заново, и первая порция нового круга может задеть последнюю
+// порцию старого. Это не «повтор вчерашнего»: к этому моменту ученик прошёл
+// весь доступный ему банк.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -19,8 +26,8 @@ import {
   textSeed,
 } from "./engine";
 
-const NOW = new Date("2026-08-11T09:00:00.000Z");
 const DAY_MS = 86_400_000;
+const NOW = new Date("2026-08-11T09:00:00.000Z");
 
 /**
  * Минимальный запас: два полных захода.
@@ -32,6 +39,18 @@ const DAY_MS = 86_400_000;
 const MIN_POOL = SESSION_SIZE * 2;
 
 const ids = <T extends { id: string }>(items: T[]) => items.map((t) => t.id);
+
+/**
+ * День, с которого начинается круг.
+ *
+ * Без этого тесты по дням зависели бы от того, когда их запустили: сегодняшний
+ * день может оказаться последним шагом круга, и тогда «завтра» — уже следующий
+ * круг с новой тасовкой.
+ */
+function cycleStart(batches: number): Date {
+  const day = Math.floor(NOW.getTime() / DAY_MS);
+  return new Date((day - (day % batches)) * DAY_MS);
+}
 
 // ── Объём ───────────────────────────────────────────────────────────────────
 
@@ -84,9 +103,11 @@ test("Past Continuous доступен уже на A2", () => {
 
 // ── Ротация ─────────────────────────────────────────────────────────────────
 
-test("соседние шаги курсора не пересекаются вовсе", () => {
+test("внутри круга соседние шаги не пересекаются вовсе", () => {
   const pool = Array.from({ length: 50 }, (_, i) => ({ id: `t-${i}` }));
-  for (let step = 0; step < 12; step++) {
+  const batches = batchCount(pool.length, 12);
+
+  for (let step = 0; step + 1 < batches; step++) {
     const a = new Set(ids(rotateBatch(pool, 12, step, 1)));
     const b = ids(rotateBatch(pool, 12, step + 1, 1));
     assert.equal(b.length, 12, `шаг ${step + 1}: неполная порция`);
@@ -119,6 +140,13 @@ test("новый круг идёт в другом порядке", () => {
   assert.notEqual(first, nextCycle, "после полного круга подборка повторилась дословно");
 });
 
+test("хвост банка не режется на короткие заходы", () => {
+  // 50 заданий по 12 — это четыре полных захода, а не четыре полных и один
+  // куцый: иначе каждый пятый день был бы вдвое короче остальных.
+  assert.equal(batchCount(50, 12), 4);
+  assert.equal(rotateBatch(Array.from({ length: 50 }, (_, i) => ({ id: `t-${i}` })), 12, 3, 1).length, 12);
+});
+
 test("банк меньше захода отдаётся целиком", () => {
   const pool = Array.from({ length: 5 }, (_, i) => ({ id: `t-${i}` }));
   const batch = rotateBatch(pool, 12, 3, 1);
@@ -133,30 +161,38 @@ test("у режимов и времён свои сиды: подборки не
 
 // ── Подборка целиком ────────────────────────────────────────────────────────
 
-test("завтра приходят другие предложения", () => {
-  const today = buildGrammarSession({ mode: "build", level: "A2", now: NOW });
-  const tomorrow = buildGrammarSession({
-    mode: "build",
-    level: "A2",
-    now: new Date(NOW.getTime() + DAY_MS),
-  });
+test("несколько дней подряд предложения не повторяются", () => {
+  const { batches } = buildGrammarSession({ mode: "build", level: "A2", now: NOW });
+  assert.ok(batches >= 2, `на A2 набирается всего ${batches} непересекающихся заходов`);
 
-  assert.equal(today.cards.length, SESSION_SIZE);
-  const seen = new Set(today.cards.map((c) => c.id));
-  for (const card of tomorrow.cards) {
-    assert.equal(seen.has(card.id), false, `${card.id} пришёл второй день подряд`);
+  const start = cycleStart(batches);
+  const seen = new Set<string>();
+  for (let day = 0; day < batches; day++) {
+    const { cards } = buildGrammarSession({
+      mode: "build",
+      level: "A2",
+      now: new Date(start.getTime() + day * DAY_MS),
+    });
+    assert.equal(cards.length, SESSION_SIZE, `день ${day}: неполный заход`);
+    for (const card of cards) {
+      assert.equal(seen.has(card.id), false, `${card.id} пришёл повторно на ${day + 1}-й день`);
+      seen.add(card.id);
+    }
   }
 });
 
 test("«Ещё заход» приносит следующую порцию, а не ту же самую", () => {
-  const first = buildGrammarSession({ mode: "build", level: "A2", now: NOW, round: 0 });
-  const second = buildGrammarSession({ mode: "build", level: "A2", now: NOW, round: 1 });
+  const { batches } = buildGrammarSession({ mode: "build", level: "A2", now: NOW });
+  const now = cycleStart(batches);
 
-  const seen = new Set(first.cards.map((c) => c.id));
-  for (const card of second.cards) {
-    assert.equal(seen.has(card.id), false, `${card.id} повторился во втором заходе`);
+  const seen = new Set<string>();
+  for (let round = 0; round < batches; round++) {
+    const { cards } = buildGrammarSession({ mode: "build", level: "A2", now, round });
+    for (const card of cards) {
+      assert.equal(seen.has(card.id), false, `${card.id} повторился в заходе ${round + 1}`);
+      seen.add(card.id);
+    }
   }
-  assert.ok(first.batches >= 2, "на уровне не набирается двух непересекающихся заходов");
 });
 
 test("в течение дня подборка не меняется при обновлении экрана", () => {
