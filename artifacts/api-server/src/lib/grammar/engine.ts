@@ -47,7 +47,6 @@ import {
   type VerbGapTask,
 } from "./tasks";
 import {
-  FORM_MASTERY_HITS,
   formAnswers,
   formCard,
   formLine,
@@ -216,13 +215,18 @@ function gapOptions(base: string, answer: string, rng: () => number): string[] {
  *
  * Здесь проверяется знание слова, а не формы, поэтому и ошибка должна быть
  * содержательной: спутал buy с bring, а не выбрал buying вместо buy.
+ *
+ * Исключаются ВСЕ принимаемые ответы, а не только эталон: у put и lay один
+ * перевод, и lay среди «неправильных» вариантов дал бы зелёную галочку на
+ * варианте, помеченном как ловушка.
  */
-function verbWordOptions(answer: string, pool: FormTask[], rng: () => number): string[] {
+function verbWordOptions(answers: string[], pool: FormTask[], rng: () => number): string[] {
+  const taken = new Set(answers.map(normalizeAnswer));
   const others = [...new Set(pool.map((t) => t.verb.base))].filter(
-    (b) => normalizeAnswer(b) !== normalizeAnswer(answer),
+    (b) => !taken.has(normalizeAnswer(b)),
   );
   const picked = shuffle(others, rng).slice(0, OPTION_COUNT - 1);
-  return shuffle([answer, ...picked], rng);
+  return shuffle([answers[0] ?? "", ...picked], rng);
 }
 
 /** Дистракторы для времени: та же форма, но от других времён. */
@@ -328,7 +332,7 @@ export function buildGrammarSession(opts: {
           options: !choice
             ? undefined
             : t.kind === "toEn"
-              ? verbWordOptions(main, pool, rng)
+              ? verbWordOptions(answers, pool, rng)
               : gapOptions(t.verb.base, main, rng),
           hint: view.hint,
         };
@@ -618,6 +622,3 @@ export function assembleMistake(given: string, expected: string): { headline: st
   }
   return null;
 }
-
-/** Порог знания глагола: экспортируется, чтобы маршрут считал его так же. */
-export { FORM_MASTERY_HITS };
