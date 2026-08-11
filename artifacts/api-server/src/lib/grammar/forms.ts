@@ -34,6 +34,24 @@
 // Поэтому уровень задания равен уровню глагола: у глагола A1 спрашиваются все
 // три формы, у глагола C1 — тоже все три, но не раньше C1. Где эта форма
 // работает, написано прямо в подсказке: «третья форма (после have/has)».
+//
+// ── Группы по первой букве ──────────────────────────────────────────────────
+// Так неправильные глаголы учат в школе и так они напечатаны в конце любого
+// учебника: столбик на A, столбик на B. Просьба была буквальная — «если вкладка
+// называется „глаголы на букву B“, значит там и должны попадаться глаголы на B».
+//
+// Группа считается по ПЕРВОЙ ФОРМЕ, а не по переводу: список в учебнике
+// отсортирован именно так, и ученик ищет там go, а не «идти».
+//
+// Буквы, на которых у ученика нет ни одного глагола, не показываются вовсе.
+// Пустая кнопка «на букву A» — это сломанная кнопка: на A1 и A2 нет ни одного
+// глагола на A, первый (arise) приходит только на C1.
+//
+// Группы получаются очень разными по объёму: на A1 буква S даёт четыре глагола,
+// а буква M — один. Уравнивать их, досыпая в мелкие группы соседние буквы,
+// нельзя: это ровно то, о чём просили не делать. Поэтому объём группы просто
+// написан на кнопке — «1 глагол · 3 вопроса», и ученик выбирает, зная, что
+// берёт.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { normalizeAnswer } from "../answerCheck";
@@ -122,6 +140,68 @@ export function allFormTasks(): FormTask[] {
 /** Задания уровня ученика и ниже. */
 export function formTasksUpTo(level: CefrLevel): FormTask[] {
   return allFormTasks().filter((t) => fitsLevel(t.level, level));
+}
+
+// ── Группы по первой букве ──────────────────────────────────────────────────
+
+/** Буква группы: первая буква ПЕРВОЙ ФОРМЫ, заглавная. */
+export function verbLetter(base: string): string {
+  return base.trim().charAt(0).toUpperCase();
+}
+
+/**
+ * Буква из запроса в сравнимом виде.
+ *
+ * Мусор, кириллица и пустая строка дают null: адрес приходит от клиента, и
+ * «буква» вида «../» не должна превращаться в пустой экран без объяснения.
+ */
+export function normalizeLetter(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const ch = value.trim().charAt(0).toUpperCase();
+  return /^[A-Z]$/.test(ch) ? ch : null;
+}
+
+/** Одна группа: буква и её объём. */
+export type FormLetterGroup = {
+  letter: string;
+  /** Сколько глаголов на эту букву доступно ученику. */
+  verbCount: number;
+  /** Сколько вопросов это даёт: по три на глагол. */
+  taskCount: number;
+};
+
+/** Задания только на эту букву. Неизвестная буква — пустой список. */
+export function formTasksByLetter(level: CefrLevel, letter: string): FormTask[] {
+  const target = normalizeLetter(letter);
+  if (!target) return [];
+  return formTasksUpTo(level).filter((t) => verbLetter(t.verb.base) === target);
+}
+
+/**
+ * Какие буквы доступны ученику и сколько в каждой глаголов.
+ *
+ * Считается по доступным заданиям, а не по всей таблице: буква, все глаголы
+ * которой выше уровня ученика, в список не попадает.
+ */
+export function formLetterGroups(level: CefrLevel): FormLetterGroup[] {
+  const verbs = new Map<string, Set<string>>();
+  const tasks = new Map<string, number>();
+
+  for (const t of formTasksUpTo(level)) {
+    const letter = verbLetter(t.verb.base);
+    const bases = verbs.get(letter) ?? new Set<string>();
+    bases.add(t.verb.base);
+    verbs.set(letter, bases);
+    tasks.set(letter, (tasks.get(letter) ?? 0) + 1);
+  }
+
+  return [...verbs.entries()]
+    .map(([letter, bases]) => ({
+      letter,
+      verbCount: bases.size,
+      taskCount: tasks.get(letter) ?? 0,
+    }))
+    .sort((a, b) => a.letter.localeCompare(b.letter));
 }
 
 /**
