@@ -35,7 +35,7 @@ import { startOfDay } from "../lib/srs";
 import { LEVEL_ORDER, fitsLevel, verbByBase, verbsUpTo, type CefrLevel } from "../lib/grammar/verbs";
 import { TENSES, tenseById } from "../lib/grammar/tenses";
 import { ASSEMBLE_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
-import { TENSE_GAP_TASKS } from "../lib/grammar/tenseTasks";
+import { TENSE_GAP_TASKS } from "../lib/grammar/tenseBank";
 import { FORM_MASTERY_HITS, formTasksUpTo } from "../lib/grammar/forms";
 import {
   SESSION_SIZE,
