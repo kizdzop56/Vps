@@ -1,16 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Тренажёр раздела «Учёба». Один экран на три режима:
+// Тренажёр раздела «Учёба». Один экран на четыре режима:
 //
-//   verbs — вставить форму неправильного глагола;
+//   forms — сама форма глагола: «покупать» → buy, buy → bought;
+//   verbs — вставить форму неправильного глагола в предложение;
 //   tense — поставить глагол в заданное время (?tense=present_perfect);
 //   build — собрать предложение по русскому переводу.
 //
-// Отличается только способ ответа: написать, выбрать вариант, собрать плитками.
-// Три почти одинаковых экрана означали бы, что одну и ту же ошибку придётся
-// починить три раза.
+// Отличается только способ ответа и то, что стоит крупно: слово, форма или
+// предложение. Четыре почти одинаковых экрана означали бы, что одну и ту же
+// ошибку придётся починить четыре раза.
 //
 // ── ПОЧЕМУ ЭКРАН МОНТИРУЕТСЯ ЗАНОВО ─────────────────────────────────────────
-// Все три режима живут на одном маршруте. Уход через панель вкладок экран не
+// Все режимы живут на одном маршруте. Уход через панель вкладок экран не
 // размонтирует, а вход в другой режим меняет только параметр — тот же компонент,
 // то же состояние. Однажды это дало мешанину на экране: предложение из сборки
 // предложений, перевод и подсказка из времён, разбор ошибки из третьего места и
@@ -84,10 +85,21 @@ const NEXT_DELAY_OK = 1200;
 const BLANK = "______";
 
 const TITLES: Record<GrammarMode, string> = {
-  verbs: "Неправильные глаголы",
+  forms: "Формы глаголов",
+  verbs: "Глагол в предложении",
   tense: "Времена",
   build: "Собери предложение",
 };
+
+/** Куда возвращаться из режима: туда, откуда ученик пришёл. */
+const EXITS: Record<GrammarMode, string> = {
+  forms: "/flashcards/verbs",
+  verbs: "/flashcards/verbs",
+  tense: "/flashcards/tenses",
+  build: "/flashcards",
+};
+
+const MODES: GrammarMode[] = ["forms", "verbs", "tense", "build"];
 
 /**
  * Падение этого экрана иначе выглядело бы как «кнопка не работает»: навигатор
@@ -118,8 +130,11 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
 export default function GrammarTrainerRoute() {
   const params = useLocalSearchParams<{ mode?: string; tense?: string }>();
 
-  const mode: GrammarMode =
-    params.mode === "tense" || params.mode === "build" ? params.mode : "verbs";
+  // Неизвестный режим считаем глаголами в предложении, а не падаем: адрес мог
+  // прийти из старой ссылки или из опечатки.
+  const mode: GrammarMode = MODES.includes(params.mode as GrammarMode)
+    ? (params.mode as GrammarMode)
+    : "verbs";
   const tense = typeof params.tense === "string" ? params.tense : undefined;
 
   // Счётчик заходов. Нужен для возврата в ТОТ ЖЕ режим: параметры не изменились,
@@ -195,16 +210,17 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
   const hasFresh = round + 1 < batches;
 
   // Выход задан явным адресом: router.back() в навигации по вкладкам возвращает
-  // на ПЕРВУЮ вкладку, а не на экран, откуда пришли. Из режима времён уходим на
-  // выбор времени — уводить сразу в корень раздела значит поставить ученика на
-  // два шага дальше того места, откуда он пришёл.
+  // на ПЕРВУЮ вкладку, а не на экран, откуда пришли. Из глагольных режимов
+  // уходим на экран с двумя вкладками, из времён — на выбор времени: уводить
+  // сразу в корень раздела значит поставить ученика на два шага дальше того
+  // места, откуда он пришёл.
   const exit = React.useCallback(() => {
     // Очки ушли в общий счёт, а статистика тем изменилась: экраны, которые их
     // показывают, обязаны перечитать данные.
     qc.invalidateQueries({ queryKey: ["grammar-overview"] });
     qc.invalidateQueries({ queryKey: ["grammar-stats"] });
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
-    router.replace(mode === "tense" ? "/flashcards/tenses" : "/flashcards");
+    router.replace(EXITS[mode] as any);
   }, [router, mode, qc]);
 
   const resetCard = React.useCallback(() => {
@@ -372,6 +388,8 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
   if (!card) return null;
 
   // Предложение с прочерком или с ответом: одним Text, см. ГРАБЛИ в шапке.
+  // В режиме форм на месте «предложения целиком» приходит строка всех трёх форм —
+  // именно её и нужно показать после ошибки.
   const shown = verdict?.full && verdict.correct === false
     ? verdict.full
     : card.text.replace("___", BLANK);
@@ -382,6 +400,14 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
       : built.length > 0;
 
   const builtText = built.map((i) => card.tiles?.[i] ?? "").join(" ");
+
+  // Подпись над заданием. В режиме форм спрашивают не только форму («как по-
+  // английски покупать» — это про слово), поэтому там формулировка нейтральная.
+  const askLabel =
+    card.input === "assemble" ? "собери предложение"
+      : mode === "forms" ? (card.input === "choice" ? "выбери ответ" : "напиши ответ")
+      : card.input === "choice" ? "выбери форму"
+      : "напиши форму";
 
   return (
     <ScrollView
@@ -421,7 +447,7 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
           fontSize: 11, fontWeight: "800", color: colors.mutedForeground,
           textTransform: "uppercase", letterSpacing: 1.2, textAlign: "center",
         }}>
-          {card.input === "assemble" ? "собери предложение" : card.input === "choice" ? "выбери форму" : "напиши форму"}
+          {askLabel}
         </Text>
 
         {/* Задание. В сборке главное — русский перевод, в остальных — фраза. */}
