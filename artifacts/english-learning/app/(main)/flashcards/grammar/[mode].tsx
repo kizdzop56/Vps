@@ -24,6 +24,13 @@
 // тренажёр с key, внутренний ничего о параметрах не знает. Другой режим, другое
 // время или повторный вход — другой key, и React выбрасывает состояние целиком.
 //
+// ── «ЕЩЁ ЗАХОД» — ЭТО ЗАПРОС, А НЕ СБРОС ────────────────────────────────────
+// Раньше кнопка просто ставила счётчики в ноль и показывала ТЕ ЖЕ карточки.
+// Ученик закрывал двенадцать заданий и получал предложение пройти ровно их же.
+// Теперь у захода есть номер, он уходит на сервер, и приходит следующая порция
+// банка. Номер живёт здесь, а не в key маршрута: экран остаётся тем же самым,
+// меняется только подборка, и незачем ради этого пересобирать компонент.
+//
 // ── Что перенесено из тренажёра слов ────────────────────────────────────────
 // 1. Верный ответ листается сам, ошибка НЕ листается никогда. Разбор ошибки —
 //    самая полезная секунда занятия, отмерять её таймером нельзя.
@@ -145,6 +152,8 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
   const [error, setError] = React.useState<string | null>(null);
   const [pos, setPos] = React.useState(0);
   const [done, setDone] = React.useState(false);
+  /** Номер захода: с ним сервер отдаёт следующую порцию банка. */
+  const [round, setRound] = React.useState(0);
 
   // Ответ ученика: строка для письма, выбранный индекс для варианта, список
   // слов для сборки.
@@ -163,11 +172,12 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  // Загрузка одна на весь срок жизни компонента: режим и время меняться не
-  // могут — при их смене компонент монтируется заново (см. key в маршруте).
+  // Загрузка висит на режиме, времени и номере захода. Режим и время меняться
+  // не могут — при их смене компонент монтируется заново (см. key в маршруте),
+  // а вот номер захода меняется кнопкой «Ещё заход» и приносит новую порцию.
   React.useEffect(() => {
     let alive = true;
-    grammar.getSession(mode, tense)
+    grammar.getSession(mode, tense, round)
       .then((s) => {
         if (!alive) return;
         setSession(s);
@@ -175,10 +185,14 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
       })
       .catch((e) => alive && setError(e?.message ?? "Не удалось загрузить задания."));
     return () => { alive = false; };
-  }, [mode, tense]);
+  }, [mode, tense, round]);
 
   const cards: GrammarCard[] = session?.cards ?? [];
   const card = cards[pos];
+
+  /** Сколько заходов подряд идут без повторов. Дальше банк идёт по второму кругу. */
+  const batches = session?.batches ?? 1;
+  const hasFresh = round + 1 < batches;
 
   // Выход задан явным адресом: router.back() в навигации по вкладкам возвращает
   // на ПЕРВУЮ вкладку, а не на экран, откуда пришли. Из режима времён уходим на
@@ -212,6 +226,26 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
       return next;
     });
   }, [cards.length, resetCard]);
+
+  /**
+   * Следующий заход: запрос за новой порцией, а не сброс счётчиков.
+   *
+   * session обнуляется намеренно — пока идёт загрузка, на экране крутится
+   * ожидание. Оставить старые карточки значило бы показать ученику прежний
+   * заход, который через секунду подменится другим прямо под руками.
+   */
+  const nextRound = React.useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    setSession(null);
+    setError(null);
+    setPos(0);
+    setDone(false);
+    setAnswered(0);
+    setCorrectCount(0);
+    setPoints(0);
+    resetCard();
+    setRound((r) => r + 1);
+  }, [resetCard]);
 
   /** Отправить ответ на проверку. Эталон знает только сервер. */
   const submit = React.useCallback(async (given: string) => {
@@ -313,9 +347,16 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
               </Text>
             )}
 
-            <ChunkyButton label="Ещё заход" icon="repeat" onPress={() => {
-              setPos(0); setDone(false); setAnswered(0); setCorrectCount(0); setPoints(0); resetCard();
-            }} style={{ marginBottom: 12 }} />
+            {/* Кнопка ведёт на СЛЕДУЮЩУЮ порцию банка. Когда новых заданий
+                больше нет, подпись предупреждает об этом честно: обещать
+                бесконечную новизну нельзя, банк конечен. */}
+            <ChunkyButton
+              label="Ещё заход"
+              sublabel={hasFresh ? "дальше новые задания" : "новые кончились, пойдёт второй круг"}
+              icon="repeat"
+              onPress={nextRound}
+              style={{ marginBottom: 12 }}
+            />
           </>
         ) : (
           <Text style={{ fontSize: 14, lineHeight: 21, color: colors.mutedForeground, marginBottom: 18 }}>

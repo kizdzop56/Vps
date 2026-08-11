@@ -3,7 +3,7 @@
 //
 // Маршруты:
 //   GET  /grammar/overview        — режимы, времена и сколько заданий доступно
-//   GET  /grammar/session         — подборка заданий (?mode=&tense=)
+//   GET  /grammar/session         — подборка заданий (?mode=&tense=&round=)
 //   POST /grammar/check           — проверка ответа, разбор ошибки, очки
 //   GET  /grammar/stats           — точность по темам: что даётся хуже всего
 //
@@ -16,6 +16,12 @@
 // Одна строка на ответ в grammar_log: задание, режим, тема, способ ответа,
 // результат и начисленные очки. Ровно то, из чего считаются дневной потолок и
 // «слабые места», и ничего больше: «сколько заходов сделано» никому не нужно.
+//
+// ── Почему номер захода приходит от клиента ─────────────────────────────────
+// Сервер не помнит выданные сессии — и не должен: это состояние на каждого
+// ученика ради одной кнопки. Клиент считает заходы сам и присылает round;
+// подделать его можно, но выигрыш — увидеть другую порцию заданий, то есть
+// ровно то, что кнопка и делает бесплатно.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
@@ -29,6 +35,7 @@ import { TENSES, tenseById } from "../lib/grammar/tenses";
 import { ASSEMBLE_TASKS, TENSE_GAP_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
 import {
   SESSION_SIZE,
+  batchCount,
   buildGrammarSession,
   checkGrammarAnswer,
   findTask,
@@ -50,11 +57,21 @@ const MAX_ANSWER_LEN = 200;
 /** Сколько последних ответов читаем для статистики по темам. */
 const STATS_LIMIT = 600;
 
+/** Потолок номера захода: дальше это уже не занятие, а перебор банка. */
+const MAX_ROUND = 50;
+
 const MODES: GrammarMode[] = ["verbs", "tense", "build"];
 const INPUTS: GrammarInput[] = ["type", "choice", "assemble"];
 
 function isMode(value: unknown): value is GrammarMode {
   return typeof value === "string" && MODES.includes(value as GrammarMode);
+}
+
+/** Номер захода из запроса: мусор считаем первым заходом. */
+function readRound(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(MAX_ROUND, Math.trunc(n));
 }
 
 /**
@@ -115,17 +132,22 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
   // Времена показываем только те, что уже проходят на этом уровне, и рядом —
   // сколько по каждому есть заданий. Время без заданий в списке выглядело бы
   // как сломанная кнопка.
-  const tenses = TENSES.filter((t) => fitsLevel(t.level, level)).map((t) => ({
-    id: t.id,
-    title: t.title,
-    titleRu: t.titleRu,
-    level: t.level,
-    formula: t.formula,
-    usage: t.usage,
-    markers: t.markers,
-    rule: t.rule,
-    taskCount: tenseTasks.filter((x) => x.tense === t.id).length,
-  }));
+  const tenses = TENSES.filter((t) => fitsLevel(t.level, level)).map((t) => {
+    const count = tenseTasks.filter((x) => x.tense === t.id).length;
+    return {
+      id: t.id,
+      title: t.title,
+      titleRu: t.titleRu,
+      level: t.level,
+      formula: t.formula,
+      usage: t.usage,
+      markers: t.markers,
+      rule: t.rule,
+      taskCount: count,
+      // Сколько заходов подряд можно сделать, ни разу не повторившись.
+      batches: batchCount(count, SESSION_SIZE),
+    };
+  });
 
   const today = await earnedToday(user.userId);
 
@@ -141,6 +163,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
         title: "Неправильные глаголы",
         subtitle: "вставь нужную форму в предложение",
         taskCount: verbTasks.length,
+        batches: batchCount(verbTasks.length, SESSION_SIZE),
         verbCount: verbsUpTo(level).length,
       },
       {
@@ -148,6 +171,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
         title: "Времена",
         subtitle: "выбери время и тренируй его правила",
         taskCount: tenseTasks.length,
+        batches: batchCount(tenseTasks.length, SESSION_SIZE),
         tenseCount: tenses.filter((t) => t.taskCount > 0).length,
       },
       {
@@ -155,6 +179,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
         title: "Собери предложение",
         subtitle: "по русскому переводу, из слов",
         taskCount: buildTasks.length,
+        batches: batchCount(buildTasks.length, SESSION_SIZE),
       },
     ],
     tenses,
@@ -172,12 +197,13 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
 
   const level = await levelOf(user.userId);
   const tense = typeof req.query["tense"] === "string" ? String(req.query["tense"]) : undefined;
+  const round = readRound(req.query["round"]);
 
-  const { cards, total } = buildGrammarSession({ mode, level, tense, now: new Date() });
+  const session = buildGrammarSession({ mode, level, tense, round, now: new Date() });
 
   // Пустая подборка — это не ошибка, а сообщение: на этом уровне заданий ещё
   // нет. Клиент объясняет её текстом, поэтому отвечаем 200 с нулём.
-  res.json({ mode, level, tense, total, cards });
+  res.json({ mode, level, tense, ...session });
 });
 
 // ── POST /grammar/check ─────────────────────────────────────────────────────
