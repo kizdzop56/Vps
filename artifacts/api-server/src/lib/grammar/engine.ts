@@ -71,7 +71,9 @@ import {
   formLine,
   formMistake,
   formRule,
+  formTasksByLetter,
   formTasksUpTo,
+  normalizeLetter,
   parseFormTask,
   type FormTask,
 } from "./forms";
@@ -165,6 +167,13 @@ export function allForms(base: string): string[] {
 // сегодня — это первый заход завтра. Альтернатива (свой круг на каждый день)
 // вернула бы случайное пересечение соседних дней. Повтор через сутки полезнее
 // для памяти, чем повтор через минуту, поэтому выбран этот вариант.
+//
+// ── Сид: у каждой подборки свой ────────────────────────────────────────────
+//
+// В сид входят режим, время и буква. Иначе группы шли бы в ногу: буква B и буква
+// C тасовались бы одинаково, и на одинаковом по объёму банке ученик получал бы
+// глаголы в одном и том же порядке. И курсор у групп общий быть не может по той
+// же причине — занятия по букве B не должны прокручивать букву C.
 
 /** Сид из строки: режим и время должны крутиться независимо друг от друга. */
 export function textSeed(value: string): number {
@@ -204,14 +213,15 @@ export function freshBatchesLeft(step: number, batches: number): number {
  * Порция заданий по курсору.
  *
  * @param step  курсор: номер дня плюс израсходованные заходы
- * @param seed  сид банка: у каждого режима и времени он свой
+ * @param seed  сид банка: у каждого режима, времени и буквы он свой
  */
 export function rotateBatch<T>(pool: T[], size: number, step: number, seed: number): T[] {
   if (pool.length === 0) return [];
   const cursor = Math.max(0, Math.trunc(step));
 
   // Банка не хватает даже на один заход: отдаём всё, что есть, но порядок
-  // меняем — иначе задания идут в одном и том же порядке каждый день.
+  // меняем — иначе задания идут в одном и том же порядке каждый день. Это
+  // обычное дело для группы на одну букву: один глагол — три вопроса.
   if (pool.length <= size) return shuffle(pool, mulberry32(seed + cursor * 7919));
 
   const batches = batchCount(pool.length, size);
@@ -251,6 +261,10 @@ function gapOptions(base: string, answer: string, rng: () => number): string[] {
  * Исключаются ВСЕ принимаемые ответы, а не только эталон: у put и lay один
  * перевод, и lay среди «неправильных» вариантов дал бы зелёную галочку на
  * варианте, помеченном как ловушка.
+ *
+ * pool — подборка, из которой берутся ловушки. В группе на одну букву это
+ * глаголы той же буквы, и так даже лучше: buy против bring и begin — выбор
+ * труднее, чем buy против withdraw.
  */
 function verbWordOptions(answers: string[], pool: FormTask[], rng: () => number): string[] {
   const taken = new Set(answers.map(normalizeAnswer));
@@ -410,6 +424,8 @@ export type GrammarSessionResult = {
   batches: number;
   /** Сколько заходов осталось до конца круга: 0 — дальше второй круг. */
   freshLeft: number;
+  /** Буква группы, если заход идёт по одной букве. */
+  letter?: string;
 };
 
 /**
@@ -424,6 +440,11 @@ export function buildGrammarSession(opts: {
   level: CefrLevel;
   /** Только для режима tense: какое время тренируем. */
   tense?: string;
+  /**
+   * Только для режима forms: буква, на которую идут глаголы. Пусто — все буквы
+   * вперемешку (это режим повторения, см. шапку forms.ts).
+   */
+  letter?: string;
   now?: Date;
   size?: number;
   /** Номер захода за день: 0 — первый, дальше следующие порции банка. */
@@ -444,7 +465,10 @@ export function buildGrammarSession(opts: {
   const size = Math.max(1, opts.size ?? SESSION_SIZE);
   const round = Math.max(0, Math.trunc(opts.round ?? 0));
   const consumed = Math.max(0, Math.trunc(opts.consumed ?? 0));
-  const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}`);
+  // Буква нормализуется здесь же: дальше по коду ходит либо валидная заглавная
+  // латинская буква, либо ничего.
+  const letter = opts.mode === "forms" ? normalizeLetter(opts.letter) : null;
+  const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}:${letter ?? ""}`);
   // МАКСИМУМ, а не сумма: складывать значило бы проскакивать порции через одну
   // на каждом «Ещё заход» — журнал к этому моменту уже сдвинулся сам.
   const step = daySeed(now) + Math.max(consumed, round);
@@ -453,7 +477,10 @@ export function buildGrammarSession(opts: {
   const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
 
   if (opts.mode === "forms") {
-    const pool = formTasksUpTo(opts.level);
+    // Буква задана — берём только её глаголы. Именно на это и была просьба:
+    // «если вкладка называется „на букву B“, там и должны попадаться глаголы
+    // на B».
+    const pool = letter ? formTasksByLetter(opts.level, letter) : formTasksUpTo(opts.level);
     const picked = rotateBatch(pool, size, step, seed);
     const batches = batchCount(pool.length, size);
     const mastered = opts.mastered ?? new Set<string>();
@@ -462,6 +489,7 @@ export function buildGrammarSession(opts: {
       round,
       batches,
       freshLeft: freshBatchesLeft(step, batches),
+      ...(letter ? { letter } : {}),
       cards: picked.map((t: FormTask) => {
         const answers = formAnswers(t);
         const view = formCard(t);

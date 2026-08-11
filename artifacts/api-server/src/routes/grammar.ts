@@ -2,8 +2,8 @@
 // Раздел «Составлять»: формы глаголов, неправильные глаголы, времена, сборка.
 //
 // Маршруты:
-//   GET  /grammar/overview        — режимы, времена и сколько заданий доступно
-//   GET  /grammar/session         — подборка заданий (?mode=&tense=&round=)
+//   GET  /grammar/overview        — режимы, времена, буквы и объём банка
+//   GET  /grammar/session         — подборка (?mode=&tense=&letter=&round=)
 //   POST /grammar/check           — проверка ответа, разбор ошибки, очки
 //   GET  /grammar/stats           — точность по темам: что даётся хуже всего
 //
@@ -29,6 +29,13 @@
 // заданий, входил снова и получал ТЕ ЖЕ двенадцать. Номер захода от клиента
 // остался, но теперь он лишь подстраховка на случай недоехавших ответов —
 // движок берёт максимум из двух (см. шапку engine.ts).
+//
+// ── Буквы ───────────────────────────────────────────────────────────────────
+// Формы глаголов разложены по первой букве, как в таблице в конце учебника.
+// Курсор у каждой буквы СВОЙ: занятия по букве B не должны прокручивать букву C,
+// иначе ученик, открыв C, начнёт не с начала и решит, что часть глаголов
+// пропала. Поэтому в режиме форм израсходованные заходы считаются по первой
+// букве темы (topic там — первая форма глагола).
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
@@ -41,7 +48,13 @@ import { LEVEL_ORDER, fitsLevel, verbByBase, verbsUpTo, type CefrLevel } from ".
 import { TENSES, tenseById } from "../lib/grammar/tenses";
 import { ASSEMBLE_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
 import { TENSE_GAP_TASKS } from "../lib/grammar/tenseBank";
-import { FORM_MASTERY_HITS, formTasksUpTo } from "../lib/grammar/forms";
+import {
+  FORM_MASTERY_HITS,
+  formLetterGroups,
+  formTasksUpTo,
+  normalizeLetter,
+  verbLetter,
+} from "../lib/grammar/forms";
 import {
   SESSION_SIZE,
   batchCount,
@@ -120,14 +133,15 @@ async function earnedToday(userId: number): Promise<number> {
 }
 
 /**
- * Сколько заходов ученик уже израсходовал в этом режиме.
+ * Сколько заходов ученик уже израсходовал в этой подборке.
  *
  * Это и есть курсор ротации: по нему движок выбирает порцию банка. Считается по
  * журналу, а не по счётчику на экране, именно потому, что экран закрывается —
  * а вернувшись, ученик обязан получить СЛЕДУЮЩИЕ двенадцать заданий, а не те же.
  *
- * Времена считаются по отдельности: у каждого свой банк, и общий счётчик гонял
- * бы курсор Past Simple вперёд из-за занятий по Present Perfect.
+ * Времена и буквы считаются по отдельности: у каждой подборки свой банк, и общий
+ * счётчик гонял бы курсор Past Simple вперёд из-за занятий по Present Perfect, а
+ * букву C — из-за занятий по букве B.
  *
  * Деление с округлением вниз: половина захода курсор не двигает — ученик не
  * дошёл до конца порции, и показать её остаток честнее, чем перескочить.
@@ -135,13 +149,19 @@ async function earnedToday(userId: number): Promise<number> {
 async function consumedRounds(
   userId: number,
   mode: GrammarMode,
-  tense?: string,
+  opts: { tense?: string; letter?: string | null } = {},
 ): Promise<number> {
   const where: SQL[] = [
     eq(grammarLogTable.userId, userId),
     eq(grammarLogTable.mode, mode),
   ];
-  if (mode === "tense" && tense) where.push(eq(grammarLogTable.topic, tense));
+  if (mode === "tense" && opts.tense) where.push(eq(grammarLogTable.topic, opts.tense));
+  // В режиме форм тема — первая форма глагола, поэтому буква группы это её
+  // первая буква. Значение параметризовано драйвером, да и проверено на
+  // единственную латинскую букву заранее.
+  if (mode === "forms" && opts.letter) {
+    where.push(sql`upper(left(${grammarLogTable.topic}, 1)) = ${opts.letter}`);
+  }
 
   const [row] = await db
     .select({ answers: sql<number>`count(*)::int` })
@@ -227,6 +247,21 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
   const today = await earnedToday(user.userId);
   const mastered = await masteredVerbs(user.userId);
 
+  /** Знакомые глаголы уровня: по ним вопросы идут письмом. */
+  const knownBases = [...mastered].filter((b) => {
+    const verb = verbByBase(b);
+    return !!verb && fitsLevel(verb.level, level);
+  });
+
+  // Буквы: как в таблице в конце учебника. Пустые не отдаём вовсе — на A1 и A2
+  // нет ни одного глагола на A, и кнопка «на букву A» была бы сломанной.
+  const verbLetters = formLetterGroups(level).map((group) => ({
+    ...group,
+    // Сколько глаголов группы уже знакомы: по этой цифре видно, что буква
+    // закрывается, и она же отвечает на «я выучила букву B или нет».
+    knownVerbs: knownBases.filter((b) => verbLetter(b) === group.letter).length,
+  }));
+
   res.json({
     level,
     sessionSize: SESSION_SIZE,
@@ -241,11 +276,8 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
         taskCount: formTasks.length,
         batches: batchCount(formTasks.length, SESSION_SIZE),
         verbCount: verbsUpTo(level).length,
-        // Сколько глаголов уже знакомы: по ним вопросы идут письмом.
-        knownVerbs: [...mastered].filter((b) => {
-          const verb = verbByBase(b);
-          return !!verb && fitsLevel(verb.level, level);
-        }).length,
+        knownVerbs: knownBases.length,
+        letterCount: verbLetters.length,
       },
       {
         id: "verbs",
@@ -272,6 +304,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
       },
     ],
     tenses,
+    verbLetters,
   });
 });
 
@@ -286,14 +319,24 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
 
   const level = await levelOf(user.userId);
   const tense = typeof req.query["tense"] === "string" ? String(req.query["tense"]) : undefined;
+  // Буква приходит из адреса, поэтому проверяется здесь: мусор считаем
+  // «без буквы», а не пустой подборкой.
+  const letter = mode === "forms" ? normalizeLetter(req.query["letter"]) : null;
   const round = readRound(req.query["round"]);
   // Курсор из журнала: он и двигает подборку между входами в раздел.
-  const consumed = await consumedRounds(user.userId, mode, tense);
+  const consumed = await consumedRounds(user.userId, mode, { tense, letter });
   // Лишний запрос делаем только там, где он влияет на подборку.
   const mastered = mode === "forms" ? await masteredVerbs(user.userId) : undefined;
 
   const session = buildGrammarSession({
-    mode, level, tense, round, consumed, mastered, now: new Date(),
+    mode,
+    level,
+    tense,
+    ...(letter ? { letter } : {}),
+    round,
+    consumed,
+    mastered,
+    now: new Date(),
   });
 
   // Пустая подборка — это не ошибка, а сообщение: на этом уровне заданий ещё

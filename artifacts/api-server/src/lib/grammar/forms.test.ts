@@ -10,11 +10,15 @@ import {
   allFormTasks,
   formAnswers,
   formCard,
+  formLetterGroups,
   formLine,
   formMistake,
   formTaskId,
+  formTasksByLetter,
   formTasksUpTo,
+  normalizeLetter,
   parseFormTask,
+  verbLetter,
 } from "./forms";
 import {
   SESSION_SIZE,
@@ -22,6 +26,7 @@ import {
   checkGrammarAnswer,
   edForm,
   findTask,
+  textSeed,
 } from "./engine";
 
 const NOW = new Date("2026-08-11T09:00:00.000Z");
@@ -285,4 +290,166 @@ test("заход полный, и завтра он другой", () => {
     today.cards.map((c) => c.id),
     tomorrow.cards.map((c) => c.id),
   );
+});
+
+// ── Буквы ───────────────────────────────────────────────────────────────────
+//
+// Просьба была буквальная: «если вкладка называется „глаголы на букву B“, значит
+// там и должны попадаться глаголы на B». Первый тест здесь — ровно про это, и он
+// главный: чужой глагол в заходе делает всю затею бессмысленной.
+
+test("буква считается по первой форме", () => {
+  assert.equal(verbLetter("buy"), "B");
+  assert.equal(verbLetter("understand"), "U");
+  // По первой форме, а не по переводу: в учебнике список отсортирован так же.
+  assert.equal(verbLetter("go"), "G");
+});
+
+test("мусор вместо буквы не превращается в букву", () => {
+  assert.equal(normalizeLetter("b"), "B");
+  assert.equal(normalizeLetter(" Bu "), "B");
+  assert.equal(normalizeLetter("Б"), null);
+  assert.equal(normalizeLetter("1"), null);
+  assert.equal(normalizeLetter(""), null);
+  assert.equal(normalizeLetter(undefined), null);
+  assert.equal(normalizeLetter(["B"]), null);
+});
+
+test("в группе только глаголы своей буквы", () => {
+  for (const level of LEVEL_ORDER) {
+    for (const group of formLetterGroups(level)) {
+      const tasks = formTasksByLetter(level, group.letter);
+      assert.ok(tasks.length > 0, `${level}/${group.letter}: пустая группа в списке`);
+      for (const t of tasks) {
+        assert.equal(
+          verbLetter(t.verb.base),
+          group.letter,
+          `${level}/${group.letter}: попал глагол ${t.verb.base}`,
+        );
+      }
+    }
+  }
+});
+
+test("в заходе по букве нет ни одного чужого глагола", () => {
+  // Тот самый случай из жалобы, только проверяемый: заход по букве обязан быть
+  // однобуквенным на любом уровне, при любом курсоре.
+  for (const level of LEVEL_ORDER) {
+    for (const group of formLetterGroups(level)) {
+      for (const consumed of [0, 1, 5]) {
+        const { cards, letter } = buildGrammarSession({
+          mode: "forms",
+          level,
+          letter: group.letter,
+          consumed,
+          now: NOW,
+        });
+        assert.equal(letter, group.letter, "буква не вернулась в ответе");
+        assert.ok(cards.length > 0, `${level}/${group.letter}: пустой заход`);
+        for (const card of cards) {
+          const task = parseFormTask(card.id)!;
+          assert.equal(
+            verbLetter(task.verb.base),
+            group.letter,
+            `${level}/${group.letter}: пришёл ${task.verb.base}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test("группы покрывают весь банк уровня и не пересекаются", () => {
+  for (const level of LEVEL_ORDER) {
+    const groups = formLetterGroups(level);
+    const seen = new Set<string>();
+    for (const group of groups) {
+      for (const t of formTasksByLetter(level, group.letter)) {
+        assert.equal(seen.has(t.id), false, `${t.id} попал в две группы`);
+        seen.add(t.id);
+      }
+    }
+    assert.equal(
+      seen.size,
+      formTasksUpTo(level).length,
+      `${level}: по буквам разложено ${seen.size} заданий из ${formTasksUpTo(level).length}`,
+    );
+
+    // Объём группы честный: три вопроса на глагол.
+    for (const group of groups) {
+      assert.equal(group.taskCount, group.verbCount * 3, `${level}/${group.letter}`);
+    }
+  }
+});
+
+test("пустых букв в списке нет", () => {
+  // На A1 и A2 нет ни одного неправильного глагола на A: первый (arise) приходит
+  // только на C1. Кнопка «на букву A» была бы сломанной кнопкой.
+  const a2 = formLetterGroups("A2").map((g) => g.letter);
+  assert.equal(a2.includes("A"), false, `буквы A2: ${a2.join("")}`);
+
+  const c1 = formLetterGroups("C1").map((g) => g.letter);
+  assert.ok(c1.includes("A"), "на C1 буква A должна появиться");
+
+  // И вообще: каждая буква из списка что-то содержит.
+  for (const level of LEVEL_ORDER) {
+    for (const g of formLetterGroups(level)) {
+      assert.ok(g.verbCount > 0, `${level}/${g.letter}: ноль глаголов`);
+    }
+  }
+});
+
+test("буква без глаголов на этом уровне даёт пустой заход, а не чужие глаголы", () => {
+  // Так выглядит переход по старой ссылке: буква в таблице есть, но все её
+  // глаголы выше уровня ученика. Экран объясняет это текстом.
+  assert.equal(formTasksByLetter("A2", "A").length, 0);
+  const { cards, total } = buildGrammarSession({
+    mode: "forms", level: "A2", letter: "A", now: NOW,
+  });
+  assert.equal(total, 0);
+  assert.equal(cards.length, 0);
+});
+
+test("мусорная буква в адресе даёт обычную подборку", () => {
+  // Не пустой экран: сломанная ссылка не должна выглядеть как «раздел кончился».
+  const { cards, letter } = buildGrammarSession({
+    mode: "forms", level: "A2", letter: "Щ", now: NOW,
+  });
+  assert.equal(letter, undefined);
+  assert.equal(cards.length, SESSION_SIZE);
+});
+
+test("у каждой буквы свой сид: группы не идут в ногу", () => {
+  // Иначе на одинаковых по объёму группах глаголы шли бы в одном и том же
+  // порядке, и вторая буква после первой читалась бы как повтор.
+  assert.notEqual(textSeed("forms::B"), textSeed("forms::C"));
+  assert.notEqual(textSeed("forms::B"), textSeed("forms::"));
+});
+
+test("внутри буквы заход двигается: второй вход даёт другие вопросы", () => {
+  // Буква с запасом: на A2 их пять (buy, bring, begin, break, build) = 15
+  // вопросов, то есть заход не покрывает группу целиком.
+  const level: CefrLevel = "A2";
+  const pool = formTasksByLetter(level, "B");
+  assert.ok(pool.length > SESSION_SIZE, `на A2 в букве B всего ${pool.length} вопросов`);
+
+  const first = buildGrammarSession({ mode: "forms", level, letter: "B", consumed: 0, now: NOW });
+  const second = buildGrammarSession({ mode: "forms", level, letter: "B", consumed: 1, now: NOW });
+  assert.notDeepEqual(
+    first.cards.map((c) => c.id),
+    second.cards.map((c) => c.id),
+  );
+});
+
+test("маленькая группа отдаётся целиком, а не обрезается в ноль", () => {
+  // На A1 буква M — это один глагол make, то есть три вопроса. Заход из трёх
+  // вопросов — это нормально и честно, а вот пустой экран был бы поломкой.
+  const pool = formTasksByLetter("A1", "M");
+  assert.equal(pool.length, 3, `в букве M на A1 ${pool.length} вопросов`);
+
+  const { cards } = buildGrammarSession({
+    mode: "forms", level: "A1", letter: "M", now: NOW,
+  });
+  assert.equal(cards.length, 3);
+  assert.equal(new Set(cards.map((c) => c.id)).size, 3, "вопросы в заходе повторяются");
 });
