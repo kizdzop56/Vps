@@ -71,7 +71,9 @@ import {
   formLine,
   formMistake,
   formRule,
+  formTasksByLetter,
   formTasksUpTo,
+  normalizeLetter,
   parseFormTask,
   type FormTask,
 } from "./forms";
@@ -251,6 +253,12 @@ function gapOptions(base: string, answer: string, rng: () => number): string[] {
  * Исключаются ВСЕ принимаемые ответы, а не только эталон: у put и lay один
  * перевод, и lay среди «неправильных» вариантов дал бы зелёную галочку на
  * варианте, помеченном как ловушка.
+ *
+ * ВНИМАНИЕ: pool здесь — банк захода. В группе одной буквы это глаголы той же
+ * буквы, и ловушки к «bought» получаются на ту же букву — что даже честнее:
+ * спутать buy и bring куда правдоподобнее, чем buy и sleep. Но если в группе
+ * один глагол, ловушек не наберётся вовсе, поэтому вызывающий передаёт сюда
+ * ПОЛНЫЙ банк уровня, а не одну букву.
  */
 function verbWordOptions(answers: string[], pool: FormTask[], rng: () => number): string[] {
   const taken = new Set(answers.map(normalizeAnswer));
@@ -424,6 +432,11 @@ export function buildGrammarSession(opts: {
   level: CefrLevel;
   /** Только для режима tense: какое время тренируем. */
   tense?: string;
+  /**
+   * Только для режима forms: группа одной буквы («учу глаголы на B»). Пусто —
+   * весь уровень подряд.
+   */
+  letter?: string;
   now?: Date;
   size?: number;
   /** Номер захода за день: 0 — первый, дальше следующие порции банка. */
@@ -444,7 +457,11 @@ export function buildGrammarSession(opts: {
   const size = Math.max(1, opts.size ?? SESSION_SIZE);
   const round = Math.max(0, Math.trunc(opts.round ?? 0));
   const consumed = Math.max(0, Math.trunc(opts.consumed ?? 0));
-  const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}`);
+  const letter = normalizeLetter(opts.letter);
+  // Буква дописывается к сиду только когда она есть: иначе у режимов без букв
+  // сменился бы порядок ротации на пустом месте. У каждой группы своя тасовка —
+  // группы не обязаны идти в ногу друг с другом.
+  const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}${letter ? `:${letter}` : ""}`);
   // МАКСИМУМ, а не сумма: складывать значило бы проскакивать порции через одну
   // на каждом «Ещё заход» — журнал к этому моменту уже сдвинулся сам.
   const step = daySeed(now) + Math.max(consumed, round);
@@ -453,7 +470,11 @@ export function buildGrammarSession(opts: {
   const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
 
   if (opts.mode === "forms") {
-    const pool = formTasksUpTo(opts.level);
+    // Банк захода — выбранная буква, а вот ловушки берутся из ПОЛНОГО банка
+    // уровня: в группе из одного глагола вариантов иначе не наберётся вовсе, и
+    // задание с выбором осталось бы без выбора.
+    const all = formTasksUpTo(opts.level);
+    const pool = letter ? formTasksByLetter(opts.level, letter) : all;
     const picked = rotateBatch(pool, size, step, seed);
     const batches = batchCount(pool.length, size);
     const mastered = opts.mastered ?? new Set<string>();
@@ -478,8 +499,8 @@ export function buildGrammarSession(opts: {
           options: !choice
             ? undefined
             : t.kind === "toEn"
-              ? verbWordOptions(answers, pool, rng)
-              : formOptions(t, answers, pool, rng),
+              ? verbWordOptions(answers, all, rng)
+              : formOptions(t, answers, all, rng),
           hint: view.hint,
         };
       }),
