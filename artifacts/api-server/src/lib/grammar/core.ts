@@ -110,16 +110,34 @@ export type AssembleTask = {
 };
 
 // ── Образование форм ────────────────────────────────────────────────────────
+//
+// ГРАБЛИ. Правила ниже описывают обычный глагол, а be и have не обычные: по
+// правилу выходит «bes», «bing» и «haves». В таблице форм этого не видно —
+// вторая и третья формы там прописаны руками, — зато прекрасно видно в вариантах
+// ответа, куда третье лицо и -ing попадают как ловушки. Ученик отбрасывает такое
+// слово, не зная языка вообще, и выбор перестаёт быть выбором.
+//
+// Исключения заданы списком, а не хитрым правилом: правила для них нет, есть
+// ровно два глагола, зато самых частых в языке.
 
-/** Третье лицо: he goes, she watches, it studies. */
+const IRREGULAR_PRESENT: Record<string, { third: string; ing: string }> = {
+  be: { third: "is", ing: "being" },
+  have: { third: "has", ing: "having" },
+};
+
+/** Третье лицо: he goes, she watches, it studies, he is, he has. */
 export function thirdPerson(base: string): string {
+  const special = IRREGULAR_PRESENT[base];
+  if (special) return special.third;
   if (/(s|sh|ch|x|z|o)$/.test(base)) return `${base}es`;
   if (/[^aeiou]y$/.test(base)) return `${base.slice(0, -1)}ies`;
   return `${base}s`;
 }
 
-/** Причастие на -ing: make → making, run → running. */
+/** Причастие на -ing: make → making, run → running, be → being. */
 export function ingForm(base: string): string {
+  const special = IRREGULAR_PRESENT[base];
+  if (special) return special.ing;
   if (/[^aeiou]e$/.test(base)) return `${base.slice(0, -1)}ing`;
   if (/^[^aeiou]?[aeiou][^aeiouwxy]$/.test(base)) return `${base}${base.slice(-1)}ing`;
   return `${base}ing`;
