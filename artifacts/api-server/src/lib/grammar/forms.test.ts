@@ -17,7 +17,13 @@ import {
   formTasksUpTo,
   parseFormTask,
 } from "./forms";
-import { SESSION_SIZE, buildGrammarSession, checkGrammarAnswer, findTask } from "./engine";
+import {
+  SESSION_SIZE,
+  buildGrammarSession,
+  checkGrammarAnswer,
+  edForm,
+  findTask,
+} from "./engine";
 
 const NOW = new Date("2026-08-11T09:00:00.000Z");
 const rank = (l: CefrLevel) => LEVEL_ORDER.indexOf(l);
@@ -208,21 +214,34 @@ test("среди вариантов ровно один принимаемый �
   }
 });
 
-test("дистракторы содержательные: чужие глаголы в переводе, свои формы в форме", () => {
+test("варианты осмысленные, мусорных слов среди них нет", () => {
+  // Мусор — это ingForm("be") = «bing» и thirdPerson("be") = «bes». Такие слова
+  // ученик отбрасывает, не зная языка, и выбор перестаёт быть выбором. Поэтому
+  // вариант обязан быть либо формой этого глагола, либо его формой на -ed
+  // (частая ошибка), либо формой другого глагола из таблицы.
   const bases = new Set(IRREGULAR_VERBS.map((v) => v.base));
+  const anyForm = new Set(
+    IRREGULAR_VERBS.flatMap((v) => [v.base, ...v.past, ...v.participle]),
+  );
+
   for (const card of wholePool("B1")) {
     if (card.input !== "choice") continue;
     const task = parseFormTask(card.id)!;
+    const own = new Set([
+      task.verb.base,
+      ...task.verb.past,
+      ...task.verb.participle,
+      edForm(task.verb.base),
+    ]);
+
     for (const o of card.options ?? []) {
       if (task.kind === "toEn") {
+        // Спрашивают слово — значит и ловушки это слова, а не формы.
         assert.ok(bases.has(o), `${card.id}: вариант «${o}» не глагол из таблицы`);
       } else {
-        // Формы того же глагола, включая несуществующее buyed: ошибка здесь
-        // означает «спутал формы», и выбор должен ловить именно это.
         assert.ok(
-          o.startsWith(task.verb.base.slice(0, 2)) ||
-            [...task.verb.past, ...task.verb.participle].includes(o),
-          `${card.id}: вариант «${o}» не похож на форму ${task.verb.base}`,
+          own.has(o) || anyForm.has(o),
+          `${card.id}: вариант «${o}» не форма ни одного глагола`,
         );
       }
     }
