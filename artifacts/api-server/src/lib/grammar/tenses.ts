@@ -314,17 +314,18 @@ function diagnoseAuxiliary(
   const gVerb = g[g.length - 1];
   if (!eVerb || !gVerb || eVerb === gVerb) return null;
 
+  // Как называть вспомогательный в объяснении. Если в ответе его нет вовсе
+  // (спрашивают сам глагол: «Did you ___ to school?»), берём у времени.
+  const auxName = eAux ?? auxOf(tense);
   const shape = shapeOf(tense);
 
   if (shape === "base") {
     // Самая частая ошибка школьника: «did you went», «does he likes».
-    const withS = verb ? undefined : undefined;
-    void withS;
     if (gVerb === `${eVerb}s` || gVerb === `${eVerb}es`) {
       return {
         headline: "Лишнее -s: оно уже сидит во вспомогательном",
         detail:
-          `Окончание третьего лица уходит к ${eAux ?? "do/does"}, а сам глагол остаётся в первой форме: «${eVerb}». ` +
+          `Окончание третьего лица уходит к ${auxName}, а сам глагол остаётся в первой форме: «${eVerb}». ` +
           `Схема: ${scheme}.`,
       };
     }
@@ -332,7 +333,7 @@ function diagnoseAuxiliary(
       return {
         headline: "Это вторая форма, а после вспомогательного нужна первая",
         detail:
-          `Время уже показано словом ${eAux ?? auxOf(tense)}, второй раз его показывать не нужно: «${eVerb}», а не «${gVerb}». ` +
+          `Время уже показано словом ${auxName}, второй раз его показывать не нужно: «${eVerb}», а не «${gVerb}». ` +
           `Схема: ${scheme}.`,
       };
     }
@@ -343,7 +344,7 @@ function diagnoseAuxiliary(
       };
     }
     return {
-      headline: `После вспомогательного нужна первая форма: «${eVerb}»`,
+      headline: `После ${auxName} нужна первая форма: «${eVerb}»`,
       detail: `Схема: ${scheme}.`,
     };
   }
