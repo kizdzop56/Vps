@@ -20,6 +20,12 @@
 // глагола: первая, третье лицо, -ed, -ing, вторая, третья. Совпал с какой-то —
 // значит выбрана не та форма, это ошибка. Не совпал — обычная описка, прощаем.
 //
+// И ещё: с появлением отрицаний ответы стали многословными, а опечатка в них
+// считалась по всей строке целиком. «will not go» и «will not do» отличаются на
+// одну правку — то есть совершенно другой глагол проходил бы как описка. Теперь
+// опечатка ищется ПОСЛОВНО и только в словах от MIN_FUZZY_LENGTH букв, поэтому
+// короткие служебные слова обязаны совпадать точно.
+//
 // ── Письмо против выбора ────────────────────────────────────────────────────
 // В заданиях с предложениями ученик по умолчанию ПИШЕТ сам, и лишь каждое третье
 // даётся вариантами: выбор из четырёх — это узнавание, оно легче и форму не
@@ -29,29 +35,30 @@
 // ученик этот глагол. Первое знакомство — варианты (писать наугад нечего),
 // дальше письмо. Порог — FORM_MASTERY_HITS верных ответов по глаголу.
 //
-// ── Дистракторы у каждого режима свои, и это не прихоть ─────────────────────
+// ── Дистракторы у каждого вида задания свои, и это не прихоть ───────────────
 // Вопрос «как по-английски покупать» — про слово, поэтому ловушки это другие
 // ГЛАГОЛЫ (спутал buy с bring). Вопрос «вторая форма от buy» — про форму,
-// поэтому ловушки это другие формы ТОГО ЖЕ глагола плюс регуляризованное
-// «buyed». В предложениях набор шире: туда может встать и третье лицо, и -ing.
+// поэтому ловушки это другие формы того же глагола плюс регуляризованное
+// «buyed». В отрицании ловушки — другие отрицания целиком («do not go», «has not
+// gone»): выбирать приходится и вспомогательный, и форму смыслового глагола.
 //
 // Модуль без БД и express — тесты в engine.test.ts, rotation.test.ts,
 // forms.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { checkWritten, normalizeAnswer } from "../answerCheck";
+import { MIN_FUZZY_LENGTH, checkWritten, editDistance, normalizeAnswer } from "../answerCheck";
 import { mulberry32, shuffle, daySeed } from "../wordExercise";
 import { fitsLevel, verbByBase, type CefrLevel } from "./verbs";
 import { diagnose, tenseById, type Tense } from "./tenses";
 import {
   ASSEMBLE_TASKS,
   GAP,
-  TENSE_GAP_TASKS,
   VERB_GAP_TASKS,
   type AssembleTask,
   type TenseGapTask,
   type VerbGapTask,
 } from "./tasks";
+import { TENSE_GAP_TASKS } from "./tenseTasks";
 import {
   formAnswers,
   formCard,
@@ -90,7 +97,7 @@ export type GrammarCard = {
   options?: string[];
   /** Плитки слов для input="assemble", уже перемешанные. */
   tiles?: string[];
-  /** Что требуется от ученика словами: «Past Simple», «вторая форма». */
+  /** Что требуется от ученика словами: «Past Simple · вопрос», «вторая форма». */
   hint?: string;
   /** Время задания — только в режиме tense. */
   tense?: string;
@@ -277,27 +284,73 @@ function formOptions(
   return shuffle([answers[0] ?? "", ...picked], rng);
 }
 
-/** Дистракторы для времени: та же форма, но от других времён. */
+/** Вспомогательные глаголы: из них состоит ответ на вопрос вида «___ he like milk?». */
+const AUXILIARIES = ["do", "does", "did", "is", "are", "was", "were", "have", "has", "will"];
+
+const isOneWord = (value: string) => value.trim().split(/\s+/).length === 1;
+
+/**
+ * Регистр варианта равняется на ответ.
+ *
+ * Ответ в начале вопроса пишется с заглавной («Does he like milk?»), а формы
+ * генерируются со строчной. Один вариант с большой буквы среди трёх маленьких —
+ * подсказка, которую видно, не зная языка вообще.
+ */
+function matchCase(sample: string, word: string): string {
+  const first = sample.charAt(0);
+  const capitalized = !!first && first === first.toUpperCase() && first !== first.toLowerCase();
+  if (!capitalized || !word) return word;
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/**
+ * Дистракторы для времени.
+ *
+ * Набор зависит от того, что вообще спрашивают:
+ *   вспомогательный   → другие вспомогательные (do/does/did/is/was/have/will);
+ *   смысловой глагол  → другие его формы;
+ *   отрицание целиком → другие отрицания целиком, со своими вспомогательными;
+ *   утверждение       → та же форма, но от других времён.
+ */
 function tenseOptions(task: TenseGapTask, rng: () => number): string[] {
   const answer = task.accept[0] ?? "";
   const base = task.base;
   const verb = verbByBase(base);
   const past = verb?.past[0] ?? edForm(base);
   const participle = verb?.participle[0] ?? edForm(base);
+  const ing = ingForm(base);
 
-  const pool = [
-    base,
-    thirdPerson(base),
-    past,
-    `will ${base}`,
-    `is ${ingForm(base)}`,
-    `are ${ingForm(base)}`,
-    `was ${ingForm(base)}`,
-    `have ${participle}`,
-    `has ${participle}`,
-  ].filter((f) => normalizeAnswer(f) !== normalizeAnswer(answer));
+  let pool: string[];
+  if (isOneWord(answer) && AUXILIARIES.includes(normalizeAnswer(answer))) {
+    pool = AUXILIARIES;
+  } else if (isOneWord(answer)) {
+    pool = [base, thirdPerson(base), past, participle, ing];
+  } else if (task.form === "negative") {
+    pool = [
+      `do not ${base}`, `does not ${base}`, `did not ${base}`, `will not ${base}`,
+      `is not ${ing}`, `are not ${ing}`, `was not ${ing}`, `were not ${ing}`,
+      `have not ${participle}`, `has not ${participle}`,
+    ];
+  } else {
+    pool = [
+      base,
+      thirdPerson(base),
+      past,
+      `will ${base}`,
+      `is ${ing}`,
+      `are ${ing}`,
+      `was ${ing}`,
+      `have ${participle}`,
+      `has ${participle}`,
+    ];
+  }
 
-  const picked = shuffle([...new Set(pool)], rng).slice(0, OPTION_COUNT - 1);
+  const wrong = [...new Set(pool)].filter(
+    (f) => normalizeAnswer(f) !== normalizeAnswer(answer),
+  );
+  const picked = shuffle(wrong, rng)
+    .slice(0, OPTION_COUNT - 1)
+    .map((f) => matchCase(answer, f));
   return shuffle([answer, ...picked], rng);
 }
 
@@ -312,6 +365,20 @@ export function sentenceTiles(en: string): string[] {
 
 function verbFormHint(task: VerbGapTask): string {
   return task.form === "past" ? "вторая форма (Past Simple)" : "третья форма (после have/has)";
+}
+
+/**
+ * Подпись над заданием на время.
+ *
+ * Вид предложения назван прямо: фраза «He ___ milk» допускает и «likes», и
+ * «does not like», и без подсказки задание было бы нерешаемым. Русский перевод
+ * под заданием говорит о том же, но подсказка не должна зависеть от того,
+ * прочитал ли ученик перевод.
+ */
+function tenseHint(task: TenseGapTask, title: string): string {
+  if (task.form === "negative") return `${title} · отрицание`;
+  if (task.form === "question") return `${title} · вопрос`;
+  return title;
 }
 
 export type GrammarSessionResult = {
@@ -427,7 +494,7 @@ export function buildGrammarSession(opts: {
           base: t.base,
           input: choice ? ("choice" as const) : ("type" as const),
           options: choice ? tenseOptions(t, cardRng(t.id)) : undefined,
-          hint: tense?.title ?? t.tense,
+          hint: tenseHint(t, tense?.title ?? t.tense),
           tense: t.tense,
         };
       }),
@@ -510,6 +577,31 @@ function isWrongForm(given: string, base: string, accept: string[]): boolean {
   return allForms(base).some((f) => normalizeAnswer(f) === g);
 }
 
+/**
+ * Опечатка ищется ПОСЛОВНО и только в длинных словах.
+ *
+ * Иначе многословный ответ ломает всю затею: «will not go» и «will not do»
+ * отличаются на одну правку, то есть другой глагол проходил бы как описка.
+ * Служебные слова короче MIN_FUZZY_LENGTH обязаны совпадать точно — «do» против
+ * «does» это выбор, а не промах пальца.
+ */
+function typoAcceptable(given: string, matched: string): boolean {
+  const g = normalizeAnswer(given).split(" ").filter(Boolean);
+  const e = normalizeAnswer(matched).split(" ").filter(Boolean);
+  if (g.length !== e.length) return false;
+
+  let slips = 0;
+  for (let i = 0; i < e.length; i++) {
+    const a = g[i]!;
+    const b = e[i]!;
+    if (a === b) continue;
+    if (b.length < MIN_FUZZY_LENGTH) return false;
+    if (editDistance(a, b, 1) > 1) return false;
+    slips += 1;
+  }
+  return slips <= 1;
+}
+
 /** Проверка с грамматической строгостью: см. шапку файла. */
 function checkStrict(given: string, accept: string[], base?: string): { correct: boolean; typo: boolean } {
   const verdict = checkWritten(given, accept);
@@ -518,6 +610,10 @@ function checkStrict(given: string, accept: string[], base?: string): { correct:
   if (!verdict.typo) return { correct: true, typo: false };
   // Прощение опечатки отменяется, если ответ — другая форма глагола.
   if (base && isWrongForm(given, base, accept)) return { correct: false, typo: false };
+  // …и если «опечатка» пришлась на служебное слово или на второе слово подряд.
+  if (!typoAcceptable(given, verdict.matched ?? accept[0] ?? "")) {
+    return { correct: false, typo: false };
+  }
   return { correct: true, typo: true };
 }
 
@@ -597,7 +693,9 @@ export function checkGrammarAnswer(id: string, given: string): GrammarVerdict | 
     if (!correct) {
       const tense = tenseById(task.tense);
       if (tense) {
-        const d = diagnose(given, task.accept[0] ?? "", tense, task.base);
+        // Вид предложения обязателен: без него разбор объяснял бы в вопросе
+        // «Did you ___ to school?», что нужна вторая форма.
+        const d = diagnose(given, task.accept[0] ?? "", tense, task.base, task.form);
         if (d) verdict.mistake = d;
         verdict.rule = ruleOf(tense);
       }

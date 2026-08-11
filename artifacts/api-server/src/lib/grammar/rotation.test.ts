@@ -17,7 +17,8 @@ import assert from "node:assert/strict";
 
 import { LEVEL_ORDER, fitsLevel, type CefrLevel } from "./verbs";
 import { TENSES } from "./tenses";
-import { ASSEMBLE_TASKS, TENSE_GAP_TASKS, VERB_GAP_TASKS } from "./tasks";
+import { ASSEMBLE_TASKS, VERB_GAP_TASKS } from "./tasks";
+import { TENSE_GAP_TASKS } from "./tenseTasks";
 import {
   SESSION_SIZE,
   batchCount,
@@ -37,6 +38,15 @@ const NOW = new Date("2026-08-11T09:00:00.000Z");
  * нижняя граница, при которой «завтра будет новое» вообще выполнимо.
  */
 const MIN_POOL = SESSION_SIZE * 2;
+
+/**
+ * У времён запас больше: три захода.
+ *
+ * Не из любви к круглым числам. У времени три вида предложений, и по каждому
+ * нужен свой запас — иначе «новое каждый день» превращается в «новые
+ * утверждения, а вопросы те же».
+ */
+const MIN_TENSE_POOL = SESSION_SIZE * 3;
 
 const ids = <T extends { id: string }>(items: T[]) => items.map((t) => t.id);
 
@@ -82,8 +92,8 @@ test("у каждого времени хватает заданий, как т�
       (t) => t.tense === tense.id && fitsLevel(t.level, tense.level),
     );
     assert.ok(
-      pool.length >= MIN_POOL,
-      `${tense.title}: ${pool.length} заданий на уровне ${tense.level} при минимуме ${MIN_POOL}`,
+      pool.length >= MIN_TENSE_POOL,
+      `${tense.title}: ${pool.length} заданий на уровне ${tense.level} при минимуме ${MIN_TENSE_POOL}`,
     );
   }
 });
@@ -98,7 +108,7 @@ test("Past Continuous доступен уже на A2", () => {
   const forA2 = TENSE_GAP_TASKS.filter(
     (t) => t.tense === "past_continuous" && fitsLevel(t.level, "A2" as CefrLevel),
   );
-  assert.ok(forA2.length >= MIN_POOL, `на A2 доступно ${forA2.length} заданий`);
+  assert.ok(forA2.length >= MIN_TENSE_POOL, `на A2 доступно ${forA2.length} заданий`);
 });
 
 // ── Ротация ─────────────────────────────────────────────────────────────────
@@ -211,7 +221,7 @@ test("в течение дня подборка не меняется при о�
 
 test("во всех режимах заход выдаётся полным", () => {
   for (const level of LEVEL_ORDER) {
-    for (const mode of ["verbs", "tense", "build"] as const) {
+    for (const mode of ["forms", "verbs", "tense", "build"] as const) {
       const { cards } = buildGrammarSession({ mode, level, now: NOW });
       assert.equal(
         cards.length,

@@ -9,15 +9,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { IRREGULAR_VERBS, LEVEL_ORDER, verbByBase, type CefrLevel } from "./verbs";
-import { TENSES, diagnose, tenseById } from "./tenses";
+import { TENSES, diagnose, tenseById, type SentenceForm } from "./tenses";
 import {
   ASSEMBLE_TASKS,
   GAP,
   MAX_WORDS,
   PARTICIPLE_FROM,
-  TENSE_GAP_TASKS,
   VERB_GAP_TASKS,
 } from "./tasks";
+import { TENSE_GAP_TASKS } from "./tenseTasks";
 import {
   CHOICE_EVERY,
   allForms,
@@ -34,6 +34,14 @@ import {
 const rank = (l: CefrLevel) => LEVEL_ORDER.indexOf(l);
 const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
 const gaps = (s: string) => s.split(GAP).length - 1;
+
+/**
+ * Готовая фраза: с подставленным ответом, а не с прочерком.
+ *
+ * Длину меряем именно по ней. В отрицании на месте одного слова встают три
+ * («does not watch»), и фраза с пропуском о своей длине врёт.
+ */
+const filled = (text: string, answer: string) => text.replace(GAP, answer);
 
 // ── Таблица глаголов ────────────────────────────────────────────────────────
 
@@ -66,19 +74,30 @@ test("у каждого времени есть правило, примеры �
   }
 });
 
+test("у каждого времени есть схема отрицания и вопроса", () => {
+  // Схемы не украшение: их подставляет в объяснение разбор ошибки.
+  for (const t of TENSES) {
+    assert.ok(t.formulaNegative.includes("not"), `${t.id}: в схеме отрицания нет not`);
+    assert.ok(t.formulaQuestion.includes("?"), `${t.id}: схема вопроса не выглядит вопросом`);
+  }
+});
+
 // ── Уровни: то, о чём была просьба «строго проверь» ──────────────────────────
 
-test("предложение не длиннее лимита своего уровня", () => {
+test("готовая фраза не длиннее лимита своего уровня", () => {
   for (const t of VERB_GAP_TASKS) {
+    const answers = verbGapAnswers(t);
+    const text = filled(t.text, answers[0] ?? "");
     assert.ok(
-      wordCount(t.text) <= MAX_WORDS[t.level],
-      `${t.id}: ${wordCount(t.text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
+      wordCount(text) <= MAX_WORDS[t.level],
+      `${t.id}: ${wordCount(text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
     );
   }
   for (const t of TENSE_GAP_TASKS) {
+    const text = filled(t.text, t.accept[0] ?? "");
     assert.ok(
-      wordCount(t.text) <= MAX_WORDS[t.level],
-      `${t.id}: ${wordCount(t.text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
+      wordCount(text) <= MAX_WORDS[t.level],
+      `${t.id}: ${wordCount(text)} слов при лимите ${MAX_WORDS[t.level]} для ${t.level}`,
     );
   }
   for (const t of ASSEMBLE_TASKS) {
@@ -140,19 +159,76 @@ test("у каждого задания есть русский перевод", 
   }
 });
 
-test("у заданий на время ответ не пустой и согласован с самим временем", () => {
+// ── Три вида предложений ────────────────────────────────────────────────────
+
+test("у каждого времени поровну утверждений, отрицаний и вопросов", () => {
+  // Ровный состав — не вкусовщина: при перекосе 24/6/6 вопросы попадали бы в
+  // заход через раз, и раздел снова выглядел бы «только утвердительным».
+  const forms: SentenceForm[] = ["affirmative", "negative", "question"];
+  for (const tense of TENSES) {
+    const own = TENSE_GAP_TASKS.filter((t) => t.tense === tense.id);
+    for (const form of forms) {
+      const count = own.filter((t) => t.form === form).length;
+      assert.ok(count >= 12, `${tense.id}: заданий вида «${form}» всего ${count}`);
+    }
+  }
+});
+
+test("в отрицании есть not, в вопросе — вопросительный знак", () => {
+  for (const t of TENSE_GAP_TASKS) {
+    const text = filled(t.text, t.accept[0] ?? "");
+    if (t.form === "negative") {
+      assert.match(text, /\bnot\b|n't/, `${t.id}: отрицание без not`);
+    }
+    if (t.form === "question") {
+      assert.ok(text.trim().endsWith("?"), `${t.id}: вопрос без знака вопроса`);
+    }
+    if (t.form === "affirmative") {
+      assert.equal(text.includes("?"), false, `${t.id}: утверждение со знаком вопроса`);
+    }
+  }
+});
+
+test("ответ согласован с временем и видом предложения", () => {
   for (const t of TENSE_GAP_TASKS) {
     assert.ok(t.accept.length > 0, `${t.id}: нет ответа`);
     const main = t.accept[0]!;
+
+    // В вопросе ответом бывает один вспомогательный («Does»), поэтому форму
+    // смыслового глагола проверять не по чему — она стоит в самой фразе.
+    if (t.form === "question") continue;
+    if (t.form === "negative") {
+      assert.match(main, /\bnot\b/, `${t.id}: в отрицании ожидается not`);
+      continue;
+    }
     if (t.tense === "future_simple") {
-      assert.ok(/^(will|'ll)\s/.test(main), `${t.id}: в будущем времени ожидается will`);
+      assert.match(main, /^(will|'ll)\s/, `${t.id}: в будущем времени ожидается will`);
     }
     if (t.tense === "present_perfect") {
-      assert.ok(/^(have|has|'ve)\s/.test(main), `${t.id}: в Present Perfect ожидается have/has`);
+      assert.match(main, /^(have|has|'ve)\s/, `${t.id}: в Present Perfect ожидается have/has`);
     }
     if (t.tense === "present_continuous" || t.tense === "past_continuous") {
-      assert.ok(/ing$/.test(main), `${t.id}: в длительном времени ожидается -ing`);
+      assert.match(main, /ing$/, `${t.id}: в длительном времени ожидается -ing`);
     }
+  }
+});
+
+test("ответ в начале вопроса написан с заглавной буквы", () => {
+  // Он подставляется в начало фразы: строчная буква там выглядела бы ошибкой
+  // в самом задании.
+  for (const t of TENSE_GAP_TASKS) {
+    if (!t.text.startsWith(GAP)) continue;
+    const main = t.accept[0] ?? "";
+    assert.equal(main[0], main[0]?.toUpperCase(), `${t.id}: ответ «${main}» со строчной буквы`);
+  }
+});
+
+test("полная форма идёт раньше сокращённой", () => {
+  // Первый вариант показывается как эталон после ошибки, и там уместнее
+  // «did not go», а не «didn't go».
+  for (const t of TENSE_GAP_TASKS) {
+    const main = t.accept[0] ?? "";
+    assert.equal(main.includes("n't"), false, `${t.id}: эталонный ответ сокращённый`);
   }
 });
 
@@ -201,7 +277,7 @@ const NOW = new Date("2026-08-10T12:00:00.000Z");
 
 test("ученик получает только задания своего уровня и ниже", () => {
   for (const level of LEVEL_ORDER) {
-    for (const mode of ["verbs", "tense", "build"] as const) {
+    for (const mode of ["forms", "verbs", "tense", "build"] as const) {
       const { cards } = buildGrammarSession({ mode, level, now: NOW });
       for (const c of cards) {
         assert.ok(
@@ -227,6 +303,23 @@ test("в режиме времени приходят задания тольк�
   for (const c of cards) assert.equal(c.tense, "past_simple");
 });
 
+test("вид предложения назван в подсказке", () => {
+  // Без этого задание нерешаемо: «He ___ milk» допускает и «likes», и «does not
+  // like». Перевод под заданием говорит о том же, но подсказка не должна
+  // зависеть от того, прочитал ли ученик перевод.
+  const { cards } = buildGrammarSession({
+    mode: "tense", level: "A1", tense: "present_simple", now: NOW, size: 500,
+  });
+  for (const c of cards) {
+    const task = TENSE_GAP_TASKS.find((t) => t.id === c.id)!;
+    if (task.form === "negative") assert.match(c.hint ?? "", /отрицание/, `${c.id}`);
+    if (task.form === "question") assert.match(c.hint ?? "", /вопрос/, `${c.id}`);
+    if (task.form === "affirmative") {
+      assert.equal(/отрицание|вопрос/.test(c.hint ?? ""), false, `${c.id}`);
+    }
+  }
+});
+
 test("ученик в основном пишет сам, вариантами даётся каждое третье задание", () => {
   const { cards } = buildGrammarSession({ mode: "verbs", level: "B1", now: NOW, size: 6 });
   const choices = cards.filter((c) => c.input === "choice");
@@ -249,6 +342,32 @@ test("дистракторы — другие формы того же глаг�
     const forms = new Set(allForms(c.base!));
     for (const o of c.options!) {
       assert.ok(forms.has(o), `${c.id}: вариант «${o}» не форма глагола ${c.base}`);
+    }
+  }
+});
+
+test("во временах верный ответ ровно один, и он не выдаёт себя регистром", () => {
+  for (const tense of TENSES) {
+    const { cards } = buildGrammarSession({
+      mode: "tense", level: "C1", tense: tense.id, now: NOW, size: 500,
+    });
+    for (const c of cards) {
+      if (c.input !== "choice") continue;
+      const task = TENSE_GAP_TASKS.find((t) => t.id === c.id)!;
+      const options = c.options ?? [];
+      assert.equal(new Set(options).size, options.length, `${c.id}: варианты повторяются`);
+
+      const accept = new Set(task.accept.map((a) => a.toLowerCase()));
+      const hits = options.filter((o) => accept.has(o.toLowerCase()));
+      assert.equal(hits.length, 1, `${c.id}: принимаемых ответов среди вариантов ${hits.length}`);
+
+      // Заглавная буква только у одного варианта — это подсказка, видная без
+      // знания языка.
+      const caps = options.filter((o) => o[0] === o[0]?.toUpperCase());
+      assert.ok(
+        caps.length === 0 || caps.length === options.length,
+        `${c.id}: регистр вариантов разный, ответ видно по большой букве`,
+      );
     }
   }
 });
@@ -301,6 +420,28 @@ test("другая форма глагола НЕ прощается как оп
   const typo = checkGrammarAnswer("pst-2", "bough");
   assert.equal(typo?.correct, true);
   assert.equal(typo?.typo, true);
+});
+
+test("сокращение принимается наравне с полной формой", () => {
+  assert.equal(checkGrammarAnswer("pst-n1", "did not go")?.correct, true);
+  assert.equal(checkGrammarAnswer("pst-n1", "didn't go")?.correct, true);
+  // Описка внутри сокращения — всё ещё описка.
+  const typo = checkGrammarAnswer("pst-n1", "didnt go");
+  assert.equal(typo?.correct, true);
+  assert.equal(typo?.typo, true);
+});
+
+test("в отрицании вторая форма не проходит", () => {
+  const v = checkGrammarAnswer("pst-n1", "did not went");
+  assert.equal(v?.correct, false);
+});
+
+test("«Do» вместо «Does» — ошибка, а не опечатка", () => {
+  // Короткие служебные слова обязаны совпадать точно: выбор вспомогательного —
+  // это и есть проверяемое знание.
+  const v = checkGrammarAnswer("ps-q1", "Do");
+  assert.equal(v?.correct, false);
+  assert.equal(checkGrammarAnswer("ps-q1", "does")?.correct, true);
 });
 
 test("после ошибки приходит предложение целиком с верным ответом", () => {
@@ -367,6 +508,66 @@ test("будущее: пропущено will", () => {
 test("верный ответ не разбирается", () => {
   const tense = tenseById("past_simple")!;
   assert.equal(diagnose("went", "went", tense, "go"), null);
+});
+
+// ── Разбор ошибки в отрицании и вопросе ─────────────────────────────────────
+//
+// Самое важное здесь — что ветки утвердительного предложения СЮДА НЕ ЛЕЗУТ.
+// В вопросе «Did you ___ to school?» верный ответ go, и старый разбор объяснял
+// бы, что «go — первая форма, а нужна вторая», то есть учил бы писать «Did you
+// went».
+
+test("вопрос: после вспомогательного нужна первая форма, а не вторая", () => {
+  const tense = tenseById("past_simple")!;
+  const d = diagnose("went", "go", tense, "go", "question");
+  assert.ok(d, "ошибка не опознана");
+  assert.match(d!.headline, /перв/);
+  assert.equal(/нужна вторая/.test(d!.headline), false, "разбор учит писать «did you went»");
+});
+
+test("отрицание: не тот вспомогательный назван прямо", () => {
+  const tense = tenseById("present_simple")!;
+  const d = diagnose("do not like", "does not like", tense, "like", "negative");
+  assert.ok(d);
+  assert.match(d!.headline, /does/);
+});
+
+test("отрицание: -s уехало не туда", () => {
+  const tense = tenseById("present_simple")!;
+  const d = diagnose("does not likes", "does not like", tense, "like", "negative");
+  assert.ok(d);
+  assert.match(d!.headline, /-s/);
+});
+
+test("отрицание: пропущено not", () => {
+  const tense = tenseById("past_simple")!;
+  const d = diagnose("did go", "did not go", tense, "go", "negative");
+  assert.ok(d);
+  assert.match(d!.headline, /not/);
+});
+
+test("отрицание: пропущен сам вспомогательный", () => {
+  const tense = tenseById("present_perfect")!;
+  const d = diagnose("not seen", "have not seen", tense, "see", "negative");
+  assert.ok(d);
+  assert.match(d!.headline, /have/);
+});
+
+test("сокращение в ответе понимается разбором", () => {
+  const tense = tenseById("past_simple")!;
+  // «didn't go» — тот же ответ, что и «did not go»: разбирать нечего.
+  assert.equal(diagnose("didn't go", "did not go", tense, "go", "negative"), null);
+  // А вот «didn't went» — ошибка, и её надо назвать.
+  const d = diagnose("didn't went", "did not go", tense, "go", "negative");
+  assert.ok(d);
+  assert.match(d!.headline, /перв/);
+});
+
+test("вопрос в длительном времени: пропущено -ing", () => {
+  const tense = tenseById("present_continuous")!;
+  const d = diagnose("sleep", "sleeping", tense, "sleep", "question");
+  assert.ok(d);
+  assert.match(d!.headline, /ing/);
 });
 
 test("сборка: те же слова в другом порядке — это про порядок слов", () => {

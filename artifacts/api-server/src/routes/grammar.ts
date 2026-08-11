@@ -34,7 +34,8 @@ import { ensureSettings } from "../lib/flashcardsCore";
 import { startOfDay } from "../lib/srs";
 import { LEVEL_ORDER, fitsLevel, verbByBase, verbsUpTo, type CefrLevel } from "../lib/grammar/verbs";
 import { TENSES, tenseById } from "../lib/grammar/tenses";
-import { ASSEMBLE_TASKS, TENSE_GAP_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
+import { ASSEMBLE_TASKS, VERB_GAP_TASKS } from "../lib/grammar/tasks";
+import { TENSE_GAP_TASKS } from "../lib/grammar/tenseTasks";
 import { FORM_MASTERY_HITS, formTasksUpTo } from "../lib/grammar/forms";
 import {
   SESSION_SIZE,
@@ -220,7 +221,7 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
       {
         id: "tense",
         title: "Времена",
-        subtitle: "выбери время и тренируй его правила",
+        subtitle: "утверждение, отрицание и вопрос по правилам времени",
         taskCount: tenseTasks.length,
         batches: batchCount(tenseTasks.length, SESSION_SIZE),
         tenseCount: tenses.filter((t) => t.taskCount > 0).length,
