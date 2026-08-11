@@ -36,7 +36,9 @@ export type GrammarSession = {
   mode: GrammarMode;
   level: string;
   tense?: string;
-  /** Сколько заданий доступно на уровне (не только в этом заходе). */
+  /** Буква группы, если заход идёт по одной букве. */
+  letter?: string;
+  /** Сколько заданий доступно в этой подборке (не только в этом заходе). */
   total: number;
   /** Номер этого захода: 0 — первый за день. */
   round?: number;
@@ -68,6 +70,21 @@ export type TenseInfo = {
   batches?: number;
 };
 
+/**
+ * Группа неправильных глаголов на одну букву — как столбик в таблице в конце
+ * учебника. Буквы, на которых у ученика нет ни одного глагола, сервер не
+ * отдаёт вовсе.
+ */
+export type VerbLetterGroup = {
+  letter: string;
+  /** Сколько глаголов на эту букву доступно. */
+  verbCount: number;
+  /** Сколько это вопросов: по три на глагол. */
+  taskCount: number;
+  /** Сколько глаголов группы уже знакомы — по ним вопросы идут письмом. */
+  knownVerbs: number;
+};
+
 export type GrammarModeInfo = {
   id: GrammarMode;
   title: string;
@@ -78,6 +95,8 @@ export type GrammarModeInfo = {
   verbCount?: number;
   /** Сколько глаголов ученик уже знает: по ним вопросы идут письмом. */
   knownVerbs?: number;
+  /** Сколько буквенных групп доступно (только у режима форм). */
+  letterCount?: number;
   tenseCount?: number;
 };
 
@@ -89,6 +108,8 @@ export type GrammarOverview = {
   pointsCap?: number;
   modes: GrammarModeInfo[];
   tenses: TenseInfo[];
+  /** Буквенные группы форм глаголов, по алфавиту. */
+  verbLetters?: VerbLetterGroup[];
 };
 
 /** Точность по одной теме: времени или глаголу. */
@@ -132,20 +153,35 @@ export type GrammarVerdict = {
   pointsCap?: number;
 };
 
+/** Что запрашиваем: режим и, по обстоятельствам, время, букву и номер захода. */
+export type GrammarSessionQuery = {
+  mode: GrammarMode;
+  /** Только для режима tense. */
+  tense?: string;
+  /** Только для режима forms: одна буква. Пусто — все буквы вперемешку. */
+  letter?: string;
+  /**
+   * Номер захода внутри одного открытия экрана. Между входами курсор двигает не
+   * он, а журнал ответов на сервере: иначе выход в оглавление обнулял бы
+   * счётчик, и ученик получал бы те же двенадцать заданий. Здесь round
+   * остаётся подстраховкой на случай ответов, не доехавших до сервера.
+   */
+  round?: number;
+};
+
 export const grammar = {
   getOverview: () => apiFetch<GrammarOverview>("/api/grammar/overview"),
   getStats: () => apiFetch<GrammarStats>("/api/grammar/stats"),
   /**
    * Подборка заданий.
    *
-   * round — номер захода внутри одного открытия экрана. Между входами курсор
-   * двигает не он, а журнал ответов на сервере: иначе выход в оглавление
-   * обнулял бы счётчик, и ученик получал бы те же двенадцать заданий. Здесь
-   * round остаётся подстраховкой на случай ответов, не доехавших до сервера.
+   * Параметры объектом, а не по порядку: их стало четыре, и вызов вида
+   * getSession(mode, undefined, 0, "B") читался бы шарадой.
    */
-  getSession: (mode: GrammarMode, tense?: string, round = 0) => {
+  getSession: ({ mode, tense, letter, round = 0 }: GrammarSessionQuery) => {
     const p = new URLSearchParams({ mode });
     if (tense) p.set("tense", tense);
+    if (letter) p.set("letter", letter);
     if (round > 0) p.set("round", String(round));
     return apiFetch<GrammarSession>(`/api/grammar/session?${p.toString()}`);
   },
