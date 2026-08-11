@@ -43,11 +43,20 @@
 // должен стоять там, где отрицание звучит естественно. «Кошки много {}» дало бы
 // «Кошки много не спят», поэтому написано «Кошки {} много».
 //
+// ── ГРАБЛИ: счётчики в хвосте ───────────────────────────────────────────────
+// «She has read this book three times» — прекрасное утверждение и негодный
+// вопрос: «Has she read this book three times?» звучит странно, а по-русски
+// вопрос вообще получался про другое. Чинить это отдельным переводом на каждый
+// вид предложения значит завести третий шаблон, о котором обязательно забудут.
+//
+// Проще не ставить счётчик в заготовку вовсе. К грамматике, ради которой
+// задание написано, «три раза» ничего не добавляет.
+//
 // ── Хвост для отрицания ─────────────────────────────────────────────────────
-// «I have not finished my homework already» — не по-английски: в отрицании и
-// вопросе Present Perfect работает yet, already остаётся утверждению. То же с
-// «three times» и «twice». Для таких случаев есть restNeg и ruNeg. Генератор
-// подменить already на yet не может и не должен: это работа со смыслом.
+// Остался ровно один вид особого хвоста: already в отрицании и вопросе меняется
+// на yet. Перевод утверждения при этом работает и как вопрос («Я уже закончил
+// домашнюю работу?»), поэтому третий шаблон не нужен и тут. С «наконец» это не
+// работало, и в двух заготовках оно заменено на «уже».
 //
 // ── Правила, которые надо держать в голове, добавляя заготовку ──────────────
 // 1. Длина. Считается ГОТОВАЯ фраза, а отрицание длиннее утверждения на два
@@ -59,6 +68,7 @@
 //    стоит на месте глагола, и наречие оказалось бы не с той стороны.
 // 3. Подлежащее — обычное слово или местоимение, без имён собственных: в
 //    вопросе оно уходит с заглавной буквы на строчную («Does my cat …»).
+// 4. Никаких счётчиков в хвосте, см. ГРАБЛИ выше.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { CefrLevel } from "./verbs";
@@ -137,12 +147,12 @@ export const SENTENCE_UNITS: SentenceUnit[] = [
   // ── Past Simple (A2) ──────────────────────────────────────────────────────
   { id: "u-pst-1", level: "A2", tense: "past_simple", person: "we", subject: "We", verb: "go", rest: "to the cinema last night", ru: "Мы {} в кино вчера вечером", ruVerb: "ходили" },
   { id: "u-pst-2", level: "A2", tense: "past_simple", person: "she", subject: "She", verb: "buy", rest: "a new dress yesterday", ru: "Она {} новое платье вчера", ruVerb: "купила" },
-  { id: "u-pst-3", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "play", rest: "football two days ago", ru: "Я {} в футбол два дня назад", ruVerb: "играл" },
+  { id: "u-pst-3", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "play", rest: "football yesterday", ru: "Я {} в футбол вчера", ruVerb: "играл" },
   { id: "u-pst-4", level: "A2", tense: "past_simple", person: "he", subject: "He", verb: "lose", rest: "his keys last week", ru: "Он {} свои ключи на прошлой неделе", ruVerb: "потерял" },
-  { id: "u-pst-5", level: "A2", tense: "past_simple", person: "they", subject: "They", verb: "live", rest: "in London in 2019", ru: "Они {} в Лондоне в 2019 году", ruVerb: "жили" },
+  { id: "u-pst-5", level: "A2", tense: "past_simple", person: "they", subject: "They", verb: "live", rest: "in London last year", ru: "Они {} в Лондоне в прошлом году", ruVerb: "жили" },
   { id: "u-pst-6", level: "A2", tense: "past_simple", person: "she", subject: "My mother", verb: "make", rest: "a cake yesterday", ru: "Моя мама {} торт вчера", ruVerb: "сделала" },
   { id: "u-pst-7", level: "A2", tense: "past_simple", person: "we", subject: "We", verb: "meet", rest: "our friends on Saturday", ru: "Мы {} наших друзей в субботу", ruVerb: "встретили" },
-  { id: "u-pst-8", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "read", rest: "that book two years ago", ru: "Я {} ту книгу два года назад", ruVerb: "читал" },
+  { id: "u-pst-8", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "read", rest: "that book last summer", ru: "Я {} ту книгу прошлым летом", ruVerb: "читал" },
   { id: "u-pst-9", level: "A2", tense: "past_simple", person: "she", subject: "She", verb: "visit", rest: "her grandmother on Sunday", ru: "Она {} бабушку в воскресенье", ruVerb: "навещала" },
   { id: "u-pst-10", level: "A2", tense: "past_simple", person: "we", subject: "We", verb: "eat", rest: "a big pizza yesterday", ru: "Мы {} большую пиццу вчера", ruVerb: "съели" },
   { id: "u-pst-11", level: "A2", tense: "past_simple", person: "he", subject: "He", verb: "open", rest: "the window an hour ago", ru: "Он {} окно час назад", ruVerb: "открыл" },
@@ -152,7 +162,7 @@ export const SENTENCE_UNITS: SentenceUnit[] = [
   { id: "u-pst-15", level: "A2", tense: "past_simple", person: "she", subject: "She", verb: "sing", rest: "a beautiful song", ru: "Она {} красивую песню", ruVerb: "спела" },
   { id: "u-pst-16", level: "A2", tense: "past_simple", person: "we", subject: "We", verb: "swim", rest: "in the sea last July", ru: "Мы {} в море в прошлом июле", ruVerb: "плавали" },
   { id: "u-pst-17", level: "A2", tense: "past_simple", person: "he", subject: "My brother", verb: "break", rest: "his bike last week", ru: "Мой брат {} велосипед на прошлой неделе", ruVerb: "сломал" },
-  { id: "u-pst-18", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "call", rest: "you three times yesterday", ru: "Я {} тебе три раза вчера", ruVerb: "звонил", restNeg: "you yesterday", ruNeg: "Я {} тебе вчера" },
+  { id: "u-pst-18", level: "A2", tense: "past_simple", person: "I", subject: "I", verb: "call", rest: "you yesterday", ru: "Я {} тебе вчера", ruVerb: "звонил" },
   { id: "u-pst-19", level: "A2", tense: "past_simple", person: "they", subject: "They", verb: "buy", rest: "a new flat in May", ru: "Они {} новую квартиру в мае", ruVerb: "купили" },
   { id: "u-pst-20", level: "A2", tense: "past_simple", person: "she", subject: "She", verb: "write", rest: "me a long letter", ru: "Она {} мне длинное письмо", ruVerb: "написала" },
 
@@ -201,26 +211,26 @@ export const SENTENCE_UNITS: SentenceUnit[] = [
   { id: "u-fs-20", level: "A2", tense: "future_simple", person: "it", subject: "Our team", verb: "win", rest: "the next match", ru: "Наша команда {} следующий матч", ruVerb: "выиграет" },
 
   // ── Present Perfect (B1) ──────────────────────────────────────────────────
-  // Здесь чаще всего нужен свой хвост для отрицания: already живёт в
+  // Единственное место, где нужен свой хвост для отрицания: already живёт в
   // утверждении, а в отрицании и вопросе на его месте стоит yet.
   { id: "u-pp-1", level: "B1", tense: "present_perfect", person: "I", subject: "I", verb: "finish", rest: "my homework already", ru: "Я уже {} домашнюю работу", ruVerb: "закончил", restNeg: "my homework yet", ruNeg: "Я ещё {} домашнюю работу" },
-  { id: "u-pp-2", level: "B1", tense: "present_perfect", person: "she", subject: "She", verb: "read", rest: "this book three times", ru: "Она {} эту книгу три раза", ruVerb: "читала", restNeg: "this book", ruNeg: "Она {} эту книгу" },
+  { id: "u-pp-2", level: "B1", tense: "present_perfect", person: "she", subject: "She", verb: "read", rest: "this book", ru: "Она {} эту книгу", ruVerb: "читала" },
   { id: "u-pp-3", level: "B1", tense: "present_perfect", person: "we", subject: "We", verb: "live", rest: "here since 2015", ru: "Мы {} здесь с 2015 года", ruVerb: "живём" },
-  { id: "u-pp-4", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "lose", rest: "his passport again", ru: "Он снова {} свой паспорт", ruVerb: "потерял", restNeg: "his passport", ruNeg: "Он {} свой паспорт" },
-  { id: "u-pp-5", level: "B1", tense: "present_perfect", person: "they", subject: "They", verb: "be", rest: "to Japan twice", ru: "Они {} в Японии дважды", ruVerb: "были", restNeg: "to Japan", ruNeg: "Они {} в Японии" },
+  { id: "u-pp-4", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "lose", rest: "his passport", ru: "Он {} свой паспорт", ruVerb: "потерял" },
+  { id: "u-pp-5", level: "B1", tense: "present_perfect", person: "they", subject: "They", verb: "be", rest: "to Japan", ru: "Они {} в Японии", ruVerb: "были" },
   { id: "u-pp-6", level: "B1", tense: "present_perfect", person: "I", subject: "I", verb: "hear", rest: "the news already", ru: "Я уже {} эту новость", ruVerb: "слышал", restNeg: "the news yet", ruNeg: "Я ещё {} эту новость" },
   { id: "u-pp-7", level: "B1", tense: "present_perfect", person: "we", subject: "We", verb: "do", rest: "our homework already", ru: "Мы уже {} домашнюю работу", ruVerb: "сделали", restNeg: "our homework yet", ruNeg: "Мы ещё {} домашнюю работу" },
   { id: "u-pp-8", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "study", rest: "here since 2020", ru: "Он {} здесь с 2020 года", ruVerb: "учится" },
   { id: "u-pp-9", level: "B1", tense: "present_perfect", person: "I", subject: "I", verb: "clean", rest: "my room today", ru: "Я {} свою комнату сегодня", ruVerb: "убрал" },
   { id: "u-pp-10", level: "B1", tense: "present_perfect", person: "she", subject: "She", verb: "ride", rest: "a horse before", ru: "Она {} на лошади раньше", ruVerb: "каталась" },
-  { id: "u-pp-11", level: "B1", tense: "present_perfect", person: "we", subject: "We", verb: "know", rest: "each other for ten years", ru: "Мы {} друг друга десять лет", ruVerb: "знаем", restNeg: "each other", ruNeg: "Мы {} друг друга" },
-  { id: "u-pp-12", level: "B1", tense: "present_perfect", person: "it", subject: "The rain", verb: "stop", rest: "at last", ru: "Дождь наконец {}", ruVerb: "прекратился", restNeg: "yet", ruNeg: "Дождь ещё {}" },
+  { id: "u-pp-11", level: "B1", tense: "present_perfect", person: "we", subject: "We", verb: "know", rest: "each other well", ru: "Мы {} друг друга хорошо", ruVerb: "знаем" },
+  { id: "u-pp-12", level: "B1", tense: "present_perfect", person: "it", subject: "The rain", verb: "stop", rest: "already", ru: "Дождь уже {}", ruVerb: "прекратился", restNeg: "yet", ruNeg: "Дождь ещё {}" },
   { id: "u-pp-13", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "leave", rest: "his phone at home", ru: "Он {} свой телефон дома", ruVerb: "оставил" },
-  { id: "u-pp-14", level: "B1", tense: "present_perfect", person: "you", subject: "You", verb: "make", rest: "a lot of mistakes today", ru: "Ты {} много ошибок сегодня", ruVerb: "сделал", restNeg: "mistakes today", ruNeg: "Ты {} ошибок сегодня" },
+  { id: "u-pp-14", level: "B1", tense: "present_perfect", person: "you", subject: "You", verb: "make", rest: "mistakes today", ru: "Ты {} ошибки сегодня", ruVerb: "сделал" },
   { id: "u-pp-15", level: "B1", tense: "present_perfect", person: "I", subject: "I", verb: "see", rest: "this word before", ru: "Я {} это слово раньше", ruVerb: "видел" },
   { id: "u-pp-16", level: "B1", tense: "present_perfect", person: "she", subject: "She", verb: "work", rest: "in Moscow since April", ru: "Она {} в Москве с апреля", ruVerb: "работает" },
   { id: "u-pp-17", level: "B1", tense: "present_perfect", person: "we", subject: "We", verb: "sell", rest: "all the tickets already", ru: "Мы уже {} все билеты", ruVerb: "продали", restNeg: "all the tickets yet", ruNeg: "Мы ещё {} все билеты" },
-  { id: "u-pp-18", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "write", rest: "to me twice this week", ru: "Он {} мне дважды на этой неделе", ruVerb: "написал", restNeg: "to me this week", ruNeg: "Он {} мне на этой неделе" },
-  { id: "u-pp-19", level: "B1", tense: "present_perfect", person: "they", subject: "They", verb: "build", rest: "the new bridge at last", ru: "Они наконец {} новый мост", ruVerb: "построили", restNeg: "the new bridge yet", ruNeg: "Они ещё {} новый мост" },
+  { id: "u-pp-18", level: "B1", tense: "present_perfect", person: "he", subject: "He", verb: "write", rest: "to me this week", ru: "Он {} мне на этой неделе", ruVerb: "написал" },
+  { id: "u-pp-19", level: "B1", tense: "present_perfect", person: "they", subject: "They", verb: "build", rest: "the new bridge already", ru: "Они уже {} новый мост", ruVerb: "построили", restNeg: "the new bridge yet", ruNeg: "Они ещё {} новый мост" },
   { id: "u-pp-20", level: "B1", tense: "present_perfect", person: "I", subject: "I", verb: "eat", rest: "my breakfast already", ru: "Я уже {} свой завтрак", ruVerb: "съел", restNeg: "my breakfast yet", ruNeg: "Я ещё {} свой завтрак" },
 ];
