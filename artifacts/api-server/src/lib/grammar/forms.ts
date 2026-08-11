@@ -34,6 +34,20 @@
 // Поэтому уровень задания равен уровню глагола: у глагола A1 спрашиваются все
 // три формы, у глагола C1 — тоже все три, но не раньше C1. Где эта форма
 // работает, написано прямо в подсказке: «третья форма (после have/has)».
+//
+// ── Группы по первой букве ──────────────────────────────────────────────────
+// Глаголы можно учить и подряд, и по буквам: «неправильные глаголы на B», потом
+// на C. Так их учат по таблице в учебнике, и так же выглядит любой список
+// глаголов в справочнике — ученик приходит с этой привычкой, а не с нашей.
+//
+// Практическая польза не в алфавите, а в РАЗМЕРЕ: группа из шести глаголов
+// закрывается за один присест, и «выучила глаголы на B» — проверяемый результат.
+// «Учу неправильные глаголы» результатом не является никогда.
+//
+// Буква берётся у ПЕРВОЙ формы (buy → B), а не у перевода: в таблице учебника
+// глагол стоит именно по ней, и искать его ученик будет там же. Группы
+// вычисляются из таблицы, поэтому новый глагол попадает в свою букву сам, и
+// пустых букв в списке не бывает по построению.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { normalizeAnswer } from "../answerCheck";
@@ -41,6 +55,7 @@ import {
   IRREGULAR_VERBS,
   fitsLevel,
   verbByBase,
+  verbsUpTo,
   type CefrLevel,
   type IrregularVerb,
 } from "./verbs";
@@ -91,6 +106,9 @@ function taskFor(kind: VerbFormKind, verb: IrregularVerb): FormTask {
 
 const KINDS: VerbFormKind[] = ["toEn", "past", "participle"];
 
+/** Сколько вопросов приходится на один глагол: по одному на каждую форму. */
+export const QUESTIONS_PER_VERB = KINDS.length;
+
 function isKind(value: string): value is VerbFormKind {
   return (KINDS as string[]).includes(value);
 }
@@ -122,6 +140,84 @@ export function allFormTasks(): FormTask[] {
 /** Задания уровня ученика и ниже. */
 export function formTasksUpTo(level: CefrLevel): FormTask[] {
   return allFormTasks().filter((t) => fitsLevel(t.level, level));
+}
+
+// ── Буквы ───────────────────────────────────────────────────────────────────
+
+/**
+ * Буква глагола: первая буква ПЕРВОЙ формы, заглавная.
+ *
+ * Не перевода: в таблице учебника глагол стоит по английскому слову, и ученик
+ * будет искать его там же. «Покупать» на «П» не найдётся ни в одном справочнике.
+ */
+export function verbLetter(verb: IrregularVerb): string {
+  return (verb.base.charAt(0) ?? "").toUpperCase();
+}
+
+/** Буква из запроса в сравнимом виде. Пусто — значит буква не выбрана. */
+export function normalizeLetter(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const letter = value.trim().charAt(0).toUpperCase();
+  return /^[A-Z]$/.test(letter) ? letter : "";
+}
+
+export type LetterGroup = {
+  letter: string;
+  /** Сколько глаголов в группе. */
+  verbCount: number;
+  /** Сколько вопросов: по три на глагол. */
+  taskCount: number;
+  /** Сколько глаголов группы ученик уже знает — по ним вопросы идут письмом. */
+  knownVerbs: number;
+};
+
+/**
+ * Группы букв для уровня ученика.
+ *
+ * Только буквы, у которых на этом уровне есть глаголы: буква без заданий в
+ * списке — это сломанная кнопка. Порядок алфавитный, потому что вся затея
+ * именно про алфавит: искать «глаголы на S» ученик будет там, где ожидает.
+ *
+ * Числа отдаются сразу, без второго запроса: без них ученик не поймёт, во что
+ * жмёт, а группа из одного глагола (на A1 таких несколько) должна честно
+ * говорить, что она из одного глагола.
+ */
+export function verbLetterGroups(
+  level: CefrLevel,
+  mastered: ReadonlySet<string> = new Set(),
+): LetterGroup[] {
+  const groups = new Map<string, { verbCount: number; knownVerbs: number }>();
+
+  for (const verb of verbsUpTo(level)) {
+    const letter = verbLetter(verb);
+    if (!letter) continue;
+    const row = groups.get(letter) ?? { verbCount: 0, knownVerbs: 0 };
+    row.verbCount += 1;
+    if (mastered.has(verb.base)) row.knownVerbs += 1;
+    groups.set(letter, row);
+  }
+
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([letter, row]) => ({
+      letter,
+      verbCount: row.verbCount,
+      taskCount: row.verbCount * QUESTIONS_PER_VERB,
+      knownVerbs: row.knownVerbs,
+    }));
+}
+
+/**
+ * Задания одной буквы.
+ *
+ * Буква не задана или не латинская — отдаём весь уровень: «все подряд» это
+ * законный режим, а не ошибка, и падать тут не на чем.
+ */
+export function formTasksByLetter(level: CefrLevel, letter: unknown): FormTask[] {
+  const want = normalizeLetter(letter);
+  const pool = formTasksUpTo(level);
+  if (!want) return pool;
+  return pool.filter((t) => verbLetter(t.verb) === want);
 }
 
 /**
