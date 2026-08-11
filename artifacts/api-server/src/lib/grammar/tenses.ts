@@ -13,8 +13,14 @@
 //
 // ── Уровни ──────────────────────────────────────────────────────────────────
 // Расставлены по школьной программе: Present Simple и Present Continuous на A1,
-// Past Simple и Future Simple на A2, Present Perfect и Past Continuous на B1.
+// Past Simple, Future Simple и Past Continuous на A2, Present Perfect на B1.
 // Ученик A1 не должен получить задание на Present Perfect — это тест.
+//
+// Про Past Continuous отдельно: сперва он стоял на B1 рядом с перфектом, и
+// ученик A2 его не видел вовсе. Это неверно. Прошедшее длительное вводится
+// сразу за Past Simple («I was reading when he called»), а по конструкции оно
+// проще перфекта: was/were плюс -ing, без третьей формы. Present Perfect на B1
+// остаётся: там трудность не в форме, а в том, когда это время вообще уместно.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { verbByBase, type CefrLevel } from "./verbs";
@@ -99,6 +105,23 @@ export const TENSES: Tense[] = [
       "Вторая форма и did вместе не используются никогда.",
   },
   {
+    id: "past_continuous",
+    title: "Past Continuous",
+    titleRu: "Прошедшее длительное",
+    level: "A2",
+    formula: "I was working · They were working",
+    usage: [
+      "действие шло в определённый момент прошлого: at seven I was having dinner",
+      "длинное действие прервано коротким: I was reading when he called",
+      "фон для рассказа: the sun was shining and birds were singing",
+    ],
+    markers: ["at that moment", "while", "when", "all day yesterday", "at five o'clock"],
+    rule:
+      "was или were плюс глагол с -ing. was — с I, he, she, it; were — с we, you, they. " +
+      "Часто встречается в паре с Past Simple: длинное действие в Past Continuous, короткое, которое его прервало, — в Past Simple. " +
+      "I was walking home when I met her.",
+  },
+  {
     id: "future_simple",
     title: "Future Simple",
     titleRu: "Простое будущее",
@@ -132,23 +155,6 @@ export const TENSES: Tense[] = [
       "Ключевое отличие от Past Simple: здесь не называется точное время. " +
       "Поэтому yesterday, last week и ago с этим временем не сочетаются — с ними нужен Past Simple. " +
       "Зато already, just, yet, ever, never, for и since — его собственные слова.",
-  },
-  {
-    id: "past_continuous",
-    title: "Past Continuous",
-    titleRu: "Прошедшее длительное",
-    level: "B1",
-    formula: "I was working · They were working",
-    usage: [
-      "действие шло в определённый момент прошлого: at seven I was having dinner",
-      "длинное действие прервано коротким: I was reading when he called",
-      "фон для рассказа: the sun was shining and birds were singing",
-    ],
-    markers: ["at that moment", "while", "when", "all day yesterday", "at five o'clock"],
-    rule:
-      "was или were плюс глагол с -ing. was — с I, he, she, it; were — с we, you, they. " +
-      "Часто встречается в паре с Past Simple: длинное действие в Past Continuous, короткое, которое его прервало, — в Past Simple. " +
-      "I was walking home when I met her.",
   },
 ];
 
