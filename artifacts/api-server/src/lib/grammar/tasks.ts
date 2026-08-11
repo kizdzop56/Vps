@@ -1,10 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Банк заданий раздела «Составлять».
+// Банки заданий раздела «Составлять»: общие типы и правила уровней.
 //
-// Три вида, все на одном движке (см. engine.ts):
-//   verbGap  — вставить нужную форму неправильного глагола;
-//   tenseGap — поставить глагол в заданное время;
+// Виды заданий, все на одном движке (см. engine.ts):
+//   forms    — сама форма неправильного глагола (см. forms.ts, банк вычисляется);
+//   verbGap  — вставить нужную форму неправильного глагола в предложение;
+//   tenseGap — поставить глагол в заданное время (банк в tenseTasks.ts);
 //   assemble — собрать предложение по русскому переводу.
+//
+// Банк времён вынесен в отдельный файл: после того как у каждого времени
+// появились отрицания и вопросы, в нём стало больше двухсот заданий, и всё
+// остальное просто перестало быть видно. Растёт он быстрее прочих, значит и
+// жить должен отдельно.
 //
 // ── Объём: не меньше двух полных заходов ────────────────────────────────────
 // Первая версия банка была маленькой: 28 предложений в сборке на все уровни,
@@ -20,8 +26,9 @@
 // ── Соответствие уровню ─────────────────────────────────────────────────────
 // Пять правил, и каждое проверяется тестом, а не обещанием в комментарии:
 //
-//   1. длина предложения не больше лимита уровня (MAX_WORDS). На A1 длинная
-//      фраза непонятна сама по себе, сколько бы простой ни была грамматика;
+//   1. ГОТОВАЯ фраза не длиннее лимита уровня (MAX_WORDS). Считается именно
+//      готовая, с подставленным ответом: в отрицании на месте одного слова
+//      встают три («does not watch»), и фраза с пропуском о своей длине врёт;
 //   2. глагол задания не выше уровня задания: в задании A1 не может стоять
 //      withdraw;
 //   3. третья форма (для Present Perfect) появляется только с B1 — там, где
@@ -37,12 +44,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { CefrLevel } from "./verbs";
-import type { TenseId } from "./tenses";
+import type { SentenceForm, TenseId } from "./tenses";
 
 /** Метка пропуска в предложении. Одна на весь банк. */
 export const GAP = "___";
 
-/** Предел длины предложения по уровню, в словах. */
+/** Предел длины ГОТОВОЙ фразы по уровню, в словах. */
 export const MAX_WORDS: Record<CefrLevel, number> = {
   A1: 8,
   A2: 11,
@@ -70,15 +77,30 @@ export type VerbGapTask = {
   ru: string;
 };
 
-/** Поставить глагол в заданное время. */
+/**
+ * Поставить глагол в заданное время. Банк — в tenseTasks.ts.
+ *
+ * form обязателен и без умолчания: «по умолчанию утвердительное» означало бы,
+ * что забытое поле молча превращает вопрос в утверждение. Про такие поля
+ * забывают всегда, а разбор ошибки без вида предложения врёт ученику в лицо —
+ * например, объясняет «нужна вторая форма» там, где после did нужна первая.
+ */
 export type TenseGapTask = {
   id: string;
   level: CefrLevel;
   tense: TenseId;
+  /** Утверждение, отрицание или вопрос. */
+  form: SentenceForm;
   text: string;
   /** Первая форма глагола — она же подсказка в скобках. */
   base: string;
-  /** Допустимые ответы целиком: «is reading», «have seen». */
+  /**
+   * Допустимые ответы целиком: «is reading», «does not like», «Did».
+   *
+   * Первый вариант — эталонный, его показываем после ошибки, поэтому полная
+   * форма идёт раньше сокращённой. У ответов в начале вопроса первая буква
+   * заглавная: этот ответ подставляется в начало фразы.
+   */
   accept: string[];
   ru: string;
 };
@@ -186,174 +208,6 @@ export const VERB_GAP_TASKS: VerbGapTask[] = [
   { id: "vg-b2-8", level: "B2", text: `She has ${GAP} the floor twice today.`, base: "sweep", form: "participle", ru: "Она подмела пол дважды за сегодня." },
   { id: "vg-b2-9", level: "B2", text: `The box ${GAP} across the wet floor.`, base: "slide", form: "past", ru: "Коробка проскользила по мокрому полу." },
   { id: "vg-b2-10", level: "B2", text: `The children ${GAP} on the old gate.`, base: "swing", form: "past", ru: "Дети качались на старых воротах." },
-];
-
-// ── Времена ─────────────────────────────────────────────────────────────────
-// В пропуск встаёт ВСЯ форма целиком: «is reading», «have been». Поэтому
-// пропуск один, а служебные слова (never, just, already) стоят рядом с ним
-// открытым текстом — ученик видит их и понимает, какое время требуется.
-//
-// По 24 задания на время: это два полных захода без единого повтора, то есть
-// два дня подряд. Меньше — и ротация упирается в размер банка.
-
-export const TENSE_GAP_TASKS: TenseGapTask[] = [
-  // Present Simple (A1)
-  { id: "ps-1", level: "A1", tense: "present_simple", text: `He ${GAP} to bed at ten.`, base: "go", accept: ["goes"], ru: "Он ложится спать в десять." },
-  { id: "ps-2", level: "A1", tense: "present_simple", text: `I ${GAP} tea every morning.`, base: "drink", accept: ["drink"], ru: "Я пью чай каждое утро." },
-  { id: "ps-3", level: "A1", tense: "present_simple", text: `She ${GAP} her homework after school.`, base: "do", accept: ["does"], ru: "Она делает домашнюю работу после школы." },
-  { id: "ps-4", level: "A1", tense: "present_simple", text: `My friends ${GAP} football on Sundays.`, base: "play", accept: ["play"], ru: "Мои друзья играют в футбол по воскресеньям." },
-  { id: "ps-5", level: "A1", tense: "present_simple", text: `The shop ${GAP} at nine every day.`, base: "open", accept: ["opens"], ru: "Магазин открывается в девять каждый день." },
-  { id: "ps-6", level: "A1", tense: "present_simple", text: `My cat ${GAP} milk very much.`, base: "like", accept: ["likes"], ru: "Моя кошка очень любит молоко." },
-  { id: "ps-7", level: "A1", tense: "present_simple", text: `We usually ${GAP} at home.`, base: "eat", accept: ["eat"], ru: "Мы обычно едим дома." },
-  { id: "ps-8", level: "A1", tense: "present_simple", text: `She never ${GAP} to music.`, base: "listen", accept: ["listens"], ru: "Она никогда не слушает музыку." },
-  { id: "ps-9", level: "A1", tense: "present_simple", text: `We ${GAP} English at school.`, base: "study", accept: ["study"], ru: "Мы учим английский в школе." },
-  { id: "ps-10", level: "A1", tense: "present_simple", text: `My mother ${GAP} very good soup.`, base: "cook", accept: ["cooks"], ru: "Моя мама готовит очень вкусный суп." },
-  { id: "ps-11", level: "A1", tense: "present_simple", text: `The bus ${GAP} at eight.`, base: "come", accept: ["comes"], ru: "Автобус приходит в восемь." },
-  { id: "ps-12", level: "A1", tense: "present_simple", text: `Cats ${GAP} a lot.`, base: "sleep", accept: ["sleep"], ru: "Кошки много спят." },
-  { id: "ps-13", level: "A1", tense: "present_simple", text: `He always ${GAP} his teeth.`, base: "brush", accept: ["brushes"], ru: "Он всегда чистит зубы." },
-  { id: "ps-14", level: "A1", tense: "present_simple", text: `I ${GAP} in a big house.`, base: "live", accept: ["live"], ru: "Я живу в большом доме." },
-  { id: "ps-15", level: "A1", tense: "present_simple", text: `She ${GAP} to school by bus.`, base: "go", accept: ["goes"], ru: "Она ездит в школу на автобусе." },
-  { id: "ps-16", level: "A1", tense: "present_simple", text: `We ${GAP} TV every evening.`, base: "watch", accept: ["watch"], ru: "Мы смотрим телевизор каждый вечер." },
-  { id: "ps-17", level: "A1", tense: "present_simple", text: `My father ${GAP} in a bank.`, base: "work", accept: ["works"], ru: "Мой папа работает в банке." },
-  { id: "ps-18", level: "A1", tense: "present_simple", text: `They ${GAP} football very well.`, base: "play", accept: ["play"], ru: "Они играют в футбол очень хорошо." },
-  { id: "ps-19", level: "A1", tense: "present_simple", text: `It often ${GAP} in autumn.`, base: "rain", accept: ["rains"], ru: "Осенью часто идёт дождь." },
-  { id: "ps-20", level: "A1", tense: "present_simple", text: `My sister ${GAP} funny books.`, base: "read", accept: ["reads"], ru: "Моя сестра читает смешные книги." },
-  { id: "ps-21", level: "A1", tense: "present_simple", text: `We ${GAP} our homework together.`, base: "do", accept: ["do"], ru: "Мы делаем домашнюю работу вместе." },
-  { id: "ps-22", level: "A1", tense: "present_simple", text: `He ${GAP} milk every morning.`, base: "drink", accept: ["drinks"], ru: "Он пьёт молоко каждое утро." },
-  { id: "ps-23", level: "A1", tense: "present_simple", text: `Birds ${GAP} in the sky.`, base: "fly", accept: ["fly"], ru: "Птицы летают в небе." },
-  { id: "ps-24", level: "A1", tense: "present_simple", text: `She ${GAP} her room on Sunday.`, base: "clean", accept: ["cleans"], ru: "Она убирает свою комнату в воскресенье." },
-
-  // Present Continuous (A1)
-  { id: "pc-1", level: "A1", tense: "present_continuous", text: `Look! The baby ${GAP}.`, base: "sleep", accept: ["is sleeping"], ru: "Смотри! Малыш спит." },
-  { id: "pc-2", level: "A1", tense: "present_continuous", text: `I ${GAP} a book right now.`, base: "read", accept: ["am reading", "'m reading"], ru: "Я читаю книгу прямо сейчас." },
-  { id: "pc-3", level: "A1", tense: "present_continuous", text: `They ${GAP} in the garden now.`, base: "run", accept: ["are running"], ru: "Они бегают в саду сейчас." },
-  { id: "pc-4", level: "A1", tense: "present_continuous", text: `She ${GAP} a letter at the moment.`, base: "write", accept: ["is writing"], ru: "Она пишет письмо в данный момент." },
-  { id: "pc-5", level: "A1", tense: "present_continuous", text: `Listen! The birds ${GAP}.`, base: "sing", accept: ["are singing"], ru: "Слушай! Птицы поют." },
-  { id: "pc-6", level: "A1", tense: "present_continuous", text: `We ${GAP} dinner now.`, base: "make", accept: ["are making"], ru: "Мы готовим ужин сейчас." },
-  { id: "pc-7", level: "A1", tense: "present_continuous", text: `My brother ${GAP} his room today.`, base: "clean", accept: ["is cleaning"], ru: "Мой брат убирает свою комнату сегодня." },
-  { id: "pc-8", level: "A1", tense: "present_continuous", text: `I ${GAP} to school right now.`, base: "go", accept: ["am going", "'m going"], ru: "Я иду в школу прямо сейчас." },
-  { id: "pc-9", level: "A1", tense: "present_continuous", text: `Look! It ${GAP} outside.`, base: "rain", accept: ["is raining"], ru: "Смотри! На улице идёт дождь." },
-  { id: "pc-10", level: "A1", tense: "present_continuous", text: `We ${GAP} lunch right now.`, base: "have", accept: ["are having"], ru: "Мы обедаем прямо сейчас." },
-  { id: "pc-11", level: "A1", tense: "present_continuous", text: `He ${GAP} football in the yard.`, base: "play", accept: ["is playing"], ru: "Он играет в футбол во дворе." },
-  { id: "pc-12", level: "A1", tense: "present_continuous", text: `They ${GAP} TV at the moment.`, base: "watch", accept: ["are watching"], ru: "Они смотрят телевизор в данный момент." },
-  { id: "pc-13", level: "A1", tense: "present_continuous", text: `I ${GAP} my homework now.`, base: "do", accept: ["am doing", "'m doing"], ru: "Я делаю домашнюю работу сейчас." },
-  { id: "pc-14", level: "A1", tense: "present_continuous", text: `She ${GAP} coffee right now.`, base: "drink", accept: ["is drinking"], ru: "Она пьёт кофе прямо сейчас." },
-  { id: "pc-15", level: "A1", tense: "present_continuous", text: `Look! The dog ${GAP} fast.`, base: "run", accept: ["is running"], ru: "Смотри! Собака быстро бежит." },
-  { id: "pc-16", level: "A1", tense: "present_continuous", text: `We ${GAP} for the bus now.`, base: "wait", accept: ["are waiting"], ru: "Мы ждём автобус сейчас." },
-  { id: "pc-17", level: "A1", tense: "present_continuous", text: `My mother ${GAP} in the kitchen.`, base: "cook", accept: ["is cooking"], ru: "Моя мама готовит на кухне." },
-  { id: "pc-18", level: "A1", tense: "present_continuous", text: `The children ${GAP} in the pool.`, base: "swim", accept: ["are swimming"], ru: "Дети плавают в бассейне." },
-  { id: "pc-19", level: "A1", tense: "present_continuous", text: `I ${GAP} a new song now.`, base: "learn", accept: ["am learning", "'m learning"], ru: "Я учу новую песню сейчас." },
-  { id: "pc-20", level: "A1", tense: "present_continuous", text: `Listen! Somebody ${GAP} outside.`, base: "sing", accept: ["is singing"], ru: "Слушай! Кто-то поёт на улице." },
-  { id: "pc-21", level: "A1", tense: "present_continuous", text: `You ${GAP} too fast now.`, base: "speak", accept: ["are speaking"], ru: "Ты говоришь слишком быстро сейчас." },
-  { id: "pc-22", level: "A1", tense: "present_continuous", text: `He ${GAP} a picture at the moment.`, base: "draw", accept: ["is drawing"], ru: "Он рисует картину в данный момент." },
-  { id: "pc-23", level: "A1", tense: "present_continuous", text: `They ${GAP} a new house now.`, base: "build", accept: ["are building"], ru: "Они строят новый дом сейчас." },
-  { id: "pc-24", level: "A1", tense: "present_continuous", text: `I ${GAP} my best friend today.`, base: "meet", accept: ["am meeting", "'m meeting"], ru: "Я встречаюсь с лучшим другом сегодня." },
-
-  // Past Simple (A2)
-  { id: "pst-1", level: "A2", tense: "past_simple", text: `We ${GAP} to the cinema last night.`, base: "go", accept: ["went"], ru: "Мы ходили в кино вчера вечером." },
-  { id: "pst-2", level: "A2", tense: "past_simple", text: `She ${GAP} a new dress yesterday.`, base: "buy", accept: ["bought"], ru: "Она купила новое платье вчера." },
-  { id: "pst-3", level: "A2", tense: "past_simple", text: `I ${GAP} football two days ago.`, base: "play", accept: ["played"], ru: "Я играл в футбол два дня назад." },
-  { id: "pst-4", level: "A2", tense: "past_simple", text: `He ${GAP} his keys last week.`, base: "lose", accept: ["lost"], ru: "Он потерял свои ключи на прошлой неделе." },
-  { id: "pst-5", level: "A2", tense: "past_simple", text: `They ${GAP} in London in 2019.`, base: "live", accept: ["lived"], ru: "Они жили в Лондоне в 2019 году." },
-  { id: "pst-6", level: "A2", tense: "past_simple", text: `My mother ${GAP} a cake yesterday.`, base: "make", accept: ["made"], ru: "Моя мама сделала торт вчера." },
-  { id: "pst-7", level: "A2", tense: "past_simple", text: `We ${GAP} our friends last Saturday.`, base: "meet", accept: ["met"], ru: "Мы встретили наших друзей в прошлую субботу." },
-  { id: "pst-8", level: "A2", tense: "past_simple", text: `I ${GAP} that book two years ago.`, base: "read", accept: ["read"], ru: "Я читал ту книгу два года назад." },
-  { id: "pst-9", level: "A2", tense: "past_simple", text: `She ${GAP} her grandmother last Sunday.`, base: "visit", accept: ["visited"], ru: "Она навещала бабушку в прошлое воскресенье." },
-  { id: "pst-10", level: "A2", tense: "past_simple", text: `We ${GAP} a big pizza yesterday.`, base: "eat", accept: ["ate"], ru: "Мы съели большую пиццу вчера." },
-  { id: "pst-11", level: "A2", tense: "past_simple", text: `He ${GAP} the window an hour ago.`, base: "open", accept: ["opened"], ru: "Он открыл окно час назад." },
-  { id: "pst-12", level: "A2", tense: "past_simple", text: `They ${GAP} home very late.`, base: "come", accept: ["came"], ru: "Они пришли домой очень поздно." },
-  { id: "pst-13", level: "A2", tense: "past_simple", text: `I ${GAP} my grandfather last summer.`, base: "help", accept: ["helped"], ru: "Я помогал дедушке прошлым летом." },
-  { id: "pst-14", level: "A2", tense: "past_simple", text: `The film ${GAP} at eight yesterday.`, base: "start", accept: ["started"], ru: "Фильм начался в восемь вчера." },
-  { id: "pst-15", level: "A2", tense: "past_simple", text: `She ${GAP} a beautiful song at the party.`, base: "sing", accept: ["sang"], ru: "Она спела красивую песню на вечеринке." },
-  { id: "pst-16", level: "A2", tense: "past_simple", text: `We ${GAP} in the sea last July.`, base: "swim", accept: ["swam"], ru: "Мы плавали в море в прошлом июле." },
-  { id: "pst-17", level: "A2", tense: "past_simple", text: `My brother ${GAP} his bike last week.`, base: "break", accept: ["broke"], ru: "Мой брат сломал велосипед на прошлой неделе." },
-  { id: "pst-18", level: "A2", tense: "past_simple", text: `I ${GAP} you three times yesterday.`, base: "call", accept: ["called"], ru: "Я звонил тебе три раза вчера." },
-  { id: "pst-19", level: "A2", tense: "past_simple", text: `He ${GAP} the door and went out.`, base: "close", accept: ["closed"], ru: "Он закрыл дверь и вышел." },
-  { id: "pst-20", level: "A2", tense: "past_simple", text: `They ${GAP} a new flat in May.`, base: "buy", accept: ["bought"], ru: "Они купили новую квартиру в мае." },
-  { id: "pst-21", level: "A2", tense: "past_simple", text: `She ${GAP} me a long letter.`, base: "write", accept: ["wrote"], ru: "Она написала мне длинное письмо." },
-  { id: "pst-22", level: "A2", tense: "past_simple", text: `We ${GAP} the bus and walked home.`, base: "miss", accept: ["missed"], ru: "Мы опоздали на автобус и пошли домой пешком." },
-  { id: "pst-23", level: "A2", tense: "past_simple", text: `The children ${GAP} a snowman yesterday.`, base: "make", accept: ["made"], ru: "Дети слепили снеговика вчера." },
-  { id: "pst-24", level: "A2", tense: "past_simple", text: `I ${GAP} my keys in the car.`, base: "leave", accept: ["left"], ru: "Я оставил ключи в машине." },
-
-  // Future Simple (A2)
-  { id: "fs-1", level: "A2", tense: "future_simple", text: `I ${GAP} you tomorrow.`, base: "call", accept: ["will call", "'ll call"], ru: "Я позвоню тебе завтра." },
-  { id: "fs-2", level: "A2", tense: "future_simple", text: `She ${GAP} the answer soon.`, base: "know", accept: ["will know", "'ll know"], ru: "Она скоро узнает ответ." },
-  { id: "fs-3", level: "A2", tense: "future_simple", text: `We ${GAP} to the sea next summer.`, base: "go", accept: ["will go", "'ll go"], ru: "Мы поедем на море следующим летом." },
-  { id: "fs-4", level: "A2", tense: "future_simple", text: `I think it ${GAP} tomorrow.`, base: "rain", accept: ["will rain", "'ll rain"], ru: "Я думаю, завтра будет дождь." },
-  { id: "fs-5", level: "A2", tense: "future_simple", text: `He ${GAP} me with my homework.`, base: "help", accept: ["will help", "'ll help"], ru: "Он поможет мне с домашней работой." },
-  { id: "fs-6", level: "A2", tense: "future_simple", text: `They ${GAP} a new house next year.`, base: "buy", accept: ["will buy", "'ll buy"], ru: "Они купят новый дом в следующем году." },
-  { id: "fs-7", level: "A2", tense: "future_simple", text: `We ${GAP} at the station tomorrow.`, base: "meet", accept: ["will meet", "'ll meet"], ru: "Мы встретимся на вокзале завтра." },
-  { id: "fs-8", level: "A2", tense: "future_simple", text: `She ${GAP} the exam next week.`, base: "pass", accept: ["will pass", "'ll pass"], ru: "Она сдаст экзамен на следующей неделе." },
-  { id: "fs-9", level: "A2", tense: "future_simple", text: `I ${GAP} you the truth later.`, base: "tell", accept: ["will tell", "'ll tell"], ru: "Я скажу тебе правду позже." },
-  { id: "fs-10", level: "A2", tense: "future_simple", text: `They ${GAP} a new school here.`, base: "build", accept: ["will build", "'ll build"], ru: "Они построят здесь новую школу." },
-  { id: "fs-11", level: "A2", tense: "future_simple", text: `He ${GAP} sixteen next year.`, base: "be", accept: ["will be", "'ll be"], ru: "Ему исполнится шестнадцать в следующем году." },
-  { id: "fs-12", level: "A2", tense: "future_simple", text: `I think she ${GAP} soon.`, base: "come", accept: ["will come", "'ll come"], ru: "Думаю, она скоро придёт." },
-  { id: "fs-13", level: "A2", tense: "future_simple", text: `We ${GAP} this film tomorrow evening.`, base: "watch", accept: ["will watch", "'ll watch"], ru: "Мы посмотрим этот фильм завтра вечером." },
-  { id: "fs-14", level: "A2", tense: "future_simple", text: `Nobody ${GAP} about our secret.`, base: "know", accept: ["will know", "'ll know"], ru: "Никто не узнает о нашем секрете." },
-  { id: "fs-15", level: "A2", tense: "future_simple", text: `I ${GAP} my room after lunch.`, base: "clean", accept: ["will clean", "'ll clean"], ru: "Я уберу свою комнату после обеда." },
-  { id: "fs-16", level: "A2", tense: "future_simple", text: `The train ${GAP} in ten minutes.`, base: "leave", accept: ["will leave", "'ll leave"], ru: "Поезд отправится через десять минут." },
-  { id: "fs-17", level: "A2", tense: "future_simple", text: `You ${GAP} this book very much.`, base: "like", accept: ["will like", "'ll like"], ru: "Тебе очень понравится эта книга." },
-  { id: "fs-18", level: "A2", tense: "future_simple", text: `They ${GAP} us next summer.`, base: "visit", accept: ["will visit", "'ll visit"], ru: "Они навестят нас следующим летом." },
-  { id: "fs-19", level: "A2", tense: "future_simple", text: `I ${GAP} this letter tomorrow morning.`, base: "send", accept: ["will send", "'ll send"], ru: "Я отправлю это письмо завтра утром." },
-  { id: "fs-20", level: "A2", tense: "future_simple", text: `He ${GAP} his homework in the evening.`, base: "do", accept: ["will do", "'ll do"], ru: "Он сделает домашнюю работу вечером." },
-  { id: "fs-21", level: "A2", tense: "future_simple", text: `I hope the weather ${GAP} fine.`, base: "be", accept: ["will be", "'ll be"], ru: "Надеюсь, погода будет хорошей." },
-  { id: "fs-22", level: "A2", tense: "future_simple", text: `She ${GAP} at home tomorrow.`, base: "stay", accept: ["will stay", "'ll stay"], ru: "Она останется дома завтра." },
-  { id: "fs-23", level: "A2", tense: "future_simple", text: `We ${GAP} the tickets tonight.`, base: "buy", accept: ["will buy", "'ll buy"], ru: "Мы купим билеты сегодня вечером." },
-  { id: "fs-24", level: "A2", tense: "future_simple", text: `Our team ${GAP} the next match.`, base: "win", accept: ["will win", "'ll win"], ru: "Наша команда выиграет следующий матч." },
-
-  // Present Perfect (B1)
-  { id: "pp-1", level: "B1", tense: "present_perfect", text: `I ${GAP} my homework already.`, base: "finish", accept: ["have finished", "'ve finished"], ru: "Я уже закончил домашнюю работу." },
-  { id: "pp-2", level: "B1", tense: "present_perfect", text: `She ${GAP} this book three times.`, base: "read", accept: ["has read"], ru: "Она читала эту книгу три раза." },
-  { id: "pp-3", level: "B1", tense: "present_perfect", text: `We ${GAP} here since 2015.`, base: "live", accept: ["have lived", "'ve lived"], ru: "Мы живём здесь с 2015 года." },
-  { id: "pp-4", level: "B1", tense: "present_perfect", text: `He ${GAP} his passport again.`, base: "lose", accept: ["has lost"], ru: "Он снова потерял свой паспорт." },
-  { id: "pp-5", level: "B1", tense: "present_perfect", text: `They ${GAP} to Japan twice.`, base: "be", accept: ["have been", "'ve been"], ru: "Они были в Японии дважды." },
-  { id: "pp-6", level: "B1", tense: "present_perfect", text: `I ${GAP} the news already.`, base: "hear", accept: ["have heard", "'ve heard"], ru: "Я уже слышал эту новость." },
-  { id: "pp-7", level: "B1", tense: "present_perfect", text: `We ${GAP} our homework already.`, base: "do", accept: ["have done", "'ve done"], ru: "Мы уже сделали домашнюю работу." },
-  { id: "pp-8", level: "B1", tense: "present_perfect", text: `He ${GAP} in this school since 2020.`, base: "study", accept: ["has studied"], ru: "Он учится в этой школе с 2020 года." },
-  { id: "pp-9", level: "B1", tense: "present_perfect", text: `I ${GAP} my room today.`, base: "clean", accept: ["have cleaned", "'ve cleaned"], ru: "Я убрал свою комнату сегодня." },
-  { id: "pp-10", level: "B1", tense: "present_perfect", text: `She ${GAP} a horse before.`, base: "ride", accept: ["has ridden"], ru: "Она каталась на лошади раньше." },
-  { id: "pp-11", level: "B1", tense: "present_perfect", text: `We ${GAP} each other for ten years.`, base: "know", accept: ["have known", "'ve known"], ru: "Мы знаем друг друга десять лет." },
-  { id: "pp-12", level: "B1", tense: "present_perfect", text: `He ${GAP} his phone somewhere.`, base: "leave", accept: ["has left"], ru: "Он где-то оставил свой телефон." },
-  { id: "pp-13", level: "B1", tense: "present_perfect", text: `You ${GAP} a lot of mistakes today.`, base: "make", accept: ["have made", "'ve made"], ru: "Ты сегодня сделал много ошибок." },
-  { id: "pp-14", level: "B1", tense: "present_perfect", text: `The rain ${GAP} at last.`, base: "stop", accept: ["has stopped"], ru: "Дождь наконец прекратился." },
-  { id: "pp-15", level: "B1", tense: "present_perfect", text: `I ${GAP} this word before.`, base: "see", accept: ["have seen", "'ve seen"], ru: "Я видел это слово раньше." },
-  { id: "pp-16", level: "B1", tense: "present_perfect", text: `She ${GAP} in Moscow since April.`, base: "work", accept: ["has worked"], ru: "Она работает в Москве с апреля." },
-  { id: "pp-17", level: "B1", tense: "present_perfect", text: `We ${GAP} all the tickets already.`, base: "sell", accept: ["have sold", "'ve sold"], ru: "Мы уже продали все билеты." },
-  { id: "pp-18", level: "B1", tense: "present_perfect", text: `He ${GAP} to me twice this week.`, base: "write", accept: ["has written"], ru: "Он писал мне дважды на этой неделе." },
-  { id: "pp-19", level: "B1", tense: "present_perfect", text: `They ${GAP} the new bridge at last.`, base: "build", accept: ["have built", "'ve built"], ru: "Они наконец построили новый мост." },
-  { id: "pp-20", level: "B1", tense: "present_perfect", text: `I ${GAP} my breakfast already.`, base: "eat", accept: ["have eaten", "'ve eaten"], ru: "Я уже позавтракал." },
-  { id: "pp-21", level: "B1", tense: "present_perfect", text: `The children ${GAP} their grandmother today.`, base: "visit", accept: ["have visited", "'ve visited"], ru: "Дети сегодня навестили бабушку." },
-  { id: "pp-22", level: "B1", tense: "present_perfect", text: `She ${GAP} a new dress for the party.`, base: "buy", accept: ["has bought"], ru: "Она купила новое платье к вечеринке." },
-  { id: "pp-23", level: "B1", tense: "present_perfect", text: `Our team ${GAP} three matches this year.`, base: "win", accept: ["has won"], ru: "Наша команда выиграла три матча в этом году." },
-  { id: "pp-24", level: "B1", tense: "present_perfect", text: `Somebody ${GAP} the window.`, base: "break", accept: ["has broken"], ru: "Кто-то разбил окно." },
-
-  // Past Continuous (A2)
-  // Прошедшее длительное идёт сразу за Past Simple, задолго до Present Perfect,
-  // поэтому и время, и его задания стоят на A2.
-  { id: "pcn-1", level: "A2", tense: "past_continuous", text: `I ${GAP} when the phone rang.`, base: "sleep", accept: ["was sleeping"], ru: "Я спал, когда зазвонил телефон." },
-  { id: "pcn-2", level: "A2", tense: "past_continuous", text: `They ${GAP} football at five o'clock.`, base: "play", accept: ["were playing"], ru: "Они играли в футбол в пять часов." },
-  { id: "pcn-3", level: "A2", tense: "past_continuous", text: `She ${GAP} dinner when I came home.`, base: "cook", accept: ["was cooking"], ru: "Она готовила ужин, когда я пришёл домой." },
-  { id: "pcn-4", level: "A2", tense: "past_continuous", text: `We ${GAP} while it was raining.`, base: "walk", accept: ["were walking"], ru: "Мы шли, пока шёл дождь." },
-  { id: "pcn-5", level: "A2", tense: "past_continuous", text: `The sun ${GAP} all day yesterday.`, base: "shine", accept: ["was shining"], ru: "Солнце светило весь день вчера." },
-  { id: "pcn-6", level: "A2", tense: "past_continuous", text: `He ${GAP} a book at that moment.`, base: "read", accept: ["was reading"], ru: "Он читал книгу в тот момент." },
-  { id: "pcn-7", level: "A2", tense: "past_continuous", text: `We ${GAP} dinner at eight yesterday.`, base: "have", accept: ["were having"], ru: "Мы ужинали в восемь вчера." },
-  { id: "pcn-8", level: "A2", tense: "past_continuous", text: `She ${GAP} to music all evening.`, base: "listen", accept: ["was listening"], ru: "Она слушала музыку весь вечер." },
-  { id: "pcn-9", level: "A2", tense: "past_continuous", text: `They ${GAP} TV when I came.`, base: "watch", accept: ["were watching"], ru: "Они смотрели телевизор, когда я пришёл." },
-  { id: "pcn-10", level: "A2", tense: "past_continuous", text: `I ${GAP} my homework at six.`, base: "do", accept: ["was doing"], ru: "Я делал домашнюю работу в шесть." },
-  { id: "pcn-11", level: "A2", tense: "past_continuous", text: `The children ${GAP} in the yard.`, base: "play", accept: ["were playing"], ru: "Дети играли во дворе." },
-  { id: "pcn-12", level: "A2", tense: "past_continuous", text: `He ${GAP} a letter all morning.`, base: "write", accept: ["was writing"], ru: "Он писал письмо всё утро." },
-  { id: "pcn-13", level: "A2", tense: "past_continuous", text: `We ${GAP} to school when it started raining.`, base: "walk", accept: ["were walking"], ru: "Мы шли в школу, когда начался дождь." },
-  { id: "pcn-14", level: "A2", tense: "past_continuous", text: `My father ${GAP} the car at that moment.`, base: "wash", accept: ["was washing"], ru: "Мой папа мыл машину в тот момент." },
-  { id: "pcn-15", level: "A2", tense: "past_continuous", text: `You ${GAP} when I called you.`, base: "sleep", accept: ["were sleeping"], ru: "Ты спал, когда я тебе звонил." },
-  { id: "pcn-16", level: "A2", tense: "past_continuous", text: `It ${GAP} all day yesterday.`, base: "rain", accept: ["was raining"], ru: "Дождь шёл весь день вчера." },
-  { id: "pcn-17", level: "A2", tense: "past_continuous", text: `She ${GAP} dinner while I was reading.`, base: "cook", accept: ["was cooking"], ru: "Она готовила ужин, пока я читал." },
-  { id: "pcn-18", level: "A2", tense: "past_continuous", text: `They ${GAP} in the sea at noon.`, base: "swim", accept: ["were swimming"], ru: "Они плавали в море в полдень." },
-  { id: "pcn-19", level: "A2", tense: "past_continuous", text: `I ${GAP} for the bus at seven.`, base: "wait", accept: ["was waiting"], ru: "Я ждал автобус в семь." },
-  { id: "pcn-20", level: "A2", tense: "past_continuous", text: `We ${GAP} about you yesterday evening.`, base: "talk", accept: ["were talking"], ru: "Мы говорили о тебе вчера вечером." },
-  { id: "pcn-21", level: "A2", tense: "past_continuous", text: `He ${GAP} a bike when he fell.`, base: "ride", accept: ["was riding"], ru: "Он ехал на велосипеде, когда упал." },
-  { id: "pcn-22", level: "A2", tense: "past_continuous", text: `The birds ${GAP} outside my window.`, base: "sing", accept: ["were singing"], ru: "Птицы пели за моим окном." },
-  { id: "pcn-23", level: "A2", tense: "past_continuous", text: `She ${GAP} a book when the light went out.`, base: "read", accept: ["was reading"], ru: "Она читала книгу, когда погас свет." },
-  { id: "pcn-24", level: "A2", tense: "past_continuous", text: `My friends ${GAP} for me near the shop.`, base: "wait", accept: ["were waiting"], ru: "Мои друзья ждали меня возле магазина." },
 ];
 
 // ── Сборка предложений ──────────────────────────────────────────────────────
