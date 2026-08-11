@@ -35,6 +35,10 @@ export type GrammarSession = {
   tense?: string;
   /** Сколько заданий доступно на уровне (не только в этом заходе). */
   total: number;
+  /** Номер этого захода: 0 — первый за день. */
+  round?: number;
+  /** Сколько заходов подряд идут без единого повтора. */
+  batches?: number;
   cards: GrammarCard[];
 };
 
@@ -48,6 +52,8 @@ export type TenseInfo = {
   markers: string[];
   rule: string;
   taskCount: number;
+  /** Сколько заходов без повторов набирается по этому времени. */
+  batches?: number;
 };
 
 export type GrammarModeInfo = {
@@ -55,6 +61,8 @@ export type GrammarModeInfo = {
   title: string;
   subtitle: string;
   taskCount: number;
+  /** Сколько заходов подряд можно сделать, ни разу не повторившись. */
+  batches?: number;
   verbCount?: number;
   tenseCount?: number;
 };
@@ -113,9 +121,17 @@ export type GrammarVerdict = {
 export const grammar = {
   getOverview: () => apiFetch<GrammarOverview>("/api/grammar/overview"),
   getStats: () => apiFetch<GrammarStats>("/api/grammar/stats"),
-  getSession: (mode: GrammarMode, tense?: string) => {
+  /**
+   * Подборка заданий.
+   *
+   * round — номер захода за день. Ноль — первый; дальше сервер отдаёт следующую
+   * порцию банка, а не ту же самую. Без этого «Ещё заход» повторял только что
+   * пройденные задания.
+   */
+  getSession: (mode: GrammarMode, tense?: string, round = 0) => {
     const p = new URLSearchParams({ mode });
     if (tense) p.set("tense", tense);
+    if (round > 0) p.set("round", String(round));
     return apiFetch<GrammarSession>(`/api/grammar/session?${p.toString()}`);
   },
   /**
