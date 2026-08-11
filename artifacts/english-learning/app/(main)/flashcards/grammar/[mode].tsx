@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Тренажёр раздела «Учёба». Один экран на четыре режима:
 //
-//   forms — сама форма глагола: «покупать» → buy, buy → bought;
+//   forms — сама форма глагола: «покупать» → buy, buy → bought (?letter=B);
 //   verbs — вставить форму неправильного глагола в предложение;
 //   tense — поставить глагол в заданное время (?tense=present_perfect);
 //   build — собрать предложение по русскому переводу.
@@ -23,7 +23,8 @@
 // работает до следующей добавленной переменной, о которой забудут. Поэтому
 // маршрут разделён на два компонента: внешний читает параметры и монтирует
 // тренажёр с key, внутренний ничего о параметрах не знает. Другой режим, другое
-// время или повторный вход — другой key, и React выбрасывает состояние целиком.
+// время, ДРУГАЯ БУКВА или повторный вход — другой key, и React выбрасывает
+// состояние целиком.
 //
 // ── «ЕЩЁ ЗАХОД» — ЭТО ЗАПРОС, А НЕ СБРОС ────────────────────────────────────
 // Раньше кнопка просто ставила счётчики в ноль и показывала ТЕ ЖЕ карточки.
@@ -39,6 +40,11 @@
 // lib/grammar/engine.ts), а сюда приходит готовым: freshLeft — сколько заходов
 // ещё пройдёт без повторов. Отсюда и подпись на кнопке: обещать бесконечную
 // новизну нельзя, банк конечен.
+//
+// ── Буква в заголовке ───────────────────────────────────────────────────────
+// Заход по одной букве обязан называть её прямо: ученик пришёл учить глаголы на
+// B и должен видеть, что попал именно туда. Заодно это отвечает на вопрос,
+// почему в заходе три вопроса, а не двенадцать: на этой букве всего один глагол.
 //
 // ── Что перенесено из тренажёра слов ────────────────────────────────────────
 // 1. Верный ответ листается сам, ошибка НЕ листается никогда. Разбор ошибки —
@@ -136,7 +142,7 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
  * состояние прошлого захода физически не может дожить до следующего.
  */
 export default function GrammarTrainerRoute() {
-  const params = useLocalSearchParams<{ mode?: string; tense?: string }>();
+  const params = useLocalSearchParams<{ mode?: string; tense?: string; letter?: string }>();
 
   // Неизвестный режим считаем глаголами в предложении, а не падаем: адрес мог
   // прийти из старой ссылки или из опечатки.
@@ -144,6 +150,11 @@ export default function GrammarTrainerRoute() {
     ? (params.mode as GrammarMode)
     : "verbs";
   const tense = typeof params.tense === "string" ? params.tense : undefined;
+  // Буква только у форм. Проверку на «одну латинскую букву» делает сервер: он
+  // всё равно обязан её делать, а вторая копия правила разъехалась бы с первой.
+  const letter = mode === "forms" && typeof params.letter === "string" && params.letter
+    ? params.letter.toUpperCase()
+    : undefined;
 
   // Счётчик заходов. Нужен для возврата в ТОТ ЖЕ режим: параметры не изменились,
   // key без него остался бы прежним, и ученик снова увидел бы разбор ошибки, с
@@ -162,10 +173,23 @@ export default function GrammarTrainerRoute() {
     }, []),
   );
 
-  return <GrammarTrainer key={`${mode}:${tense ?? ""}:${visit}`} mode={mode} tense={tense} />;
+  return (
+    <GrammarTrainer
+      key={`${mode}:${tense ?? ""}:${letter ?? ""}:${visit}`}
+      mode={mode}
+      tense={tense}
+      letter={letter}
+    />
+  );
 }
 
-function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) {
+function GrammarTrainer({
+  mode, tense, letter,
+}: {
+  mode: GrammarMode;
+  tense?: string;
+  letter?: string;
+}) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -195,12 +219,12 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  // Загрузка висит на режиме, времени и номере захода. Режим и время меняться
-  // не могут — при их смене компонент монтируется заново (см. key в маршруте),
-  // а вот номер захода меняется кнопкой «Ещё заход» и приносит новую порцию.
+  // Загрузка висит на подборке и номере захода. Режим, время и буква меняться не
+  // могут — при их смене компонент монтируется заново (см. key в маршруте), а
+  // вот номер захода меняется кнопкой «Ещё заход» и приносит новую порцию.
   React.useEffect(() => {
     let alive = true;
-    grammar.getSession(mode, tense, round)
+    grammar.getSession({ mode, tense, letter, round })
       .then((s) => {
         if (!alive) return;
         setSession(s);
@@ -208,7 +232,7 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
       })
       .catch((e) => alive && setError(e?.message ?? "Не удалось загрузить задания."));
     return () => { alive = false; };
-  }, [mode, tense, round]);
+  }, [mode, tense, letter, round]);
 
   const cards: GrammarCard[] = session?.cards ?? [];
   const card = cards[pos];
@@ -222,6 +246,9 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
    * задания, даже когда банк был пройден целиком.
    */
   const hasFresh = (session?.freshLeft ?? 0) > 0;
+
+  /** Название подборки: у буквенной группы буква стоит прямо в заголовке. */
+  const title = letter ? `${TITLES[mode]} · ${letter}` : TITLES[mode];
 
   // Выход задан явным адресом: router.back() в навигации по вкладкам возвращает
   // на ПЕРВУЮ вкладку, а не на экран, откуда пришли. Из глагольных режимов
@@ -382,7 +409,11 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
                 бесконечную новизну нельзя, банк конечен. */}
             <ChunkyButton
               label="Ещё заход"
-              sublabel={hasFresh ? "дальше новые задания" : "новые кончились, пойдёт второй круг"}
+              sublabel={hasFresh
+                ? "дальше новые задания"
+                : letter
+                  ? `глаголы на ${letter} кончились, пойдёт второй круг`
+                  : "новые кончились, пойдёт второй круг"}
               icon="repeat"
               onPress={nextRound}
               style={{ marginBottom: 12 }}
@@ -390,7 +421,9 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
           </>
         ) : (
           <Text style={{ fontSize: 14, lineHeight: 21, color: colors.mutedForeground, marginBottom: 18 }}>
-            Для твоего уровня в этом режиме заданий пока нет. Они появятся, когда уровень подрастёт.
+            {letter
+              ? `На букву ${letter} глаголов для твоего уровня пока нет. Они появятся, когда уровень подрастёт.`
+              : "Для твоего уровня в этом режиме заданий пока нет. Они появятся, когда уровень подрастёт."}
           </Text>
         )}
 
@@ -439,7 +472,7 @@ function GrammarTrainer({ mode, tense }: { mode: GrammarMode; tense?: string }) 
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
-            {TITLES[mode]}
+            {title}
           </Text>
           <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
             {pos + 1} из {cards.length} · уровень {card.level}
