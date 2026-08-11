@@ -10,6 +10,10 @@
 // Порядок здесь не случайный: forms идёт до verbs, потому что вставить форму в
 // предложение может только тот, кто эту форму знает (см. шапку forms.ts).
 //
+// Банки собираются из двух частей: написанного руками и сгенерированного из
+// предложений-заготовок (sentenceUnits.ts). Движку разницы нет — он видит
+// обычные задания.
+//
 // ── Опечатки здесь прощаются ИНАЧЕ, чем в словах ────────────────────────────
 // В словах одна опечатка в длинном слове — описка, и наказывать за неё нельзя
 // (см. lib/answerCheck.ts). В грамматике наоборот: «lived» и «lives»
@@ -43,7 +47,7 @@
 // gone»): выбирать приходится и вспомогательный, и форму смыслового глагола.
 //
 // Модуль без БД и express — тесты в engine.test.ts, rotation.test.ts,
-// forms.test.ts.
+// forms.test.ts, generate.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { MIN_FUZZY_LENGTH, checkWritten, editDistance, normalizeAnswer } from "../answerCheck";
@@ -51,14 +55,16 @@ import { mulberry32, shuffle, daySeed } from "../wordExercise";
 import { fitsLevel, verbByBase, type CefrLevel } from "./verbs";
 import { diagnose, tenseById, type Tense } from "./tenses";
 import {
-  ASSEMBLE_TASKS,
   GAP,
-  VERB_GAP_TASKS,
+  edForm,
+  ingForm,
+  thirdPerson,
   type AssembleTask,
   type TenseGapTask,
   type VerbGapTask,
-} from "./tasks";
-import { TENSE_GAP_TASKS } from "./tenseTasks";
+} from "./core";
+import { ASSEMBLE_TASKS, VERB_GAP_TASKS } from "./tasks";
+import { TENSE_GAP_TASKS } from "./tenseBank";
 import {
   formAnswers,
   formCard,
@@ -69,6 +75,11 @@ import {
   parseFormTask,
   type FormTask,
 } from "./forms";
+
+// Правила образования форм живут в core.ts: ими пользуется генератор заданий, а
+// импортировать их отсюда он не может — движок сам зависит от банков, вышел бы
+// круг. Реэкспорт оставлен, чтобы не переписывать чужие импорты и тесты.
+export { edForm, ingForm, thirdPerson } from "./core";
 
 export type GrammarMode = "forms" | "verbs" | "tense" | "build";
 
@@ -102,30 +113,6 @@ export type GrammarCard = {
   /** Время задания — только в режиме tense. */
   tense?: string;
 };
-
-// ── Формы глагола ───────────────────────────────────────────────────────────
-
-/** Третье лицо: he goes, she watches, it studies. */
-export function thirdPerson(base: string): string {
-  if (/(s|sh|ch|x|z|o)$/.test(base)) return `${base}es`;
-  if (/[^aeiou]y$/.test(base)) return `${base.slice(0, -1)}ies`;
-  return `${base}s`;
-}
-
-/** Причастие на -ing: make → making, run → running. */
-export function ingForm(base: string): string {
-  if (/[^aeiou]e$/.test(base)) return `${base.slice(0, -1)}ing`;
-  if (/^[^aeiou]?[aeiou][^aeiouwxy]$/.test(base)) return `${base}${base.slice(-1)}ing`;
-  return `${base}ing`;
-}
-
-/** Правильное прошедшее: work → worked, live → lived, study → studied. */
-export function edForm(base: string): string {
-  if (base.endsWith("e")) return `${base}d`;
-  if (/[^aeiou]y$/.test(base)) return `${base.slice(0, -1)}ied`;
-  if (/^[^aeiou]?[aeiou][^aeiouwxy]$/.test(base)) return `${base}${base.slice(-1)}ed`;
-  return `${base}ed`;
-}
 
 /**
  * Все формы глагола. Нужны для двух вещей: дистракторы в заданиях с

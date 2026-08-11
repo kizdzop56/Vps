@@ -4,7 +4,10 @@
 //
 // Половина файла — не про код, а про ДАННЫЕ. Просьба была «строго проверь, чтобы
 // предложения соответствовали уровню», а обещание в комментарии проверкой не
-// является: банк будет расти, и правило должно падать само, без ревизора.
+// является: банк будет расти, и правило должно падать само.
+//
+// Банк здесь полный: написанное руками плюс сгенерированное из заготовок. Сам
+// генератор проверяется отдельно, в generate.test.ts.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -17,7 +20,7 @@ import {
   PARTICIPLE_FROM,
   VERB_GAP_TASKS,
 } from "./tasks";
-import { TENSE_GAP_TASKS } from "./tenseTasks";
+import { TENSE_GAP_TASKS } from "./tenseBank";
 import {
   CHOICE_EVERY,
   allForms,
@@ -119,13 +122,16 @@ test("глагол задания есть в таблице и не выше у
   }
 });
 
-test("третья форма не появляется раньше B1", () => {
-  for (const t of VERB_GAP_TASKS) {
-    if (t.form !== "participle") continue;
-    assert.ok(
-      rank(t.level) >= rank(PARTICIPLE_FROM),
-      `${t.id}: третья форма на уровне ${t.level}, а Present Perfect вводится с ${PARTICIPLE_FROM}`,
-    );
+test("третья форма спрашивается с A1", () => {
+  // Раньше здесь стояла обратная проверка: третьей формы не должно быть до B1.
+  // Порог держался за Present Perfect, но have и has пишутся прямо в задании, и
+  // знать время для ответа не нужно — нужна форма глагола, а её учат сразу.
+  assert.equal(PARTICIPLE_FROM, "A1");
+
+  const a1 = VERB_GAP_TASKS.filter((t) => t.level === "A1" && t.form === "participle");
+  assert.ok(a1.length > 0, "на A1 нет ни одного задания на третью форму");
+  for (const t of a1) {
+    assert.match(t.text, /\b(have|has)\b/, `${t.id}: в задании нет have или has`);
   }
 });
 
@@ -148,7 +154,8 @@ test("в задании ровно один пропуск", () => {
 
 test("номера заданий уникальны по всем банкам", () => {
   // Проверка ответа ищет задание по номеру в трёх банках подряд. Одинаковый
-  // номер в двух банках означает, что ответ сверят с чужим заданием.
+  // номер в двух банках означает, что ответ сверят с чужим заданием. С
+  // появлением генератора это уже не теория: у него свои номера с приставкой g-.
   const ids = [...VERB_GAP_TASKS, ...TENSE_GAP_TASKS, ...ASSEMBLE_TASKS].map((t) => t.id);
   assert.equal(new Set(ids).size, ids.length, "есть повторяющиеся номера заданий");
 });
@@ -161,7 +168,7 @@ test("у каждого задания есть русский перевод", 
 
 // ── Три вида предложений ────────────────────────────────────────────────────
 
-test("у каждого времени поровну утверждений, отрицаний и вопросов", () => {
+test("у каждого времени хватает и утверждений, и отрицаний, и вопросов", () => {
   // Ровный состав — не вкусовщина: при перекосе 24/6/6 вопросы попадали бы в
   // заход через раз, и раздел снова выглядел бы «только утвердительным».
   const forms: SentenceForm[] = ["affirmative", "negative", "question"];
@@ -255,6 +262,9 @@ test("третье лицо: -s, -es и y → ies", () => {
   assert.equal(thirdPerson("study"), "studies");
   // play — гласная перед y, поэтому просто -s
   assert.equal(thirdPerson("play"), "plays");
+  // be и have правилу не подчиняются вовсе
+  assert.equal(thirdPerson("be"), "is");
+  assert.equal(thirdPerson("have"), "has");
 });
 
 test("-ing: немая e пропадает, короткая согласная удваивается", () => {
@@ -262,6 +272,7 @@ test("-ing: немая e пропадает, короткая согласная
   assert.equal(ingForm("run"), "running");
   assert.equal(ingForm("read"), "reading");
   assert.equal(ingForm("go"), "going");
+  assert.equal(ingForm("be"), "being");
 });
 
 test("-ed по тем же правилам", () => {
@@ -286,14 +297,6 @@ test("ученик получает только задания своего у�
         );
       }
     }
-  }
-});
-
-test("на A2 третья форма не встречается вовсе", () => {
-  const { cards } = buildGrammarSession({ mode: "verbs", level: "A2", now: NOW });
-  for (const c of cards) {
-    const task = VERB_GAP_TASKS.find((t) => t.id === c.id)!;
-    assert.notEqual(task.form, "participle", `${c.id}: третья форма на A2`);
   }
 });
 
@@ -442,6 +445,13 @@ test("«Do» вместо «Does» — ошибка, а не опечатка", 
   const v = checkGrammarAnswer("ps-q1", "Do");
   assert.equal(v?.correct, false);
   assert.equal(checkGrammarAnswer("ps-q1", "does")?.correct, true);
+});
+
+test("сгенерированное задание проверяется так же, как написанное руками", () => {
+  assert.equal(checkGrammarAnswer("g-u-ps-1-aff", "goes")?.correct, true);
+  assert.equal(checkGrammarAnswer("g-u-ps-1-aff", "go")?.correct, false);
+  assert.equal(checkGrammarAnswer("g-u-pst-1-qv", "go")?.correct, true);
+  assert.equal(checkGrammarAnswer("g-u-pst-1-qv", "went")?.correct, false);
 });
 
 test("после ошибки приходит предложение целиком с верным ответом", () => {
