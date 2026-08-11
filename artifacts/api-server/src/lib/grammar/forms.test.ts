@@ -5,7 +5,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { IRREGULAR_VERBS, LEVEL_ORDER, verbByBase, type CefrLevel } from "./verbs";
-import { PARTICIPLE_FROM } from "./tasks";
 import {
   FORM_MASTERY_HITS,
   allFormTasks,
@@ -64,27 +63,43 @@ test("номера уникальны и находятся общим поис�
 
 // ── Уровни ──────────────────────────────────────────────────────────────────
 
-test("глагол задания не выше уровня самого задания", () => {
+test("уровень задания равен уровню глагола", () => {
   for (const t of allFormTasks()) {
-    assert.ok(
-      rank(t.verb.level) <= rank(t.level),
-      `${t.id}: глагол уровня ${t.verb.level} в задании уровня ${t.level}`,
+    assert.equal(
+      t.level,
+      t.verb.level,
+      `${t.id}: задание уровня ${t.level} у глагола уровня ${t.verb.level}`,
     );
   }
 });
 
-test("третья форма не появляется раньше B1", () => {
-  for (const t of allFormTasks()) {
-    if (t.kind !== "participle") continue;
-    assert.ok(
-      rank(t.level) >= rank(PARTICIPLE_FROM),
-      `${t.id}: третья форма на уровне ${t.level}`,
-    );
+test("все три формы спрашиваются с A1", () => {
+  // Раньше третья форма была закрыта до B1 — по аналогии с предложениями, где
+  // она приходит вместе с Present Perfect. Для таблицы форм это неверно: три
+  // формы учат столбиком и целиком, и уронить из неё третью колонку молча
+  // теперь нельзя.
+  const a1 = formTasksUpTo("A1");
+  const a1Verbs = IRREGULAR_VERBS.filter((v) => v.level === "A1");
+  assert.ok(a1Verbs.length > 0, "на A1 нет ни одного глагола");
+
+  for (const verb of a1Verbs) {
+    for (const kind of ["toEn", "past", "participle"] as const) {
+      assert.ok(
+        a1.some((t) => t.verb.base === verb.base && t.kind === kind),
+        `${verb.base}: на A1 не спрашивается форма «${kind}»`,
+      );
+    }
   }
-  // И до B1 её нет в подборке вовсе: Present Perfect ещё не проходили.
-  for (const level of ["A1", "A2"] as CefrLevel[]) {
+  assert.equal(a1.length, a1Verbs.length * 3);
+});
+
+test("глагол выше уровня ученика не приходит", () => {
+  for (const level of LEVEL_ORDER) {
     for (const t of formTasksUpTo(level)) {
-      assert.notEqual(t.kind, "participle", `${t.id}: третья форма на ${level}`);
+      assert.ok(
+        rank(t.verb.level) <= rank(level),
+        `${t.id}: глагол уровня ${t.verb.level} на уровне ${level}`,
+      );
     }
   }
 });
@@ -156,6 +171,14 @@ test("после ошибки видно все три формы и прави�
   assert.equal(v?.full, formLine(verbByBase("buy")!));
   assert.ok(v?.rule, "правило не приложено");
   assert.match(v!.rule!.text, /bought/);
+});
+
+test("в правиле сказано, где работает третья форма", () => {
+  // Её спрашивают с A1, то есть задолго до Present Perfect. Без этой строчки
+  // ученик заучивал бы слово, не понимая, зачем оно.
+  const v = checkGrammarAnswer("vf:participle:see", "saw");
+  assert.equal(v?.correct, false);
+  assert.match(v!.rule!.text, /have и has/);
 });
 
 test("названа именно та путаница, которая случилась", () => {
