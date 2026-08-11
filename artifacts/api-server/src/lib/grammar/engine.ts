@@ -138,9 +138,28 @@ export function allForms(base: string): string[] {
 // случаев. Ученик видит не «новый заход», а «опять эти».
 //
 // Теперь банк режется на непересекающиеся порции по size, и порция выбирается
-// курсором. Курсор — номер дня плюс номер захода, то есть соседние шаги дают
-// РАЗНЫЕ порции гарантированно, а не по удаче. Пройден полный круг по банку —
-// порядок перетасовывается заново, и круг начинается другой.
+// курсором. Курсор — номер дня плюс израсходованные заходы, то есть соседние
+// шаги дают РАЗНЫЕ порции гарантированно, а не по удаче. Пройден полный круг по
+// банку — порядок перетасовывается заново, и круг начинается другой.
+//
+// ── Курсор обязан пережить выход из раздела ─────────────────────────────────
+//
+// Сначала курсор складывался из номера дня и номера захода, а номер захода жил
+// в состоянии экрана. Пока ученик не выходил, всё работало: «Ещё заход» давал
+// следующую порцию. Стоило выйти в оглавление и войти снова — номер обнулялся,
+// день тот же, и приходили ТЕ ЖЕ двенадцать заданий. Ровно на это и пожаловались:
+// «решила все двенадцать, нажимаю „Учить формы“ снова, и опять они».
+//
+// Поэтому курсор считается по ЖУРНАЛУ ответов: сколько заходов ученик уже
+// израсходовал в этом режиме (consumed = ответов / size). Журнал лежит в базе,
+// поэтому курсор переживает и выход, и перезапуск приложения, и смену
+// устройства — в отличие от любого счётчика на экране.
+//
+// Номер захода от клиента не выброшен, а взят в МАКСИМУМ с consumed. Причина
+// приземлённая: часть ответов может не долететь до сервера (сеть мигнула), тогда
+// consumed отстанет, и без round «Ещё заход» вернул бы ту же порцию. Максимум из
+// двух двигается всегда, а вместе они не «складываются» и не проскакивают порции
+// через одну — именно это и случилось бы при сложении.
 //
 // Плата, которую стоит назвать прямо: курсор непрерывный, поэтому второй заход
 // сегодня — это первый заход завтра. Альтернатива (свой круг на каждый день)
@@ -169,9 +188,22 @@ export function batchCount(poolSize: number, size: number): number {
 }
 
 /**
+ * Сколько заходов ещё пройдёт БЕЗ ЕДИНОГО повтора до конца круга.
+ *
+ * Нужно подписи на кнопке «Ещё заход». Обещать бесконечную новизну нельзя: банк
+ * конечен, и честнее предупредить, что дальше пойдёт второй круг, чем сделать
+ * вид, что заданий бесконечно много.
+ */
+export function freshBatchesLeft(step: number, batches: number): number {
+  const total = Math.max(1, batches);
+  const cursor = Math.max(0, Math.trunc(step));
+  return Math.max(0, total - 1 - (cursor % total));
+}
+
+/**
  * Порция заданий по курсору.
  *
- * @param step  курсор: номер дня плюс номер захода
+ * @param step  курсор: номер дня плюс израсходованные заходы
  * @param seed  сид банка: у каждого режима и времени он свой
  */
 export function rotateBatch<T>(pool: T[], size: number, step: number, seed: number): T[] {
@@ -376,6 +408,8 @@ export type GrammarSessionResult = {
   round: number;
   /** Сколько заходов подряд можно сделать без единого повтора. */
   batches: number;
+  /** Сколько заходов осталось до конца круга: 0 — дальше второй круг. */
+  freshLeft: number;
 };
 
 /**
@@ -395,6 +429,12 @@ export function buildGrammarSession(opts: {
   /** Номер захода за день: 0 — первый, дальше следующие порции банка. */
   round?: number;
   /**
+   * Сколько заходов ученик уже израсходовал в этом режиме — по журналу ответов.
+   * Именно это число двигает курсор между входами в раздел: счётчик на экране
+   * обнуляется при выходе, журнал в базе — нет.
+   */
+  consumed?: number;
+  /**
    * Глаголы, которые ученик уже знает (режим forms): по ним спрашиваем письмом,
    * по остальным — вариантами. Пусто — значит всё в первый раз.
    */
@@ -403,8 +443,11 @@ export function buildGrammarSession(opts: {
   const now = opts.now ?? new Date();
   const size = Math.max(1, opts.size ?? SESSION_SIZE);
   const round = Math.max(0, Math.trunc(opts.round ?? 0));
+  const consumed = Math.max(0, Math.trunc(opts.consumed ?? 0));
   const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}`);
-  const step = daySeed(now) + round;
+  // МАКСИМУМ, а не сумма: складывать значило бы проскакивать порции через одну
+  // на каждом «Ещё заход» — журнал к этому моменту уже сдвинулся сам.
+  const step = daySeed(now) + Math.max(consumed, round);
 
   /** Плитки и варианты мешаются от НОМЕРА задания: одна карточка — один вид. */
   const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
@@ -412,11 +455,13 @@ export function buildGrammarSession(opts: {
   if (opts.mode === "forms") {
     const pool = formTasksUpTo(opts.level);
     const picked = rotateBatch(pool, size, step, seed);
+    const batches = batchCount(pool.length, size);
     const mastered = opts.mastered ?? new Set<string>();
     return {
       total: pool.length,
       round,
-      batches: batchCount(pool.length, size),
+      batches,
+      freshLeft: freshBatchesLeft(step, batches),
       cards: picked.map((t: FormTask) => {
         const answers = formAnswers(t);
         const view = formCard(t);
@@ -444,10 +489,12 @@ export function buildGrammarSession(opts: {
   if (opts.mode === "build") {
     const pool = pickTasks(ASSEMBLE_TASKS, opts.level);
     const picked = rotateBatch(pool, size, step, seed);
+    const batches = batchCount(pool.length, size);
     return {
       total: pool.length,
       round,
-      batches: batchCount(pool.length, size),
+      batches,
+      freshLeft: freshBatchesLeft(step, batches),
       cards: picked.map((t: AssembleTask) => ({
         id: t.id,
         mode: "build" as const,
@@ -465,10 +512,12 @@ export function buildGrammarSession(opts: {
     const all = pickTasks(TENSE_GAP_TASKS, opts.level);
     const pool = opts.tense ? all.filter((t) => t.tense === opts.tense) : all;
     const picked = rotateBatch(pool, size, step, seed);
+    const batches = batchCount(pool.length, size);
     return {
       total: pool.length,
       round,
-      batches: batchCount(pool.length, size),
+      batches,
+      freshLeft: freshBatchesLeft(step, batches),
       cards: picked.map((t: TenseGapTask, i) => {
         const tense = tenseById(t.tense);
         const choice = (i + 1) % CHOICE_EVERY === 0;
@@ -490,10 +539,12 @@ export function buildGrammarSession(opts: {
 
   const pool = pickTasks(VERB_GAP_TASKS, opts.level);
   const picked = rotateBatch(pool, size, step, seed);
+  const batches = batchCount(pool.length, size);
   return {
     total: pool.length,
     round,
-    batches: batchCount(pool.length, size),
+    batches,
+    freshLeft: freshBatchesLeft(step, batches),
     cards: picked.map((t: VerbGapTask, i) => {
       // Верный ответ достаём в переменную: в проекте включена строгая проверка
       // индексов, и answers[0] прямо в тернарнике имел бы тип string|undefined.

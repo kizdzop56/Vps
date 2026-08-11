@@ -15,20 +15,25 @@
 // ── Что хранится ────────────────────────────────────────────────────────────
 // Одна строка на ответ в grammar_log: задание, режим, тема, способ ответа,
 // результат и начисленные очки. Ровно то, из чего считаются дневной потолок,
-// «слабые места» и знакомость глагола, и ничего больше.
+// «слабые места», знакомость глагола и курсор ротации, и ничего больше.
 //
-// ── Почему номер захода приходит от клиента, а знакомость — нет ─────────────
-// Номер захода — это состояние одного экрана: клиент считает его сам, подделка
-// даёт ровно то, что кнопка «Ещё заход» и так делает бесплатно.
+// ── Почему знакомость и курсор считает сервер ───────────────────────────────
+// Обе величины живут в журнале и обязаны переживать выход из раздела и
+// переустановку приложения.
 //
-// Знакомость глагола считает СЕРВЕР, потому что она живёт в журнале и должна
-// переживать переустановку приложения. От неё зависит способ ответа в режиме
-// форм: незнакомый глагол — варианты, знакомый — письмо.
+// От знакомости зависит способ ответа в режиме форм: незнакомый глагол —
+// варианты, знакомый — письмо.
+//
+// От курсора зависит, какую порцию банка ученик увидит. Раньше курсор жил в
+// состоянии экрана, и выход в оглавление обнулял его: ученик решал двенадцать
+// заданий, входил снова и получал ТЕ ЖЕ двенадцать. Номер захода от клиента
+// остался, но теперь он лишь подстраховка на случай недоехавших ответов —
+// движок берёт максимум из двух (см. шапку engine.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { usersTable, grammarLogTable } from "@workspace/db";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, sql, type SQL } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import { ensureSettings } from "../lib/flashcardsCore";
 import { startOfDay } from "../lib/srs";
@@ -112,6 +117,38 @@ async function earnedToday(userId: number): Promise<number> {
       gte(grammarLogTable.answeredAt, startOfDay()),
     ));
   return Number(row?.total ?? 0);
+}
+
+/**
+ * Сколько заходов ученик уже израсходовал в этом режиме.
+ *
+ * Это и есть курсор ротации: по нему движок выбирает порцию банка. Считается по
+ * журналу, а не по счётчику на экране, именно потому, что экран закрывается —
+ * а вернувшись, ученик обязан получить СЛЕДУЮЩИЕ двенадцать заданий, а не те же.
+ *
+ * Времена считаются по отдельности: у каждого свой банк, и общий счётчик гонял
+ * бы курсор Past Simple вперёд из-за занятий по Present Perfect.
+ *
+ * Деление с округлением вниз: половина захода курсор не двигает — ученик не
+ * дошёл до конца порции, и показать её остаток честнее, чем перескочить.
+ */
+async function consumedRounds(
+  userId: number,
+  mode: GrammarMode,
+  tense?: string,
+): Promise<number> {
+  const where: SQL[] = [
+    eq(grammarLogTable.userId, userId),
+    eq(grammarLogTable.mode, mode),
+  ];
+  if (mode === "tense" && tense) where.push(eq(grammarLogTable.topic, tense));
+
+  const [row] = await db
+    .select({ answers: sql<number>`count(*)::int` })
+    .from(grammarLogTable)
+    .where(and(...where));
+
+  return Math.floor(Number(row?.answers ?? 0) / SESSION_SIZE);
 }
 
 /**
@@ -250,10 +287,14 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
   const level = await levelOf(user.userId);
   const tense = typeof req.query["tense"] === "string" ? String(req.query["tense"]) : undefined;
   const round = readRound(req.query["round"]);
+  // Курсор из журнала: он и двигает подборку между входами в раздел.
+  const consumed = await consumedRounds(user.userId, mode, tense);
   // Лишний запрос делаем только там, где он влияет на подборку.
   const mastered = mode === "forms" ? await masteredVerbs(user.userId) : undefined;
 
-  const session = buildGrammarSession({ mode, level, tense, round, mastered, now: new Date() });
+  const session = buildGrammarSession({
+    mode, level, tense, round, consumed, mastered, now: new Date(),
+  });
 
   // Пустая подборка — это не ошибка, а сообщение: на этом уровне заданий ещё
   // нет. Клиент объясняет её текстом, поэтому отвечаем 200 с нулём.

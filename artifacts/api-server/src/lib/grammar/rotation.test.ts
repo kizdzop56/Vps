@@ -14,6 +14,11 @@
 // него банк проходится целиком. На границе круга банк тасуется заново, и первая
 // порция нового круга может задеть последнюю порцию старого. Это не «повтор
 // вчерашнего»: к этому моменту ученик прошёл весь доступный ему банк.
+//
+// ── Третья жалоба: «решила двенадцать, зашла снова — опять они» ─────────────
+// Гарантия выше держалась на курсоре, а курсор жил в состоянии экрана и
+// обнулялся при выходе. Поэтому в конце файла отдельный блок: курсор обязан
+// приходить из журнала ответов и переживать выход из раздела.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -26,6 +31,7 @@ import {
   SESSION_SIZE,
   batchCount,
   buildGrammarSession,
+  freshBatchesLeft,
   rotateBatch,
   textSeed,
 } from "./engine";
@@ -242,5 +248,68 @@ test("во всех режимах заход выдаётся полным", ()
         `${mode}/${level}: в заходе ${cards.length} заданий вместо ${SESSION_SIZE}`,
       );
     }
+  }
+});
+
+// ── Курсор переживает выход из раздела ──────────────────────────────────────
+//
+// Жалоба была ровно такая: «решила все двенадцать форм, нажимаю „Учить формы“
+// снова — и опять эти же двенадцать». Курсор жил в состоянии экрана, выход его
+// обнулял, день тот же — подборка та же. Теперь его двигает журнал ответов, и
+// номер захода при повторном входе снова ноль.
+
+test("повторный вход в раздел даёт следующую порцию, а не ту же самую", () => {
+  const { batches } = buildGrammarSession({ mode: "forms", level: "A2", now: NOW });
+  const now = cycleStart(batches);
+
+  // round везде ноль: экран закрывался между заходами. Двигает только журнал.
+  const seen = new Set<string>();
+  for (let consumed = 0; consumed < batches; consumed++) {
+    const { cards } = buildGrammarSession({ mode: "forms", level: "A2", now, consumed });
+    assert.equal(cards.length, SESSION_SIZE, `вход ${consumed + 1}: неполный заход`);
+    for (const card of cards) {
+      assert.equal(seen.has(card.id), false, `${card.id} повторился на входе ${consumed + 1}`);
+      seen.add(card.id);
+    }
+  }
+});
+
+test("журнал и номер захода берутся в максимум, а не складываются", () => {
+  // Сложение проскакивало бы порцию через одну: к моменту «Ещё заход» журнал
+  // уже сдвинулся сам, и round лишь повторил бы этот сдвиг.
+  const a = buildGrammarSession({ mode: "forms", level: "A2", now: NOW, consumed: 1 });
+  const b = buildGrammarSession({ mode: "forms", level: "A2", now: NOW, consumed: 1, round: 1 });
+  assert.deepEqual(ids(a.cards), ids(b.cards));
+});
+
+test("номер захода двигает подборку, когда журнал отстал", () => {
+  // Часть ответов могла не долететь до сервера: consumed остался нулём, а ученик
+  // уже нажал «Ещё заход». Без round он получил бы те же двенадцать заданий.
+  const a = buildGrammarSession({ mode: "forms", level: "A2", now: NOW, consumed: 0 });
+  const b = buildGrammarSession({ mode: "forms", level: "A2", now: NOW, consumed: 0, round: 1 });
+  assert.notDeepEqual(ids(a.cards), ids(b.cards));
+});
+
+test("freshLeft честно считает остаток круга", () => {
+  assert.equal(freshBatchesLeft(0, 5), 4);
+  // Последняя порция круга: дальше банк пойдёт по второму разу.
+  assert.equal(freshBatchesLeft(4, 5), 0);
+  // Новый круг — снова полный запас.
+  assert.equal(freshBatchesLeft(5, 5), 4);
+  // Банка хватает ровно на один заход: обещать новизну нечем.
+  assert.equal(freshBatchesLeft(0, 1), 0);
+});
+
+test("freshLeft подборки убывает с каждым израсходованным заходом", () => {
+  const { batches } = buildGrammarSession({ mode: "forms", level: "A2", now: NOW });
+  const now = cycleStart(batches);
+
+  for (let consumed = 0; consumed < batches; consumed++) {
+    const s = buildGrammarSession({ mode: "forms", level: "A2", now, consumed });
+    assert.equal(
+      s.freshLeft,
+      batches - 1 - consumed,
+      `после ${consumed} заходов обещано ${s.freshLeft} свежих из ${batches}`,
+    );
   }
 });
