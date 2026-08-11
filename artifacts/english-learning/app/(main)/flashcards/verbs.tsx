@@ -21,6 +21,13 @@
 // глаголы отдельной строкой — как факт, а не как обещание: подборка их вперёд не
 // выносит, и писать обратное значило бы соврать.
 //
+// ── Сколько заходов идёт без повторов ───────────────────────────────────────
+// Эта цифра стояла только на вкладке с предложениями, и вкладку с формами
+// прочитали ровно так, как она выглядела: «двенадцать вопросов — и всё, раздел
+// закончился». На деле двенадцать — это один заход, а банк на A1 даёт пять
+// таких, на A2 — тринадцать. Молчать об этом значит выдавать полный раздел за
+// пустой.
+//
 // Статистика грузится отдельным запросом, и её отсутствие ничего не ломает:
 // экран работает и без неё, просто без цифр.
 //
@@ -45,6 +52,21 @@ const TABS = [
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
+
+/** Русское склонение по числу: «1 заход», «2 захода», «5 заходов». */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+/** Подпись «N заходов без повторов» — она же ответ на «а дальше что». */
+function roundsLabel(batches: number): string {
+  return `${batches} ${plural(batches, ["заход", "захода", "заходов"])} без повторов`;
+}
 
 /**
  * Падение этого экрана иначе выглядело бы как «кнопка не работает»: навигатор
@@ -213,12 +235,25 @@ export default function IrregularVerbsScreen() {
                 {!!forms?.verbCount && (
                   <Pill text={`${forms.verbCount} глаголов`} tone="soft" color={colors.primary} />
                 )}
+                {/* Главная цифра вкладки: двенадцать вопросов — это ОДИН заход,
+                    а не весь раздел. Без неё раздел выглядит пройденным за
+                    один присест. */}
+                {!!forms?.batches && forms.batches > 1 && (
+                  <Pill text={roundsLabel(forms.batches)} tone="soft" color={colors.primary} />
+                )}
                 {/* Счётчик знакомых глаголов появляется, когда он не ноль: ноль в
                     таком месте — это упрёк, а не прогресс. */}
                 {!!forms?.knownVerbs && (
                   <Pill text={`${forms.knownVerbs} уже знаешь`} icon="check" tone="soft" color={colors.success} />
                 )}
               </View>
+
+              {/* Что будет при следующем входе. Вопрос «а другие глаголы когда?»
+                  задают ровно потому, что ответа на него нигде не было. */}
+              <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginTop: 12 }}>
+                Каждый следующий заход — другие глаголы. Пройденные вернутся, только
+                когда закончится весь список, и это уже будет повторение.
+              </Text>
 
               <ChunkyButton
                 label="Учить формы"
@@ -260,7 +295,7 @@ export default function IrregularVerbsScreen() {
                   <Pill text={`${inSentences.taskCount} предложений`} tone="soft" color={colors.primary} />
                 )}
                 {!!inSentences?.batches && inSentences.batches > 1 && (
-                  <Pill text={`${inSentences.batches} заходов без повторов`} tone="soft" color={colors.primary} />
+                  <Pill text={roundsLabel(inSentences.batches)} tone="soft" color={colors.primary} />
                 )}
               </View>
 
