@@ -29,6 +29,12 @@
 // ученик этот глагол. Первое знакомство — варианты (писать наугад нечего),
 // дальше письмо. Порог — FORM_MASTERY_HITS верных ответов по глаголу.
 //
+// ── Дистракторы у каждого режима свои, и это не прихоть ─────────────────────
+// Вопрос «как по-английски покупать» — про слово, поэтому ловушки это другие
+// ГЛАГОЛЫ (спутал buy с bring). Вопрос «вторая форма от buy» — про форму,
+// поэтому ловушки это другие формы ТОГО ЖЕ глагола плюс регуляризованное
+// «buyed». В предложениях набор шире: туда может встать и третье лицо, и -ing.
+//
 // Модуль без БД и express — тесты в engine.test.ts, rotation.test.ts,
 // forms.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,8 +121,8 @@ export function edForm(base: string): string {
 }
 
 /**
- * Все формы глагола. Нужны для двух вещей: дистракторы к заданию с выбором и
- * отсечение «опечаток», которые на самом деле другая форма.
+ * Все формы глагола. Нужны для двух вещей: дистракторы в заданиях с
+ * предложениями и отсечение «опечаток», которые на самом деле другая форма.
  */
 export function allForms(base: string): string[] {
   const verb = verbByBase(base);
@@ -229,6 +235,48 @@ function verbWordOptions(answers: string[], pool: FormTask[], rng: () => number)
   return shuffle([answers[0] ?? "", ...picked], rng);
 }
 
+/**
+ * Дистракторы к вопросу о форме: только то, что реально можно спутать.
+ *
+ * Свои остальные формы плюс регуляризованная на -ed («buyed», «comed») — самая
+ * частая ошибка вообще. Третье лицо и -ing сюда НЕ идут: в вопросе про вторую
+ * форму они не ответ ни при каком раскладе, а у неправильных глаголов такой
+ * набор ещё и порождает мусор вроде «bing» от be — его ученик отбросит, не зная
+ * языка, и выбор перестанет быть выбором.
+ *
+ * Если своих форм не хватило, добираем формы других глаголов подборки: спутать
+ * went и bought — тоже осмысленная ошибка, и разбор называет её прямо.
+ */
+function formOptions(
+  task: FormTask,
+  answers: string[],
+  pool: FormTask[],
+  rng: () => number,
+): string[] {
+  const verb = task.verb;
+  const taken = new Set(answers.map(normalizeAnswer));
+  const own = [verb.base, ...verb.past, ...verb.participle, edForm(verb.base)].filter(
+    (f) => !taken.has(normalizeAnswer(f)),
+  );
+
+  const picked = shuffle([...new Set(own)], rng).slice(0, OPTION_COUNT - 1);
+
+  if (picked.length < OPTION_COUNT - 1) {
+    const used = new Set([...taken, ...picked.map(normalizeAnswer)]);
+    const alien = pool
+      .filter((t) => t.verb.base !== verb.base)
+      .map((t) => (task.kind === "participle" ? t.verb.participle[0] : t.verb.past[0]) ?? "")
+      .filter((f) => f && !used.has(normalizeAnswer(f)));
+    for (const f of shuffle([...new Set(alien)], rng)) {
+      if (picked.length >= OPTION_COUNT - 1) break;
+      picked.push(f);
+      used.add(normalizeAnswer(f));
+    }
+  }
+
+  return shuffle([answers[0] ?? "", ...picked], rng);
+}
+
 /** Дистракторы для времени: та же форма, но от других времён. */
 function tenseOptions(task: TenseGapTask, rng: () => number): string[] {
   const answer = task.accept[0] ?? "";
@@ -317,7 +365,6 @@ export function buildGrammarSession(opts: {
       batches: batchCount(pool.length, size),
       cards: picked.map((t: FormTask) => {
         const answers = formAnswers(t);
-        const main = answers[0] ?? "";
         const view = formCard(t);
         // Знакомый глагол пишем, незнакомый выбираем. Порог — FORM_MASTERY_HITS.
         const choice = !mastered.has(t.verb.base);
@@ -333,7 +380,7 @@ export function buildGrammarSession(opts: {
             ? undefined
             : t.kind === "toEn"
               ? verbWordOptions(answers, pool, rng)
-              : gapOptions(t.verb.base, main, rng),
+              : formOptions(t, answers, pool, rng),
           hint: view.hint,
         };
       }),
