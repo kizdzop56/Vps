@@ -22,7 +22,7 @@
 // поэтому каждое третье задание даётся вариантами. Дистракторы — другие формы
 // того же глагола: случайное слово отбрасывается по виду, а не по знанию.
 //
-// Модуль без БД и express — тесты в engine.test.ts.
+// Модуль без БД и express — тесты в engine.test.ts и rotation.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { checkWritten, normalizeAnswer } from "../answerCheck";
@@ -113,6 +113,64 @@ export function allForms(base: string): string[] {
   return [...forms];
 }
 
+// ── Ротация: почему не «перетасовать и взять первые двенадцать» ─────────────
+//
+// Так и было сделано сначала, и на маленьком банке это заметно: тасовка новая,
+// но мешок тот же, поэтому вчерашние задания выпадали снова примерно в трети
+// случаев. Ученик видит не «новый заход», а «опять эти».
+//
+// Теперь банк режется на непересекающиеся порции по size, и порция выбирается
+// курсором. Курсор — номер дня плюс номер захода, то есть соседние шаги дают
+// РАЗНЫЕ порции гарантированно, а не по удаче. Пройден полный круг по банку —
+// порядок перетасовывается заново, и круг начинается другой.
+//
+// Плата, которую стоит назвать прямо: курсор непрерывный, поэтому второй заход
+// сегодня — это первый заход завтра. Альтернатива (свой круг на каждый день)
+// вернула бы случайное пересечение соседних дней. Повтор через сутки полезнее
+// для памяти, чем повтор через минуту, поэтому выбран этот вариант.
+
+/** Сид из строки: режим и время должны крутиться независимо друг от друга. */
+export function textSeed(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h | 0) || 1;
+}
+
+/**
+ * Сколько непересекающихся порций получается из банка.
+ *
+ * Округление ВНИЗ: хвост короче полного захода не берётся отдельной порцией,
+ * иначе каждый N-й день был бы вдвое короче остальных. Хвост не пропадает — на
+ * следующем круге тасовка другая, и в него попадёт уже другое.
+ */
+export function batchCount(poolSize: number, size: number): number {
+  return Math.max(1, Math.floor(poolSize / Math.max(1, size)));
+}
+
+/**
+ * Порция заданий по курсору.
+ *
+ * @param step  курсор: номер дня плюс номер захода
+ * @param seed  сид банка: у каждого режима и времени он свой
+ */
+export function rotateBatch<T>(pool: T[], size: number, step: number, seed: number): T[] {
+  if (pool.length === 0) return [];
+  const cursor = Math.max(0, Math.trunc(step));
+
+  // Банка не хватает даже на один заход: отдаём всё, что есть, но порядок
+  // меняем — иначе задания идут в одном и том же порядке каждый день.
+  if (pool.length <= size) return shuffle(pool, mulberry32(seed + cursor * 7919));
+
+  const batches = batchCount(pool.length, size);
+  const cycle = Math.floor(cursor / batches);
+  const pos = cursor % batches;
+  const order = shuffle(pool, mulberry32(seed + cycle * 7919));
+  return order.slice(pos * size, pos * size + size);
+}
+
 // ── Подбор заданий ──────────────────────────────────────────────────────────
 
 /** Задания уровня ученика и ниже. */
@@ -171,12 +229,22 @@ function verbFormHint(task: VerbGapTask): string {
   return task.form === "past" ? "вторая форма (Past Simple)" : "третья форма (после have/has)";
 }
 
+export type GrammarSessionResult = {
+  cards: GrammarCard[];
+  /** Сколько заданий доступно ученику в этом режиме вообще. */
+  total: number;
+  /** Номер захода: с ним подборка сдвигается на следующую порцию. */
+  round: number;
+  /** Сколько заходов подряд можно сделать без единого повтора. */
+  batches: number;
+};
+
 /**
  * Собрать заход.
  *
- * Порядок детерминирован сидом дня: в течение дня задания не перетасовываются
- * при каждом обновлении экрана, но день ко дню меняются. Тот же приём, что в
- * карточках слов.
+ * Порядок детерминирован: одна и та же подборка в течение дня (обновление
+ * экрана не тасует задания заново), но день ко дню и заход к заходу — другая.
+ * За это отвечает rotateBatch, см. комментарий выше.
  */
 export function buildGrammarSession(opts: {
   mode: GrammarMode;
@@ -185,43 +253,49 @@ export function buildGrammarSession(opts: {
   tense?: string;
   now?: Date;
   size?: number;
-}): { cards: GrammarCard[]; total: number } {
+  /** Номер захода за день: 0 — первый, дальше следующие порции банка. */
+  round?: number;
+}): GrammarSessionResult {
   const now = opts.now ?? new Date();
   const size = Math.max(1, opts.size ?? SESSION_SIZE);
-  const rng = mulberry32(daySeed(now) + opts.mode.length * 7919);
+  const round = Math.max(0, Math.trunc(opts.round ?? 0));
+  const seed = textSeed(`${opts.mode}:${opts.tense ?? ""}`);
+  const step = daySeed(now) + round;
+
+  /** Плитки и варианты мешаются от НОМЕРА задания: одна карточка — один вид. */
+  const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
 
   if (opts.mode === "build") {
     const pool = pickTasks(ASSEMBLE_TASKS, opts.level);
-    const picked = shuffle(pool, rng).slice(0, size);
+    const picked = rotateBatch(pool, size, step, seed);
     return {
       total: pool.length,
-      cards: picked.map((t: AssembleTask, i) => {
-        const cardRng = mulberry32(daySeed(now) + i * 131 + t.id.length);
-        const tiles = shuffle([...sentenceTiles(t.en), ...(t.extra ?? [])], cardRng);
-        return {
-          id: t.id,
-          mode: "build" as const,
-          level: t.level,
-          text: "",
-          ru: t.ru,
-          input: "assemble" as const,
-          tiles,
-          hint: "собери предложение по переводу",
-        };
-      }),
+      round,
+      batches: batchCount(pool.length, size),
+      cards: picked.map((t: AssembleTask) => ({
+        id: t.id,
+        mode: "build" as const,
+        level: t.level,
+        text: "",
+        ru: t.ru,
+        input: "assemble" as const,
+        tiles: shuffle([...sentenceTiles(t.en), ...(t.extra ?? [])], cardRng(t.id)),
+        hint: "собери предложение по переводу",
+      })),
     };
   }
 
   if (opts.mode === "tense") {
     const all = pickTasks(TENSE_GAP_TASKS, opts.level);
     const pool = opts.tense ? all.filter((t) => t.tense === opts.tense) : all;
-    const picked = shuffle(pool, rng).slice(0, size);
+    const picked = rotateBatch(pool, size, step, seed);
     return {
       total: pool.length,
+      round,
+      batches: batchCount(pool.length, size),
       cards: picked.map((t: TenseGapTask, i) => {
         const tense = tenseById(t.tense);
         const choice = (i + 1) % CHOICE_EVERY === 0;
-        const cardRng = mulberry32(daySeed(now) + i * 271 + t.id.length);
         return {
           id: t.id,
           mode: "tense" as const,
@@ -230,7 +304,7 @@ export function buildGrammarSession(opts: {
           ru: t.ru,
           base: t.base,
           input: choice ? ("choice" as const) : ("type" as const),
-          options: choice ? tenseOptions(t, cardRng) : undefined,
+          options: choice ? tenseOptions(t, cardRng(t.id)) : undefined,
           hint: tense?.title ?? t.tense,
           tense: t.tense,
         };
@@ -239,16 +313,17 @@ export function buildGrammarSession(opts: {
   }
 
   const pool = pickTasks(VERB_GAP_TASKS, opts.level);
-  const picked = shuffle(pool, rng).slice(0, size);
+  const picked = rotateBatch(pool, size, step, seed);
   return {
     total: pool.length,
+    round,
+    batches: batchCount(pool.length, size),
     cards: picked.map((t: VerbGapTask, i) => {
       // Верный ответ достаём в переменную: в проекте включена строгая проверка
       // индексов, и answers[0] прямо в тернарнике имел бы тип string|undefined.
       const answers = verbGapAnswers(t);
       const main = answers[0];
       const choice = (i + 1) % CHOICE_EVERY === 0;
-      const cardRng = mulberry32(daySeed(now) + i * 313 + t.id.length);
       return {
         id: t.id,
         mode: "verbs" as const,
@@ -257,7 +332,7 @@ export function buildGrammarSession(opts: {
         ru: t.ru,
         base: t.base,
         input: choice ? ("choice" as const) : ("type" as const),
-        options: choice && main ? gapOptions(t.base, main, cardRng) : undefined,
+        options: choice && main ? gapOptions(t.base, main, cardRng(t.id)) : undefined,
         hint: verbFormHint(t),
       };
     }),
