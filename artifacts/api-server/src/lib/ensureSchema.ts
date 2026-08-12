@@ -185,6 +185,87 @@ const TABLES: TablePatch[] = [
        )`,
     ],
   },
+  {
+    table: "dialog_scenarios",
+    reason: "ситуации от учителя: без них раздел ролевых заданий отвечает ошибкой",
+    ddl: [
+      `create table if not exists "dialog_scenarios" (
+         "id" serial primary key,
+         "teacher_id" integer not null references "users"("id") on delete cascade,
+         "title" text not null,
+         "situation" text not null,
+         "role" text not null,
+         "goal" text,
+         "finish_mode" text not null default 'turns',
+         "turns_target" integer not null default 20,
+         "criteria" jsonb,
+         "strictness" text not null default 'normal',
+         "level" text,
+         "opener" text,
+         "archived" boolean not null default false,
+         "created_at" timestamp not null default now(),
+         "updated_at" timestamp not null default now()
+       )`,
+      `create index if not exists "dialog_scenarios_teacher_idx"
+         on "dialog_scenarios" ("teacher_id", "created_at")`,
+    ],
+  },
+  {
+    table: "dialog_scenario_assignments",
+    reason: "кому выдана ситуация: по ней ученик видит задание",
+    ddl: [
+      `create table if not exists "dialog_scenario_assignments" (
+         "id" serial primary key,
+         "scenario_id" integer not null references "dialog_scenarios"("id") on delete cascade,
+         "student_id" integer not null references "users"("id") on delete cascade,
+         "assigned_by" integer references "users"("id") on delete set null,
+         "created_at" timestamp not null default now(),
+         constraint "dialog_assignment_unique" unique ("scenario_id", "student_id")
+       )`,
+      `create index if not exists "dialog_assignments_student_idx"
+         on "dialog_scenario_assignments" ("student_id")`,
+    ],
+  },
+  {
+    table: "dialog_attempts",
+    reason: "прохождение ситуации: статус, реплики, ошибки, итог для учителя",
+    ddl: [
+      `create table if not exists "dialog_attempts" (
+         "id" serial primary key,
+         "scenario_id" integer not null references "dialog_scenarios"("id") on delete cascade,
+         "student_id" integer not null references "users"("id") on delete cascade,
+         "status" text not null default 'active',
+         "turns" integer not null default 0,
+         "mistakes" integer not null default 0,
+         "goal_reached" boolean not null default false,
+         "summary" text,
+         "started_at" timestamp not null default now(),
+         "finished_at" timestamp,
+         "seen_at" timestamp
+       )`,
+      `create index if not exists "dialog_attempts_student_idx"
+         on "dialog_attempts" ("student_id", "started_at")`,
+      `create index if not exists "dialog_attempts_scenario_idx"
+         on "dialog_attempts" ("scenario_id", "started_at")`,
+    ],
+  },
+  {
+    table: "dialog_turns",
+    reason: "реплики ситуации вместе с разбором ошибок — это и есть отчёт учителю",
+    ddl: [
+      `create table if not exists "dialog_turns" (
+         "id" serial primary key,
+         "attempt_id" integer not null references "dialog_attempts"("id") on delete cascade,
+         "role" text not null,
+         "text" text not null,
+         "correct" boolean,
+         "fixed" text,
+         "issue" text,
+         "at" timestamp not null default now()
+       )`,
+      `create index if not exists "dialog_turns_attempt_idx" on "dialog_turns" ("attempt_id", "at")`,
+    ],
+  },
 ];
 
 const PATCHES: ColumnPatch[] = [

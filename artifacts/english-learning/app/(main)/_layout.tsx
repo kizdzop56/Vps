@@ -132,9 +132,9 @@ const GUIDE_TABS = new Set<string>(Object.keys(TAB_GUIDE_CONTENT));
  *
  * Панель плавающая: она лежит ПОВЕРХ содержимого, а не в потоке. На обычных
  * экранах это нормально — там внизу оставлен запас. Но полноэкранные режимы
- * (тренажёр слов, бой рейда, просмотр задания, чат) верстают контент на всю
- * высоту, и панель просто закрывает его нижнюю часть: доскроллить нельзя, потому
- * что скроллить нечего — панель висит сверху.
+ * (тренажёр слов, бой рейда, разговор по ситуации, просмотр задания, чат)
+ * верстают контент на всю высоту, и панель просто закрывает его нижнюю часть:
+ * доскроллить нельзя, потому что скроллить нечего — панель висит сверху.
  *
  * Именно так пропадала кнопка «Готово» на итогах тренировки и последний
  * вариант ответа во время самой тренировки. У всех этих экранов есть свой
@@ -153,6 +153,8 @@ const FULLSCREEN_ROUTES = [
   "flashcards/marathon",
   // Бой рейда: задания на всю высоту, выход крестиком в шапке.
   "raid/battle",
+  // Разговор по ситуации: внизу поле ввода и микрофон, панель их перекрывала бы.
+  "flashcards/scenario/[id]",
 ];
 
 interface CustomTabBarProps {
@@ -323,6 +325,9 @@ function CustomTabBar({
                 </View>
               )}
               <Text
+                // Подпись в ОДНУ строку: у учителя вкладок много, и перенос
+                // «Календарь» на две строки дёргал высоту всей панели.
+                numberOfLines={1}
                 style={{
                   fontSize: 10,
                   fontWeight: isFocused ? "800" : "600",
@@ -479,6 +484,17 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Ситуации для разговора — вкладка УЧИТЕЛЯ: он их создаёт, выдаёт и
+            читает разборы. Ученик попадает в свои ситуации из «Учёбы»: у него
+            это один из режимов занятия, а не отдельный раздел приложения. */}
+        <Tabs.Screen
+          name="scenarios"
+          options={isTeacher
+            ? { title: "Диалоги", tabBarIcon: ({ color }) => <Glyph name="handshake" size={22} color={color} /> }
+            : { href: null }
+          }
+        />
+
         <Tabs.Screen name="history" options={{ href: null }} />
 
         <Tabs.Screen
@@ -544,6 +560,9 @@ function MainLayoutInner() {
         <Tabs.Screen name="friend/[id]" options={{ href: null }} />
         <Tabs.Screen name="teacher-results/[id]" options={{ href: null }} />
         <Tabs.Screen name="submission-review/[id]" options={{ href: null }} />
+        {/* Разбор диалога по ситуации. Один экран на учителя и ученика: данные
+            одни и те же, а сервер сам решает, кого пустить. */}
+        <Tabs.Screen name="scenario-review/[id]" options={{ href: null }} />
         {/* Бой рейда: свой экран, в панель не попадает. Без этой записи Tabs
             показал бы его отдельной кнопкой рядом с «Рейдом». */}
         <Tabs.Screen name="raid/battle" options={{ href: null }} />
@@ -559,6 +578,9 @@ function MainLayoutInner() {
         <Tabs.Screen name="flashcards/new-deck" options={{ href: null }} />
         <Tabs.Screen name="flashcards/deck/[id]" options={{ href: null }} />
         <Tabs.Screen name="flashcards/preview/[id]" options={{ href: null }} />
+        {/* Ситуации ученика: список и сам разговор. */}
+        <Tabs.Screen name="flashcards/scenarios" options={{ href: null }} />
+        <Tabs.Screen name="flashcards/scenario/[id]" options={{ href: null }} />
       </Tabs>
 
       {/* Всплывающее окно события. Стоит здесь, а не на конкретном экране:

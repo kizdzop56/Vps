@@ -7,6 +7,7 @@ import interestsRouter from "./interests";
 import assignmentsRouter from "./assignments";
 import submissionsRouter from "./submissions";
 import voiceChatRouter from "./voiceChat";
+import scenariosRouter from "./scenarios";
 import timeTrackingRouter from "./timeTracking";
 import leaderboardRouter from "./leaderboard";
 import uploadRouter from "./upload";
@@ -40,6 +41,10 @@ router.use(interestsRouter);
 router.use(assignmentsRouter);
 router.use(submissionsRouter);
 router.use(voiceChatRouter);
+// Ситуации от учителя: роль-плей как задание (/scenarios/*,
+// /scenario-attempts/*). Со свободным разговором общего только слой ИИ:
+// у ситуаций свои таблицы, свой разбор ошибок и свой отчёт учителю.
+router.use(scenariosRouter);
 router.use(timeTrackingRouter);
 router.use(leaderboardRouter);
 router.use(uploadRouter);
