@@ -1,9 +1,12 @@
 // Клиентский слой рейда. apiFetch берётся из useFlashcards — авторизация и
 // разбор ошибок должны быть общими на всё приложение.
+//
+// Валюта в рейде одна: монеты. Маны нет, бафы покупаются монетами.
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
 export type RaidLeague = "bronze" | "silver" | "gold";
+export type RaidBuff = "power" | "aoe" | "shield" | "stamina";
 
 export interface RaidEventInfo {
   id: number;
@@ -42,8 +45,6 @@ export interface RaidMe {
   stamina: number;
   staminaMax: number;
   staminaNextAt: string | null;
-  mana: number;
-  manaMax: number;
   coins: number;
   keys: number;
   frames: string[];
@@ -63,15 +64,6 @@ export interface RaidMe {
   merciless: boolean;
 }
 
-export interface RaidMilestone {
-  at: number;
-  label: string;
-  coins: number;
-  mana: number;
-  reached: boolean;
-  claimed: boolean;
-}
-
 export interface RaidRow {
   userId: number;
   name: string;
@@ -88,17 +80,13 @@ export interface RaidRow {
 export interface RaidSnapshot {
   event: RaidEventInfo;
   me: RaidMe;
-  quest: { need: number; done: number; claimed: boolean; coins: number; mana: number };
+  quest: { need: number; done: number; claimed: boolean; coins: number };
   abilities: {
     power: { cost: number; mult: number; armed: boolean };
     aoe: { cost: number; tasks: number; mult: number; left: number };
     shield: { cost: number; active: boolean };
+    stamina: { cost: number; full: boolean };
   };
-  shop: {
-    mana: { coins: number; mana: number; label: string };
-    stamina: { coins: number; label: string };
-  };
-  track: { claimed: number; ready: number; milestones: RaidMilestone[] };
   leagues: { key: RaidLeague; title: string; mine: boolean; rows: RaidRow[] }[];
   chest: {
     eventId: number;
@@ -119,33 +107,72 @@ export interface RaidSnapshot {
   recent: { damage: number; crit: boolean; superEffective: boolean; combo: number; at: string }[];
 }
 
-export interface RaidGranted {
-  coins: number;
-  mana: number;
-  stamina: boolean;
-  keys: number;
-  cosmetic: string | null;
-  weapon: string | null;
-  label: string;
+/** Задание боя. Правильного ответа в нём нет: проверка серверная. */
+export interface RaidTask {
+  key: string;
+  kind: "word" | "grammar";
+  id: string;
+  prompt: string;
+  hint?: string;
+  input: "choice" | "type" | "assemble";
+  options?: string[];
+  tiles?: string[];
+  answerLang?: "ru" | "en";
+  /** Ставка урона: easy | medium | hard. */
+  damage: "easy" | "medium" | "hard";
+  tags: string[];
+  listen?: boolean;
+  wordId?: number;
+}
+
+export interface RaidBattle {
+  size: number;
+  tasks: RaidTask[];
+}
+
+/** Что сервер сказал про удар. Разбора ошибки в рейде нет намеренно. */
+export interface RaidAnswer {
+  correct: boolean;
+  typo: boolean;
+  expected: string[];
+  raid: {
+    damage: number;
+    combo: number;
+    comboMult: number;
+    crit: boolean;
+    superEffective: boolean;
+    stamina: number;
+    staminaMax: number;
+    coins: number;
+    coinsEarned: number;
+    aoeLeft: number;
+    hpTotal: number;
+    hpLeft: number;
+    percentLeft: number;
+    phase: RaidPhase;
+    myDamage: number;
+    killed: boolean;
+    blocked: string | null;
+    bossName: string;
+  } | null;
 }
 
 export const raid = {
   current: () => apiFetch<RaidSnapshot>("/api/raid/current"),
-  ability: (ability: "power" | "aoe" | "shield") =>
-    apiFetch<RaidSnapshot>("/api/raid/ability", {
+  battle: () => apiFetch<RaidBattle>("/api/raid/battle"),
+  answer: (task: RaidTask, given: string) =>
+    apiFetch<RaidAnswer>("/api/raid/answer", {
       method: "POST",
-      body: JSON.stringify({ ability }),
+      body: JSON.stringify({ kind: task.kind, id: task.id, given }),
     }),
-  claim: () =>
-    apiFetch<{ granted: RaidGranted[]; snapshot: RaidSnapshot }>("/api/raid/claim", { method: "POST" }),
+  buy: (buff: RaidBuff) =>
+    apiFetch<RaidSnapshot>("/api/raid/buy", { method: "POST", body: JSON.stringify({ buff }) }),
   quest: () => apiFetch<RaidSnapshot>("/api/raid/quest", { method: "POST" }),
   chest: (eventId: number) =>
     apiFetch<{ chest: { status: string; coins: number; title: string }; snapshot: RaidSnapshot }>(
       "/api/raid/chest",
       { method: "POST", body: JSON.stringify({ eventId }) },
     ),
-  shop: (item: "mana" | "stamina") =>
-    apiFetch<RaidSnapshot>("/api/raid/shop", { method: "POST", body: JSON.stringify({ item }) }),
 };
 
 /** Название фазы человеческим языком. */
@@ -178,6 +205,13 @@ export function tagTitle(tag: string): string {
     case "all": return "все типы заданий";
     default: return tag;
   }
+}
+
+/** Ставка урона задания словами. */
+export function damageTitle(level: "easy" | "medium" | "hard"): string {
+  if (level === "hard") return "50 урона";
+  if (level === "medium") return "25 урона";
+  return "10 урона";
 }
 
 export default raid;

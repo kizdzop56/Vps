@@ -11,6 +11,9 @@
 // сервера, дописывает к нему поле raid и на этом всё. Тренажёры о рейде не
 // знают вовсе — выключить событие можно снятием одной строки в routes/index.ts.
 //
+// Практика ВНУТРИ рейда (POST /raid/answer) сюда не попадает: она сама вызывает
+// recordRaidHit, потому что там урон это смысл ответа, а не побочный эффект.
+//
 // ── Как это работает ────────────────────────────────────────────────────────
 // res.json подменяется на свою версию. Тело ответа к этому моменту уже
 // посчитано, поэтому отправку можно на мгновение отложить: сначала считаем
@@ -22,55 +25,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { RequestHandler } from "express";
 import { findTask } from "../lib/grammar/engine";
-import { recordRaidHit, type RaidDifficulty, type RaidTag } from "../lib/raid";
-
-/** Что за упражнение пришло из раздела «Слова». */
-function wordExercise(mode: unknown): { difficulty: RaidDifficulty; tags: RaidTag[] } | null {
-  switch (mode) {
-    // Знакомство — не задание: там нет верного и неверного.
-    case "intro":
-      return null;
-    case "choiceRu":
-    case "choiceEn":
-      return { difficulty: "easy", tags: ["vocab"] };
-    case "listen":
-      return { difficulty: "easy", tags: ["listening", "vocab"] };
-    case "build":
-      return { difficulty: "medium", tags: ["vocab", "wordorder"] };
-    case "typeRu":
-    case "typeEn":
-      return { difficulty: "medium", tags: ["vocab", "synonyms"] };
-    case "speak":
-      return { difficulty: "hard", tags: ["pronunciation", "vocab"] };
-    default:
-      // Режим не пришёл: считаем самым дешёвым. Завысить сложность подделкой
-      // нельзя — тот же принцип, что у ставок очков в грамматике.
-      return { difficulty: "easy", tags: ["vocab"] };
-  }
-}
-
-/** Что за задание пришло из раздела «Составлять». */
-function grammarExercise(
-  taskId: unknown,
-  input: unknown,
-): { difficulty: RaidDifficulty; tags: RaidTag[] } {
-  const difficulty: RaidDifficulty =
-    input === "assemble" ? "hard" : input === "type" ? "medium" : "easy";
-
-  // Вид задания читаем строкой, а не сравнением с литералами движка: формат
-  // номеров заданий — внутреннее дело банка, и рейд не должен от него зависеть.
-  const found = typeof taskId === "string" ? findTask(taskId) : null;
-  const kind = found ? String((found as { kind?: unknown }).kind ?? "") : "";
-
-  const tags: RaidTag[] =
-    kind === "tense" || kind === "verbs"
-      ? ["grammar", "tenses"]
-      : kind === "build"
-        ? ["grammar", "wordorder", "phrasal"]
-        : ["grammar"];
-
-  return { difficulty, tags };
-}
+import { recordRaidHit } from "../lib/raid";
+import { grammarTaskKind, wordTaskKind } from "../lib/raidTags";
 
 /** Ответ тренажёра → удар. null, если этот ответ ударом не считается. */
 async function damageFor(
@@ -80,7 +36,7 @@ async function damageFor(
   userId: number,
 ): Promise<unknown> {
   if (path.endsWith("/flashcards/review")) {
-    const kind = wordExercise(body["mode"]);
+    const kind = wordTaskKind(body["mode"]);
     if (!kind) return null;
     // Оценку ставит сервер, поэтому верность берём из ОТВЕТА, а не из запроса.
     const grade = payload["grade"];
@@ -96,7 +52,12 @@ async function damageFor(
   if (path.endsWith("/grammar/check")) {
     const correct = payload["correct"];
     if (typeof correct !== "boolean") return null;
-    const kind = grammarExercise(body["taskId"], body["input"]);
+    const taskId = body["taskId"];
+    const found = typeof taskId === "string" ? findTask(taskId) : null;
+    const kind = grammarTaskKind(
+      found ? String((found as { kind?: unknown }).kind ?? "") : "",
+      body["input"],
+    );
     return await recordRaidHit({
       userId,
       correct,

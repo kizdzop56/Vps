@@ -1,13 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Шина ударов по боссу.
 //
-// Цифра урона должна вылетать ТАМ, ГДЕ УЧЕНИК ОТВЕЧАЕТ: в тренажёре слов, в
-// формах глаголов, во временах, в сборке предложений. Экранов этих пять, и все
-// они о рейде ничего не знают — как и серверные тренажёры (см. routes/raidHook).
+// Цифра урона должна вылетать ТАМ, ГДЕ УЧЕНИК ОТВЕЧАЕТ: в бою рейда, в тренажёре
+// слов, в формах глаголов, во временах. Экранов много, и все они о рейде ничего
+// не знают — как и серверные тренажёры (см. routes/raidHook).
 //
-// Поэтому клиент слушает не экраны, а сеть: сервер дописывает к ответу
-// тренажёра поле raid, и один слой перехватывает его на выходе fetch. Оверлей
-// живёт в раскладке вкладок и рисует цифру поверх любого экрана.
+// Поэтому клиент слушает не экраны, а сеть: сервер дописывает к ответу поле
+// raid, и один слой перехватывает его на выходе fetch. Оверлей живёт в раскладке
+// вкладок и рисует цифру поверх любого экрана.
 //
 // Почему перехват, а не правка каждого экрана: правка означает пять мест,
 // которые обязаны помнить про рейд, и шестое, которое забудет. Перехват
@@ -22,7 +22,8 @@ export interface RaidHitEvent {
   combo: number;
   comboMult: number;
   stamina: number;
-  mana: number;
+  coins: number;
+  coinsEarned: number;
   percentLeft: number;
   phase: string;
   killed: boolean;
@@ -67,7 +68,8 @@ export function pickRaidHit(payload: unknown): RaidHitEvent | null {
     combo: Number(r["combo"] ?? 0),
     comboMult: Number(r["comboMult"] ?? 1),
     stamina: Number(r["stamina"] ?? 0),
-    mana: Number(r["mana"] ?? 0),
+    coins: Number(r["coins"] ?? 0),
+    coinsEarned: Number(r["coinsEarned"] ?? 0),
     percentLeft: Number(r["percentLeft"] ?? 0),
     phase: String(r["phase"] ?? "normal"),
     killed: !!r["killed"],
@@ -78,7 +80,7 @@ export function pickRaidHit(payload: unknown): RaidHitEvent | null {
 }
 
 /** Ответы каких запросов смотрим. Остальные не трогаем вовсе. */
-const WATCHED = ["/api/flashcards/review", "/api/grammar/check"];
+const WATCHED = ["/api/raid/answer", "/api/flashcards/review", "/api/grammar/check"];
 
 let installed = false;
 

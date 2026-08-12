@@ -16,6 +16,11 @@
 // типов и всё, что требует переноса данных, остаются за drizzle-kit push: их
 // нельзя выполнять вслепую на живой базе.
 //
+// Оставшиеся не нужными колонки здесь НЕ удаляются: удаление необратимо, а
+// лишняя колонка с DEFAULT никому не мешает. Так осталась mana в raid_state —
+// механика маны убрана, но колонка в уже развёрнутой базе живёт с default 0 и
+// вставкам не мешает.
+//
 // Определения написаны дословно, а не выведены из схемы drizzle: генерация DDL
 // из кода — это свой мини-drizzle-kit, а настоящий в проекте уже есть. Здесь
 // только страховка от «код доехал, база нет».
@@ -90,7 +95,7 @@ const TABLES: TablePatch[] = [
   },
   {
     table: "raid_participants",
-    reason: "вклад ученика в рейд: рейтинг, вехи и сундук",
+    reason: "вклад ученика в рейд: рейтинг и сундук",
     ddl: [
       `create table if not exists "raid_participants" (
          "id" serial primary key,
@@ -132,14 +137,12 @@ const TABLES: TablePatch[] = [
   },
   {
     table: "raid_state",
-    reason: "боевое состояние ученика: энергия, мана, комбо, монеты",
+    reason: "боевое состояние ученика: энергия, комбо, монеты, бафы",
     ddl: [
       `create table if not exists "raid_state" (
          "user_id" integer primary key references "users"("id") on delete cascade,
          "stamina" integer not null default 20,
          "stamina_at" timestamp not null default now(),
-         "mana" integer not null default 0,
-         "mana_day" date,
          "combo" integer not null default 0,
          "clean_streak" integer not null default 0,
          "power_armed" boolean not null default false,
@@ -149,6 +152,7 @@ const TABLES: TablePatch[] = [
          "boost_until" timestamp,
          "last_active_at" timestamp,
          "coins" integer not null default 0,
+         "bonus_day" date,
          "keys" integer not null default 0,
          "frames" jsonb,
          "weapon_skin" text,
@@ -199,6 +203,12 @@ const PATCHES: ColumnPatch[] = [
     column: "grade",
     definition: "text",
     reason: "оценка ответа (again/hard/good/easy) для точного дневного потолка очков",
+  },
+  {
+    table: "raid_state",
+    column: "bonus_day",
+    definition: "date",
+    reason: "день, за который выданы монеты за вход (пришла на место mana_day)",
   },
 ];
 

@@ -1,61 +1,104 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Рейд-босс: маршруты экрана.
+// Рейд-босс: маршруты экрана и практики.
 //
-//   GET  /raid/current   — босс, шкала, мой вклад, энергия, мана, вехи, лиги
-//   POST /raid/ability   — спецатака за ману: power | aoe | shield
-//   POST /raid/claim     — забрать все достигнутые вехи вклада
+//   GET  /raid/current   — босс, шкала, мой вклад, энергия, монеты, лиги
+//   GET  /raid/battle    — заход практики: задания, по которым бьют босса
+//   POST /raid/answer    — ответ практики: проверка и урон
+//   POST /raid/buy       — баф за монеты: power | aoe | shield | stamina
 //   POST /raid/quest     — награда за дневное задание
 //   POST /raid/chest     — сундук за итог закончившегося рейда
-//   POST /raid/shop      — трата монет: мана или полная энергия
+//   POST /raid/claim     — забрать вехи вклада (экран вех сейчас скрыт)
 //
-// Урон здесь НЕ наносится: его снимает перехватчик ответов (routes/raidHook.ts).
-// Экран рейда только показывает состояние и распоряжается наградами.
+// Ответы тренажёров «Учёбы» тоже бьют босса, но не здесь: их перехватывает
+// routes/raidHook.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { requireAuth, getUser } from "../lib/auth";
 import {
-  buy,
+  buyBuff,
   claimChest,
   claimMilestones,
   claimQuest,
   isActionError,
   raidSnapshot,
-  useAbility,
+  recordRaidHit,
+  type RaidBuff,
 } from "../lib/raid";
+import { RAID_BATCH, buildRaidBatch, checkRaidAnswer } from "../lib/raidSession";
 
 const router = Router();
+
+/** Ответ длиннее этого — не ответ, а вставленный текст. */
+const MAX_ANSWER_LEN = 200;
 
 router.get("/raid/current", requireAuth, async (req, res) => {
   const user = getUser(req);
   res.json(await raidSnapshot(user.userId, new Date()));
 });
 
-router.post("/raid/ability", requireAuth, async (req, res) => {
+// ── GET /raid/battle ────────────────────────────────────────────────────────
+// Заход практики. Заданий на ответы не содержит: проверка целиком серверная.
+router.get("/raid/battle", requireAuth, async (req, res) => {
   const user = getUser(req);
-  const raw = (req.body as { ability?: unknown }).ability;
-  const ability = raw === "power" || raw === "aoe" || raw === "shield" ? raw : null;
-  if (!ability) {
-    res.status(400).json({ error: "ability: ожидается power, aoe или shield" });
+  const tasks = await buildRaidBatch(user.userId, new Date());
+  res.json({ size: RAID_BATCH, tasks });
+});
+
+// ── POST /raid/answer ───────────────────────────────────────────────────────
+//
+// Возвращает только «верно или нет» и правильный ответ: разбора ошибок в рейде
+// нет намеренно (см. шапку lib/raidSession.ts). Рядом кладём поле raid — по нему
+// клиент рисует вылетающую цифру урона.
+router.post("/raid/answer", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const body = req.body as { kind?: unknown; id?: unknown; given?: unknown };
+  const kind = body.kind === "grammar" ? "grammar" : "word";
+  const id = typeof body.id === "string" ? body.id.trim() : String(body.id ?? "");
+  const given = typeof body.given === "string" ? body.given.slice(0, MAX_ANSWER_LEN) : "";
+
+  if (!id) {
+    res.status(400).json({ error: "id required" });
     return;
   }
-  const result = await useAbility(user.userId, ability, new Date());
+
+  const now = new Date();
+  const verdict = await checkRaidAnswer(user.userId, kind, id, given, now);
+  if (!verdict) {
+    res.status(404).json({ error: "Задание не найдено" });
+    return;
+  }
+
+  const raid = await recordRaidHit({
+    userId: user.userId,
+    correct: verdict.correct,
+    difficulty: verdict.difficulty,
+    tags: verdict.tags,
+    now,
+  });
+
+  res.json({
+    correct: verdict.correct,
+    typo: verdict.typo,
+    expected: verdict.expected,
+    raid,
+  });
+});
+
+router.post("/raid/buy", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const raw = (req.body as { buff?: unknown }).buff;
+  const allowed: RaidBuff[] = ["power", "aoe", "shield", "stamina"];
+  const buff = allowed.find((b) => b === raw);
+  if (!buff) {
+    res.status(400).json({ error: "buff: ожидается power, aoe, shield или stamina" });
+    return;
+  }
+  const result = await buyBuff(user.userId, buff, new Date());
   if (isActionError(result)) {
     res.status(400).json(result);
     return;
   }
   res.json(await raidSnapshot(user.userId, new Date()));
-});
-
-router.post("/raid/claim", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  const result = await claimMilestones(user.userId, new Date());
-  if (isActionError(result)) {
-    res.status(400).json(result);
-    return;
-  }
-  // Отдаём и выданное, и новую картину: экран показывает награды окном, а
-  // цифры под ним должны уже быть новыми.
-  res.json({ granted: result.granted, raid: null, snapshot: await raidSnapshot(user.userId, new Date()) });
 });
 
 router.post("/raid/quest", requireAuth, async (req, res) => {
@@ -83,20 +126,14 @@ router.post("/raid/chest", requireAuth, async (req, res) => {
   res.json({ chest: result, snapshot: await raidSnapshot(user.userId, new Date()) });
 });
 
-router.post("/raid/shop", requireAuth, async (req, res) => {
+router.post("/raid/claim", requireAuth, async (req, res) => {
   const user = getUser(req);
-  const raw = (req.body as { item?: unknown }).item;
-  const item = raw === "mana" || raw === "stamina" ? raw : null;
-  if (!item) {
-    res.status(400).json({ error: "item: ожидается mana или stamina" });
-    return;
-  }
-  const result = await buy(user.userId, item, new Date());
+  const result = await claimMilestones(user.userId, new Date());
   if (isActionError(result)) {
     res.status(400).json(result);
     return;
   }
-  res.json(await raidSnapshot(user.userId, new Date()));
+  res.json({ granted: result.granted, snapshot: await raidSnapshot(user.userId, new Date()) });
 });
 
 export default router;

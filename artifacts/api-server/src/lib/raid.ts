@@ -2,25 +2,34 @@
 // Рейд-босс: правила события и весь счёт урона.
 //
 // Событие идёт неделю (пн 00:00 — вс 23:59). У босса общий на всех пул
-// здоровья, каждый верный ответ в тренажёрах снимает часть, итог общий:
-// добили — победа всем, не добили — утешительный сундук.
+// здоровья, каждый верный ответ снимает часть, итог общий: добили — победа всем,
+// не добили — утешительный сундук.
 //
-// ── Почему HP не по формуле из задумки буквально ─────────────────────────────
-// Задумка: HP = 100 000 * (1 + 0.05 * средний DAU). Это формула для взрослой
-// аудитории. При одном-двух активных учениках она даёт 100 000 HP, то есть
-// четыре тысячи верных ответов за неделю — босс не умирает НИКОГДА, и весь
-// смысл события (общая победа) не наступает ни разу.
+// ── Здоровье босса ──────────────────────────────────────────────────────────
+// HP считается от ЧИСЛА УЧЕНИКОВ в приложении так, чтобы босса сносили примерно
+// за пять дней из семи: два дня в запасе на выходные и на тех, кто заходит
+// через день.
 //
-// Поэтому берётся МИНИМУМ из двух оценок: формулы задумки и бюджета
-// WEEKLY_BUDGET_PER_USER на активного ученика. Второе и работает на малой
-// аудитории, первое включится, когда людей станет много. Пол MIN_HP не даёт
-// боссу умереть с трёх ответов.
+//   HP = ученики * DAILY_DAMAGE_PER_STUDENT * TARGET_DAYS
+//
+// Дневная ставка взята из практики: около пятнадцати заданий в день по 35–45
+// урона с учётом комбо и уязвимости. Формула из первоначальной задумки
+// (100 000 * (1 + 0.05 * DAU)) не используется: при одном-двух учениках она
+// давала босса, которого не убить никогда, а событие без победы бессмысленно.
+//
+// Считаем именно учеников, а не активных: рейд общий, и новичок, зашедший в
+// среду, тоже часть сообщества. Учителя и родители не бьют — их и не считаем.
 //
 // ── Динамическая сложность ──────────────────────────────────────────────────
-// Раз в час HP подгоняется под текущую аудиторию, но не больше чем на 10% за
-// раз и никогда ниже уже нанесённого урона: иначе всплеск новых установок
-// делал бы босса непобиваемым для тех, кто бьёт его с понедельника. В последние
-// сутки подгонка выключена — финиш не должен уезжать из-под ног.
+// Раз в час HP подгоняется под текущее число учеников, но не больше чем на 10%
+// за раз и никогда ниже уже нанесённого урона: иначе всплеск регистраций делал
+// бы босса непобиваемым для тех, кто бьёт его с понедельника. В последние сутки
+// подгонка выключена — финиш не должен уезжать из-под ног.
+//
+// ── Валюта одна: монеты ─────────────────────────────────────────────────────
+// Монеты капают за попадания, дневное задание и сундуки. Тратятся на бафы
+// (мощный удар, удвоение, щит) и на энергию. Маны в механике нет: два счётчика
+// делали одно и то же.
 //
 // ── Дисциплина ──────────────────────────────────────────────────────────────
 // recordRaidHit() вызывается ИЗ ПУТИ ОТВЕТА УЧЕНИКА и поэтому не имеет права
@@ -30,14 +39,11 @@
 import { db } from "@workspace/db";
 import {
   usersTable,
-  reviewLogTable,
-  grammarLogTable,
   raidEventsTable,
   raidParticipantsTable,
   raidHitsTable,
   raidStateTable,
   type RaidEvent,
-  type RaidParticipant,
   type RaidState,
 } from "@workspace/db";
 import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
@@ -51,7 +57,7 @@ const DAY_MS = 24 * HOUR_MS;
 
 // ── Теги заданий и слабости боссов ──────────────────────────────────────────
 
-/** Чем является задание. По совпадению с слабостью босса бьёт сверхэффективно. */
+/** Чем является задание. По совпадению со слабостью босса бьёт сверхэффективно. */
 export type RaidTag =
   | "grammar" | "tenses" | "prepositions"
   | "vocab" | "synonyms"
@@ -164,15 +170,16 @@ export function bossForWeek(index: number): BossDef {
 
 // ── Здоровье босса ──────────────────────────────────────────────────────────
 
-/** Урона за неделю на одного активного ученика — практический бюджет. */
-export const WEEKLY_BUDGET_PER_USER = 4900;
-/** Ниже этого босс умирает быстрее, чем ученик успевает заметить событие. */
-export const MIN_HP = 1500;
+/** Сколько урона ученик успевает нанести за день без надрыва. */
+export const DAILY_DAMAGE_PER_STUDENT = 600;
+/** За сколько дней сообщество должно спокойно закрывать босса. */
+export const TARGET_DAYS = 5;
+/** Пол: даже у одного ученика босс должен жить несколько дней. */
+export const MIN_HP = DAILY_DAMAGE_PER_STUDENT * TARGET_DAYS;
 
-export function bossHp(avgDau: number): number {
-  const bySpec = 100_000 * (1 + 0.05 * avgDau);
-  const byBudget = WEEKLY_BUDGET_PER_USER * Math.max(1, avgDau);
-  return Math.max(MIN_HP, Math.round(Math.min(bySpec, byBudget)));
+export function bossHp(students: number): number {
+  const people = Math.max(1, Math.round(students));
+  return Math.max(MIN_HP, people * DAILY_DAMAGE_PER_STUDENT * TARGET_DAYS);
 }
 
 export function phaseOf(hpLeft: number, hpTotal: number): RaidPhase {
@@ -193,22 +200,29 @@ export const VULN_MULT: Record<RaidPhase, number> = { normal: 1.5, hardened: 3, 
 /** В берсерке базовый урон любого задания выше на 50%. */
 export const BERSERK_BASE_BONUS = 1.5;
 
-// ── Энергия, мана, бафы ─────────────────────────────────────────────────────
+// ── Энергия, монеты, бафы ───────────────────────────────────────────────────
 
 export const STAMINA_MAX = 20;
 export const STAMINA_REGEN_MS = 30 * MINUTE_MS;
-export const MANA_MAX = 500;
-export const DAILY_MANA = 10;
-/** Мана за каждые пять верных подряд. */
-export const STREAK_MANA = 5;
-export const STREAK_MANA_STEP = 5;
 
-export const POWER_COST = 100;
+/** Монеты за попадание и надбавки. Единственный постоянный доход. */
+export const COINS_PER_HIT = 1;
+export const COINS_SUPER_BONUS = 1;
+export const COINS_CRIT_BONUS = 2;
+/** Монеты за вход в новый день. */
+export const DAILY_COINS = 10;
+/** Монеты за каждые пять верных подряд. */
+export const STREAK_COINS = 5;
+export const STREAK_COINS_STEP = 5;
+
+/** Цены бафов. Всё в монетах: другой валюты в рейде нет. */
+export const POWER_COST = 40;
 export const POWER_MULT = 3;
-export const AOE_COST = 200;
+export const AOE_COST = 80;
 export const AOE_TASKS = 5;
 export const AOE_MULT = 2;
-export const SHIELD_COST = 150;
+export const SHIELD_COST = 60;
+export const STAMINA_COST = 50;
 
 /** Пропуск сутки и больше — «языковая ржавчина» на два часа. */
 export const RUST_AFTER_MS = 24 * HOUR_MS;
@@ -225,14 +239,7 @@ export const BOOST_MS = 48 * HOUR_MS;
 
 /** Дневное задание рейда. */
 export const QUEST_DAMAGE = 100;
-export const QUEST_COINS = 30;
-export const QUEST_MANA = 15;
-
-/** Цены магазина монет: монеты тратятся внутри события. */
-export const SHOP = {
-  mana: { coins: 100, mana: 50, label: "50 маны" },
-  stamina: { coins: 150, label: "Полная энергия" },
-} as const;
+export const QUEST_COINS = 40;
 
 // ── Формула урона ───────────────────────────────────────────────────────────
 
@@ -308,10 +315,14 @@ export function computeDamage(input: DamageInput): DamageBreakdown {
 }
 
 // ── Вехи личного вклада ─────────────────────────────────────────────────────
+//
+// Шкала вех в клиенте пока скрыта (её попросили убрать до отдельного разговора),
+// но счёт вкладу ведётся: убирать посчитанное ради временно спрятанного экрана
+// значит потерять историю. Награды выдаются только по явному запросу
+// claimMilestones — сам по себе счёт монет не двигает.
 
 export interface MilestoneReward {
   coins: number;
-  mana: number;
   /** Полное восстановление энергии. */
   stamina: boolean;
   keys: number;
@@ -322,44 +333,42 @@ export interface MilestoneReward {
 
 function reward(
   coins: number,
-  mana: number,
-  extra: Partial<Omit<MilestoneReward, "coins" | "mana" | "label">> & { label?: string } = {},
+  extra: Partial<Omit<MilestoneReward, "coins" | "label">> & { label?: string } = {},
 ): MilestoneReward {
   const cosmetic = extra.cosmetic ?? null;
   const weapon = extra.weapon ?? null;
   const stamina = extra.stamina ?? false;
   const keys = extra.keys ?? 0;
   const parts: string[] = [`${coins} монет`];
-  if (mana > 0) parts.push(`${mana} маны`);
   if (stamina) parts.push("полная энергия");
   if (keys > 0) parts.push(`${keys} ключ`);
   if (cosmetic) parts.push(cosmetic);
   if (weapon) parts.push(weapon);
-  return { coins, mana, stamina, keys, cosmetic, weapon, label: extra.label ?? parts.join(" · ") };
+  return { coins, stamina, keys, cosmetic, weapon, label: extra.label ?? parts.join(" · ") };
 }
 
 /** Двадцать вех по нанесённому за рейд урону. */
 export const MILESTONES: readonly { at: number; reward: MilestoneReward }[] = [
-  { at: 50, reward: reward(15, 5) },
-  { at: 100, reward: reward(20, 10) },
-  { at: 200, reward: reward(25, 0, { stamina: true }) },
-  { at: 350, reward: reward(30, 15) },
-  { at: 550, reward: reward(35, 0, { cosmetic: "рамка «Трещина»" }) },
-  { at: 800, reward: reward(40, 20) },
-  { at: 1100, reward: reward(45, 0, { keys: 1 }) },
-  { at: 1500, reward: reward(50, 25) },
-  { at: 2000, reward: reward(60, 0, { stamina: true }) },
-  { at: 2600, reward: reward(70, 0, { cosmetic: "рамка «Пепел»" }) },
-  { at: 3300, reward: reward(80, 30) },
-  { at: 4100, reward: reward(90, 0, { keys: 1 }) },
-  { at: 5000, reward: reward(100, 35) },
-  { at: 6000, reward: reward(110, 0, { stamina: true }) },
-  { at: 7200, reward: reward(120, 0, { cosmetic: "стикер «Добито»" }) },
-  { at: 8600, reward: reward(140, 40) },
-  { at: 10200, reward: reward(160, 0, { keys: 1 }) },
-  { at: 12000, reward: reward(180, 50) },
-  { at: 14000, reward: reward(200, 0, { stamina: true }) },
-  { at: 16500, reward: reward(300, 60, { weapon: "скин оружия «Клинок слов»" }) },
+  { at: 50, reward: reward(15) },
+  { at: 100, reward: reward(20) },
+  { at: 200, reward: reward(25, { stamina: true }) },
+  { at: 350, reward: reward(30) },
+  { at: 550, reward: reward(35, { cosmetic: "рамка «Трещина»" }) },
+  { at: 800, reward: reward(40) },
+  { at: 1100, reward: reward(45, { keys: 1 }) },
+  { at: 1500, reward: reward(50) },
+  { at: 2000, reward: reward(60, { stamina: true }) },
+  { at: 2600, reward: reward(70, { cosmetic: "рамка «Пепел»" }) },
+  { at: 3300, reward: reward(80) },
+  { at: 4100, reward: reward(90, { keys: 1 }) },
+  { at: 5000, reward: reward(100) },
+  { at: 6000, reward: reward(110, { stamina: true }) },
+  { at: 7200, reward: reward(120, { cosmetic: "стикер «Добито»" }) },
+  { at: 8600, reward: reward(140) },
+  { at: 10200, reward: reward(160, { keys: 1 }) },
+  { at: 12000, reward: reward(180) },
+  { at: 14000, reward: reward(200, { stamina: true }) },
+  { at: 16500, reward: reward(300, { weapon: "скин оружия «Клинок слов»" }) },
 ];
 
 /** Сколько вех уже достигнуто нанесённым уроном. */
@@ -387,32 +396,21 @@ export function leagueOf(level: number): League {
 // ── Аудитория ───────────────────────────────────────────────────────────────
 
 /**
- * Средний DAU за последние семь дней.
+ * Сколько в приложении учеников.
  *
- * Считается по журналам ответов: активен тот, кто занимался, а не тот, кто
- * открыл приложение. Пересечение (человек занимался и словами, и грамматикой в
- * один день) считается дважды — это оценка сверху, и для подгонки HP она
- * безопаснее оценки снизу.
+ * Именно учеников: рейд бьют они, а учителя и родители в событии не участвуют.
+ * При ошибке считаем одного — босс будет маленьким, но живым; наоборот было бы
+ * хуже (непобиваемый босс из-за сбоя запроса).
  */
-async function averageDau(now: Date): Promise<number> {
-  const since = new Date(now.getTime() - 7 * DAY_MS);
+async function countStudents(): Promise<number> {
   try {
-    const [words] = await db
-      .select({
-        pairs: sql<number>`count(distinct (${reviewLogTable.userId}::text || ':' || to_char(${reviewLogTable.reviewedAt}, 'YYYY-MM-DD')))::int`,
-      })
-      .from(reviewLogTable)
-      .where(gte(reviewLogTable.reviewedAt, since));
-    const [gram] = await db
-      .select({
-        pairs: sql<number>`count(distinct (${grammarLogTable.userId}::text || ':' || to_char(${grammarLogTable.answeredAt}, 'YYYY-MM-DD')))::int`,
-      })
-      .from(grammarLogTable)
-      .where(gte(grammarLogTable.answeredAt, since));
-    const pairs = Number(words?.pairs ?? 0) + Number(gram?.pairs ?? 0);
-    return Math.max(1, pairs / 7);
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(usersTable)
+      .where(eq(usersTable.role, "student"));
+    return Math.max(1, Number(row?.n ?? 1));
   } catch (err) {
-    logger.error({ err }, "Рейд: не удалось посчитать аудиторию, беру минимум");
+    logger.error({ err }, "Рейд: не удалось посчитать учеников, беру одного");
     return 1;
   }
 }
@@ -434,13 +432,13 @@ async function resolveFinished(now: Date): Promise<void> {
   }
 }
 
-/** Подгоняет HP под аудиторию не чаще раза в час. */
+/** Подгоняет HP под число учеников не чаще раза в час. */
 async function tuneHp(event: RaidEvent, now: Date): Promise<RaidEvent> {
   if (now.getTime() - event.hpTunedAt.getTime() < HOUR_MS) return event;
   // Последние сутки не трогаем: менять финишную линию перед финишем нельзя.
   if (event.endsAt.getTime() - now.getTime() < DAY_MS) return event;
 
-  const target = bossHp(await averageDau(now));
+  const target = bossHp(await countStudents());
   const step = Math.max(1, Math.round(event.hpTotal * 0.1));
   const delta = Math.max(-step, Math.min(step, target - event.hpTotal));
   const hpTotal = Math.max(MIN_HP, event.damageDealt + 1, event.hpTotal + delta);
@@ -469,7 +467,7 @@ export async function ensureRaidEvent(now: Date = new Date()): Promise<RaidEvent
         weekKey: week.key,
         startsAt: week.startsAt,
         endsAt: week.endsAt,
-        hpTotal: bossHp(await averageDau(now)),
+        hpTotal: bossHp(await countStudents()),
         hpTunedAt: now,
       })
       .onConflictDoNothing();
@@ -509,7 +507,7 @@ async function applyPatch(userId: number, patch: StatePatch, now: Date): Promise
 }
 
 /**
- * Приводит состояние к моменту «сейчас»: восстанавливает энергию, выдаёт ману
+ * Приводит состояние к моменту «сейчас»: восстанавливает энергию, выдаёт монеты
  * за вход, вешает «ржавчину» за пропуск дней и обновляет отметку активности.
  *
  * Вызывается и на открытии экрана, и на каждом ударе: восстановление энергии
@@ -532,11 +530,11 @@ export async function syncState(userId: number, now: Date = new Date()): Promise
       : new Date(state.staminaAt.getTime() + gained * STAMINA_REGEN_MS);
   }
 
-  // Мана за вход и сброс дневного задания.
+  // Монеты за вход и сброс дневного задания.
   const today = localDayKey(now);
-  if (state.manaDay !== today) {
-    patch.manaDay = today;
-    patch.mana = Math.min(MANA_MAX, state.mana + DAILY_MANA);
+  if (state.bonusDay !== today) {
+    patch.bonusDay = today;
+    patch.coins = state.coins + DAILY_COINS;
     patch.questDay = today;
     patch.questClaimed = false;
   }
@@ -572,7 +570,9 @@ export interface RaidHitResult extends DamageBreakdown {
   combo: number;
   stamina: number;
   staminaMax: number;
-  mana: number;
+  coins: number;
+  /** Сколько монет принёс именно этот удар. */
+  coinsEarned: number;
   aoeLeft: number;
   hpTotal: number;
   hpLeft: number;
@@ -582,10 +582,36 @@ export interface RaidHitResult extends DamageBreakdown {
   killed: boolean;
   /** Урон не нанесён: закончилась энергия. */
   blocked: "stamina" | null;
-  /** Сколько вех вклада готовы к получению. */
-  milestonesReady: number;
   /** Ржавчина снята этим ответом. */
   rustCleared: boolean;
+}
+
+/** Пустой результат: ответ был, а урона нет (ошибка или нет энергии). */
+async function idleResult(
+  event: RaidEvent,
+  boss: BossDef,
+  state: RaidState,
+  input: RaidHitInput,
+  streak: number,
+  blocked: "stamina" | null,
+): Promise<RaidHitResult> {
+  const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
+  const [mine] = await db
+    .select({ damage: raidParticipantsTable.damage })
+    .from(raidParticipantsTable)
+    .where(and(eq(raidParticipantsTable.eventId, event.id), eq(raidParticipantsTable.userId, input.userId)));
+  return {
+    eventId: event.id, boss: boss.key, bossName: boss.name,
+    damage: 0, base: BASE_DAMAGE[input.difficulty], comboMult: comboMult(streak), vulnMult: 1,
+    superEffective: false, crit: false, aoe: false, rusty: false,
+    combo: streak, stamina: state.stamina, staminaMax: STAMINA_MAX,
+    coins: state.coins, coinsEarned: 0, aoeLeft: state.aoeLeft,
+    hpTotal: event.hpTotal, hpLeft,
+    percentLeft: event.hpTotal > 0 ? Math.round((hpLeft / event.hpTotal) * 100) : 0,
+    phase: phaseOf(hpLeft, event.hpTotal),
+    myDamage: Number(mine?.damage ?? 0), killed: false, blocked,
+    rustCleared: false,
+  };
 }
 
 /**
@@ -611,23 +637,7 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
       patch.combo = 0;
       patch.cleanStreak = 0;
       const after = await applyPatch(input.userId, patch, now);
-      const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
-      const [mine] = await db
-        .select({ damage: raidParticipantsTable.damage })
-        .from(raidParticipantsTable)
-        .where(and(eq(raidParticipantsTable.eventId, event.id), eq(raidParticipantsTable.userId, input.userId)));
-      return {
-        eventId: event.id, boss: boss.key, bossName: boss.name,
-        damage: 0, base: BASE_DAMAGE[input.difficulty], comboMult: 1, vulnMult: 1,
-        superEffective: false, crit: false, aoe: false, rusty: false,
-        combo: 0, stamina: after.stamina, staminaMax: STAMINA_MAX, mana: after.mana,
-        aoeLeft: after.aoeLeft,
-        hpTotal: event.hpTotal, hpLeft,
-        percentLeft: event.hpTotal > 0 ? Math.round((hpLeft / event.hpTotal) * 100) : 0,
-        phase: phaseOf(hpLeft, event.hpTotal),
-        myDamage: Number(mine?.damage ?? 0), killed: false, blocked: null,
-        milestonesReady: 0, rustCleared: false,
-      };
+      return await idleResult(event, boss, after, input, 0, null);
     }
 
     // Энергия: одна единица за задание. Без энергии задание решается, но урона
@@ -637,23 +647,7 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
       patch.combo = streak;
       patch.cleanStreak = state.cleanStreak + 1;
       const after = await applyPatch(input.userId, patch, now);
-      const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
-      const [mine] = await db
-        .select({ damage: raidParticipantsTable.damage })
-        .from(raidParticipantsTable)
-        .where(and(eq(raidParticipantsTable.eventId, event.id), eq(raidParticipantsTable.userId, input.userId)));
-      return {
-        eventId: event.id, boss: boss.key, bossName: boss.name,
-        damage: 0, base: BASE_DAMAGE[input.difficulty], comboMult: comboMult(streak), vulnMult: 1,
-        superEffective: false, crit: false, aoe: false, rusty: false,
-        combo: streak, stamina: 0, staminaMax: STAMINA_MAX, mana: after.mana,
-        aoeLeft: after.aoeLeft,
-        hpTotal: event.hpTotal, hpLeft,
-        percentLeft: event.hpTotal > 0 ? Math.round((hpLeft / event.hpTotal) * 100) : 0,
-        phase: phaseOf(hpLeft, event.hpTotal),
-        myDamage: Number(mine?.damage ?? 0), killed: false, blocked: "stamina",
-        milestonesReady: 0, rustCleared: false,
-      };
+      return await idleResult(event, boss, after, input, streak, "stamina");
     }
 
     const hpBefore = Math.max(0, event.hpTotal - event.damageDealt);
@@ -682,19 +676,20 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
     // «нанесено больше, чем было» ломают шкалу.
     const damage = Math.min(breakdown.damage, Math.max(0, hpBefore));
 
+    // Монеты за попадание: база плюс надбавки за сверхэффективность и крит,
+    // плюс бонус за каждые пять верных подряд.
+    let coinsEarned = COINS_PER_HIT;
+    if (breakdown.superEffective) coinsEarned += COINS_SUPER_BONUS;
+    if (breakdown.crit) coinsEarned += COINS_CRIT_BONUS;
+    if (cleanStreak % STREAK_COINS_STEP === 0) coinsEarned += STREAK_COINS;
+
     patch.combo = streak;
     patch.cleanStreak = cleanStreak;
     patch.stamina = state.stamina - 1;
-    if (state.stamina - 1 < STAMINA_MAX && state.stamina >= STAMINA_MAX) patch.staminaAt = now;
+    patch.coins = state.coins + coinsEarned;
+    if (state.stamina >= STAMINA_MAX) patch.staminaAt = now;
     if (state.powerArmed) patch.powerArmed = false;
     if (state.aoeLeft > 0) patch.aoeLeft = state.aoeLeft - 1;
-
-    // Мана за серию без ошибок.
-    let mana = state.mana;
-    if (cleanStreak % STREAK_MANA_STEP === 0) {
-      mana = Math.min(MANA_MAX, mana + STREAK_MANA);
-      patch.mana = mana;
-    }
 
     // Ржавчина снимается пятью верными подряд.
     let rustCleared = false;
@@ -760,9 +755,6 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
       at: now,
     });
 
-    const myDamage = Number(participant?.damage ?? damage);
-    const claimed = Number(participant?.milestone ?? 0);
-
     return {
       ...breakdown,
       damage,
@@ -772,16 +764,16 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
       combo: streak,
       stamina: after.stamina,
       staminaMax: STAMINA_MAX,
-      mana: after.mana,
+      coins: after.coins,
+      coinsEarned,
       aoeLeft: after.aoeLeft,
       hpTotal,
       hpLeft,
       percentLeft: hpTotal > 0 ? Math.round((hpLeft / hpTotal) * 100) : 0,
       phase: phaseOf(hpLeft, hpTotal),
-      myDamage,
+      myDamage: Number(participant?.damage ?? damage),
       killed,
       blocked: null,
-      milestonesReady: Math.max(0, milestonesReached(myDamage) - claimed),
       rustCleared,
     };
   } catch (err) {
@@ -860,13 +852,13 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     .where(eq(usersTable.id, userId));
   const level = Number(me?.level ?? 1);
   const league = leagueOf(level);
+  const def = LEAGUES.find((l) => l.key === league)!;
 
   const myDamage = Number(participant?.damage ?? 0);
-  const claimed = Number(participant?.milestone ?? 0);
   const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
   const phase = phaseOf(hpLeft, event.hpTotal);
 
-  // Место в своей лиге: считаем сколько людей лиги набили больше.
+  // Место в своей лиге: считаем, сколько людей лиги набили больше.
   const [ahead] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(raidParticipantsTable)
@@ -874,8 +866,8 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     .where(and(
       eq(raidParticipantsTable.eventId, event.id),
       sql`${raidParticipantsTable.damage} > ${myDamage}`,
-      gte(usersTable.xpLevel, LEAGUES.find((l) => l.key === league)!.min),
-      lte(usersTable.xpLevel, LEAGUES.find((l) => l.key === league)!.max),
+      gte(usersTable.xpLevel, def.min),
+      lte(usersTable.xpLevel, def.max),
     ));
 
   const [fighters] = await db
@@ -944,15 +936,6 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
   const shielded = !!state.shieldUntil && state.shieldUntil.getTime() > now.getTime();
   const weapon = !!state.weaponSkin && state.weaponEventId !== event.id;
 
-  const track = MILESTONES.map((m, i) => ({
-    at: m.at,
-    label: m.reward.label,
-    coins: m.reward.coins,
-    mana: m.reward.mana,
-    reached: myDamage >= m.at,
-    claimed: i < claimed,
-  }));
-
   return {
     event: {
       id: event.id,
@@ -985,7 +968,7 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       rank: Number(ahead?.n ?? 0) + 1,
       level,
       league,
-      leagueTitle: LEAGUES.find((l) => l.key === league)!.title,
+      leagueTitle: def.title,
       share: Number(fighters?.damage ?? 0) > 0
         ? Math.round((myDamage / Number(fighters?.damage ?? 1)) * 1000) / 10
         : 0,
@@ -994,8 +977,6 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       staminaNextAt: state.stamina >= STAMINA_MAX
         ? null
         : new Date(state.staminaAt.getTime() + STAMINA_REGEN_MS).toISOString(),
-      mana: state.mana,
-      manaMax: MANA_MAX,
       coins: state.coins,
       keys: state.keys,
       frames: state.frames ?? [],
@@ -1019,15 +1000,14 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       done: Number(today?.damage ?? 0),
       claimed: state.questClaimed && state.questDay === localDayKey(now),
       coins: QUEST_COINS,
-      mana: QUEST_MANA,
     },
+    /** Бафы: всё покупается монетами. */
     abilities: {
       power: { cost: POWER_COST, mult: POWER_MULT, armed: state.powerArmed },
       aoe: { cost: AOE_COST, tasks: AOE_TASKS, mult: AOE_MULT, left: state.aoeLeft },
       shield: { cost: SHIELD_COST, active: shielded },
+      stamina: { cost: STAMINA_COST, full: state.stamina >= STAMINA_MAX },
     },
-    shop: SHOP,
-    track: { claimed, ready: Math.max(0, milestonesReached(myDamage) - claimed), milestones: track },
     leagues: await Promise.all(
       LEAGUES.map(async (l) => ({
         key: l.key,
@@ -1076,57 +1056,47 @@ export function isActionError(value: unknown): value is RaidActionError {
   return !!value && typeof value === "object" && "error" in (value as object);
 }
 
-/** Купить спецатаку за ману. */
-export async function useAbility(
+export type RaidBuff = "power" | "aoe" | "shield" | "stamina";
+
+/** Купить баф за монеты. */
+export async function buyBuff(
   userId: number,
-  ability: "power" | "aoe" | "shield",
+  buff: RaidBuff,
   now: Date = new Date(),
 ): Promise<RaidState | RaidActionError> {
   const state = await syncState(userId, now);
 
-  if (ability === "power") {
+  if (buff === "power") {
     if (state.powerArmed) return fail("Мощный удар уже заряжен");
-    if (state.mana < POWER_COST) return fail("Не хватает маны");
-    return await applyPatch(userId, { mana: state.mana - POWER_COST, powerArmed: true }, now);
+    if (state.coins < POWER_COST) return fail("Не хватает монет");
+    return await applyPatch(userId, { coins: state.coins - POWER_COST, powerArmed: true }, now);
   }
-  if (ability === "aoe") {
+  if (buff === "aoe") {
     if (state.aoeLeft > 0) return fail("Удвоение ещё действует");
-    if (state.mana < AOE_COST) return fail("Не хватает маны");
-    return await applyPatch(userId, { mana: state.mana - AOE_COST, aoeLeft: AOE_TASKS }, now);
+    if (state.coins < AOE_COST) return fail("Не хватает монет");
+    return await applyPatch(userId, { coins: state.coins - AOE_COST, aoeLeft: AOE_TASKS }, now);
   }
-  if (state.shieldUntil && state.shieldUntil.getTime() > now.getTime()) return fail("Щит уже стоит");
-  if (state.mana < SHIELD_COST) return fail("Не хватает маны");
-  return await applyPatch(
-    userId,
-    { mana: state.mana - SHIELD_COST, shieldUntil: new Date(now.getTime() + 7 * DAY_MS) },
-    now,
-  );
-}
-
-/** Магазин монет: монеты тратятся только внутри события. */
-export async function buy(
-  userId: number,
-  item: "mana" | "stamina",
-  now: Date = new Date(),
-): Promise<RaidState | RaidActionError> {
-  const state = await syncState(userId, now);
-  const price = SHOP[item].coins;
-  if (state.coins < price) return fail("Не хватает монет");
-  if (item === "mana") {
+  if (buff === "stamina") {
+    if (state.stamina >= STAMINA_MAX) return fail("Энергия и так полная");
+    if (state.coins < STAMINA_COST) return fail("Не хватает монет");
     return await applyPatch(
       userId,
-      { coins: state.coins - price, mana: Math.min(MANA_MAX, state.mana + SHOP.mana.mana) },
+      { coins: state.coins - STAMINA_COST, stamina: STAMINA_MAX, staminaAt: now },
       now,
     );
   }
-  if (state.stamina >= STAMINA_MAX) return fail("Энергия и так полная");
-  return await applyPatch(userId, { coins: state.coins - price, stamina: STAMINA_MAX, staminaAt: now }, now);
+  if (state.shieldUntil && state.shieldUntil.getTime() > now.getTime()) return fail("Щит уже стоит");
+  if (state.coins < SHIELD_COST) return fail("Не хватает монет");
+  return await applyPatch(
+    userId,
+    { coins: state.coins - SHIELD_COST, shieldUntil: new Date(now.getTime() + 7 * DAY_MS) },
+    now,
+  );
 }
 
 export interface ClaimResult {
   granted: MilestoneReward[];
   coins: number;
-  mana: number;
   keys: number;
   frames: string[];
   weaponSkin: string | null;
@@ -1151,7 +1121,6 @@ export async function claimMilestones(
   const granted = MILESTONES.slice(participant.milestone, reached).map((m) => m.reward);
 
   let coins = state.coins;
-  let mana = state.mana;
   let keys = state.keys;
   let stamina = state.stamina;
   const frames = [...(state.frames ?? [])];
@@ -1160,7 +1129,6 @@ export async function claimMilestones(
 
   for (const r of granted) {
     coins += r.coins;
-    mana = Math.min(MANA_MAX, mana + r.mana);
     keys += r.keys;
     if (r.stamina) stamina = STAMINA_MAX;
     if (r.cosmetic && !frames.includes(r.cosmetic)) frames.push(r.cosmetic);
@@ -1171,13 +1139,13 @@ export async function claimMilestones(
     }
   }
 
-  await applyPatch(userId, { coins, mana, keys, stamina, frames, weaponSkin, weaponEventId }, now);
+  await applyPatch(userId, { coins, keys, stamina, frames, weaponSkin, weaponEventId }, now);
   await db
     .update(raidParticipantsTable)
     .set({ milestone: reached })
     .where(eq(raidParticipantsTable.id, participant.id));
 
-  return { granted, coins, mana, keys, frames, weaponSkin };
+  return { granted, coins, keys, frames, weaponSkin };
 }
 
 /** Дневное задание рейда. */
@@ -1197,12 +1165,7 @@ export async function claimQuest(
 
   return await applyPatch(
     userId,
-    {
-      questDay: today,
-      questClaimed: true,
-      coins: state.coins + QUEST_COINS,
-      mana: Math.min(MANA_MAX, state.mana + QUEST_MANA),
-    },
+    { questDay: today, questClaimed: true, coins: state.coins + QUEST_COINS },
     now,
   );
 }
