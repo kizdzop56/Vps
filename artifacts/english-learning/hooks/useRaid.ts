@@ -6,10 +6,12 @@
 // Задание боя приходит с номером ВЫДАЧИ (taskId): правильного ответа в нём нет,
 // способ ответа выбрал сервер, и ответ отправляется по этому номеру. Поэтому
 // клиент не может ни подсмотреть ответ, ни выдать выбор за сборку ради урона.
+//
+// Лиг по уровню профиля больше нет: топ рейда один на всех (см. шапку
+// api-server/src/lib/raid.ts).
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
-export type RaidLeague = "bronze" | "silver" | "gold";
 export type RaidBuff = "power" | "aoe" | "shield" | "stamina";
 
 export interface RaidEventInfo {
@@ -43,8 +45,6 @@ export interface RaidMe {
   combo: number;
   rank: number;
   level: number;
-  league: RaidLeague;
-  leagueTitle: string;
   share: number;
   stamina: number;
   staminaMax: number;
@@ -81,6 +81,30 @@ export interface RaidRow {
   me: boolean;
 }
 
+/** Медаль рейда. Выводится сервером из итогов за всё время. */
+export interface RaidMedal {
+  id: string;
+  title: string;
+  about: string;
+  /** Имя глифа из набора приложения. */
+  icon: string;
+  tier: "easy" | "medium" | "hard";
+  got: boolean;
+  current: number;
+  target: number;
+  percent: number;
+}
+
+export interface RaidLifetime {
+  damage: number;
+  hits: number;
+  crits: number;
+  bestCombo: number;
+  raids: number;
+  wins: number;
+  lastHits: number;
+}
+
 export interface RaidSnapshot {
   event: RaidEventInfo;
   me: RaidMe;
@@ -91,7 +115,11 @@ export interface RaidSnapshot {
     shield: { cost: number; active: boolean };
     stamina: { cost: number; full: boolean };
   };
-  leagues: { key: RaidLeague; title: string; mine: boolean; rows: RaidRow[] }[];
+  /** Общий топ по урону. */
+  top: RaidRow[];
+  medals: RaidMedal[];
+  medalCount: { got: number; total: number };
+  lifetime: RaidLifetime;
   chest: {
     eventId: number;
     bossName: string;
