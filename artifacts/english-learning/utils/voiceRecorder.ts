@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Голос ученика и голос тьютора: запись и проигрывание.
+// Голос ученика и голос Снежи: запись и проигрывание.
 //
 // ── Зачем отдельный файл ────────────────────────────────────────────────────
-// Первая версия экрана тьютора писала звук через Audio.Recording из expo-av. На
-// телефоне это работает, а НА ВЕБЕ ЗАПИСИ В expo-av НЕТ ВООБЩЕ: проигрывание
-// есть, записи нет. Кнопка «Говорить» просто падала, и раздел выглядел
-// неработающим — притом что сервер был полностью готов.
+// Первая версия экрана разговора писала звук через Audio.Recording из expo-av.
+// На телефоне это работает, а НА ВЕБЕ ЗАПИСИ В expo-av НЕТ ВООБЩЕ:
+// проигрывание есть, записи нет. Кнопка «Говорить» просто падала, и раздел
+// выглядел неработающим — притом что сервер был полностью готов.
 //
 // Поэтому реализации две, и выбираются они по платформе:
 //   web    — MediaRecorder из самого браузера, без expo-av;
@@ -241,7 +241,7 @@ export function createVoiceRecorder(): VoiceRecorder {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ПРОИГРЫВАНИЕ ОТВЕТА ТЬЮТОРА
+// ПРОИГРЫВАНИЕ ОТВЕТА
 //
 // ── ГРАБЛИ, ИЗ-ЗА КОТОРЫХ ОТВЕТ ОЗВУЧИВАЛСЯ ЧЕРЕЗ РАЗ ──────────────────────
 // Было так: на каждый ответ создавался НОВЫЙ Audio, и play() вызывался после
@@ -268,6 +268,15 @@ export function createVoiceRecorder(): VoiceRecorder {
 // Если звук всё же заблокирован, это ВОЗВРАЩАЕТСЯ наружу (blocked: true), а не
 // проглатывается: экран показывает подсказку «нажми, чтобы послушать», и
 // нажатие уже идёт от человека — тогда играет всегда.
+//
+// ── ЗАЧЕМ onEnd ────────────────────────────────────────────────────────────
+// Снежа двигает ртом, пока звучит её реплика (components/SnezhaLive.tsx). Ни
+// длительности, ни размера звука клиент не знает: приходит готовый файл. Гадать
+// по длине текста нельзя — рот либо замолкает посреди фразы, либо продолжает
+// шевелиться в тишине, и оба случая выглядят поломкой.
+//
+// Поэтому конец воспроизведения приходит СОБЫТИЕМ: onended в браузере,
+// didJustFinish на телефоне.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Остановить и забыть текущий звук. */
@@ -277,6 +286,11 @@ export type Playback = {
   stop: StopPlayback;
   /** true — браузер не дал играть без нажатия. Текст ответа уже на экране. */
   blocked: boolean;
+};
+
+export type PlayOptions = {
+  /** Позвать, когда звук доиграл сам. При остановке руками не вызывается. */
+  onEnd?: () => void;
 };
 
 /** 40 мс тишины: этим разблокируется плеер. */
@@ -312,6 +326,9 @@ export function primeAudio(): void {
   const el = ensureWebPlayer();
   if (!el) return;
   try {
+    // Тишину доигрывать до конца не нужно, и её конец не должен уехать в onEnd
+    // прошлой реплики.
+    el.onended = null;
     el.src = SILENCE;
     const started = el.play() as unknown as Promise<void> | undefined;
     const done = () => {
@@ -350,13 +367,29 @@ async function toPlayableUrl(uri: string): Promise<string> {
   }
 }
 
-async function playOnWeb(uri: string): Promise<Playback> {
+async function playOnWeb(uri: string, opts?: PlayOptions): Promise<Playback> {
   const el = ensureWebPlayer();
   if (!el) return { stop: () => {}, blocked: false };
 
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    opts?.onEnd?.();
+  };
+
   const stop = () => {
+    // Ручная остановка — не конец реплики: onEnd не зовём, но и повесить его
+    // на будущее событие нельзя, иначе рот дёрнется на следующем звуке.
+    done = true;
+    el.onended = null;
     try { el.pause(); } catch { /* уже остановлен */ }
   };
+
+  el.onended = finish;
+  // Ошибка загрузки тоже завершает реплику: иначе рот будет шевелиться, пока
+  // экран не закроют.
+  el.onerror = finish;
 
   el.src = await toPlayableUrl(uri);
   try {
@@ -369,15 +402,17 @@ async function playOnWeb(uri: string): Promise<Playback> {
     await el.play();
     webUnlocked = true;
     return { stop, blocked: false };
-  } catch (e: any) {
+  } catch {
     // NotAllowedError — запрет автозапуска, а не поломка: ученик нажмёт на
     // реплику и услышит ответ. Остальные ошибки (битый файл, нет кодека)
     // выглядят так же, и разделять их незачем: снаружи действие одно.
+    el.onended = null;
+    done = true;
     return { stop, blocked: true };
   }
 }
 
-async function playOnNative(uri: string): Promise<Playback> {
+async function playOnNative(uri: string, opts?: PlayOptions): Promise<Playback> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { Audio } = require("expo-av");
 
@@ -390,18 +425,30 @@ async function playOnNative(uri: string): Promise<Playback> {
     /* не вышло — пробуем играть как есть */
   }
 
-  const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
-  return { stop: () => { void sound.unloadAsync(); }, blocked: false };
+  let done = false;
+  const { sound } = await Audio.Sound.createAsync(
+    { uri },
+    { shouldPlay: true },
+    (status: any) => {
+      if (done || !status?.didJustFinish) return;
+      done = true;
+      opts?.onEnd?.();
+    },
+  );
+  return {
+    stop: () => { done = true; void sound.unloadAsync(); },
+    blocked: false,
+  };
 }
 
 /**
- * Проиграть ответ тьютора и рассказать, вышло ли.
+ * Проиграть реплику и рассказать, вышло ли.
  *
  * Возвращает ручку остановки: звук не должен продолжать говорить после того,
  * как ученик ушёл с экрана.
  */
-export async function playSpeech(uri: string): Promise<Playback> {
-  return Platform.OS === "web" ? playOnWeb(uri) : playOnNative(uri);
+export async function playSpeech(uri: string, opts?: PlayOptions): Promise<Playback> {
+  return Platform.OS === "web" ? playOnWeb(uri, opts) : playOnNative(uri, opts);
 }
 
 /** Прежняя ручка: только остановка, без ответа «получилось ли». */
