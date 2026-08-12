@@ -236,7 +236,7 @@ router.post("/voice-chat/speak", requireAuth, async (req, res) => {
     return;
   }
   if (value.length > MAX_SPEAK_LEN) {
-    res.status(413).json({ error: "Слишком длинный텍 текст для озвучки" });
+    res.status(413).json({ error: "Слишком длинный текст для озвучки" });
     return;
   }
 
