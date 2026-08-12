@@ -22,6 +22,32 @@
 // правила, ни подсказки. Ошибся — увидел верный ответ, идёшь дальше; учиться
 // приходят в «Учёбу».
 //
+// ── Вопрос задаётся ФРАЗОЙ, а не голым словом ───────────────────────────────
+// Здесь была настоящая несправедливость. На слове help ученик написал «помощь»,
+// и ответ не приняли: в карточке стоит «помогать», а сравнение основ
+// («помощ» против «помога») их не сводит. Ученик прав, приложение спорит.
+//
+// Причина не в проверке, а в вопросе: у одного английского слова несколько
+// частей речи (help — и «помогать», и «помощь»; work — «работать» и «работа»),
+// и голое слово в качестве задания попросту НЕ ОПРЕДЕЛЯЕТ, какой ответ ждут.
+// Расширять список синонимов бессмысленно: сколько ни добавь, всегда найдётся
+// верный ответ, которого в списке нет.
+//
+// Поэтому письменные задания боя устроены иначе: показывается ПРЕДЛОЖЕНИЕ с
+// пропуском, под ним перевод этого предложения, а вписать надо пропущенное
+// слово. Предложение само задаёт и часть речи, и смысл — вариантов ответа
+// физически не остаётся:
+//
+//   Can you ___ me, please?      ·  Ты можешь мне помочь?      → help
+//
+// Свободного перевода одним словом («напиши перевод слова help») в рейде нет
+// вовсе — это тот самый вопрос без однозначного ответа. Там, где предложения у
+// карточки нет, письмо заменяется сборкой из букв: плитки ограничивают ответ и
+// двусмысленности не оставляют.
+//
+// У заданий с выбором предложение показывается подсказкой — по той же причине:
+// видно, в каком смысле спрашивают слово.
+//
 // ── Задания не повторяются ──────────────────────────────────────────────────
 // Заучить ответы нельзя, и это обеспечено не случайностью, а памятью: каждое
 // выданное задание пишется в raid_tasks. Дальше подборка работает так:
@@ -31,8 +57,7 @@
 //   2. когда свежих не осталось (маленькая колода), берётся то, что спрашивали
 //      РАНЬШЕ ВСЕГО, а не что попало;
 //   3. слово, которое уже спрашивали, спрашивается ДРУГИМ способом: был выбор —
-//      будет письмо, было письмо — будет сборка или аудирование. Один и тот же
-//      вопрос по одному слову дважды не задаётся, пока не кончатся способы.
+//      будет пропуск в предложении, был пропуск — сборка или аудирование.
 //
 // ── Способ ответа выдаёт сервер ─────────────────────────────────────────────
 // Ставка урона зависит от способа (выбор 10, ввод 25, сборка 50), поэтому способ
@@ -50,7 +75,6 @@ import {
   OPTION_COUNT,
   buildOptions,
   isBuildable,
-  isTypeable,
   letterTiles,
   mainTranslation,
   mulberry32,
@@ -77,16 +101,19 @@ const PRUNE_DAYS = 45;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Способы спросить слово. Произношения в бою нет: см. ниже. */
-export type WordMode = "choiceRu" | "choiceEn" | "listen" | "typeRu" | "typeEn" | "build";
+/** Чем закрывается пропуск в предложении. */
+const GAP = "____";
 
 /**
- * Порядок способов по возрастанию цены удара.
+ * Способы спросить слово в бою.
  *
- * Произношение исключено намеренно: микрофон в бою означал бы, что каждый удар
- * зависит от распознавания речи, а оно ошибается тем чаще, чем быстрее темп.
+ * Голого письменного перевода («напиши перевод слова») здесь нет: см. шапку.
+ * Произношения тоже нет — микрофон в бою означал бы, что каждый удар зависит от
+ * распознавания речи, а оно ошибается тем чаще, чем быстрее темп.
  */
-const WORD_MODES: readonly WordMode[] = ["choiceRu", "choiceEn", "listen", "typeRu", "typeEn", "build"];
+export type WordMode = "choiceRu" | "choiceEn" | "listen" | "gap" | "build";
+
+const WORD_MODES: readonly WordMode[] = ["choiceRu", "choiceEn", "listen", "gap", "build"];
 
 /** Одно задание боя в том виде, в котором его видит клиент. */
 export interface RaidTask {
@@ -95,7 +122,7 @@ export interface RaidTask {
   kind: "word" | "grammar";
   /** Что показать крупно. */
   prompt: string;
-  /** Подсказка под заданием: перевод, пояснение, первая форма глагола. */
+  /** Подсказка под заданием: перевод фразы, пояснение, первая форма глагола. */
   hint?: string;
   /** Как отвечать. */
   input: "choice" | "type" | "assemble";
@@ -119,6 +146,7 @@ type WordRow = typeof wordsTable.$inferSelect;
 /** Готовая постановка вопроса по слову. */
 interface WordQuestion {
   prompt: string;
+  hint?: string;
   options?: string[];
   tiles?: string[];
   answerLang?: "ru" | "en";
@@ -128,22 +156,46 @@ interface WordQuestion {
 
 /** Что принимаем за верный ответ при таком способе. */
 function expectedFor(word: WordRow, mode: string): string[] {
-  if (mode === "choiceRu" || mode === "listen" || mode === "typeRu") {
+  // Русского письменного ответа в бою нет, поэтому единственный случай, когда
+  // ждут русский, — выбор варианта: там ответ сверяется со списком переводов.
+  if (mode === "choiceRu" || mode === "listen") {
     return (word.translationsRu as string[]).map((t) => String(t).trim()).filter(Boolean);
   }
   return [word.english.trim()].filter(Boolean);
 }
 
+/** Экранирование для подстановки строки в регулярное выражение. */
+function escapeRe(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Предложение с пропуском на месте слова.
+ *
+ * null — слово не встречается в примере дословно (пример написан с другой
+ * формой: work → working). Подставлять пропуск вслепую нельзя: получится
+ * предложение, к которому ответ не подходит.
+ */
+function gapSentence(word: WordRow): string | null {
+  const sentence = (word.exampleEn ?? "").trim();
+  const target = word.english.trim();
+  if (!sentence || !target) return null;
+  // Границы по не-буквам, а не \b: у словосочетаний и слов с апострофом \b
+  // срабатывает внутри, и пропуск съедал бы половину фразы.
+  const re = new RegExp(`(^|[^A-Za-z'])(${escapeRe(target)})(?=[^A-Za-z']|$)`, "i");
+  if (!re.test(sentence)) return null;
+  const masked = sentence.replace(re, (_m, before: string) => `${before}${GAP}`);
+  return masked.includes(GAP) ? masked : null;
+}
+
 /** Какие способы к этому слову вообще применимы. */
 function modesFor(word: WordRow): WordMode[] {
   const translation = mainTranslation(toWordLike(word));
-  const out: WordMode[] = [];
-  if (translation) {
-    out.push("choiceRu", "listen", "choiceEn");
-    if (isTypeable(translation)) out.push("typeRu");
-    if (isTypeable(word.english)) out.push("typeEn");
-    if (isBuildable(word.english)) out.push("build");
-  }
+  if (!translation) return [];
+  const out: WordMode[] = ["choiceRu", "listen", "choiceEn"];
+  // Письмо — только пропуском в предложении: голого перевода в бою нет.
+  if (gapSentence(word)) out.push("gap");
+  if (isBuildable(word.english)) out.push("build");
   return out.filter((m) => WORD_MODES.includes(m));
 }
 
@@ -151,7 +203,8 @@ function modesFor(word: WordRow): WordMode[] {
  * Собрать вопрос по слову заданным способом.
  *
  * null — этим способом спросить нельзя: у выбора не набралось отвлекающих
- * вариантов. Тогда вызывающая сторона берёт следующий способ.
+ * вариантов, у пропуска нет подходящего примера. Тогда вызывающая сторона берёт
+ * следующий способ.
  */
 function askWord(
   word: WordRow,
@@ -163,16 +216,26 @@ function askWord(
   const translation = mainTranslation(self);
   const others = pool.filter((w) => w.id !== word.id);
   const target = { pos: word.partOfSpeech, level: word.cefrLevel, deckId: word.deckId };
+  const exampleRu = (word.exampleRu ?? "").trim();
+  const exampleEn = (word.exampleEn ?? "").trim();
 
-  if (mode === "typeRu") {
-    return { prompt: word.english, answerLang: "ru", input: "type" };
+  if (mode === "gap") {
+    const sentence = gapSentence(word);
+    if (!sentence) return null;
+    return {
+      prompt: sentence,
+      // Перевод всей фразы: он и снимает двусмысленность части речи.
+      hint: exampleRu || translation,
+      answerLang: "en",
+      input: "type",
+    };
   }
-  if (mode === "typeEn") {
-    return { prompt: translation, answerLang: "en", input: "type" };
-  }
+
   if (mode === "build") {
     return {
       prompt: translation,
+      // Фраза-контекст, если есть: по ней видно, в каком смысле слово.
+      ...(exampleRu ? { hint: exampleRu } : {}),
       tiles: letterTiles(word.english, rng),
       answerLang: "en",
       input: "assemble",
@@ -189,7 +252,14 @@ function askWord(
       target,
     );
     if (options.length < MIN_OPTION_COUNT) return null;
-    return { prompt: translation, options, answerLang: "en", input: "choice" };
+    return {
+      prompt: translation,
+      // Русская фраза ответа не выдаёт (ответ английский), зато показывает смысл.
+      ...(exampleRu ? { hint: exampleRu } : {}),
+      options,
+      answerLang: "en",
+      input: "choice",
+    };
   }
 
   // choiceRu и listen отличаются только тем, показываем слово или озвучиваем.
@@ -207,12 +277,20 @@ function askWord(
     target,
   );
   if (options.length < MIN_OPTION_COUNT) return null;
+
+  if (mode === "listen") {
+    // В аудировании подсказки нет вовсе: английская фраза на экране — это
+    // готовый ответ, а русская сузила бы задание до чтения перевода.
+    return { prompt: word.english, options, answerLang: "ru", input: "choice", listen: true };
+  }
   return {
     prompt: word.english,
+    // Английская фраза: показывает, в каком смысле спрашивают слово, но перевод
+    // не подсказывает.
+    ...(exampleEn ? { hint: exampleEn } : {}),
     options,
     answerLang: "ru",
     input: "choice",
-    ...(mode === "listen" ? { listen: true } : {}),
   };
 }
 
@@ -284,7 +362,7 @@ interface Draft {
   mode: string;
   difficulty: RaidDifficulty;
   tags: RaidTag[];
-  question: WordQuestion & { hint?: string };
+  question: WordQuestion;
   wordId?: number;
 }
 
