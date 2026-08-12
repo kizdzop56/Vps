@@ -201,6 +201,18 @@ export const VULN_MULT: Record<RaidPhase, number> = { normal: 1.5, hardened: 3, 
 export const BERSERK_BASE_BONUS = 1.5;
 
 // ── Энергия, монеты, бафы ───────────────────────────────────────────────────
+//
+// ЭНЕРГИЯ ТРАТИТСЯ НА ЛЮБОЙ ОТВЕТ, верный или нет. Раньше ошибка была
+// бесплатной, и это ломало сразу две вещи:
+//
+//   • у заданий с выбором из четырёх вариантов пропадала цена ошибки. Можно было
+//     тыкать наугад: неверный вариант ничего не стоит, верный даёт урон, то есть
+//     энергия ограничивала не количество попыток, а количество попаданий;
+//   • от накруток энергия перестала защищать: перебор вариантов бесконечен, а
+//     ограничение считалось только по удачным.
+//
+// Теперь одна попытка = одна энергия. Отвечать всё равно можно и без неё
+// (задание решается, урон не идёт), поэтому учиться энергия не запрещает.
 
 export const STAMINA_MAX = 20;
 export const STAMINA_REGEN_MS = 30 * MINUTE_MS;
@@ -553,6 +565,20 @@ export async function syncState(userId: number, now: Date = new Date()): Promise
   return await applyPatch(userId, patch, now);
 }
 
+/**
+ * Списать одну энергию за попытку.
+ *
+ * Отдельной функцией, потому что списание нужно в двух ветках (верный ответ и
+ * ошибка), а вместе с ним нужно не забыть сдвинуть точку отсчёта восстановления:
+ * пока запас полный, таймер не идёт, и первая же трата обязана его запустить —
+ * иначе после суток простоя одна потраченная единица возвращалась бы мгновенно.
+ */
+function spendStamina(state: RaidState, patch: StatePatch, now: Date): void {
+  if (state.stamina <= 0) return;
+  patch.stamina = state.stamina - 1;
+  if (state.stamina >= STAMINA_MAX) patch.staminaAt = now;
+}
+
 // ── Удар ────────────────────────────────────────────────────────────────────
 
 export interface RaidHitInput {
@@ -630,18 +656,20 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
     const state = await syncState(input.userId, now);
     const patch: StatePatch = {};
 
-    // Ошибка: комбо всухую, урона нет. Энергию за неё не берём — платить за
-    // собственную ошибку дважды несправедливо, а от ботов защищает то, что
-    // урон дают только верные ответы.
+    // Ошибка: комбо всухую, урона нет — но попытка потрачена. Бесплатная ошибка
+    // обесценивала бы энергию на заданиях с выбором: тыкай наугад, пока не
+    // попадёшь (см. блок про энергию выше).
     if (!input.correct) {
       patch.combo = 0;
       patch.cleanStreak = 0;
+      spendStamina(state, patch, now);
       const after = await applyPatch(input.userId, patch, now);
       return await idleResult(event, boss, after, input, 0, null);
     }
 
-    // Энергия: одна единица за задание. Без энергии задание решается, но урона
-    // не даёт — иначе энергия превратилась бы в запрет учиться.
+    // Энергия кончилась: задание решается, но урона не даёт — иначе энергия
+    // превратилась бы в запрет учиться. Комбо при этом растёт: серия — это про
+    // ответы, а не про запас сил.
     if (state.stamina <= 0) {
       const streak = state.combo + 1;
       patch.combo = streak;
@@ -685,9 +713,8 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
 
     patch.combo = streak;
     patch.cleanStreak = cleanStreak;
-    patch.stamina = state.stamina - 1;
     patch.coins = state.coins + coinsEarned;
-    if (state.stamina >= STAMINA_MAX) patch.staminaAt = now;
+    spendStamina(state, patch, now);
     if (state.powerArmed) patch.powerArmed = false;
     if (state.aoeLeft > 0) patch.aoeLeft = state.aoeLeft - 1;
 
