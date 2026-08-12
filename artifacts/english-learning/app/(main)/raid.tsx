@@ -4,16 +4,24 @@
 // Экран отвечает на четыре вопроса и в этом порядке:
 //   1. кого бьём и сколько у него осталось (босс, шкала, фаза, таймер);
 //   2. чем бить выгоднее прямо сейчас (слабости босса);
-//   3. что могу я (мой урон, энергия, мана, спецатаки);
-//   4. что мне за это будет (вехи вклада, сундук, лиги).
+//   3. что могу я (мой урон, энергия, монеты, бафы);
+//   4. кто впереди (лиги) и что было раньше (история).
 //
-// Урон ЗДЕСЬ НЕ НАНОСИТСЯ. Он снимается ответами в тренажёрах — экран рейда это
-// табло, а не тренажёр. Отсюда и главная кнопка внизу: она уводит в «Учёбу», а
-// не предлагает «ударить» на месте. Кнопка «ударить» без задания превратила бы
-// событие в тапалку, а смысл ровно обратный: бьёшь тем, что выучил.
+// Сам бой — на отдельном экране (raid/battle): туда ведёт главная кнопка. Ранее
+// она уводила в «Учёбу», и это было ошибкой: «Учёба» устроена для обучения
+// (интервальные повторения, разбор ошибок, дневные нормы), а рейду нужна
+// практика без объяснений. Теперь у боя свои задания и своя проверка.
 //
 // Цифры урона вылетают поверх ЛЮБОГО экрана (components/raid/RaidHitOverlay),
-// поэтому здесь их дублировать не нужно: сюда ученик приходит смотреть итог.
+// поэтому здесь их дублировать не нужно: сюда приходят смотреть итог.
+//
+// ── Чего здесь намеренно нет ────────────────────────────────────────────────
+// Шкала вех личного вклада скрыта до отдельного разговора о наградах. Сервер её
+// по-прежнему считает (см. lib/raid.ts), поэтому вернуть блок — это правка
+// разметки, а не механики.
+//
+// Валюта одна: монеты. Маны нет — бафы покупаются монетами, которые капают за
+// попадания, дневное задание и сундуки.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -33,7 +41,7 @@ import { BossArt } from "@/components/raid/BossArt";
 import { onRaidHit } from "@/utils/raidBus";
 import {
   phaseAbout, phaseTitle, raid, tagTitle,
-  type RaidLeague, type RaidSnapshot,
+  type RaidBuff, type RaidLeague, type RaidSnapshot,
 } from "@/hooks/useRaid";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
@@ -115,7 +123,7 @@ function Bar({
   );
 }
 
-/** Счётчик с иконкой: энергия, мана, монеты. */
+/** Счётчик с иконкой: энергия, монеты, ключи. */
 function Stat({
   icon, value, label, color,
 }: { icon: GlyphName; value: string; label: string; color: string }) {
@@ -161,7 +169,7 @@ export default function RaidScreen() {
     staleTime: 10_000,
   });
 
-  /** Токен удара для шейка фигуры и мгновенного обновления шкалы. */
+  /** Токен удара для шейка фигуры и обновления шкалы. */
   const [hitToken, setHitToken] = React.useState(0);
   React.useEffect(() => onRaidHit(() => {
     setHitToken((t) => t + 1);
@@ -169,7 +177,6 @@ export default function RaidScreen() {
   }), [qc]);
 
   const [league, setLeague] = React.useState<RaidLeague | null>(null);
-  const [granted, setGranted] = React.useState<string[] | null>(null);
   const [chestText, setChestText] = React.useState<string | null>(null);
   const [problem, setProblem] = React.useState<string | null>(null);
 
@@ -181,25 +188,12 @@ export default function RaidScreen() {
     setTimeout(() => setProblem(null), 2600);
   };
 
-  const abilityM = useMutation({
-    mutationFn: (ability: "power" | "aoe" | "shield") => raid.ability(ability),
+  const buyM = useMutation({
+    mutationFn: (buff: RaidBuff) => raid.buy(buff),
     onSuccess: refresh,
-    onError: complain,
-  });
-  const claimM = useMutation({
-    mutationFn: () => raid.claim(),
-    onSuccess: (res) => {
-      refresh(res.snapshot);
-      setGranted(res.granted.map((g) => g.label));
-    },
     onError: complain,
   });
   const questM = useMutation({ mutationFn: () => raid.quest(), onSuccess: refresh, onError: complain });
-  const shopM = useMutation({
-    mutationFn: (item: "mana" | "stamina") => raid.shop(item),
-    onSuccess: refresh,
-    onError: complain,
-  });
   const chestM = useMutation({
     mutationFn: (eventId: number) => raid.chest(eventId),
     onSuccess: (res) => {
@@ -228,11 +222,10 @@ export default function RaidScreen() {
     );
   }
 
-  const { event, me, quest, abilities, shop, track } = data;
+  const { event, me, quest, abilities } = data;
   const hpRatio = event.hpTotal > 0 ? event.hpLeft / event.hpTotal : 0;
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
-  const nextMilestone = track.milestones.find((m) => !m.reached);
   const shownLeague = data.leagues.find((l) => l.key === (league ?? me.league)) ?? data.leagues[0];
 
   return (
@@ -256,7 +249,7 @@ export default function RaidScreen() {
         </View>
       </View>
       <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 14 }}>
-        Бьём все вместе. Каждый верный ответ в упражнениях снимает боссу здоровье.
+        Бьём все вместе. Задания в бою — на практику: ошибку не разбираем, просто показываем ответ.
       </Text>
 
       {/* ── Босс ────────────────────────────────────────────────────────── */}
@@ -335,6 +328,16 @@ export default function RaidScreen() {
         </Text>
       </LinearGradient>
 
+      {/* Главное действие стоит сразу под боссом: за этим сюда и заходят. */}
+      <ChunkyButton
+        label="В бой"
+        sublabel="12 заданий на практику · один удар за каждый верный ответ"
+        icon="flame"
+        chevron
+        onPress={() => router.push("/raid/battle" as any)}
+        style={{ marginBottom: 14 }}
+      />
+
       {/* ── Мой вклад ───────────────────────────────────────────────────── */}
       <View style={card(colors, { marginBottom: 12 })}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
@@ -359,8 +362,8 @@ export default function RaidScreen() {
 
         <View style={{ flexDirection: "row", marginTop: 14, marginBottom: 10 }}>
           <Stat icon="spark" value={`${me.stamina}/${me.staminaMax}`} label="ЭНЕРГИЯ" color={accents.amber} />
-          <Stat icon="flask" value={String(me.mana)} label="МАНА" color={colors.primary} />
           <Stat icon="cup" value={String(me.coins)} label="МОНЕТЫ" color={accents.gold} />
+          <Stat icon="flame" value={String(me.bestCombo)} label="ЛУЧШЕЕ КОМБО" color={colors.primary} />
           <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
         <Bar ratio={me.stamina / me.staminaMax} colors={["#fbbf24", "#f59e0b"]} />
@@ -377,41 +380,52 @@ export default function RaidScreen() {
         )}
       </View>
 
-      {/* ── Спецатаки ───────────────────────────────────────────────────── */}
-      <SectionLabel>Спецатаки за ману</SectionLabel>
+      {/* ── Бафы за монеты ─────────────────────────────────────────────── */}
+      <SectionLabel>Бафы за монеты</SectionLabel>
       <View style={{ gap: 9, marginBottom: 14 }}>
-        <Ability
+        <Buff
           icon="flame"
           title="Мощный удар"
           about={`Следующий верный ответ бьёт ×${abilities.power.mult}`}
           cost={abilities.power.cost}
-          mana={me.mana}
+          coins={me.coins}
           active={abilities.power.armed}
           activeText="заряжен"
-          onPress={() => abilityM.mutate("power")}
-          busy={abilityM.isPending}
+          onPress={() => buyM.mutate("power")}
+          busy={buyM.isPending}
         />
-        <Ability
+        <Buff
           icon="spark"
           title="AOE-удар"
           about={`Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`}
           cost={abilities.aoe.cost}
-          mana={me.mana}
+          coins={me.coins}
           active={abilities.aoe.left > 0}
           activeText={`осталось ${abilities.aoe.left}`}
-          onPress={() => abilityM.mutate("aoe")}
-          busy={abilityM.isPending}
+          onPress={() => buyM.mutate("aoe")}
+          busy={buyM.isPending}
         />
-        <Ability
+        <Buff
           icon="rank"
           title="Щит"
-          about="Снимает штраф за пропуск дней («языковая ржавчина»)"
+          about="Гасит штраф за пропуск дней («языковая ржавчина»)"
           cost={abilities.shield.cost}
-          mana={me.mana}
+          coins={me.coins}
           active={abilities.shield.active}
           activeText="стоит"
-          onPress={() => abilityM.mutate("shield")}
-          busy={abilityM.isPending}
+          onPress={() => buyM.mutate("shield")}
+          busy={buyM.isPending}
+        />
+        <Buff
+          icon="cup"
+          title="Полная энергия"
+          about={`Сразу ${me.staminaMax} энергии — можно бить дальше, не ожидая`}
+          cost={abilities.stamina.cost}
+          coins={me.coins}
+          active={abilities.stamina.full}
+          activeText="полная"
+          onPress={() => buyM.mutate("stamina")}
+          busy={buyM.isPending}
         />
       </View>
 
@@ -424,7 +438,7 @@ export default function RaidScreen() {
               Нанеси {quest.need} урона за день
             </Text>
             <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
-              {quest.done} из {quest.need} · награда {quest.coins} монет и {quest.mana} маны
+              {quest.done} из {quest.need} · награда {quest.coins} монет
             </Text>
           </View>
         </View>
@@ -444,90 +458,6 @@ export default function RaidScreen() {
             style={{ marginTop: 11, opacity: quest.done >= quest.need ? 1 : 0.45 }}
           />
         )}
-      </View>
-
-      {/* ── Шкала личного вклада ───────────────────────────────────────── */}
-      <SectionLabel>Награды за вклад</SectionLabel>
-      <View style={card(colors, { marginBottom: 12 })}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }}>
-            Веха {Math.min(track.claimed + track.ready, track.milestones.length)} из {track.milestones.length}
-          </Text>
-          {track.ready > 0 && <Pill text={`готово: ${track.ready}`} tone="soft" color={accents.gold} />}
-        </View>
-        {!!nextMilestone && (
-          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 4 }}>
-            До следующей: {(nextMilestone.at - me.damage).toLocaleString("ru-RU")} урона · {nextMilestone.label}
-          </Text>
-        )}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={{ marginTop: 12, marginHorizontal: -4 }}
-          contentContainerStyle={{ paddingHorizontal: 4, gap: 8 }}
-        >
-          {track.milestones.map((m, i) => (
-            <View
-              key={m.at}
-              style={{
-                width: 104, padding: 10, borderRadius: radii.sm,
-                backgroundColor: m.claimed
-                  ? "rgba(139,92,246,0.14)"
-                  : m.reached ? "rgba(251,191,36,0.18)" : "rgba(120,110,170,0.08)",
-                borderWidth: 1,
-                borderColor: m.reached ? "rgba(139,92,246,0.4)" : "rgba(120,110,170,0.18)",
-              }}
-            >
-              <Text style={{ fontSize: 10, fontWeight: "900", color: "#7a6ea8", letterSpacing: 0.6 }}>
-                {i + 1} ВЕХА
-              </Text>
-              <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground, marginTop: 2 }}>
-                {m.at.toLocaleString("ru-RU")}
-              </Text>
-              <Text style={{ fontSize: 10.5, lineHeight: 15, color: colors.mutedForeground, marginTop: 4 }}>
-                {m.label}
-              </Text>
-              <View style={{ marginTop: 6 }}>
-                <Glyph
-                  name={m.claimed ? "check" : m.reached ? "bag" : "lock"}
-                  size={15}
-                  color={m.claimed ? colors.primary : m.reached ? accents.gold : "#a99fce"}
-                />
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-        <ChunkyButton
-          label={track.ready > 0 ? `Забрать ${track.ready} награды` : "Новых вех пока нет"}
-          icon="bag"
-          center
-          onPress={() => { if (track.ready > 0) claimM.mutate(); }}
-          style={{ marginTop: 12, opacity: track.ready > 0 ? 1 : 0.45 }}
-        />
-      </View>
-
-      {/* ── Магазин монет ──────────────────────────────────────────────── */}
-      <View style={card(colors, { marginBottom: 12, flexDirection: "row", gap: 9 })}>
-        <Pressable
-          onPress={() => shopM.mutate("mana")}
-          style={{ flex: 1, alignItems: "center", padding: 10, borderRadius: radii.sm, backgroundColor: "rgba(99,102,241,0.1)" }}
-        >
-          <Glyph name="flask" size={19} color={colors.primary} />
-          <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground, marginTop: 5 }}>
-            {shop.mana.label}
-          </Text>
-          <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{shop.mana.coins} монет</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => shopM.mutate("stamina")}
-          style={{ flex: 1, alignItems: "center", padding: 10, borderRadius: radii.sm, backgroundColor: "rgba(245,158,11,0.12)" }}
-        >
-          <Glyph name="spark" size={19} color={accents.amber} />
-          <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground, marginTop: 5 }}>
-            {shop.stamina.label}
-          </Text>
-          <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{shop.stamina.coins} монет</Text>
-        </Pressable>
       </View>
 
       {/* ── Лиги ───────────────────────────────────────────────────────── */}
@@ -613,15 +543,7 @@ export default function RaidScreen() {
         </>
       )}
 
-      <ChunkyButton
-        label="В упражнения — бить босса"
-        icon="arrowRight"
-        center
-        onPress={() => router.push("/flashcards" as any)}
-        style={{ marginTop: 4 }}
-      />
-
-      {/* ── Окна: сундук, награды, ошибка ─────────────────────────────── */}
+      {/* ── Окна: сундук, ошибка ──────────────────────────────────────── */}
       {!!data.chest && (
         <Modal
           title={data.chest.status === "won" ? "Босс повержен" : "Рейд закончился"}
@@ -637,14 +559,6 @@ export default function RaidScreen() {
       {!!chestText && (
         <Modal title="Сундук открыт" body={chestText} action="Отлично" onAction={() => setChestText(null)} />
       )}
-      {!!granted && (
-        <Modal
-          title="Награды за вклад"
-          body={granted.join("\n")}
-          action="Забрал"
-          onAction={() => setGranted(null)}
-        />
-      )}
       {!!problem && (
         <View style={{
           position: "absolute", left: 16, right: 16, bottom: screenBottom(insets) - 60,
@@ -657,15 +571,15 @@ export default function RaidScreen() {
   );
 }
 
-/** Кнопка спецатаки: цена маной, состояние «уже действует». */
-function Ability({
-  icon, title, about, cost, mana, active, activeText, onPress, busy,
+/** Кнопка бафа: цена монетами, состояние «уже действует». */
+function Buff({
+  icon, title, about, cost, coins, active, activeText, onPress, busy,
 }: {
-  icon: GlyphName; title: string; about: string; cost: number; mana: number;
+  icon: GlyphName; title: string; about: string; cost: number; coins: number;
   active: boolean; activeText: string; onPress: () => void; busy: boolean;
 }) {
   const colors = useColors();
-  const enough = mana >= cost && !active && !busy;
+  const enough = coins >= cost && !active && !busy;
   const press = React.useRef(new Animated.Value(0)).current;
   const set = (to: number) =>
     Animated.timing(press, {
@@ -685,7 +599,7 @@ function Ability({
           onPressIn={() => { if (enough) set(6); }}
           onPressOut={() => set(0)}
           accessibilityRole="button"
-          accessibilityLabel={`${title}. ${about}. Цена ${cost} маны`}
+          accessibilityLabel={`${title}. ${about}. Цена ${cost} монет`}
         >
           <View style={card(colors, {
             flexDirection: "row", alignItems: "center", gap: 11,
@@ -706,7 +620,7 @@ function Ability({
             </View>
             {active
               ? <Pill text={activeText} tone="soft" color={accents.gold} />
-              : <Pill text={`${cost} маны`} tone="soft" color={colors.primary} />}
+              : <Pill text={`${cost} монет`} tone="soft" color={colors.primary} />}
           </View>
         </Pressable>
       </Animated.View>
@@ -714,7 +628,7 @@ function Ability({
   );
 }
 
-/** Простое окно события: сундук, награды. */
+/** Простое окно события: сундук. */
 function Modal({
   title, body, action, onAction,
 }: { title: string; body: string; action: string; onAction: () => void }) {

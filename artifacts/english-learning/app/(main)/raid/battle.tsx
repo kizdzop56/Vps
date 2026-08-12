@@ -25,7 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, ScrollView, TextInput, Animated, Easing, Platform,
+  View, Text, Pressable, ScrollView, TextInput,
   ActivityIndicator, type ViewStyle,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -35,13 +35,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
-import { accents, radii, timing } from "@/constants/theme";
+import { accents, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 import { BossArt } from "@/components/raid/BossArt";
 import { speakWord } from "@/hooks/useFlashcards";
-import { damageTitle, raid, type RaidAnswer, type RaidTask } from "@/hooks/useRaid";
-
-const NATIVE_DRIVER = Platform.OS !== "web";
+import { damageTitle, raid, type RaidAnswer } from "@/hooks/useRaid";
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
   return (
@@ -106,9 +104,11 @@ export default function RaidBattle() {
   }, [snapshot, hp]);
 
   // Аудирование: слово проигрывается само, иначе задание невыполнимо.
+  const listenKey = task?.listen ? task.key : null;
   React.useEffect(() => {
-    if (task?.listen && task.wordId) speakWord(task.wordId, task.prompt);
-  }, [task?.key, task?.listen, task?.wordId, task?.prompt]);
+    if (!listenKey || !task?.wordId) return;
+    speakWord(task.wordId, task.prompt);
+  }, [listenKey, task?.wordId, task?.prompt]);
 
   const reset = () => {
     setGiven("");
@@ -138,8 +138,8 @@ export default function RaidBattle() {
       } else {
         setTally((cur) => ({ ...cur, correct: cur.correct + (res.correct ? 1 : 0), total: cur.total + 1 }));
       }
-      // Табло рейда пересчитаем на выходе, а не на каждом ответе.
-      qc.invalidateQueries({ queryKey: ["raid"] });
+      // Табло рейда пересчитается само: у него свой ключ запроса.
+      void qc.invalidateQueries({ queryKey: ["raid"] });
     } catch (err) {
       setProblem(err instanceof Error ? err.message : "Ответ не отправился");
       setTimeout(() => setProblem(null), 2600);
@@ -209,7 +209,7 @@ export default function RaidBattle() {
         </LinearGradient>
 
         <ChunkyButton label="Ещё заход" icon="repeat" center onPress={again} />
-        <ChunkyButton label="К боссу" icon="arrowRight" center tone="soft" onPress={leave} />
+        <ChunkyButton label="К боссу" icon="arrowRight" center tone="dark" onPress={leave} />
       </ScrollView>
     );
   }
@@ -291,7 +291,7 @@ export default function RaidBattle() {
         <View style={cardStyle(colors)}>
           {task.listen ? (
             <Pressable
-              onPress={() => task.wordId && speakWord(task.wordId, task.prompt)}
+              onPress={() => { if (task.wordId) speakWord(task.wordId, task.prompt); }}
               style={{ alignItems: "center", gap: 8, paddingVertical: 8 }}
               accessibilityRole="button"
               accessibilityLabel="Прослушать снова"
@@ -520,6 +520,3 @@ function cardStyle(colors: any, extra?: ViewStyle): ViewStyle {
     ...extra,
   };
 }
-
-/** Заглушка, чтобы линтер не ругался на неиспользованные импорты анимации. */
-const _unused = { Animated, Easing, NATIVE_DRIVER, timing };
