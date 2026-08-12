@@ -12,6 +12,7 @@ import { TabGuide, TAB_GUIDE_CONTENT, type TabGuideTab } from "@/components/TabG
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlacementTest } from "@/components/PlacementTest";
 import { NotificationHost } from "@/components/NotificationHost";
+import { RaidHitOverlay } from "@/components/raid/RaidHitOverlay";
 import { fc, apiFetch } from "@/hooks/useFlashcards";
 import { Glyph } from "@/components/ui/Glyph";
 import { accents } from "@/constants/theme";
@@ -465,6 +466,17 @@ function MainLayoutInner() {
           }
         />
 
+        {/* Рейд-босс: недельное событие на всё сообщество. Стоит сразу за
+            «Учёбой» намеренно — оттуда по нему и бьют, и путь «позанимался →
+            посмотрел шкалу» должен быть в один шаг вправо. */}
+        <Tabs.Screen
+          name="raid"
+          options={isStudent
+            ? { title: "Рейд", tabBarIcon: ({ color }) => <Glyph name="rank" size={22} color={color} /> }
+            : { href: null }
+          }
+        />
+
         <Tabs.Screen name="history" options={{ href: null }} />
 
         <Tabs.Screen
@@ -550,6 +562,11 @@ function MainLayoutInner() {
           Только для учеников: остальным ролям такие события не приходят, а
           опрос ленты раз в минуту им бы всё равно достался. */}
       {isStudent && <NotificationHost />}
+
+      {/* Цифры урона по боссу. Тоже здесь, и по той же причине: ученик отвечает
+          в тренажёре, а цифра должна вылетать поверх ТОГО экрана, где он
+          отвечает. Слой не перехватывает нажатия (pointerEvents="none"). */}
+      {isStudent && <RaidHitOverlay />}
 
       {showPlacement && (
         <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.background }}>
