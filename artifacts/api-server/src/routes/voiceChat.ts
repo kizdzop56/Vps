@@ -20,6 +20,16 @@
 // обходит распознавание речи целиком, поэтому по нему видно, работает ли
 // остальная часть раздела, когда микрофон подводит.
 //
+// ── ОЗВУЧКА НЕ ОБЯЗАТЕЛЬНА, НО И НЕ ОДНОРАЗОВА ─────────────────────────────
+// Синтез иногда не удаётся: у моделей озвучки Gemini жёсткие лимиты, у
+// Deepgram кончается квота. Терять из-за этого весь ответ нельзя — текст уже
+// есть, и молчаливый ответ лучше потерянного.
+//
+// Но раньше такая реплика оставалась без звука НАВСЕГДА: аудио клали в базу
+// вместе с сообщением, и второй попытки не существовало. Отсюда
+// POST /voice-chat/speak: нажатие на реплику синтезирует её заново. Это же
+// снимает нагрузку с ответа — озвучка перестала быть единственным шансом.
+//
 // ── Причина отказа уходит НАРУЖУ ────────────────────────────────────────────
 // Ключ есть, а модель недоступна; квота кончилась; формат записи не принят —
 // для ученика это всё выглядело одинаково: «тьютор не ответил». Поэтому в
@@ -71,6 +81,9 @@ const MIN_AUDIO_BYTES = 1200;
 
 /** Письменная реплика длиннее этого — вставленный текст, а не фраза ребёнка. */
 const MAX_TEXT_LEN = 500;
+
+/** Столько символов озвучиваем по требованию: ответ тьютора всегда короче. */
+const MAX_SPEAK_LEN = 700;
 
 /** Сколько очков за разговоры уже начислено сегодня. */
 async function voicePointsToday(userId: number): Promise<number> {
@@ -185,6 +198,42 @@ router.get("/voice-chat/models", requireAuth, async (req, res) => {
     return;
   }
   res.json(await geminiModelReport(req.log, req.query["fresh"] === "1"));
+});
+
+// ── Озвучить текст по требованию ────────────────────────────────────────────
+//
+// Нужен, когда синтез при ответе не удался: ученик нажимает на реплику, и она
+// озвучивается со второй попытки. Отдельный маршрут, а не поле сообщения,
+// потому что причины отказа временные — лимит, квота, недоступная модель, — и
+// повтор через минуту обычно проходит.
+//
+// Ответ отдаётся data-URL, как и при обычном обмене: клиент уже умеет его
+// играть, и хранить лишний файл на диске не нужно.
+router.post("/voice-chat/speak", requireAuth, async (req, res) => {
+  const { text } = req.body as { text?: unknown };
+  const value = typeof text === "string" ? text.trim() : "";
+
+  if (!value) {
+    res.status(400).json({ error: "Нечего озвучивать" });
+    return;
+  }
+  if (value.length > MAX_SPEAK_LEN) {
+    res.status(413).json({ error: "Слишком длинный текст для озвучки" });
+    return;
+  }
+
+  const voice = await speak({ text: value, log: req.log });
+  if (!voice.ok) {
+    req.log.warn({ tried: voice.tried, detail: voice.detail }, "Озвучка по требованию не удалась");
+    res.status(502).json({
+      error: "Не удалось озвучить ответ.",
+      detail: voice.detail,
+      tried: voice.tried,
+    });
+    return;
+  }
+
+  res.json({ audioUrl: voice.dataUrl, provider: voice.provider });
 });
 
 router.post("/voice-chat/sessions", requireAuth, async (req, res) => {
@@ -354,9 +403,13 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
 
   // Озвучка — не обязательна: текст ответа уже есть, и молчаливый ответ лучше,
   // чем потерянная реплика. Написавшему её тоже даём: слышать, как звучит
-  // ответ, полезно и в письменном режиме.
+  // ответ, полезно и в письменном режиме. Не вышло — реплику можно озвучить
+  // нажатием (POST /voice-chat/speak).
   const voice = await speak({ text: aiTranscript, log: req.log });
   const aiAudioUrl = voice.ok ? voice.dataUrl : null;
+  if (!voice.ok) {
+    req.log.warn({ tried: voice.tried, detail: voice.detail }, "Ответ остался без озвучки");
+  }
 
   // ── Записываем обе реплики ──
   const [studentMsg] = await db.insert(voiceChatMessagesTable).values({
@@ -406,6 +459,9 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     // поставщика реально состоялось, без чтения логов.
     provider: outcome.provider,
     model: outcome.model,
+    // Почему ответ без звука. Экран это не показывает, но при разборе видно
+    // сразу: «нет ключа», «квота», «нет модели озвучки».
+    speechDetail: voice.ok ? undefined : voice.detail,
   });
 });
 

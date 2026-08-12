@@ -8,12 +8,29 @@
 // отношения не имеют. Теперь маршрут просто просит «ответь», «расшифруй»,
 // «озвучь».
 //
-// ── Порядок поставщиков ─────────────────────────────────────────────────────
-// Первым идёт GOOGLE AI STUDIO (Gemini): это основной ключ проекта, он умеет
-// все три задачи. Вторым — Deepgram, только речь: распознавание и озвучка.
+// ── Порядок поставщиков РАЗНЫЙ для разных задач ─────────────────────────────
+// Он выбран по делу, а не «кто первый ответит»:
 //
-// Порядок именно такой, а не «что первое ответит»: у поставщиков разная цена и
-// разное качество, и решать это должен человек, а не случай.
+//   ОТВЕТ    — только Gemini. Больше текст писать некому.
+//   РЕЧЬ→ТЕКСТ — Gemini, затем Deepgram. Gemini первым, потому что это основной
+//              ключ проекта; Deepgram спасает записи из браузера (см. ниже).
+//   ОЗВУЧКА  — Deepgram, затем Gemini. Именно в таком порядке, и вот почему.
+//
+// ── ПОЧЕМУ ОЗВУЧКУ ВЕДЁТ DEEPGRAM, А НЕ GEMINI ─────────────────────────────
+// Сначала первым стоял Gemini — «основной ключ, пусть делает всё». На практике
+// это и было причиной «озвучивает через раз»:
+//
+//   • у моделей озвучки Gemini жёсткие лимиты, и они отвечают отказом чаще,
+//     чем остальные модели;
+//   • Gemini отдаёт сырой PCM, из него получается WAV — при той же фразе он
+//     раз в десять тяжелее mp3. Такой ответ дольше едет и хуже играется в
+//     Safari;
+//   • Deepgram Aura-2 уже озвучивает слова в карточках, то есть у тьютора
+//     оказывается ТОТ ЖЕ голос, что у всего приложения. Это не мелочь: два
+//     разных голоса в одном разделе слышны сразу.
+//
+// Gemini остался вторым и нужен: без ключа Deepgram он единственный, кто
+// озвучит ответ вообще.
 //
 // ── ГРАБЛИ, ИЗ-ЗА КОТОРЫХ ТЬЮТОР МОЛЧАЛ: СПИСОК ИМЁН МОДЕЛЕЙ ───────────────
 // Здесь был вписанный руками список: gemini-2.5-flash, gemini-2.0-flash,
@@ -44,7 +61,8 @@
 // Это ЕДИНСТВЕННЫЙ распознаватель здесь, который спокойно читает то, что
 // пишет браузер (webm/opus в Chrome, mp4 в Safari). Gemini такие форматы
 // принимает через раз (см. ГРАБЛИ ниже). Если убрать ключ Deepgram, голосовой
-// разговор с тьютором начнёт отказывать на части устройств.
+// разговор с тьютором начнёт отказывать на части устройств, а голос тьютора
+// сменится на другой.
 //
 // ── ГРАБЛИ: GEMINI TTS ОТДАЁТ СЫРОЙ PCM ────────────────────────────────────
 // Обычные синтезаторы возвращают готовый mp3. Gemini возвращает НЕОБРАБОТАННЫЕ
@@ -271,6 +289,15 @@ const NOT_FOR_TEXT =
 const MAX_ATTEMPTS = 4;
 
 /**
+ * А для озвучки — всего две.
+ *
+ * Озвучка не обязательна: ответ уже написан, и ждать её дольше, чем сам ответ,
+ * бессмысленно. Раньше сюда уходило до четырёх отказов по тридцать секунд
+ * каждый, и ученик успевал уйти с экрана.
+ */
+const TTS_MAX_ATTEMPTS = 2;
+
+/**
  * Насколько модель предпочтительна, когда выбирать приходится самим.
  * Больше — лучше: сначала свежая версия, стабильная раньше предварительной.
  */
@@ -315,11 +342,12 @@ function orderCandidates(
     .map((m) => m.id);
 
   const preferred = kind === "tts" ? TTS_PREFERRED : CHAT_PREFERRED;
+  const limit = kind === "tts" ? TTS_MAX_ATTEMPTS : MAX_ATTEMPTS;
 
   if (usable.length === 0) {
     // Список не пришёл — работаем по предпочтениям, как до этой правки.
     preferred.forEach(add);
-    return picked.slice(0, MAX_ATTEMPTS);
+    return picked.slice(0, limit);
   }
 
   const has = new Set(usable);
@@ -337,7 +365,7 @@ function orderCandidates(
   }
   usable.filter(fits).sort(byRank).forEach(add);
 
-  return picked.slice(0, MAX_ATTEMPTS);
+  return picked.slice(0, limit);
 }
 
 /**
@@ -876,25 +904,29 @@ async function deepgramSpeak(key: string, text: string, log: AiLog): Promise<Spe
 /**
  * Озвучить текст.
  *
+ * Порядок: Deepgram → Gemini. Обоснование в шапке файла, коротко: mp3 легче и
+ * надёжнее играется, лимиты мягче, и голос совпадает с озвучкой слов.
+ *
  * Озвучка НЕ обязательна: текст ответа уже есть, и молчаливый ответ лучше, чем
- * потерянная реплика. Поэтому вызывающий вправе просто не показывать звук.
+ * потерянная реплика. Поэтому вызывающий вправе просто не показывать звук — а
+ * ученик может попросить озвучку повторно (POST /voice-chat/speak).
  */
 export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechResult> {
   const tried: string[] = [];
   const reasons: string[] = [];
   let detail = "Не задан ни один ключ для озвучки";
 
-  const google = googleKey();
-  if (google) {
-    const result = await geminiSpeak(google, opts.text, opts.log);
+  const deepgram = deepgramKey();
+  if (deepgram) {
+    const result = await deepgramSpeak(deepgram, opts.text, opts.log);
     if (result.ok) return result;
     tried.push(...result.tried);
     reasons.push(result.detail);
   }
 
-  const deepgram = deepgramKey();
-  if (deepgram) {
-    const result = await deepgramSpeak(deepgram, opts.text, opts.log);
+  const google = googleKey();
+  if (google) {
+    const result = await geminiSpeak(google, opts.text, opts.log);
     if (result.ok) return result;
     tried.push(...result.tried);
     reasons.push(result.detail);

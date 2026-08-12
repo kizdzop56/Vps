@@ -20,6 +20,27 @@
 // Ответ тьютора озвучивается в обоих режимах: услышать, как звучит фраза,
 // полезно и тому, кто её напечатал.
 //
+// ── ЛЮБУЮ РЕПЛИКУ ТЬЮТОРА МОЖНО ОЗВУЧИТЬ НАЖАТИЕМ ─────────────────────────
+// Озвучка приходит вместе с ответом, но не всегда: у моделей синтеза жёсткие
+// лимиты, и иногда ответ приезжает без звука. Раньше это был приговор — звука
+// у реплики не появлялось уже никогда, и выглядело как «озвучивает через раз».
+//
+// Теперь нажатие на реплику тьютора либо играет готовый звук, либо просит
+// сервер синтезировать его сейчас (POST /voice-chat/speak). Поэтому у КАЖДОЙ
+// реплики тьютора внизу есть подсказка, что её можно послушать: приветствие
+// тоже озвучивается, хотя с сервера оно не приходило вовсе.
+//
+// ── ГРАБЛИ: ЗАПРЕТ АВТОЗАПУСКА ЗВУКА ───────────────────────────────────────
+// Ответ приходит через несколько секунд после нажатия, и к этому моменту Safari
+// уже не считает проигрывание следствием действия человека — play() отвечает
+// отказом. Лечится в utils/voiceRecorder.ts: плеер один и разблокируется в
+// момент нажатия (primeAudio), поэтому primeAudio ОБЯЗАН вызываться
+// синхронно в обработчике, до любого await.
+//
+// Если звук всё-таки заблокирован, экран об этом говорит: подсказка меняется на
+// «нажми, чтобы включить звук». Молчать нельзя — иначе это снова выглядит как
+// поломка озвучки.
+//
 // ── СВОЯ РЕПЛИКА ПОКАЗЫВАЕТСЯ СРАЗУ ────────────────────────────────────────
 // Раньше она добавлялась в ленту ВМЕСТЕ с ответом тьютора, одним куском. Пока
 // всё работало, разницы не было. Стоило ответу не прийти — и сказанное
@@ -71,7 +92,8 @@ import { apiFetch } from "@/hooks/useFlashcards";
 import {
   MicDeniedError,
   createVoiceRecorder,
-  playAudio,
+  playSpeech,
+  primeAudio,
   type StopPlayback,
   type VoiceRecorder,
 } from "@/utils/voiceRecorder";
@@ -85,16 +107,19 @@ type Line = {
   id: string;
   role: "student" | "ai";
   text: string;
-  /** Озвучка ответа тьютора: data-URL с mp3. У реплики ученика её нет. */
+  /** Готовая озвучка: data-URL. Нет — можно запросить нажатием. */
   audio?: string | null;
   /** Реплика ещё в пути: показываем её приглушённой. */
   pending?: boolean;
   /** Ответ не пришёл. Реплика остаётся в ленте, но помечена. */
   failed?: boolean;
+  /** Озвучить не удалось. Показываем это на самой реплике, а не плашкой. */
+  voiceFailed?: boolean;
 };
 
 type SessionResponse = { id: number };
 type StatusResponse = { ready?: boolean; reason?: string };
+type SpeakResponse = { audioUrl?: string | null };
 
 type MessagesResponse = {
   studentMessage?: { id?: number; transcript?: string };
@@ -153,6 +178,10 @@ export default function TutorScreen() {
   const [points, setPoints] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
   const [denied, setDenied] = React.useState(false);
+  /** Какую реплику сейчас озвучиваем: у неё вместо подсказки «озвучиваю…». */
+  const [voicing, setVoicing] = React.useState<string | null>(null);
+  /** Браузер не дал играть без нажатия. Подсказка на репликах меняется. */
+  const [audioBlocked, setAudioBlocked] = React.useState(false);
   /** null — ещё не спросили; false — тьютор не настроен на сервере. */
   const [ready, setReady] = React.useState<boolean | null>(null);
   const [notReadyReason, setNotReadyReason] = React.useState<string | null>(null);
@@ -184,14 +213,49 @@ export default function TutorScreen() {
     void recorder.current?.cancel();
   }, []);
 
+  /** Проиграть звук и запомнить, дал ли браузер это сделать. */
   const play = React.useCallback(async (uri: string) => {
     try {
       stopPlayback.current?.();
-      stopPlayback.current = await playAudio(uri);
+      const playback = await playSpeech(uri);
+      stopPlayback.current = playback.stop;
+      setAudioBlocked(playback.blocked);
     } catch {
-      /* не проигралось — текст ответа всё равно на экране */
+      setAudioBlocked(true);
     }
   }, []);
+
+  /**
+   * Озвучить реплику тьютора по нажатию.
+   *
+   * Звук уже есть — играем. Нет — просим сервер синтезировать сейчас: ответ
+   * мог прийти без озвучки (лимиты моделей), и второй попытки раньше не было.
+   */
+  const speakLine = React.useCallback(async (line: Line) => {
+    // Строго до await: этим нажатием разблокируется звук (см. шапку файла).
+    primeAudio();
+    if (line.audio) { void play(line.audio); return; }
+    if (voicing) return;
+
+    setVoicing(line.id);
+    setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, voiceFailed: false } : l)));
+    try {
+      const data = await apiFetch<SpeakResponse>("/api/voice-chat/speak", {
+        method: "POST",
+        body: JSON.stringify({ text: line.text }),
+      });
+      const url = data?.audioUrl;
+      if (!url) throw new Error("Звук не пришёл");
+      setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, audio: url } : l)));
+      await play(url);
+    } catch {
+      // Тихо и на самой реплике: плашка с ошибкой здесь была бы слишком громкой
+      // для того, что текст ответа уже прочитан.
+      setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, voiceFailed: true } : l)));
+    } finally {
+      setVoicing(null);
+    }
+  }, [play, voicing]);
 
   /**
    * Отправить реплику: либо запись, либо текст.
@@ -437,13 +501,28 @@ export default function TutorScreen() {
             обычной переписке, чтобы не читать подписи «кто сказал». */}
         {lines.map((line) => {
           const mine = line.role === "student";
+          // Реплику тьютора можно послушать всегда: звук либо готов, либо
+          // синтезируется по нажатию.
+          const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
+          const busy = voicing === line.id;
+
+          const hint = busy
+            ? "озвучиваю…"
+            : line.voiceFailed
+              ? "озвучить не вышло, попробуй ещё раз"
+              : audioBlocked && line.audio
+                ? "нажми, чтобы включить звук"
+                : line.audio
+                  ? "нажми, чтобы послушать ещё раз"
+                  : "нажми, чтобы послушать";
+
           return (
             <Pressable
               key={line.id}
-              onPress={() => { if (line.audio) void play(line.audio); }}
-              disabled={!line.audio}
-              accessibilityRole={line.audio ? "button" : undefined}
-              accessibilityLabel={line.audio ? "Прослушать ответ ещё раз" : undefined}
+              onPress={() => { if (listenable) void speakLine(line); }}
+              disabled={!listenable}
+              accessibilityRole={listenable ? "button" : undefined}
+              accessibilityLabel={listenable ? "Послушать ответ тьютора" : undefined}
               style={{
                 alignSelf: mine ? "flex-end" : "flex-start",
                 maxWidth: "88%",
@@ -480,11 +559,17 @@ export default function TutorScreen() {
                   </Text>
                 </View>
               )}
-              {!!line.audio && (
+              {listenable && (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
-                  <Glyph name="sound" size={13} color={colors.primary} />
-                  <Text style={{ fontSize: 11, fontWeight: "700", color: colors.primary }}>
-                    нажми, чтобы послушать ещё раз
+                  {busy
+                    ? <ActivityIndicator size="small" color={colors.primary} />
+                    : <Glyph name="sound" size={13} color={line.voiceFailed ? colors.destructive : colors.primary} />}
+                  <Text style={{
+                    fontSize: 11,
+                    fontWeight: "700",
+                    color: line.voiceFailed ? colors.destructive : colors.primary,
+                  }}>
+                    {hint}
                   </Text>
                 </View>
               )}
@@ -492,13 +577,10 @@ export default function TutorScreen() {
           );
         })}
 
+        {/* Ждём ответ. Без подписи: кружок и так означает ожидание, а строка
+            «думаю над ответом» повторяла его словами и занимала место. */}
         {sending && (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 9, marginTop: 4 }}>
-            <ActivityIndicator color={colors.primary} />
-            <Text style={{ fontSize: 13, color: colors.mutedForeground }}>
-              {mode === "voice" ? "Слушаю и думаю над ответом…" : "Читаю и думаю над ответом…"}
-            </Text>
-          </View>
+          <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 4 }} />
         )}
 
         {denied && (
@@ -537,7 +619,12 @@ export default function TutorScreen() {
             tone={recording ? "warm" : "primary"}
             center
             disabled={sending || blocked}
-            onPress={() => { void (recording ? stopAndSend() : startRecording()); }}
+            onPress={() => {
+              // Разблокировка звука — первым делом, синхронно: ответ придёт
+              // через несколько секунд, и тогда браузер играть уже не даст.
+              primeAudio();
+              void (recording ? stopAndSend() : startRecording());
+            }}
           />
         ) : (
           <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 10 }}>
@@ -549,7 +636,7 @@ export default function TutorScreen() {
               editable={!sending && !blocked}
               multiline
               maxLength={500}
-              onSubmitEditing={() => { void sendTyped(); }}
+              onSubmitEditing={() => { primeAudio(); void sendTyped(); }}
               returnKeyType="send"
               style={{
                 flex: 1,
@@ -567,7 +654,7 @@ export default function TutorScreen() {
               }}
             />
             <Pressable
-              onPress={() => { void sendTyped(); }}
+              onPress={() => { primeAudio(); void sendTyped(); }}
               disabled={sending || blocked || typed.trim().length === 0}
               accessibilityRole="button"
               accessibilityLabel="Отправить"
