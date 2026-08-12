@@ -17,7 +17,13 @@
 // так же, как карточка цели дня в профиле.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type QuestKind = "words" | "newWords" | "assignment" | "voice";
+export type QuestKind =
+  | "words"
+  | "newWords"
+  | "assignment"
+  | "voice"
+  | "grammar"
+  | "verbForms";
 
 /** Очки за полностью закрытый день. Зависят от активной цели по времени. */
 export const GOAL_POINTS: Record<number, number> = {
@@ -72,6 +78,10 @@ function questTitle(kind: QuestKind, target: number): string {
         : `Выполнить ${target} ${plural(target, ["задание", "задания", "заданий"])}`;
     case "voice":
       return "Поговорить с тьютором";
+    case "grammar":
+      return `Решить ${target} ${plural(target, ["задание", "задания", "заданий"])} по грамматике`;
+    case "verbForms":
+      return `Повторить формы ${target} ${plural(target, ["глагола", "глаголов", "глаголов"])}`;
   }
 }
 
@@ -92,6 +102,16 @@ export interface DailyPlanInput {
   learnedToday: number;
   /** Личная цель по словам (flashcard_settings.daily_word_goal). */
   dailyWordGoal: number;
+  /** Ответов в разделе «Учёба» сегодня — любой режим грамматики. */
+  grammarToday: number;
+  /**
+   * РАЗНЫХ глаголов, чьи формы ученик трогал сегодня.
+   *
+   * Именно разных, а не ответов: в режиме форм на каждый глагол приходится три
+   * вопроса, и по ответам задача «повторить формы 5 глаголов» закрывалась бы
+   * двумя глаголами.
+   */
+  verbFormsToday: number;
 }
 
 export interface PendingItem {
@@ -130,6 +150,20 @@ export interface DailyPlanResult {
 }
 
 /**
+ * Из чего собирается день, кроме повторения слов.
+ *
+ * Повторение слов стоит в дне ВСЕГДА (без слов остальное бессмысленно), а
+ * дальше из этого списка берётся два-три пункта — по дате. Порядок здесь
+ * значим: он вместе с датой определяет, что выпадет, и на клиенте список
+ * обязан быть таким же.
+ *
+ * Грамматика и формы глаголов появились здесь позже остальных: раздел «Учёба»
+ * вырос, а день о нём не знал, и его можно было закрыть, ни разу туда не
+ * заглянув.
+ */
+const QUEST_POOL: QuestKind[] = ["assignment", "newWords", "voice", "grammar", "verbForms"];
+
+/**
  * День целиком: цель по времени и список задач с отметками о выполнении.
  *
  * Нужен там, где важно не только «всё ли закрыто», но и ЧТО именно закрыто:
@@ -158,7 +192,7 @@ export function buildServerDailyPlan(input: DailyPlanInput): ServerDailyPlan {
     Math.max(5, input.dailyWordGoal || 10) + (tier >= 1 ? 2 : 0) + (tier >= 3 ? 3 : 0);
   raw.push({ kind: "words", current: input.wordsToday, target: wordGoal });
 
-  const pool: QuestKind[] = ["assignment", "newWords", "voice"];
+  const pool = QUEST_POOL;
   const offset = seed % pool.length;
 
   for (let i = 0; i < pool.length && raw.length < count; i++) {
@@ -171,6 +205,18 @@ export function buildServerDailyPlan(input: DailyPlanInput): ServerDailyPlan {
 
     if (kind === "newWords") {
       raw.push({ kind, current: input.learnedToday, target: 2 + tier });
+      continue;
+    }
+
+    if (kind === "grammar") {
+      // Заход в разделе — 12 заданий, поэтому даже на тяжёлой цели это меньше
+      // полутора заходов: день не должен упираться в одну грамматику.
+      raw.push({ kind, current: input.grammarToday, target: 10 + tier * 2 });
+      continue;
+    }
+
+    if (kind === "verbForms") {
+      raw.push({ kind, current: input.verbFormsToday, target: 3 + tier });
       continue;
     }
 
