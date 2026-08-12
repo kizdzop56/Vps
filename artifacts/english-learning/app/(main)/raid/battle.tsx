@@ -4,29 +4,32 @@
 // ── Почему это отдельный экран, а не переход в «Учёбу» ──────────────────────
 // «Учёба» учит: знакомство со словом, интервальное повторение, разбор ошибки с
 // правилом, дневные нормы, очки. Бой практикует: применяешь то, что уже знаешь,
-// быстро и подряд. Раньше кнопка «бить босса» уводила в «Учёбу» — и это было
-// неправильно в обе стороны: рейд начинал гнать темп обучению, а обучение
-// тормозило рейд разборами.
+// быстро и подряд. Кнопка «бить босса», уводившая в «Учёбу», была неправильной в
+// обе стороны: рейд начинал гнать темп обучению, а обучение тормозило рейд
+// разборами.
 //
 // Здесь НЕТ объяснений ошибок. Ответил неверно — увидел правильный ответ одной
-// строкой и пошёл дальше. Ни правил, ни разбора, ни подсказок: за этим ходят в
-// «Учёбу», а тут идёт бой.
+// строкой и пошёл дальше. Ни правил, ни разбора: за этим ходят в «Учёбу».
 //
-// Проверка целиком на сервере (POST /raid/answer): в заданиях, которые приходят
-// на клиент, правильного ответа нет вовсе — ни в options, ни в скрытом поле.
+// Задания приходят с сервера уже готовыми и БЕЗ правильного ответа: и проверка,
+// и способ ответа (от него зависит ставка урона) живут на сервере, а клиент
+// отправляет только номер выданного задания и сам ответ. Повторов в подборке
+// нет: сервер помнит, что уже спрашивал (см. lib/raidSession.ts).
 //
-// ── Вылетающие цифры урона ─────────────────────────────────────────────────
-// Их рисует не этот экран, а общий слой в раскладке вкладок
-// (components/raid/RaidHitOverlay): он слушает ответы сервера и показывает цифру
-// поверх любого экрана. Здесь только сама механика ответов.
+// ── Босс занимает почти половину экрана ─────────────────────────────────────
+// Он здесь не украшение: это единственная обратная связь боя. Цифра урона
+// вылетает поверх него (слой в раскладке вкладок), шкала под ним ползёт вниз,
+// фигура вздрагивает от каждого попадания. Маленькая картинка всё это съедала,
+// поэтому размер считается от РЕАЛЬНОЙ высоты окна, а не задан числом: на
+// маленьком телефоне босс не выдавит задание за край, на большом не потеряется.
 //
 // Выход — router.replace("/raid"), а не router.back(): внутри вкладок back
 // возвращает на ПЕРВУЮ вкладку, а не на предыдущий экран.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, ScrollView, TextInput,
-  ActivityIndicator, type ViewStyle,
+  View, Text, Pressable, ScrollView, TextInput, ActivityIndicator,
+  useWindowDimensions, type ViewStyle,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -40,6 +43,11 @@ import { screenTop } from "@/constants/layout";
 import { BossArt } from "@/components/raid/BossArt";
 import { speakWord } from "@/hooks/useFlashcards";
 import { damageTitle, raid, type RaidAnswer } from "@/hooks/useRaid";
+
+/** Доля высоты окна под фигуру босса. Почти половина — так и просили. */
+const BOSS_HEIGHT_SHARE = 0.44;
+/** Шире этого фигура не растёт: на планшете иначе распухает до нелепого. */
+const BOSS_WIDTH_SHARE = 0.92;
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
   return (
@@ -67,11 +75,12 @@ export default function RaidBattle() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
+  const { width, height } = useWindowDimensions();
 
   const battleQ = useQuery({
     queryKey: ["raid-battle"],
     queryFn: raid.battle,
-    // Заход одноразовый: каждый вход в бой — новая подборка.
+    // Заход одноразовый: каждый вход в бой — новая подборка с сервера.
     staleTime: 0,
     gcTime: 0,
   });
@@ -104,11 +113,13 @@ export default function RaidBattle() {
   }, [snapshot, hp]);
 
   // Аудирование: слово проигрывается само, иначе задание невыполнимо.
-  const listenKey = task?.listen ? task.key : null;
+  const listenId = task?.listen ? task.taskId : null;
+  const listenWordId = task?.wordId;
+  const listenPrompt = task?.prompt;
   React.useEffect(() => {
-    if (!listenKey || !task?.wordId) return;
-    speakWord(task.wordId, task.prompt);
-  }, [listenKey, task?.wordId, task?.prompt]);
+    if (!listenId || !listenWordId || !listenPrompt) return;
+    speakWord(listenWordId, listenPrompt);
+  }, [listenId, listenWordId, listenPrompt]);
 
   const reset = () => {
     setGiven("");
@@ -120,7 +131,7 @@ export default function RaidBattle() {
     if (!task || sending || verdict) return;
     setSending(true);
     try {
-      const res = await raid.answer(task, answer);
+      const res = await raid.answer(task.taskId, answer);
       setVerdict(res);
       setHitToken((t) => t + 1);
       const hit = res.raid;
@@ -208,6 +219,11 @@ export default function RaidBattle() {
           </Text>
         </LinearGradient>
 
+        <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground }}>
+          Следующий заход будет из других заданий: то, что уже спрашивали, вернётся не раньше чем
+          через несколько дней и другим вопросом.
+        </Text>
+
         <ChunkyButton label="Ещё заход" icon="repeat" center onPress={again} />
         <ChunkyButton label="К боссу" icon="arrowRight" center tone="dark" onPress={leave} />
       </ScrollView>
@@ -216,69 +232,76 @@ export default function RaidBattle() {
 
   const ratio = hp && hp.total > 0 ? Math.max(0, hp.left / hp.total) : 1;
   const assembled = picked.join(task.kind === "word" ? "" : " ");
+  const bossSize = Math.round(Math.min(width * BOSS_WIDTH_SHARE, height * BOSS_HEIGHT_SHARE));
 
   return (
     <View style={{ flex: 1, paddingTop: screenTop(insets) }}>
-      {/* ── Шапка: босс, шкала, энергия ───────────────────────────────── */}
-      <View style={{ paddingHorizontal: 16 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Pressable
-            onPress={leave}
-            hitSlop={12}
-            accessibilityRole="button"
-            accessibilityLabel="Выйти из боя"
-            style={{ padding: 4 }}
-          >
-            <Glyph name="close" size={22} color={colors.mutedForeground} />
-          </Pressable>
+      {/* ── Шапка: выход, шкала здоровья, энергия ─────────────────────── */}
+      <View style={{ paddingHorizontal: 16, flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <Pressable
+          onPress={leave}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Выйти из боя"
+          style={{ padding: 4 }}
+        >
+          <Glyph name="close" size={22} color={colors.mutedForeground} />
+        </Pressable>
 
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text style={{ fontSize: 12, fontWeight: "900", color: colors.foreground }}>
-                {snapshot?.event.bossShort ?? "Босс"}
-              </Text>
-              <Text style={{ fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground }}>
-                {index + 1} / {tasks.length}
-              </Text>
-            </View>
-            <View style={{
-              height: 9, borderRadius: 9, marginTop: 4, overflow: "hidden",
-              backgroundColor: "rgba(109,40,217,0.16)",
-            }}>
-              <View style={{ width: `${Math.round(ratio * 100)}%`, height: "100%" }}>
-                <LinearGradient
-                  colors={hp?.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={{ flex: 1, borderRadius: 9 }}
-                />
-              </View>
-            </View>
-          </View>
-
-          <View style={{ alignItems: "center" }}>
-            <Glyph name="spark" size={16} color={accents.amber} />
-            <Text style={{ fontSize: 12, fontWeight: "900", color: colors.foreground }}>
-              {stamina ?? "—"}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>
+              {snapshot?.event.bossShort ?? "Босс"}
+              {hp ? ` · ${hp.left.toLocaleString("ru-RU")} HP` : ""}
+            </Text>
+            <Text style={{ fontSize: 11.5, fontWeight: "700", color: colors.mutedForeground }}>
+              {index + 1} / {tasks.length}
             </Text>
           </View>
+          <View style={{
+            height: 10, borderRadius: 10, marginTop: 4, overflow: "hidden",
+            backgroundColor: "rgba(109,40,217,0.16)",
+          }}>
+            <View style={{ width: `${Math.round(ratio * 100)}%`, height: "100%" }}>
+              <LinearGradient
+                colors={hp?.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={{ flex: 1, borderRadius: 10 }}
+              />
+            </View>
+          </View>
         </View>
 
-        <View style={{ alignItems: "center", marginTop: 2 }}>
-          <BossArt
-            boss={snapshot?.event.boss ?? "golem"}
-            colors={snapshot?.event.colors ?? ["#818cf8", "#4338ca"]}
-            phase={hp?.phase ?? "normal"}
-            hitToken={hitToken}
-            size={116}
-            defeated={!!hp && hp.left <= 0}
-          />
+        <View style={{ alignItems: "center" }}>
+          <Glyph name="spark" size={16} color={accents.amber} />
+          <Text style={{ fontSize: 12, fontWeight: "900", color: colors.foreground }}>
+            {stamina ?? "—"}
+          </Text>
         </View>
+      </View>
+
+      {/* ── Босс: почти половина экрана ───────────────────────────────── */}
+      <View style={{ height: bossSize, alignItems: "center", justifyContent: "center" }}>
+        <BossArt
+          boss={snapshot?.event.boss ?? "golem"}
+          colors={snapshot?.event.colors ?? ["#818cf8", "#4338ca"]}
+          phase={hp?.phase ?? "normal"}
+          hitToken={hitToken}
+          size={bossSize}
+          defeated={!!hp && hp.left <= 0}
+        />
       </View>
 
       {/* ── Задание ──────────────────────────────────────────────────────── */}
       <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 12) + 20, gap: 12 }}
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingTop: 4,
+          paddingBottom: Math.max(insets.bottom, 12) + 20,
+          gap: 10,
+        }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -292,18 +315,18 @@ export default function RaidBattle() {
           {task.listen ? (
             <Pressable
               onPress={() => { if (task.wordId) speakWord(task.wordId, task.prompt); }}
-              style={{ alignItems: "center", gap: 8, paddingVertical: 8 }}
+              style={{ alignItems: "center", gap: 6, paddingVertical: 4 }}
               accessibilityRole="button"
               accessibilityLabel="Прослушать снова"
             >
-              <Glyph name="sound" size={38} color={colors.primary} />
+              <Glyph name="sound" size={34} color={colors.primary} />
               <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground }}>
                 Нажми, чтобы прослушать снова
               </Text>
             </Pressable>
           ) : (
             <Text style={{
-              fontSize: task.prompt.length > 40 ? 19 : 25,
+              fontSize: task.prompt.length > 40 ? 18 : 24,
               fontWeight: "900",
               letterSpacing: -0.6,
               color: colors.foreground,
@@ -315,7 +338,7 @@ export default function RaidBattle() {
           {!!task.hint && (
             <Text style={{
               fontSize: 13, lineHeight: 19, color: colors.mutedForeground,
-              textAlign: "center", marginTop: 7,
+              textAlign: "center", marginTop: 6,
             }}>
               {task.hint}
             </Text>
@@ -335,6 +358,7 @@ export default function RaidBattle() {
               disabled={!!verdict || sending}
               onPress={() => { setGiven(option); void send(option); }}
               style={cardStyle(colors, {
+                paddingVertical: 13,
                 borderWidth: 2,
                 borderColor: rightAnswer
                   ? colors.primary
@@ -371,7 +395,7 @@ export default function RaidBattle() {
                   ? (verdict.correct ? colors.primary : "#e11d48")
                   : colors.border,
                 paddingHorizontal: 15,
-                paddingVertical: 14,
+                paddingVertical: 13,
                 fontSize: 17,
                 fontWeight: "700",
                 color: colors.foreground,
@@ -392,7 +416,7 @@ export default function RaidBattle() {
         {/* Сборка из плиток */}
         {task.input === "assemble" && (
           <View style={{ gap: 10 }}>
-            <View style={cardStyle(colors, { minHeight: 58, justifyContent: "center" })}>
+            <View style={cardStyle(colors, { minHeight: 54, justifyContent: "center" })}>
               <Text style={{
                 fontSize: 18, fontWeight: "900", color: colors.foreground, textAlign: "center",
               }}>

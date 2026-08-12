@@ -3,9 +3,9 @@
 //
 // ── Почему у рейда свои задания, а не переход в «Учёбу» ─────────────────────
 // «Учёба» — это обучение: там знакомство со словом, интервальное повторение,
-// разбор ошибки с правилом и объяснением, дневные нормы и очки. Рейд — это
-// практика: ученик применяет то, что уже знает, быстро и подряд. Смешивать их
-// нельзя в обе стороны:
+// разбор ошибки с правилом, дневные нормы и очки. Рейд — практика: ученик
+// применяет то, что уже знает, быстро и подряд. Смешивать их нельзя в обе
+// стороны:
 //
 //   • если бить босса из «Учёбы», рейд начинает диктовать темп обучению: ученик
 //     гонит карточки ради урона, а интервальное повторение рассчитано на
@@ -13,43 +13,86 @@
 //   • если тащить в рейд разбор ошибок и правила, бой превращается в урок, и
 //     событие теряет то, зачем оно есть: короткие быстрые попадания.
 //
-// Поэтому здесь ОТДЕЛЬНАЯ подборка и отдельная проверка. В журналы учёбы
-// (review_log, grammar_log) практика не пишет ничего: она не двигает интервалы
-// повторения, не начисляет очки и не тратит дневные нормы. Единственный её
-// результат — урон боссу.
+// В журналы учёбы (review_log, grammar_log) практика не пишет ничего: она не
+// двигает интервалы повторения, не начисляет очки и не тратит дневные нормы.
+// Единственный её результат — урон боссу.
 //
 // ── Без объяснений ошибок ───────────────────────────────────────────────────
 // Ответ возвращает только «верно или нет» и правильный вариант. Ни разбора, ни
 // правила, ни подсказки. Ошибся — увидел верный ответ, идёшь дальше; учиться
 // приходят в «Учёбу».
 //
-// ── Подделать сложность нельзя ──────────────────────────────────────────────
-// Ставка урона зависит от вида упражнения, а вид сервер ВОССТАНАВЛИВАЕТ сам:
-// у слов buildExercise детерминирован (сид «слово + день»), у грамматики вид
-// задания читается из банка по его номеру. Клиент присылает только сам ответ,
-// поэтому «а пришлю-ка я самое дорогое задание» не работает.
+// ── Задания не повторяются ──────────────────────────────────────────────────
+// Заучить ответы нельзя, и это обеспечено не случайностью, а памятью: каждое
+// выданное задание пишется в raid_tasks. Дальше подборка работает так:
+//
+//   1. слова и задания банка, которые спрашивали за последние FRESH_DAYS дней,
+//      в заход не попадают вовсе;
+//   2. когда свежих не осталось (маленькая колода), берётся то, что спрашивали
+//      РАНЬШЕ ВСЕГО, а не что попало;
+//   3. слово, которое уже спрашивали, спрашивается ДРУГИМ способом: был выбор —
+//      будет письмо, было письмо — будет сборка или аудирование. Один и тот же
+//      вопрос по одному слову дважды не задаётся, пока не кончатся способы.
+//
+// ── Способ ответа выдаёт сервер ─────────────────────────────────────────────
+// Ставка урона зависит от способа (выбор 10, ввод 25, сборка 50), поэтому способ
+// выбирается здесь и записывается в raid_tasks. Клиент присылает только номер
+// выданного задания и сам ответ: подделать «я отвечал сборкой» нельзя, как и
+// ответить на одно задание дважды — answered_at гасит повтор.
 // ─────────────────────────────────────────────────────────────────────────────
 import { db } from "@workspace/db";
-import { wordsTable, userCardStateTable } from "@workspace/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { wordsTable, userCardStateTable, raidTasksTable } from "@workspace/db";
+import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import { checkWritten } from "./answerCheck";
 import { ensureSettings, levelsUpTo, toWordLike, visibleDeckIds } from "./flashcardsCore";
-import { buildExercise, mulberry32, shuffle, type Exercise } from "./wordExercise";
+import {
+  MIN_OPTION_COUNT,
+  OPTION_COUNT,
+  buildOptions,
+  isBuildable,
+  isTypeable,
+  letterTiles,
+  mainTranslation,
+  mulberry32,
+  shuffle,
+  type WordLike,
+} from "./wordExercise";
 import { LEVEL_ORDER, type CefrLevel } from "./grammar/verbs";
-import { buildGrammarSession, checkGrammarAnswer, findTask } from "./grammar/engine";
+import { buildGrammarSession, checkGrammarAnswer } from "./grammar/engine";
 import { grammarTaskKind, wordTaskKind } from "./raidTags";
 import type { RaidDifficulty, RaidTag } from "./raid";
 
 /** Сколько заданий в одном заходе. Дольше ученик не удержит темп. */
 export const RAID_BATCH = 12;
 
+/** Столько дней задание считается «недавним» и в подборку не берётся. */
+export const FRESH_DAYS = 5;
+
+/** Глубина истории, по которой считается ротация. */
+const HISTORY_DAYS = 21;
+/** Сколько строк истории читаем: больше для ротации не нужно. */
+const HISTORY_LIMIT = 800;
+/** Старше этого журнал заданий не нужен вовсе. */
+const PRUNE_DAYS = 45;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Способы спросить слово. Произношения в бою нет: см. ниже. */
+export type WordMode = "choiceRu" | "choiceEn" | "listen" | "typeRu" | "typeEn" | "build";
+
+/**
+ * Порядок способов по возрастанию цены удара.
+ *
+ * Произношение исключено намеренно: микрофон в бою означал бы, что каждый удар
+ * зависит от распознавания речи, а оно ошибается тем чаще, чем быстрее темп.
+ */
+const WORD_MODES: readonly WordMode[] = ["choiceRu", "choiceEn", "listen", "typeRu", "typeEn", "build"];
+
 /** Одно задание боя в том виде, в котором его видит клиент. */
 export interface RaidTask {
-  /** Ключ внутри захода: нужен только клиенту как key списка. */
-  key: string;
+  /** Номер ВЫДАННОГО задания. С ним же приходит ответ. */
+  taskId: number;
   kind: "word" | "grammar";
-  /** Номер слова или номер задания банка. */
-  id: string;
   /** Что показать крупно. */
   prompt: string;
   /** Подсказка под заданием: перевод, пояснение, первая форма глагола. */
@@ -65,72 +108,112 @@ export interface RaidTask {
   /** Сколько урона даст попадание — ученик видит цену заранее. */
   damage: RaidDifficulty;
   tags: RaidTag[];
-  /** Слово нужно озвучивать (аудирование). */
+  /** Задание на слух: слово нужно озвучить, а не показать. */
   listen?: boolean;
   /** Номер слова для озвучки. */
   wordId?: number;
 }
 
-/** Вид упражнения слова → как отвечать. */
-function inputOf(exercise: Exercise): "choice" | "type" | "assemble" {
-  if (exercise.type === "build") return "assemble";
-  if (exercise.options && exercise.options.length > 0) return "choice";
-  return "type";
+type WordRow = typeof wordsTable.$inferSelect;
+
+/** Готовая постановка вопроса по слову. */
+interface WordQuestion {
+  prompt: string;
+  options?: string[];
+  tiles?: string[];
+  answerLang?: "ru" | "en";
+  listen?: boolean;
+  input: "choice" | "type" | "assemble";
 }
 
-/** Допустимые ответы упражнения слова. */
-function expectedOf(exercise: Exercise): string[] {
-  if (exercise.accept && exercise.accept.length > 0) return exercise.accept;
-  return exercise.answer ? [exercise.answer] : [];
+/** Что принимаем за верный ответ при таком способе. */
+function expectedFor(word: WordRow, mode: string): string[] {
+  if (mode === "choiceRu" || mode === "listen" || mode === "typeRu") {
+    return (word.translationsRu as string[]).map((t) => String(t).trim()).filter(Boolean);
+  }
+  return [word.english.trim()].filter(Boolean);
+}
+
+/** Какие способы к этому слову вообще применимы. */
+function modesFor(word: WordRow): WordMode[] {
+  const translation = mainTranslation(toWordLike(word));
+  const out: WordMode[] = [];
+  if (translation) {
+    out.push("choiceRu", "listen", "choiceEn");
+    if (isTypeable(translation)) out.push("typeRu");
+    if (isTypeable(word.english)) out.push("typeEn");
+    if (isBuildable(word.english)) out.push("build");
+  }
+  return out.filter((m) => WORD_MODES.includes(m));
 }
 
 /**
- * Задание из слова.
+ * Собрать вопрос по слову заданным способом.
  *
- * memoryLevel берётся из состояния ученика, а незнакомому слову ставится 2:
- * практика начинается с узнавания, но НЕ со «знакомства» — intro в бою не нужен,
- * там нечего проверять.
- *
- * Произношение из практики исключено (allowSpeak: false): микрофон в бою
- * означал бы, что каждый удар зависит от распознавания речи, а оно ошибается
- * тем чаще, чем быстрее темп.
+ * null — этим способом спросить нельзя: у выбора не набралось отвлекающих
+ * вариантов. Тогда вызывающая сторона берёт следующий способ.
  */
-function wordTask(
-  word: typeof wordsTable.$inferSelect,
-  memoryLevel: number,
-  pool: ReturnType<typeof toWordLike>[],
-  now: Date,
-): RaidTask | null {
-  const exercise = buildExercise({
-    word: toWordLike(word),
-    memoryLevel: Math.max(2, memoryLevel),
-    isNew: false,
-    pool,
-    now,
-    allowSpeak: false,
-  });
-  if (exercise.type === "intro") return null;
+function askWord(
+  word: WordRow,
+  mode: WordMode,
+  pool: WordLike[],
+  rng: () => number,
+): WordQuestion | null {
+  const self = toWordLike(word);
+  const translation = mainTranslation(self);
+  const others = pool.filter((w) => w.id !== word.id);
+  const target = { pos: word.partOfSpeech, level: word.cefrLevel, deckId: word.deckId };
 
-  const kind = wordTaskKind(exercise.type);
-  if (!kind) return null;
+  if (mode === "typeRu") {
+    return { prompt: word.english, answerLang: "ru", input: "type" };
+  }
+  if (mode === "typeEn") {
+    return { prompt: translation, answerLang: "en", input: "type" };
+  }
+  if (mode === "build") {
+    return {
+      prompt: translation,
+      tiles: letterTiles(word.english, rng),
+      answerLang: "en",
+      input: "assemble",
+    };
+  }
 
-  const task: RaidTask = {
-    key: `w${word.id}`,
-    kind: "word",
-    id: String(word.id),
-    prompt: exercise.prompt,
-    input: inputOf(exercise),
-    damage: kind.difficulty,
-    tags: kind.tags,
-    wordId: word.id,
+  if (mode === "choiceEn") {
+    const { options } = buildOptions(
+      word.english,
+      others.map((w) => ({ text: w.english, pos: w.partOfSpeech, level: w.cefrLevel, deckId: w.deckId })),
+      rng,
+      [],
+      OPTION_COUNT,
+      target,
+    );
+    if (options.length < MIN_OPTION_COUNT) return null;
+    return { prompt: translation, options, answerLang: "en", input: "choice" };
+  }
+
+  // choiceRu и listen отличаются только тем, показываем слово или озвучиваем.
+  const { options } = buildOptions(
+    translation,
+    others.map((w) => ({
+      text: mainTranslation(w),
+      pos: w.partOfSpeech,
+      level: w.cefrLevel,
+      deckId: w.deckId,
+    })),
+    rng,
+    word.translationsRu as string[], // прочие переводы этого же слова неверными не бывают
+    OPTION_COUNT,
+    target,
+  );
+  if (options.length < MIN_OPTION_COUNT) return null;
+  return {
+    prompt: word.english,
+    options,
+    answerLang: "ru",
+    input: "choice",
+    ...(mode === "listen" ? { listen: true } : {}),
   };
-  if (exercise.options) task.options = exercise.options;
-  if (exercise.letters) task.tiles = exercise.letters;
-  if (exercise.answerLang) task.answerLang = exercise.answerLang;
-  if (exercise.type === "listen") task.listen = true;
-  // Ответы клиенту не отдаём вовсе: и проверка, и ставка урона считаются на
-  // сервере, а лишний правильный ответ в теле — это подсказка в консоли.
-  return task;
 }
 
 /** Уровень ученика, как его понимают остальные разделы. */
@@ -140,16 +223,84 @@ async function levelOf(userId: number): Promise<CefrLevel> {
   return (LEVEL_ORDER.includes(raw as CefrLevel) ? raw : "A1") as CefrLevel;
 }
 
+/** Что уже спрашивали: когда последний раз и какими способами. */
+interface History {
+  /** Ключ «kind:ref» → время последнего показа. */
+  lastAt: Map<string, number>;
+  /** Ключ «kind:ref» → использованные способы. */
+  modes: Map<string, Set<string>>;
+  /** Ключи, показанные за последние FRESH_DAYS дней. */
+  fresh: Set<string>;
+}
+
+async function loadHistory(userId: number, now: Date): Promise<History> {
+  const rows = await db
+    .select({
+      kind: raidTasksTable.kind,
+      ref: raidTasksTable.ref,
+      mode: raidTasksTable.mode,
+      issuedAt: raidTasksTable.issuedAt,
+    })
+    .from(raidTasksTable)
+    .where(and(
+      eq(raidTasksTable.userId, userId),
+      gte(raidTasksTable.issuedAt, new Date(now.getTime() - HISTORY_DAYS * DAY_MS)),
+    ))
+    .orderBy(sql`${raidTasksTable.issuedAt} desc`)
+    .limit(HISTORY_LIMIT);
+
+  const lastAt = new Map<string, number>();
+  const modes = new Map<string, Set<string>>();
+  const fresh = new Set<string>();
+  const freshEdge = now.getTime() - FRESH_DAYS * DAY_MS;
+
+  for (const row of rows) {
+    const key = `${row.kind}:${row.ref}`;
+    const at = row.issuedAt.getTime();
+    if (!lastAt.has(key) || at > lastAt.get(key)!) lastAt.set(key, at);
+    const set = modes.get(key) ?? new Set<string>();
+    set.add(row.mode);
+    modes.set(key, set);
+    if (at >= freshEdge) fresh.add(key);
+  }
+
+  return { lastAt, modes, fresh };
+}
+
+/** Журнал не нужен вечно: ротации хватает истории за три недели. */
+async function pruneHistory(userId: number, now: Date): Promise<void> {
+  await db
+    .delete(raidTasksTable)
+    .where(and(
+      eq(raidTasksTable.userId, userId),
+      lt(raidTasksTable.issuedAt, new Date(now.getTime() - PRUNE_DAYS * DAY_MS)),
+    ));
+}
+
+/** Заготовка задания до записи в журнал. */
+interface Draft {
+  kind: "word" | "grammar";
+  ref: string;
+  mode: string;
+  difficulty: RaidDifficulty;
+  tags: RaidTag[];
+  question: WordQuestion & { hint?: string };
+  wordId?: number;
+}
+
 /**
  * Заход практики: половина заданий на слова, половина на грамматику.
  *
  * Смешиваем намеренно: у босса недели свои слабости, и заход обязан давать
- * возможность по ним попасть. Подборка из одного раздела означала бы, что
- * против Дракона бесполезна половина недель.
+ * возможность по ним попасть. Подборка из одного раздела означала бы, что против
+ * Дракона бесполезна половина недель.
  */
 export async function buildRaidBatch(userId: number, now: Date = new Date()): Promise<RaidTask[]> {
   const level = await levelOf(userId);
-  const rng = mulberry32(now.getTime() % 2147483647);
+  // Сид от текущего времени: два захода подряд перемешиваются по-разному, а
+  // порядок внутри одного захода остаётся воспроизводимым.
+  const rng = mulberry32((now.getTime() % 2147483647) || 1);
+  const history = await loadHistory(userId, now);
 
   // ── Слова ────────────────────────────────────────────────────────────────
   const deckIds = await visibleDeckIds(userId);
@@ -161,71 +312,167 @@ export async function buildRaidBatch(userId: number, now: Date = new Date()): Pr
   const pool = fitting.map(toWordLike);
 
   const states = await db
-    .select({ wordId: userCardStateTable.wordId, memoryLevel: userCardStateTable.memoryLevel })
+    .select({ wordId: userCardStateTable.wordId })
     .from(userCardStateTable)
     .where(eq(userCardStateTable.userId, userId));
-  const levelByWord = new Map(states.map((s) => [s.wordId, s.memoryLevel]));
+  const known = new Set(states.map((s) => s.wordId));
 
-  // Знакомые слова вперёд: практика это применение того, что уже проходили.
-  const known = shuffle(fitting.filter((w) => levelByWord.has(w.id)), rng);
-  const rest = shuffle(fitting.filter((w) => !levelByWord.has(w.id)), rng);
+  // Порядок отбора: сначала то, что в рейде ещё не спрашивали (знакомое ученику
+  // вперёд), потом то, что спрашивали раньше всего. Свежесть важнее
+  // знакомости — иначе маленькая колода крутила бы одни и те же слова.
+  const untouched = fitting.filter((w) => !history.lastAt.has(`word:${w.id}`));
+  const touched = fitting
+    .filter((w) => history.lastAt.has(`word:${w.id}`))
+    .sort((a, b) => (history.lastAt.get(`word:${a.id}`)! - history.lastAt.get(`word:${b.id}`)!));
 
-  const wordTasks: RaidTask[] = [];
+  const wordOrder = [
+    ...shuffle(untouched.filter((w) => known.has(w.id)), rng),
+    ...shuffle(untouched.filter((w) => !known.has(w.id)), rng),
+    // Повторно взятые идут по возрастанию давности: самое забытое первым, и
+    // только в самом конце — то, что спрашивали на этой неделе.
+    ...touched.filter((w) => !history.fresh.has(`word:${w.id}`)),
+    ...touched.filter((w) => history.fresh.has(`word:${w.id}`)),
+  ];
+
   const half = Math.ceil(RAID_BATCH / 2);
-  for (const word of [...known, ...rest]) {
-    if (wordTasks.length >= half) break;
-    const task = wordTask(word, levelByWord.get(word.id) ?? 2, pool, now);
-    if (task) wordTasks.push(task);
-  }
+  const drafts: Draft[] = [];
 
-  // ── Грамматика ───────────────────────────────────────────────────────────
-  // Режим выбираем случайно: своего прогресса у практики нет, а разные режимы
-  // дают разные ставки урона (выбор, письмо, сборка).
-  const modes = ["tense", "verbs", "build", "forms"] as const;
-  const grammarTasks: RaidTask[] = [];
-  const need = RAID_BATCH - wordTasks.length;
+  for (const word of wordOrder) {
+    if (drafts.length >= half) break;
+    const key = `word:${word.id}`;
+    const used = history.modes.get(key) ?? new Set<string>();
+    // Способы, которыми это слово ещё НЕ спрашивали, — вперёд: повтор слова
+    // должен выглядеть новым вопросом, а не тем же экраном.
+    const candidates = modesFor(word);
+    if (candidates.length === 0) continue;
+    const ordered = [
+      ...shuffle(candidates.filter((m) => !used.has(m)), rng),
+      ...shuffle(candidates.filter((m) => used.has(m)), rng),
+    ];
 
-  for (let attempt = 0; attempt < modes.length && grammarTasks.length < need; attempt++) {
-    const mode = modes[Math.floor(rng() * modes.length)] ?? "tense";
-    const session = buildGrammarSession({
-      mode,
-      level,
-      // Курсор ротации здесь не нужен: практика не ведёт учёт пройденного, а
-      // случайный заход и так каждый раз даёт другую порцию банка.
-      round: Math.floor(rng() * 40),
-      consumed: 0,
-      now,
-    }) as { cards?: Array<Record<string, unknown>> };
-
-    for (const card of session.cards ?? []) {
-      if (grammarTasks.length >= need) break;
-      const id = String(card["id"] ?? "");
-      if (!id || grammarTasks.some((t) => t.id === id)) continue;
-      const input = String(card["input"] ?? "choice");
-      const kind = grammarTaskKind(String(card["mode"] ?? mode), input);
-      const task: RaidTask = {
-        key: `g${id}`,
-        kind: "grammar",
-        id,
-        prompt: String(card["text"] ?? ""),
-        input: input === "assemble" ? "assemble" : input === "type" ? "type" : "choice",
-        damage: kind.difficulty,
+    for (const mode of ordered) {
+      const question = askWord(word, mode, pool, rng);
+      if (!question) continue;
+      const kind = wordTaskKind(mode);
+      if (!kind) continue;
+      drafts.push({
+        kind: "word",
+        ref: String(word.id),
+        mode,
+        difficulty: kind.difficulty,
         tags: kind.tags,
-        answerLang: "en",
-      };
-      const ru = card["ru"];
-      const base = card["base"];
-      if (typeof ru === "string" && ru) task.hint = base ? `${ru} · ${String(base)}` : ru;
-      else if (typeof base === "string" && base) task.hint = base;
-      const options = card["options"];
-      if (Array.isArray(options) && options.length > 0) task.options = options.map(String);
-      const tiles = card["tiles"];
-      if (Array.isArray(tiles) && tiles.length > 0) task.tiles = tiles.map(String);
-      grammarTasks.push(task);
+        question,
+        wordId: word.id,
+      });
+      break;
     }
   }
 
-  return shuffle([...wordTasks, ...grammarTasks], rng).slice(0, RAID_BATCH);
+  // ── Грамматика ───────────────────────────────────────────────────────────
+  // Режимы перебираем все: у каждого своя ставка урона и свои теги, а заход
+  // должен доставать до слабостей любого босса.
+  const modes = ["tense", "verbs", "build", "forms"] as const;
+  const need = RAID_BATCH - drafts.length;
+  const seenRefs = new Set<string>();
+  const grammarFresh: Draft[] = [];
+  const grammarOld: Draft[] = [];
+
+  for (const mode of shuffle([...modes], rng)) {
+    if (grammarFresh.length >= need) break;
+    // Заход банка случайный: у практики своего курсора ротации нет, а повторы
+    // отсекает журнал.
+    for (let attempt = 0; attempt < 3 && grammarFresh.length < need; attempt++) {
+      const session = buildGrammarSession({
+        mode,
+        level,
+        round: Math.floor(rng() * 40),
+        consumed: 0,
+        now,
+      }) as { cards?: Array<Record<string, unknown>> };
+
+      for (const card of session.cards ?? []) {
+        const ref = String(card["id"] ?? "");
+        if (!ref || seenRefs.has(ref)) continue;
+        seenRefs.add(ref);
+
+        const input = String(card["input"] ?? "choice");
+        const normalized = input === "assemble" ? "assemble" : input === "type" ? "type" : "choice";
+        const kind = grammarTaskKind(String(card["mode"] ?? mode), input);
+        const options = card["options"];
+        const tiles = card["tiles"];
+        const ru = card["ru"];
+        const base = card["base"];
+        const hint = typeof ru === "string" && ru
+          ? (typeof base === "string" && base ? `${ru} · ${base}` : ru)
+          : (typeof base === "string" && base ? base : undefined);
+
+        const draft: Draft = {
+          kind: "grammar",
+          ref,
+          mode: normalized,
+          difficulty: kind.difficulty,
+          tags: kind.tags,
+          question: {
+            prompt: String(card["text"] ?? ""),
+            input: normalized,
+            answerLang: "en",
+            ...(Array.isArray(options) && options.length > 0 ? { options: options.map(String) } : {}),
+            ...(Array.isArray(tiles) && tiles.length > 0 ? { tiles: tiles.map(String) } : {}),
+            ...(hint ? { hint } : {}),
+          },
+        };
+
+        if (history.fresh.has(`grammar:${ref}`)) grammarOld.push(draft);
+        else grammarFresh.push(draft);
+        if (grammarFresh.length >= need) break;
+      }
+    }
+  }
+
+  // Сначала то, что давно не спрашивали, и только если не хватило — недавнее.
+  grammarOld.sort((a, b) =>
+    (history.lastAt.get(`grammar:${a.ref}`) ?? 0) - (history.lastAt.get(`grammar:${b.ref}`) ?? 0));
+  drafts.push(...grammarFresh.slice(0, need));
+  if (drafts.length < RAID_BATCH) drafts.push(...grammarOld.slice(0, RAID_BATCH - drafts.length));
+
+  if (drafts.length === 0) return [];
+
+  const mixed = shuffle(drafts, rng).slice(0, RAID_BATCH);
+
+  // Записываем ВЫДАННОЕ: по этой записи считается ротация, проверяется ответ и
+  // гасится повторная отправка.
+  const saved = await db
+    .insert(raidTasksTable)
+    .values(mixed.map((d) => ({
+      userId,
+      kind: d.kind,
+      ref: d.ref,
+      mode: d.mode,
+      difficulty: d.difficulty,
+      tags: d.tags as string[],
+      issuedAt: now,
+    })))
+    .returning({ id: raidTasksTable.id });
+
+  void pruneHistory(userId, now).catch(() => {});
+
+  return mixed.map((d, i) => {
+    const task: RaidTask = {
+      taskId: Number(saved[i]?.id ?? 0),
+      kind: d.kind,
+      prompt: d.question.prompt,
+      input: d.question.input,
+      damage: d.difficulty,
+      tags: d.tags,
+    };
+    if (d.question.hint) task.hint = d.question.hint;
+    if (d.question.options) task.options = d.question.options;
+    if (d.question.tiles) task.tiles = d.question.tiles;
+    if (d.question.answerLang) task.answerLang = d.question.answerLang;
+    if (d.question.listen) task.listen = true;
+    if (d.wordId != null) task.wordId = d.wordId;
+    return task;
+  }).filter((t) => t.taskId > 0);
 }
 
 export interface RaidVerdict {
@@ -239,79 +486,66 @@ export interface RaidVerdict {
 }
 
 /**
- * Проверить ответ практики.
+ * Проверить ответ практики по номеру ВЫДАННОГО задания.
  *
- * null — задание не найдено. Эталон всегда берётся из базы или банка, из тела
- * запроса — только сам ответ ученика.
+ * null — задания нет, оно чужое или на него уже отвечали. Эталон берётся из базы
+ * или из банка, из тела запроса — только сам ответ ученика.
  */
 export async function checkRaidAnswer(
   userId: number,
-  kind: string,
-  id: string,
+  taskId: number,
   given: string,
   now: Date = new Date(),
 ): Promise<RaidVerdict | null> {
-  if (kind === "grammar") {
-    const verdict = checkGrammarAnswer(id, given);
-    const found = findTask(id);
-    if (!verdict || !found) return null;
-    // Сложность считаем по виду задания из банка и по тому, есть ли у него
-    // варианты: сборка дороже письма, письмо дороже выбора.
-    const input = Array.isArray((found as { task?: { options?: unknown } }).task?.options)
-      ? "choice"
-      : String((found as { kind?: unknown }).kind ?? "") === "build"
-        ? "assemble"
-        : "type";
-    const taskKind = grammarTaskKind(String((found as { kind?: unknown }).kind ?? ""), input);
+  // Отметку «отвечено» ставим сразу и условием: две одновременные отправки
+  // одного задания дадут урон только один раз.
+  const [row] = await db
+    .update(raidTasksTable)
+    .set({ answeredAt: now })
+    .where(and(
+      eq(raidTasksTable.id, taskId),
+      eq(raidTasksTable.userId, userId),
+      isNull(raidTasksTable.answeredAt),
+    ))
+    .returning();
+  if (!row) return null;
+
+  const difficulty = (row.difficulty as RaidDifficulty) ?? "easy";
+  const tags = (row.tags ?? []) as RaidTag[];
+
+  if (row.kind === "grammar") {
+    const verdict = checkGrammarAnswer(row.ref, given);
+    if (!verdict) return null;
+    await db
+      .update(raidTasksTable)
+      .set({ correct: verdict.correct })
+      .where(eq(raidTasksTable.id, row.id));
     return {
       correct: verdict.correct,
       typo: !!verdict.typo,
       expected: verdict.expected ?? [],
-      difficulty: taskKind.difficulty,
-      tags: taskKind.tags,
+      difficulty,
+      tags,
     };
   }
 
-  const wordId = Number(id);
+  const wordId = Number(row.ref);
   if (!Number.isInteger(wordId) || wordId <= 0) return null;
-
   const [word] = await db.select().from(wordsTable).where(eq(wordsTable.id, wordId));
   if (!word) return null;
 
-  const [state] = await db
-    .select({ memoryLevel: userCardStateTable.memoryLevel })
-    .from(userCardStateTable)
-    .where(and(eq(userCardStateTable.userId, userId), eq(userCardStateTable.wordId, wordId)));
-
-  // Пул дистракторов на проверке не нужен, но buildExercise его требует, и от
-  // него зависит ВЫБОР типа упражнения только через сам факт нехватки вариантов.
-  // Берём слова той же колоды: этого достаточно, чтобы восстановить тот же тип,
-  // что был выдан в заходе.
-  const deckWords = await db.select().from(wordsTable).where(eq(wordsTable.deckId, word.deckId));
-  const exercise = buildExercise({
-    word: toWordLike(word),
-    memoryLevel: Math.max(2, state?.memoryLevel ?? 2),
-    isNew: false,
-    pool: deckWords.map(toWordLike),
-    now,
-    allowSpeak: false,
-  });
-
-  const expected = expectedOf(exercise);
-  const taskKind = wordTaskKind(exercise.type);
-  if (!taskKind) return null;
-
+  const expected = expectedFor(word, row.mode);
   // Карточка без перевода — не повод засчитывать ошибку.
   if (expected.length === 0) {
-    return { correct: true, typo: false, expected: [], difficulty: taskKind.difficulty, tags: taskKind.tags };
+    await db.update(raidTasksTable).set({ correct: true }).where(eq(raidTasksTable.id, row.id));
+    return { correct: true, typo: false, expected: [], difficulty, tags };
   }
 
   const verdict = checkWritten(given, expected);
-  return {
-    correct: verdict.correct,
-    typo: verdict.typo,
-    expected,
-    difficulty: taskKind.difficulty,
-    tags: taskKind.tags,
-  };
+  await db
+    .update(raidTasksTable)
+    .set({ correct: verdict.correct })
+    .where(eq(raidTasksTable.id, row.id));
+
+  return { correct: verdict.correct, typo: verdict.typo, expected, difficulty, tags };
 }

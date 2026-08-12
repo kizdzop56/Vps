@@ -4,7 +4,7 @@
 //   GET  /raid/current   — босс, шкала, мой вклад, энергия, монеты, лиги
 //   GET  /raid/battle    — заход практики: задания, по которым бьют босса
 //   POST /raid/answer    — ответ практики: проверка и урон
-//   POST /raid/buy       — баф за монеты: power | aoe | shield | stamina
+//   POST /raid/buy       — атака или баф за монеты: power | aoe | shield | stamina
 //   POST /raid/quest     — награда за дневное задание
 //   POST /raid/chest     — сундук за итог закончившегося рейда
 //   POST /raid/claim     — забрать вехи вклада (экран вех сейчас скрыт)
@@ -37,7 +37,8 @@ router.get("/raid/current", requireAuth, async (req, res) => {
 });
 
 // ── GET /raid/battle ────────────────────────────────────────────────────────
-// Заход практики. Заданий на ответы не содержит: проверка целиком серверная.
+// Заход практики. Правильных ответов в задании нет: проверка целиком серверная,
+// а способ ответа (и вместе с ним ставка урона) записан на сервере при выдаче.
 router.get("/raid/battle", requireAuth, async (req, res) => {
   const user = getUser(req);
   const tasks = await buildRaidBatch(user.userId, new Date());
@@ -51,20 +52,20 @@ router.get("/raid/battle", requireAuth, async (req, res) => {
 // клиент рисует вылетающую цифру урона.
 router.post("/raid/answer", requireAuth, async (req, res) => {
   const user = getUser(req);
-  const body = req.body as { kind?: unknown; id?: unknown; given?: unknown };
-  const kind = body.kind === "grammar" ? "grammar" : "word";
-  const id = typeof body.id === "string" ? body.id.trim() : String(body.id ?? "");
+  const body = req.body as { taskId?: unknown; given?: unknown };
+  const taskId = Number(body.taskId);
   const given = typeof body.given === "string" ? body.given.slice(0, MAX_ANSWER_LEN) : "";
 
-  if (!id) {
-    res.status(400).json({ error: "id required" });
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    res.status(400).json({ error: "taskId required" });
     return;
   }
 
   const now = new Date();
-  const verdict = await checkRaidAnswer(user.userId, kind, id, given, now);
+  const verdict = await checkRaidAnswer(user.userId, taskId, given, now);
   if (!verdict) {
-    res.status(404).json({ error: "Задание не найдено" });
+    // Либо задание чужое, либо на него уже отвечали: второй раз урон не идёт.
+    res.status(400).json({ error: "Это задание уже закрыто" });
     return;
   }
 

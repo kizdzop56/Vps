@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Рейд-босс: недельное событие на всё сообщество.
 //
-// Четыре таблицы, и у каждой своя причина существовать отдельно:
+// Пять таблиц, и у каждой своя причина существовать отдельно:
 //
 //   raid_events       — сам рейд недели: кто босс, сколько у него HP, сколько
 //                       уже снято, чем кончилось. Одна строка на неделю, ключ
@@ -11,6 +11,7 @@
 //                       экрана, а журнал растёт весь год.
 //   raid_hits         — журнал ударов. Нужен для дневного задания («нанеси 100
 //                       урона»), ленты последних ударов и разбора аномалий.
+//   raid_tasks        — журнал ВЫДАННЫХ заданий боя (см. ниже).
 //   raid_state        — боевое состояние ученика МЕЖДУ рейдами: энергия, комбо,
 //                       бафы, монеты, скин оружия. Живёт вне события, потому что
 //                       комбо и энергия не обнуляются в полночь воскресенья
@@ -24,7 +25,7 @@
 // Мана из механики убрана. Две валюты (мана на спецатаки, монеты на всё
 // остальное) требовали от ученика держать в голове два счётчика и два курса, а
 // делали одно и то же — покупали усиление удара. Осталось одно: монеты капают за
-// попадания, дневное задание и сундуки, тратятся на бафы и энергию.
+// попадания, дневное задание и сундуки, тратятся на атаки и энергию.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
   pgTable, serial, integer, text, boolean, timestamp, date, jsonb, index, unique,
@@ -95,6 +96,52 @@ export const raidHitsTable = pgTable("raid_hits", {
   index("raid_hits_event_time_idx").on(t.eventId, t.at),
 ]);
 
+/**
+ * Журнал выданных заданий боя.
+ *
+ * ── Зачем ──────────────────────────────────────────────────────────────────
+// Две задачи разом, и обе не решаются без записи на сервере.
+ *
+ * 1. ПОДБОРКА НЕ ПОВТОРЯЕТСЯ. Заучивать ответы нельзя: слово, которое уже
+ *    спрашивали, следующий заход не берёт, а если берёт — берёт ДРУГИМ способом
+ *    (не выбор, а письмо, не письмо, а сборка). Без журнала «уже спрашивали»
+ *    жило бы в состоянии экрана и обнулялось при выходе из боя.
+ *
+ * 2. СЛОЖНОСТЬ НЕ ПОДДЕЛАТЬ. Ставка урона зависит от способа ответа (выбор 10,
+ *    ввод 25, сборка 50). Раз способ выдал сервер и записал сюда, клиент не
+ *    может прислать «я отвечал сборкой» на задание с вариантами.
+ *
+ * Здесь же гасится повторная отправка: answered_at заполняется на первом
+ * ответе, второй по тому же заданию урона не даёт.
+ *
+ * Строки живут неделями и чистятся по времени (см. pruneRaidTasks): вечно они
+ * не нужны, а для ротации хватает истории за две недели.
+ */
+export const raidTasksTable = pgTable("raid_tasks", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  /** word | grammar. */
+  kind: text("kind").notNull(),
+  /** Номер слова или номер задания банка грамматики. */
+  ref: text("ref").notNull(),
+  /**
+   * Способ, которым спросили: choiceRu | choiceEn | listen | typeRu | typeEn |
+   * build у слов; choice | type | assemble у грамматики. От него зависят и
+   * эталон ответа, и ставка урона.
+   */
+  mode: text("mode").notNull(),
+  /** easy | medium | hard — ставка урона, посчитанная при выдаче. */
+  difficulty: text("difficulty").notNull(),
+  /** Теги задания: по ним считается попадание по слабости босса. */
+  tags: jsonb("tags").$type<string[]>(),
+  issuedAt: timestamp("issued_at").notNull().defaultNow(),
+  answeredAt: timestamp("answered_at"),
+  correct: boolean("correct"),
+}, (t) => [
+  index("raid_tasks_user_time_idx").on(t.userId, t.issuedAt),
+  index("raid_tasks_user_ref_idx").on(t.userId, t.ref),
+]);
+
 /** Боевое состояние ученика. Одна строка на человека, живёт между рейдами. */
 export const raidStateTable = pgTable("raid_state", {
   userId: integer("user_id").primaryKey().references(() => usersTable.id, { onDelete: "cascade" }),
@@ -142,4 +189,5 @@ export const raidStateTable = pgTable("raid_state", {
 export type RaidEvent = typeof raidEventsTable.$inferSelect;
 export type RaidParticipant = typeof raidParticipantsTable.$inferSelect;
 export type RaidHit = typeof raidHitsTable.$inferSelect;
+export type RaidTaskRow = typeof raidTasksTable.$inferSelect;
 export type RaidState = typeof raidStateTable.$inferSelect;
