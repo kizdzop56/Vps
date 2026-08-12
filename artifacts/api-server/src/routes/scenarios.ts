@@ -3,11 +3,13 @@
 //
 // Учитель:
 //   GET    /scenarios                     — мои ситуации со счётчиками
+//   GET    /scenarios/students            — мои ученики (кому можно выдать)
 //   POST   /scenarios                     — создать
 //   PATCH  /scenarios/:id                 — правка и архив
-//   POST   /scenarios/:id/assign          — выдать ученикам
+//   POST   /scenarios/:id/assign          — выдать (списком или всем сразу)
 //   DELETE /scenarios/:id/assign/:student — снять выдачу
 //   GET    /scenarios/:id                 — ситуация, кому выдана, попытки
+//   GET    /scenario-attempts             — все разборы, свежие сверху
 //
 // Ученик:
 //   GET    /scenarios/mine                — выданные мне ситуации
@@ -19,9 +21,9 @@
 //   GET    /scenario-attempts/:id         — весь диалог с ошибками
 //
 // ── ПОРЯДОК МАРШРУТОВ ЗНАЧИМ ────────────────────────────────────────────────
-// /scenarios/mine объявлен ВЫШЕ /scenarios/:id. Express берёт первый
-// подошедший, и при обратном порядке «mine» уехало бы в :id как номер, дав 404
-// на самом нужном ученику запросе.
+// /scenarios/mine и /scenarios/students объявлены ВЫШЕ /scenarios/:id. Express
+// берёт первый подошедший, и при обратном порядке «mine» уехало бы в :id как
+// номер, дав 404 на самом нужном ученику запросе.
 //
 // ── Права ───────────────────────────────────────────────────────────────────
 // Создавать и смотреть разборы может учитель (и админ). Выдать ситуацию можно
@@ -30,20 +32,21 @@
 //
 // ── Очки ────────────────────────────────────────────────────────────────────
 // За закрытую ситуацию ученик получает SCENARIO_POINTS один раз на попытку. В
-// дневной потолок разговоров это НЕ входит: там своя механика и свои медали, а
-// задание от учителя не должно ни съедать её потолок, ни закрывать медали за
-// свободные разговоры.
+// дневной потолок свободных разговоров это НЕ входит: там своя механика и свои
+// медали, а задание от учителя не должно ни съедать её потолок, ни закрывать
+// медали за болтовню со Снежей.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   usersTable,
+  teacherStudentsTable,
   dialogScenariosTable,
   dialogAssignmentsTable,
   dialogAttemptsTable,
   dialogTurnsTable,
 } from "@workspace/db";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import { canViewStudent } from "../lib/flashcardsCore";
 import { chat, hasAnyAi, transcribe } from "../lib/ai";
@@ -72,7 +75,7 @@ const MAX_CRITERIA = 10;
 const MAX_REPLY_LEN = 500;
 /** Сколько реплик отдаём модели: дальше вход дорожает, а смысла не добавляет. */
 const HISTORY_LIMIT = 24;
-/** Записи крупнее это уже файл, а не реплика. */
+/** Запись крупнее — это уже файл, а не реплика. */
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 const MIN_AUDIO_BYTES = 1200;
 
@@ -117,6 +120,18 @@ function readCriteria(value: unknown): string[] {
     .slice(0, MAX_CRITERIA);
 }
 
+/** Ученики учителя: связь принята. Из них выбирается, кому выдать ситуацию. */
+async function myStudents(teacherId: number): Promise<number[]> {
+  const rows = await db
+    .select({ studentId: teacherStudentsTable.studentId })
+    .from(teacherStudentsTable)
+    .where(and(
+      eq(teacherStudentsTable.teacherId, teacherId),
+      eq(teacherStudentsTable.status, "accepted"),
+    ));
+  return rows.map((r) => r.studentId);
+}
+
 // ── Учитель: список своих ситуаций ──────────────────────────────────────────
 router.get("/scenarios", requireAuth, async (req, res) => {
   const user = getUser(req);
@@ -141,7 +156,7 @@ router.get("/scenarios", requireAuth, async (req, res) => {
       .where(inArray(dialogAssignmentsTable.scenarioId, ids))
       .groupBy(dialogAssignmentsTable.scenarioId);
 
-    // Непросмотренные разборы: закрытые попытки, которые учитель ещё не открывал.
+    // Свежие разборы: закрытые попытки, которые учитель ещё не открывал.
     const attempts = await db
       .select({
         scenarioId: dialogAttemptsTable.scenarioId,
@@ -172,9 +187,38 @@ router.get("/scenarios", requireAuth, async (req, res) => {
   })));
 });
 
-// ── Ученик: выданные мне ситуации ───────────────────────────────────────────
+// ── Учитель: кому можно выдать ──────────────────────────────────────────────
 //
 // ВЫШЕ /scenarios/:id намеренно — см. шапку файла.
+router.get("/scenarios/students", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  if (!isTeacher(user.role)) {
+    res.status(403).json({ error: "Только для учителя" });
+    return;
+  }
+
+  const ids = await myStudents(user.userId);
+  if (ids.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: usersTable.id,
+      name: usersTable.name,
+      avatarEmoji: usersTable.avatarEmoji,
+      avatarColor: usersTable.avatarColor,
+      knowledgeLevel: usersTable.knowledgeLevel,
+    })
+    .from(usersTable)
+    .where(inArray(usersTable.id, ids))
+    .orderBy(asc(usersTable.name));
+
+  res.json(rows);
+});
+
+// ── Ученик: выданные мне ситуации ───────────────────────────────────────────
 router.get("/scenarios/mine", requireAuth, async (req, res) => {
   const user = getUser(req);
 
@@ -287,13 +331,16 @@ router.post("/scenarios", requireAuth, async (req, res) => {
     })
     .returning();
 
-  // Сразу выдаём ученикам, если их прислали вместе с ситуацией: обычный порядок
-  // работы учителя — «создал и отправил», два запроса ради этого не нужны.
-  const studentIds = Array.isArray(body["studentIds"])
+  // Сразу выдаём, если прислали кому: обычный порядок работы учителя —
+  // «создал и отправил», два запроса ради этого не нужны.
+  const all = body["assignAll"] === true;
+  const listed = Array.isArray(body["studentIds"])
     ? (body["studentIds"] as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0)
     : [];
+  const targets = all ? await myStudents(user.userId) : listed;
+
   const assigned: number[] = [];
-  for (const studentId of studentIds.slice(0, 100)) {
+  for (const studentId of targets.slice(0, 200)) {
     if (!(await canViewStudent(user, studentId))) continue;
     await db
       .insert(dialogAssignmentsTable)
@@ -319,8 +366,7 @@ router.get("/scenarios/:id", requireAuth, async (req, res) => {
     res.status(404).json({ error: "Ситуация не найдена" });
     return;
   }
-  const mine = scenario.teacherId === user.userId || user.role === "admin";
-  if (!mine) {
+  if (scenario.teacherId !== user.userId && user.role !== "admin") {
     res.status(403).json({ error: "Это чужая ситуация" });
     return;
   }
@@ -362,6 +408,7 @@ router.get("/scenarios/:id", requireAuth, async (req, res) => {
       startedAt: a.startedAt.toISOString(),
       finishedAt: a.finishedAt?.toISOString() ?? null,
       seenAt: a.seenAt?.toISOString() ?? null,
+      fresh: a.status !== "active" && !a.seenAt,
     })),
   });
 });
@@ -408,6 +455,9 @@ router.patch("/scenarios/:id", requireAuth, async (req, res) => {
 });
 
 // ── Учитель: выдать и снять ─────────────────────────────────────────────────
+//
+// assignAll — «всем моим ученикам»: на телефоне это главный сценарий, а список
+// с галочками нужен, когда ситуация адресная.
 router.post("/scenarios/:id/assign", requireAuth, async (req, res) => {
   const user = getUser(req);
   const id = Number(req.params["id"]);
@@ -421,9 +471,12 @@ router.post("/scenarios/:id/assign", requireAuth, async (req, res) => {
     return;
   }
 
-  const body = req.body as { studentIds?: unknown; studentId?: unknown };
-  const raw = Array.isArray(body.studentIds) ? body.studentIds : [body.studentId];
-  const ids = raw.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 100);
+  const body = req.body as { studentIds?: unknown; studentId?: unknown; assignAll?: unknown };
+  const listed = Array.isArray(body.studentIds) ? body.studentIds : [body.studentId];
+  const ids = body.assignAll === true
+    ? await myStudents(user.userId)
+    : listed.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+
   if (ids.length === 0) {
     res.status(400).json({ error: "Не выбран ни один ученик" });
     return;
@@ -431,7 +484,7 @@ router.post("/scenarios/:id/assign", requireAuth, async (req, res) => {
 
   const assigned: number[] = [];
   const rejected: number[] = [];
-  for (const studentId of ids) {
+  for (const studentId of ids.slice(0, 200)) {
     // Выдать можно только своему ученику: та же проверка, что у статистики.
     if (!(await canViewStudent(user, studentId))) {
       rejected.push(studentId);
@@ -565,6 +618,7 @@ async function loadAttempt(
   attemptId: number,
   user: { userId: number; role: string },
 ): Promise<{ attempt: typeof dialogAttemptsTable.$inferSelect; scenario: ScenarioRow } | null> {
+  if (!Number.isInteger(attemptId)) return null;
   const [row] = await db
     .select({ attempt: dialogAttemptsTable, scenario: dialogScenariosTable })
     .from(dialogAttemptsTable)
@@ -578,10 +632,51 @@ async function loadAttempt(
   return row;
 }
 
+// ── Учитель: все разборы одним списком ──────────────────────────────────────
+//
+// ВЫШЕ /scenario-attempts/:id: иначе «attempts» без номера ушло бы в :id.
+router.get("/scenario-attempts", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  if (!isTeacher(user.role)) {
+    res.status(403).json({ error: "Только для учителя" });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: dialogAttemptsTable.id,
+      scenarioId: dialogAttemptsTable.scenarioId,
+      scenarioTitle: dialogScenariosTable.title,
+      studentId: dialogAttemptsTable.studentId,
+      studentName: usersTable.name,
+      status: dialogAttemptsTable.status,
+      turns: dialogAttemptsTable.turns,
+      mistakes: dialogAttemptsTable.mistakes,
+      goalReached: dialogAttemptsTable.goalReached,
+      finishedAt: dialogAttemptsTable.finishedAt,
+      startedAt: dialogAttemptsTable.startedAt,
+      seenAt: dialogAttemptsTable.seenAt,
+    })
+    .from(dialogAttemptsTable)
+    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAttemptsTable.scenarioId))
+    .leftJoin(usersTable, eq(usersTable.id, dialogAttemptsTable.studentId))
+    .where(eq(dialogScenariosTable.teacherId, user.userId))
+    .orderBy(desc(dialogAttemptsTable.startedAt))
+    .limit(50);
+
+  res.json(rows.map((r) => ({
+    ...r,
+    startedAt: r.startedAt.toISOString(),
+    finishedAt: r.finishedAt?.toISOString() ?? null,
+    seenAt: r.seenAt?.toISOString() ?? null,
+    fresh: r.status !== "active" && !r.seenAt,
+  })));
+});
+
 // ── Весь диалог с ошибками ──────────────────────────────────────────────────
 //
 // Это и есть отчёт учителю. Он же служит ученику экраном итога: показывать одну
-// беседу двумя разными маршрутами незачем — данные одни и те же.
+// беседу двумя маршрутами незачем — данные одни и те же.
 router.get("/scenario-attempts/:id", requireAuth, async (req, res) => {
   const user = getUser(req);
   const id = Number(req.params["id"]);
@@ -592,7 +687,12 @@ router.get("/scenario-attempts/:id", requireAuth, async (req, res) => {
   }
 
   const [student] = await db
-    .select({ id: usersTable.id, name: usersTable.name, avatarEmoji: usersTable.avatarEmoji, avatarColor: usersTable.avatarColor })
+    .select({
+      id: usersTable.id,
+      name: usersTable.name,
+      avatarEmoji: usersTable.avatarEmoji,
+      avatarColor: usersTable.avatarColor,
+    })
     .from(usersTable)
     .where(eq(usersTable.id, found.attempt.studentId));
 
@@ -646,7 +746,11 @@ router.get("/scenario-attempts/:id", requireAuth, async (req, res) => {
  * Не получилось — не беда: отчёт остаётся без итоговой строки, сам диалог с
  * ошибками важнее и он уже в базе.
  */
-async function writeSummary(attemptId: number, scenario: ScenarioRow, log: unknown): Promise<string | null> {
+async function writeSummary(
+  attemptId: number,
+  scenario: ScenarioRow,
+  log: Parameters<typeof chat>[0]["log"],
+): Promise<string | null> {
   try {
     if (!hasAnyAi()) return null;
     const turns = await db
@@ -664,7 +768,7 @@ async function writeSummary(attemptId: number, scenario: ScenarioRow, log: unkno
       system: summarySystemPrompt(),
       history: [],
       message: `Ситуация: ${scenario.situation}\nРоль собеседника: ${scenario.role}\nЦель ученика: ${scenario.goal ?? "не задана"}\n\nДиалог:\n${script}`,
-      log: log as never,
+      log,
     });
     if (!outcome.ok) return null;
     return outcome.text.trim().slice(0, 2000);
@@ -678,19 +782,19 @@ async function closeAttempt(
   attempt: typeof dialogAttemptsTable.$inferSelect,
   scenario: ScenarioRow,
   status: "done" | "stopped",
-  log: unknown,
+  log: Parameters<typeof chat>[0]["log"],
 ): Promise<string | null> {
   const summary = await writeSummary(attempt.id, scenario, log);
 
-  await db
+  const closed = await db
     .update(dialogAttemptsTable)
     .set({ status, finishedAt: new Date(), summary })
-    // Условие по статусу: две одновременные попытки закрыть дадут одну запись.
-    .where(and(eq(dialogAttemptsTable.id, attempt.id), eq(dialogAttemptsTable.status, "active")));
+    // Условие по статусу: две одновременные попытки закрыть дадут одну запись,
+    // а значит и очки начислятся один раз.
+    .where(and(eq(dialogAttemptsTable.id, attempt.id), eq(dialogAttemptsTable.status, "active")))
+    .returning({ id: dialogAttemptsTable.id });
 
-  // Очки только за выполненное задание, и один раз: статус уже не active,
-  // поэтому повторный вызов сюда не дойдёт.
-  if (status === "done") {
+  if (status === "done" && closed.length > 0) {
     const [row] = await db
       .select({ totalPoints: usersTable.totalPoints })
       .from(usersTable)
@@ -735,8 +839,8 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
     return;
   }
 
-  // Запись расшифровываем тем же слоем, что и свободный разговор: у ученика не
-  // должно быть двух разных распознавателей в одном приложении.
+  // Запись расшифровываем тем же слоем, что и свободный разговор: двух разных
+  // распознавателей в одном приложении быть не должно.
   if (!said) {
     const audio = Buffer.from(String(body.audioBase64), "base64");
     if (audio.length < MIN_AUDIO_BYTES) {
@@ -913,48 +1017,6 @@ router.post("/scenario-attempts/:id/finish", requireAuth, async (req, res) => {
 
   const summary = await closeAttempt(found.attempt, found.scenario, "stopped", req.log);
   res.json({ status: "stopped", summary });
-});
-
-// ── Учитель: все свежие разборы одним списком ───────────────────────────────
-//
-// Отдельный маршрут, потому что учителю нужен вход «что нового», а не обход
-// ситуаций по одной.
-router.get("/scenario-attempts", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  if (!isTeacher(user.role)) {
-    res.status(403).json({ error: "Только для учителя" });
-    return;
-  }
-
-  const rows = await db
-    .select({
-      id: dialogAttemptsTable.id,
-      scenarioId: dialogAttemptsTable.scenarioId,
-      scenarioTitle: dialogScenariosTable.title,
-      studentId: dialogAttemptsTable.studentId,
-      studentName: usersTable.name,
-      status: dialogAttemptsTable.status,
-      turns: dialogAttemptsTable.turns,
-      mistakes: dialogAttemptsTable.mistakes,
-      goalReached: dialogAttemptsTable.goalReached,
-      finishedAt: dialogAttemptsTable.finishedAt,
-      startedAt: dialogAttemptsTable.startedAt,
-      seenAt: dialogAttemptsTable.seenAt,
-    })
-    .from(dialogAttemptsTable)
-    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAttemptsTable.scenarioId))
-    .leftJoin(usersTable, eq(usersTable.id, dialogAttemptsTable.studentId))
-    .where(eq(dialogScenariosTable.teacherId, user.userId))
-    .orderBy(desc(dialogAttemptsTable.startedAt))
-    .limit(50);
-
-  res.json(rows.map((r) => ({
-    ...r,
-    startedAt: r.startedAt.toISOString(),
-    finishedAt: r.finishedAt?.toISOString() ?? null,
-    seenAt: r.seenAt?.toISOString() ?? null,
-    fresh: r.status !== "active" && !r.seenAt,
-  })));
 });
 
 export default router;
