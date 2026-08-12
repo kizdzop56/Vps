@@ -21,10 +21,20 @@
 // Ответ тьютора озвучивается в обоих режимах: услышать, как звучит фраза,
 // полезно и тому, кто её напечатал.
 //
+// ── СВОЯ РЕПЛИКА ПОКАЗЫВАЕТСЯ СРАЗУ ────────────────────────────────────────
+// Раньше она добавлялась в ленту ВМЕСТЕ с ответом тьютора, одним куском. Пока
+// всё работало, разницы не было. Стоило ответу не прийти — и сказанное
+// исчезало совсем: на экране оставались приветствие тьютора и красная плашка,
+// то есть разговор выглядел так, будто ученик ничего и не говорил.
+//
+// Теперь реплика встаёт в ленту немедленно, а по ответу сервера либо уточняется
+// расшифровкой (в голосовом режиме важно видеть, КАК тебя услышали), либо
+// помечается «не доставлено». Пометка нужна: молча оставить реплику в ленте
+// значило бы соврать, что тьютор её получил.
+//
 // ── Запись живёт не здесь ───────────────────────────────────────────────────
 // Первая версия писала звук через Audio.Recording из expo-av — и на вебе не
-// работала вовсе: в expo-av записи для веба нет, только проигрывание. Кнопка
-// падала, и раздел выглядел неработающим.
+// работала вовсе: в expo-av записи для веба нет, только проигрывание.
 //
 // Теперь запись за общей ручкой (utils/voiceRecorder.ts): на вебе MediaRecorder
 // из браузера, на телефоне expo-av. Экрану всё равно, чем именно записано.
@@ -40,7 +50,7 @@
 //
 // Теперь абсолютного позиционирования нет вовсе: лента и панель ввода — два
 // элемента одного flex-столбца, а screenBottom применяется к нижнему из них
-// целиком, без арифметики. Промахнуться таким способом больше нельзя.
+// целиком, без арифметики.
 //
 // ── Клавиатура ──────────────────────────────────────────────────────────────
 // В режиме письма поле ввода прижато к низу, и на телефоне клавиатура накрыла
@@ -78,10 +88,14 @@ type Line = {
   text: string;
   /** Озвучка ответа тьютора: data-URL с mp3. У реплики ученика её нет. */
   audio?: string | null;
+  /** Реплика ещё в пути: показываем её приглушённой. */
+  pending?: boolean;
+  /** Ответ не пришёл. Реплика остаётся в ленте, но помечена. */
+  failed?: boolean;
 };
 
 type SessionResponse = { id: number };
-type StatusResponse = { ready?: boolean };
+type StatusResponse = { ready?: boolean; reason?: string };
 
 type MessagesResponse = {
   studentMessage?: { id?: number; transcript?: string };
@@ -100,6 +114,9 @@ const MODES: { key: Mode; label: string }[] = [
 /** С чего начинается разговор: тьютор здоровается первым. */
 const GREETING =
   "Hi! I am your English tutor. Tell me about your day - what did you do today?";
+
+/** Заглушка на месте расшифровки, пока запись едет на сервер. */
+const VOICE_PLACEHOLDER = "…";
 
 /**
  * Падение экрана иначе выглядело бы как «кнопка не работает»: навигатор остался
@@ -139,6 +156,7 @@ export default function TutorScreen() {
   const [denied, setDenied] = React.useState(false);
   /** null — ещё не спросили; false — тьютор не настроен на сервере. */
   const [ready, setReady] = React.useState<boolean | null>(null);
+  const [notReadyReason, setNotReadyReason] = React.useState<string | null>(null);
 
   const scroller = React.useRef<ScrollView | null>(null);
   const recorder = React.useRef<VoiceRecorder | null>(null);
@@ -149,7 +167,11 @@ export default function TutorScreen() {
   React.useEffect(() => {
     let alive = true;
     apiFetch<StatusResponse>("/api/voice-chat/status")
-      .then((s) => { if (alive) setReady(s?.ready !== false); })
+      .then((s) => {
+        if (!alive) return;
+        setReady(s?.ready !== false);
+        setNotReadyReason(s?.reason ?? null);
+      })
       // Не смогли спросить — считаем, что готов: лучше дать попробовать, чем
       // закрыть раздел из-за одного неудачного запроса.
       .catch(() => { if (alive) setReady(true); });
@@ -175,10 +197,17 @@ export default function TutorScreen() {
   /**
    * Отправить реплику: либо запись, либо текст.
    *
+   * @param payload что уходит на сервер
+   * @param shown   что сразу показать в ленте как свою реплику
+   *
    * Обе ветки сходятся здесь, потому что дальше всё одинаково — сессия, ответ
    * тьютора, очки, лента. Две копии этого кода разъехались бы на первой правке.
    */
-  const send = React.useCallback(async (payload: Record<string, unknown>) => {
+  const send = React.useCallback(async (payload: Record<string, unknown>, shown: string) => {
+    // Своя реплика появляется в ленте ДО запроса: см. шапку файла.
+    const localId = `mine-${Date.now()}`;
+    setLines((prev) => [...prev, { id: localId, role: "student", text: shown, pending: true }]);
+
     setSending(true);
     setError(null);
     try {
@@ -204,11 +233,14 @@ export default function TutorScreen() {
       const replyAudio = data.aiMessage?.audioUrl ?? null;
 
       setLines((prev) => [
-        ...prev,
-        // Расшифровку своей реплики показываем всегда: по ней видно, как ученика
-        // услышали, и половина «тьютор отвечает невпопад» объясняется именно ей.
-        { id: `s-${data.studentMessage?.id ?? Date.now()}`, role: "student", text: mine || "…" },
-        { id: `a-${data.aiMessage?.id ?? Date.now()}`, role: "ai", text: reply || "…", audio: replyAudio },
+        // Уточняем свою реплику расшифровкой: в голосовом режиме по ней видно,
+        // как ученика услышали, и половина «отвечает невпопад» объясняется ей.
+        ...prev.map((l) =>
+          l.id === localId
+            ? { ...l, text: mine || l.text, pending: false }
+            : l,
+        ),
+        { id: `a-${data.aiMessage?.id ?? Date.now()}`, role: "ai" as const, text: reply || "…", audio: replyAudio },
       ]);
       setPoints((p) => p + (data.pointsEarned ?? 0));
       if (replyAudio) void play(replyAudio);
@@ -217,7 +249,14 @@ export default function TutorScreen() {
       qc.invalidateQueries({ queryKey: ["gamification-stats"] });
       return true;
     } catch (e: any) {
-      setError(e?.message ?? "Не удалось отправить реплику");
+      // Реплика остаётся в ленте, но помеченной: она сказана, просто не дошла.
+      setLines((prev) =>
+        prev.map((l) => (l.id === localId ? { ...l, pending: false, failed: true } : l)),
+      );
+      // detail — то, что ответил сервер на самом деле («model not found»,
+      // «insufficient quota»). Без него все отказы выглядят одинаково.
+      const detail = typeof e?.detail === "string" ? e.detail : "";
+      setError([e?.message ?? "Не удалось отправить реплику", detail].filter(Boolean).join(" "));
       return false;
     } finally {
       setSending(false);
@@ -251,24 +290,30 @@ export default function TutorScreen() {
       recorded = await rec.stop();
     } catch (e: any) {
       // Слишком короткая запись и обрыв — это ошибки самой записи, до сервера
-      // дело не доходит.
+      // дело не доходит, и в ленте показывать нечего.
       recorder.current = null;
       setError(e?.message ?? "Запись не получилась");
       return;
     }
     recorder.current = null;
 
-    await send({ audioBase64: recorded.base64, mimeType: recorded.mimeType });
+    // Расшифровки ещё нет, поэтому в ленте стоит заглушка: сервер вернёт текст
+    // и она заменится.
+    await send(
+      { audioBase64: recorded.base64, mimeType: recorded.mimeType },
+      VOICE_PLACEHOLDER,
+    );
   }, [send]);
 
   /** Отправить написанную реплику. */
   const sendTyped = React.useCallback(async () => {
     const value = typed.trim();
     if (!value) return;
-    const ok = await send({ text: value });
-    // Поле чистим только при удаче: иначе неотправленная фраза пропадёт и её
-    // придётся набирать заново.
-    if (ok) setTyped("");
+    // Поле чистим сразу: реплика уже видна в ленте, и оставлять её ещё и в
+    // поле — значит показывать одно и то же дважды. При неудаче она остаётся
+    // в ленте с пометкой, и её можно скопировать оттуда.
+    setTyped("");
+    await send({ text: value }, value);
   }, [typed, send]);
 
   const exit = React.useCallback(() => {
@@ -382,8 +427,9 @@ export default function TutorScreen() {
               Тьютор пока недоступен
             </Text>
             <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              На сервере не задан ключ доступа к языковой модели. Остальные
-              разделы работают как обычно.
+              {notReadyReason
+                ? notReadyReason
+                : "На сервере не задан ключ доступа к языковой модели."}
             </Text>
           </Tile>
         )}
@@ -404,11 +450,16 @@ export default function TutorScreen() {
                 maxWidth: "88%",
                 backgroundColor: mine ? colors.primary + "1f" : colors.card,
                 borderWidth: 1,
-                borderColor: mine ? colors.primary + "44" : colors.border,
+                // Не доставленная реплика обведена красным: она сказана, но
+                // тьютор её не получил, и это должно быть видно.
+                borderColor: line.failed
+                  ? colors.destructive + "88"
+                  : mine ? colors.primary + "44" : colors.border,
                 borderRadius: radii.md,
                 paddingVertical: 11,
                 paddingHorizontal: 14,
                 marginBottom: 10,
+                opacity: line.pending ? 0.6 : 1,
               }}
             >
               <Text style={{
@@ -422,6 +473,14 @@ export default function TutorScreen() {
               <Text style={{ fontSize: 15, lineHeight: 22, color: colors.foreground }}>
                 {line.text}
               </Text>
+              {line.failed && (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
+                  <Glyph name="alert" size={13} color={colors.destructive} />
+                  <Text style={{ fontSize: 11, fontWeight: "700", color: colors.destructive }}>
+                    не доставлено
+                  </Text>
+                </View>
+              )}
               {!!line.audio && (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
                   <Glyph name="sound" size={13} color={colors.primary} />
