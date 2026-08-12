@@ -182,6 +182,26 @@ const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
+/**
+ * Ошибка запроса вместе с подробностями от сервера.
+ *
+ * ЗАЧЕМ. Раньше apiFetch выбрасывал new Error(data.error) — и всё, что сервер
+ * добавил к отказу, терялось по дороге. Наружу выходило «Тьютор не ответил», а
+ * настоящая причина («model not found», «insufficient quota») оставалась только
+ * в логах сервера, куда из приложения не заглянешь.
+ *
+ * Поля ДОПИСЫВАЮТСЯ к обычному Error, а не заменяют его: весь существующий код
+ * ловит Error и читает message, и ломать его ради одного экрана нельзя.
+ */
+export interface ApiError extends Error {
+  /** Код ответа. */
+  status?: number;
+  /** Уточнение от сервера: что именно произошло. */
+  detail?: string;
+  /** Весь разобранный ответ — на случай, если экрану нужно что-то ещё. */
+  payload?: unknown;
+}
+
 export async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
   const token = await authStorage.getItem("auth_token");
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -203,7 +223,14 @@ export async function apiFetch<T = any>(path: string, options?: RequestInit): Pr
       `Сервер вернул не JSON (статус ${res.status}). Начало ответа: ${text.slice(0, 120)}`,
     );
   }
-  if (!res.ok) throw new Error((data as { error?: string })?.error ?? "Ошибка сервера");
+  if (!res.ok) {
+    const body = data as { error?: string; detail?: string };
+    const err: ApiError = new Error(body?.error ?? "Ошибка сервера");
+    err.status = res.status;
+    if (body?.detail) err.detail = body.detail;
+    err.payload = data;
+    throw err;
+  }
   return data as T;
 }
 
