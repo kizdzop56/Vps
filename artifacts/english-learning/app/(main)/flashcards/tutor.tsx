@@ -1,11 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Разговор с тьютором: практика речи голосом или письмом.
+// РАЗГОВОР СО СНЕЖЕЙ: практика речи голосом или письмом.
 //
-// ── Почему экран появился позже сервера ─────────────────────────────────────
-// Сервер умел это давно (api-server/src/routes/voiceChat.ts): расшифровка речи,
-// ответ языковой модели, озвучка ответа и начисление очков. Не было ТОЛЬКО
-// экрана. Раздел жил в наградах («провести N разговоров») и в статистике
-// профиля — то есть ученик видел награду, которую физически не мог получить.
+// ── Почему это не «тьютор» ──────────────────────────────────────────────────
+// Раньше собеседник назывался тьютором и никак не выглядел: реплики подписаны
+// «ТЬЮТОР», и всё. Для ребёнка это переписка с настройкой, а не разговор.
+//
+// Снежа в приложении уже есть — она встречает, хвалит и подсказывает. Логично,
+// что и говорить ученик будет с ней, а не с безымянной службой. Поэтому наверху
+// сидит живая Снежа (components/SnezhaLive.tsx), и по ней ВИДНО, что происходит:
+// слушает, думает, говорит или просто дышит. Подписи-состояния при этом тоже
+// остались: картинка сообщает быстрее, но текст надёжнее.
+//
+// ── ПЕРВЫМ ГОВОРИТ УЧЕНИК ───────────────────────────────────────────────────
+// Тут было готовое приветствие Снежи, вписанное в код. Оно выглядело как
+// разговор, которого не было: реплика висела в ленте до всякого соединения с
+// сервером, и по ней нельзя было понять, работает раздел или нет.
+//
+// Теперь лента начинается пустой, а вместо приветствия — приглашение сказать
+// первое слово. Первая реплика Снежи в разговоре ВСЕГДА настоящая, из модели.
 //
 // ── Два способа сказать ─────────────────────────────────────────────────────
 // ГОЛОСОМ — то, ради чего раздел и нужен: говорить вслух страшнее и полезнее
@@ -17,47 +29,38 @@
 // распознавание речи целиком, и по нему видно, работает ли остальной раздел,
 // когда микрофон подводит.
 //
-// Ответ тьютора озвучивается в обоих режимах: услышать, как звучит фраза,
-// полезно и тому, кто её напечатал.
+// ── ЛЮБУЮ РЕПЛИКУ СНЕЖИ МОЖНО ОЗВУЧИТЬ НАЖАТИЕМ ────────────────────────────
+// Озвучка приходит вместе с ответом, но не всегда: у синтезаторов бывают лимиты
+// и квоты. Раньше это был приговор — звука у реплики не появлялось уже никогда,
+// и выглядело как «озвучивает через раз».
 //
-// ── ЛЮБУЮ РЕПЛИКУ ТЬЮТОРА МОЖНО ОЗВУЧИТЬ НАЖАТИЕМ ─────────────────────────
-// Озвучка приходит вместе с ответом, но не всегда: у моделей синтеза жёсткие
-// лимиты, и иногда ответ приезжает без звука. Раньше это был приговор — звука
-// у реплики не появлялось уже никогда, и выглядело как «озвучивает через раз».
-//
-// Теперь нажатие на реплику тьютора либо играет готовый звук, либо просит
-// сервер синтезировать его сейчас (POST /voice-chat/speak). Поэтому у КАЖДОЙ
-// реплики тьютора внизу есть подсказка, что её можно послушать: приветствие
-// тоже озвучивается, хотя с сервера оно не приходило вовсе.
+// Теперь нажатие на реплику либо играет готовый звук, либо просит сервер
+// синтезировать его сейчас (POST /voice-chat/speak).
 //
 // ── ГРАБЛИ: ЗАПРЕТ АВТОЗАПУСКА ЗВУКА ───────────────────────────────────────
 // Ответ приходит через несколько секунд после нажатия, и к этому моменту Safari
 // уже не считает проигрывание следствием действия человека — play() отвечает
 // отказом. Лечится в utils/voiceRecorder.ts: плеер один и разблокируется в
-// момент нажатия (primeAudio), поэтому primeAudio ОБЯЗАН вызываться
-// синхронно в обработчике, до любого await.
+// момент нажатия (primeAudio), поэтому primeAudio ОБЯЗАН вызываться синхронно
+// в обработчике, до любого await.
 //
 // Если звук всё-таки заблокирован, экран об этом говорит: подсказка меняется на
 // «нажми, чтобы включить звук». Молчать нельзя — иначе это снова выглядит как
 // поломка озвучки.
 //
 // ── СВОЯ РЕПЛИКА ПОКАЗЫВАЕТСЯ СРАЗУ ────────────────────────────────────────
-// Раньше она добавлялась в ленту ВМЕСТЕ с ответом тьютора, одним куском. Пока
-// всё работало, разницы не было. Стоило ответу не прийти — и сказанное
-// исчезало совсем: на экране оставались приветствие тьютора и красная плашка,
-// то есть разговор выглядел так, будто ученик ничего и не говорил.
+// Раньше она добавлялась в ленту ВМЕСТЕ с ответом, одним куском. Пока всё
+// работало, разницы не было. Стоило ответу не прийти — и сказанное исчезало
+// совсем, то есть разговор выглядел так, будто ученик ничего и не говорил.
 //
 // Теперь реплика встаёт в ленту немедленно, а по ответу сервера либо уточняется
 // расшифровкой (в голосовом режиме важно видеть, КАК тебя услышали), либо
-// помечается «не доставлено». Пометка нужна: молча оставить реплику в ленте
-// значило бы соврать, что тьютор её получил.
+// помечается «не доставлено».
 //
 // ── Запись живёт не здесь ───────────────────────────────────────────────────
 // Первая версия писала звук через Audio.Recording из expo-av — и на вебе не
-// работала вовсе: в expo-av записи для веба нет, только проигрывание.
-//
-// Теперь запись за общей ручкой (utils/voiceRecorder.ts): на вебе MediaRecorder
-// из браузера, на телефоне expo-av. Экрану всё равно, чем именно записано.
+// работала вовсе: в expo-av записи для веба нет, только проигрывание. Теперь
+// запись за общей ручкой (utils/voiceRecorder.ts).
 //
 // ── ГРАБЛИ: НИКАКОГО position: absolute ДЛЯ НИЖНЕЙ ПАНЕЛИ ───────────────────
 // Кнопка «Говорить» стояла так:
@@ -66,23 +69,17 @@
 //
 // screenBottom — это отступ ДЛЯ СОДЕРЖИМОГО: он уже включает высоту панели
 // вкладок, её подъём и воздух. Вычитая из него шестьдесят, кнопка оказывалась
-// ВНУТРИ полосы, которую занимает панель, и уходила под неё наполовину.
+// ВНУТРИ полосы панели и уходила под неё наполовину.
 //
 // Теперь абсолютного позиционирования нет вовсе: лента и панель ввода — два
-// элемента одного flex-столбца, а screenBottom применяется к нижнему из них
-// целиком, без арифметики.
-//
-// ── Клавиатура ──────────────────────────────────────────────────────────────
-// В режиме письма поле ввода прижато к низу, и на телефоне клавиатура накрыла
-// бы его вместе с кнопкой. KeyboardAvoidingView поднимает весь столбец; на вебе
-// он не нужен и не включается — там клавиатура часть окна браузера.
+// элемента одного flex-столбца, а screenBottom применяется к нижнему целиком.
 //
 // Эмодзи не используются: значки — глифы из своего набора.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
   View, Text, Pressable, ScrollView, ActivityIndicator, TextInput,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, useWindowDimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -97,10 +94,14 @@ import {
   type StopPlayback,
   type VoiceRecorder,
 } from "@/utils/voiceRecorder";
+import { SnezhaLive, type SnezhaState } from "@/components/SnezhaLive";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
+
+/** Как зовут собеседницу. Одно место на весь экран. */
+const NAME = "Снежа";
 
 /** Реплика в ленте разговора. */
 type Line = {
@@ -113,7 +114,7 @@ type Line = {
   pending?: boolean;
   /** Ответ не пришёл. Реплика остаётся в ленте, но помечена. */
   failed?: boolean;
-  /** Озвучить не удалось. Показываем это на самой реплике, а не плашкой. */
+  /** Озвучить не удалось. Показываем на самой реплике, а не плашкой. */
   voiceFailed?: boolean;
 };
 
@@ -135,12 +136,22 @@ const MODES: { key: Mode; label: string }[] = [
   { key: "text", label: "Писать" },
 ];
 
-/** С чего начинается разговор: тьютор здоровается первым. */
-const GREETING =
-  "Hi! I am your English tutor. Tell me about your day - what did you do today?";
-
 /** Заглушка на месте расшифровки, пока запись едет на сервер. */
 const VOICE_PLACEHOLDER = "…";
+
+/**
+ * Страховка на случай, если конец звука не придёт событием: рот перестанет
+ * двигаться сам. Больше минуты реплика Снежи не длится никогда.
+ */
+const SPEECH_CAP_MS = 60_000;
+
+/** Что Снежа делает — словами. Картинка быстрее, но подпись надёжнее. */
+const STATUS: Record<SnezhaState, string> = {
+  idle: "жду, что скажешь",
+  listen: "слушаю тебя",
+  think: "думаю над ответом",
+  speak: "говорю",
+};
 
 /**
  * Падение экрана иначе выглядело бы как «кнопка не работает»: навигатор остался
@@ -166,23 +177,25 @@ export default function TutorScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
+  const { width: W } = useWindowDimensions();
 
-  const [lines, setLines] = React.useState<Line[]>([
-    { id: "greeting", role: "ai", text: GREETING },
-  ]);
+  // Лента начинается ПУСТОЙ: первым говорит ученик (см. шапку файла).
+  const [lines, setLines] = React.useState<Line[]>([]);
   const [sessionId, setSessionId] = React.useState<number | null>(null);
   const [mode, setMode] = React.useState<Mode>("voice");
   const [typed, setTyped] = React.useState("");
   const [recording, setRecording] = React.useState(false);
   const [sending, setSending] = React.useState(false);
+  /** Снежа сейчас говорит: этим двигается рот. */
+  const [voicing, setVoicing] = React.useState(false);
   const [points, setPoints] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
   const [denied, setDenied] = React.useState(false);
-  /** Какую реплику сейчас озвучиваем: у неё вместо подсказки «озвучиваю…». */
-  const [voicing, setVoicing] = React.useState<string | null>(null);
+  /** Какую реплику озвучиваем по нажатию: у неё вместо подсказки «озвучиваю…». */
+  const [asking, setAsking] = React.useState<string | null>(null);
   /** Браузер не дал играть без нажатия. Подсказка на репликах меняется. */
   const [audioBlocked, setAudioBlocked] = React.useState(false);
-  /** null — ещё не спросили; false — тьютор не настроен на сервере. */
+  /** null — ещё не спросили; false — разговор не настроен на сервере. */
   const [ready, setReady] = React.useState<boolean | null>(null);
   const [notReadyReason, setNotReadyReason] = React.useState<string | null>(null);
 
@@ -202,42 +215,53 @@ export default function TutorScreen() {
       })
       // Не смогли спросить — считаем, что готов: лучше дать попробовать, чем
       // закрыть раздел из-за одного неудачного запроса.
-      .catch(() => { if (alive) setReady(true); });
+      .catch(() => { if (alive) setReady(true); })
+    ;
     return () => { alive = false; };
   }, []);
 
-  // Уход с экрана обязан оборвать и запись, и звук: иначе тьютор продолжает
+  // Уход с экрана обязан оборвать и запись, и звук: иначе Снежа продолжает
   // говорить с другой вкладки, а в браузере горит индикатор микрофона.
   React.useEffect(() => () => {
     stopPlayback.current?.();
     void recorder.current?.cancel();
   }, []);
 
-  /** Проиграть звук и запомнить, дал ли браузер это сделать. */
+  // Рот не должен шевелиться вечно, если событие конца потерялось.
+  React.useEffect(() => {
+    if (!voicing) return;
+    const t = setTimeout(() => setVoicing(false), SPEECH_CAP_MS);
+    return () => clearTimeout(t);
+  }, [voicing]);
+
+  /** Проиграть звук: рот двигается ровно пока он звучит. */
   const play = React.useCallback(async (uri: string) => {
     try {
       stopPlayback.current?.();
-      const playback = await playSpeech(uri);
-      stopPlayback.current = playback.stop;
+      setVoicing(true);
+      const playback = await playSpeech(uri, { onEnd: () => setVoicing(false) });
+      stopPlayback.current = () => { playback.stop(); setVoicing(false); };
       setAudioBlocked(playback.blocked);
+      if (playback.blocked) setVoicing(false);
     } catch {
+      setVoicing(false);
       setAudioBlocked(true);
     }
   }, []);
 
   /**
-   * Озвучить реплику тьютора по нажатию.
+   * Озвучить реплику Снежи по нажатию.
    *
-   * Звук уже есть — играем. Нет — просим сервер синтезировать сейчас: ответ
-   * мог прийти без озвучки (лимиты моделей), и второй попытки раньше не было.
+   * Звук уже есть — играем. Нет — просим сервер синтезировать сейчас: ответ мог
+   * прийти без озвучки, и второй попытки раньше не было.
    */
   const speakLine = React.useCallback(async (line: Line) => {
     // Строго до await: этим нажатием разблокируется звук (см. шапку файла).
     primeAudio();
     if (line.audio) { void play(line.audio); return; }
-    if (voicing) return;
+    if (asking) return;
 
-    setVoicing(line.id);
+    setAsking(line.id);
     setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, voiceFailed: false } : l)));
     try {
       const data = await apiFetch<SpeakResponse>("/api/voice-chat/speak", {
@@ -249,22 +273,19 @@ export default function TutorScreen() {
       setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, audio: url } : l)));
       await play(url);
     } catch {
-      // Тихо и на самой реплике: плашка с ошибкой здесь была бы слишком громкой
-      // для того, что текст ответа уже прочитан.
+      // Тихо и на самой реплике: плашка с ошибкой тут слишком громкая для того,
+      // что текст ответа уже прочитан.
       setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, voiceFailed: true } : l)));
     } finally {
-      setVoicing(null);
+      setAsking(null);
     }
-  }, [play, voicing]);
+  }, [play, asking]);
 
   /**
    * Отправить реплику: либо запись, либо текст.
    *
-   * @param payload что уходит на сервер
-   * @param shown   что сразу показать в ленте как свою реплику
-   *
    * Обе ветки сходятся здесь, потому что дальше всё одинаково — сессия, ответ
-   * тьютора, очки, лента. Две копии этого кода разъехались бы на первой правке.
+   * Снежи, очки, лента. Две копии этого кода разъехались бы на первой правке.
    */
   const send = React.useCallback(async (payload: Record<string, unknown>, shown: string) => {
     // Своя реплика появляется в ленте ДО запроса: см. шапку файла.
@@ -298,12 +319,13 @@ export default function TutorScreen() {
       setLines((prev) => [
         // Уточняем свою реплику расшифровкой: в голосовом режиме по ней видно,
         // как ученика услышали, и половина «отвечает невпопад» объясняется ей.
-        ...prev.map((l) =>
-          l.id === localId
-            ? { ...l, text: mine || l.text, pending: false }
-            : l,
-        ),
-        { id: `a-${data.aiMessage?.id ?? Date.now()}`, role: "ai" as const, text: reply || "…", audio: replyAudio },
+        ...prev.map((l) => (l.id === localId ? { ...l, text: mine || l.text, pending: false } : l)),
+        {
+          id: `a-${data.aiMessage?.id ?? Date.now()}`,
+          role: "ai" as const,
+          text: reply || "…",
+          audio: replyAudio,
+        },
       ]);
       setPoints((p) => p + (data.pointsEarned ?? 0));
       if (replyAudio) void play(replyAudio);
@@ -342,7 +364,7 @@ export default function TutorScreen() {
     }
   }, []);
 
-  /** Остановить запись и отправить её тьютору. */
+  /** Остановить запись и отправить её Снеже. */
   const stopAndSend = React.useCallback(async () => {
     const rec = recorder.current;
     if (!rec) return;
@@ -372,9 +394,8 @@ export default function TutorScreen() {
   const sendTyped = React.useCallback(async () => {
     const value = typed.trim();
     if (!value) return;
-    // Поле чистим сразу: реплика уже видна в ленте, и оставлять её ещё и в
-    // поле — значит показывать одно и то же дважды. При неудаче она остаётся
-    // в ленте с пометкой, и её можно скопировать оттуда.
+    // Поле чистим сразу: реплика уже видна в ленте, и оставлять её ещё и в поле
+    // значит показывать одно и то же дважды.
     setTyped("");
     await send({ text: value }, value);
   }, [typed, send]);
@@ -393,6 +414,14 @@ export default function TutorScreen() {
   }, [recording, sending]);
 
   const blocked = ready === false;
+
+  // Состояние Снежи. Порядок проверок — это приоритет: пока идёт запись, она
+  // слушает, чем бы там ни занимался сервер.
+  const snezhaState: SnezhaState =
+    recording ? "listen" : sending ? "think" : voicing ? "speak" : "idle";
+
+  /** Ростом Снежа занимает шестую часть ширины экрана: рядом с ней ещё текст. */
+  const mascotW = Math.min(112, Math.max(88, Math.round(W * 0.26)));
 
   return (
     <KeyboardAvoidingView
@@ -413,7 +442,7 @@ export default function TutorScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <Pressable
             onPress={exit}
             hitSlop={10}
@@ -423,8 +452,8 @@ export default function TutorScreen() {
           >
             <Glyph name="chevron" size={24} color={colors.foreground} />
           </Pressable>
-          <Text style={{ flex: 1, fontSize: 24, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
-            Разговор с тьютором
+          <Text style={{ flex: 1, fontSize: 23, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
+            {`Разговор со ${NAME}й`}
           </Text>
           {points > 0 && (
             <Text style={{ fontSize: 15, fontWeight: "900", color: accents.magenta, fontVariant: ["tabular-nums"] }}>
@@ -433,6 +462,42 @@ export default function TutorScreen() {
           )}
         </View>
 
+        {/* ── Сама Снежа ──
+            Слева зверь, справа имя и состояние словами. Нажатие на неё
+            переозвучивает последний ответ: по персонажу хочется потыкать, и
+            это самое ожидаемое, что может произойти. */}
+        <Pressable
+          onPress={() => {
+            const last = [...lines].reverse().find((l) => l.role === "ai");
+            if (last) void speakLine(last);
+            else primeAudio();
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`${NAME}: ${STATUS[snezhaState]}`}
+          style={{ flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 8 }}
+        >
+          <SnezhaLive state={snezhaState} width={mascotW} still={blocked} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 18, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3 }}>
+              {NAME}
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3 }}>
+              <View style={{
+                width: 7, height: 7, borderRadius: 4,
+                backgroundColor: snezhaState === "idle" ? colors.mutedForeground : colors.primary,
+              }} />
+              <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground }}>
+                {STATUS[snezhaState]}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
+              {mode === "voice"
+                ? "Говори по-английски вслух — она поймёт и ответит голосом"
+                : "Пиши по-английски — она ответит текстом и голосом"}
+            </Text>
+          </View>
+        </Pressable>
+
         {/* Переключатель режима. Тот же вид, что у вкладок неправильных
             глаголов: выбранная кнопка приподнята и залита цветом карточки. */}
         <View style={{
@@ -440,7 +505,7 @@ export default function TutorScreen() {
           backgroundColor: colors.primary + "14",
           borderRadius: radii.pill,
           padding: 4,
-          marginBottom: 12,
+          marginBottom: 14,
         }}>
           {MODES.map((m) => {
             const active = mode === m.key;
@@ -476,35 +541,40 @@ export default function TutorScreen() {
           })}
         </View>
 
-        <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginBottom: 16 }}>
-          {mode === "voice"
-            ? "Говори по-английски вслух. Тьютор поймёт, ответит голосом и мягко поправит ошибки. Под своей репликой видно, как тебя услышали."
-            : "Пиши по-английски. Тьютор ответит текстом и голосом и мягко поправит ошибки — удобно, когда вслух говорить негде."}
-        </Text>
-
         {/* Раздел не настроен на сервере — говорим это сразу, а не после
             потраченной впустую записи. */}
         {blocked && (
           <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 14 }}>
             <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
-              Тьютор пока недоступен
+              {`${NAME} пока не может говорить`}
             </Text>
             <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              {notReadyReason
-                ? notReadyReason
-                : "На сервере не задан ключ доступа к языковой модели."}
+              {notReadyReason ?? "На сервере не задан ключ доступа к языковой модели."}
             </Text>
           </Tile>
         )}
 
-        {/* Лента разговора. Свои реплики справа, ответы тьютора слева — как в
-            обычной переписке, чтобы не читать подписи «кто сказал». */}
+        {/* Приглашение вместо вписанного приветствия: пока ученик не сказал
+            ничего, разговора нет. */}
+        {lines.length === 0 && !blocked && (
+          <Text style={{
+            fontSize: 13.5, lineHeight: 20, color: colors.mutedForeground,
+            textAlign: "center", paddingVertical: 22, paddingHorizontal: 12,
+          }}>
+            {mode === "voice"
+              ? `Начни разговор: нажми «Говорить» и скажи что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`
+              : `Начни разговор: напиши что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`}
+          </Text>
+        )}
+
+        {/* Лента разговора. Свои реплики справа, ответы слева — как в обычной
+            переписке, чтобы не читать подписи «кто сказал». */}
         {lines.map((line) => {
           const mine = line.role === "student";
-          // Реплику тьютора можно послушать всегда: звук либо готов, либо
+          // Реплику Снежи можно послушать всегда: звук либо готов, либо
           // синтезируется по нажатию.
           const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
-          const busy = voicing === line.id;
+          const busy = asking === line.id;
 
           const hint = busy
             ? "озвучиваю…"
@@ -522,14 +592,14 @@ export default function TutorScreen() {
               onPress={() => { if (listenable) void speakLine(line); }}
               disabled={!listenable}
               accessibilityRole={listenable ? "button" : undefined}
-              accessibilityLabel={listenable ? "Послушать ответ тьютора" : undefined}
+              accessibilityLabel={listenable ? `Послушать ответ ${NAME}` : undefined}
               style={{
                 alignSelf: mine ? "flex-end" : "flex-start",
                 maxWidth: "88%",
                 backgroundColor: mine ? colors.primary + "1f" : colors.card,
                 borderWidth: 1,
                 // Не доставленная реплика обведена красным: она сказана, но
-                // тьютор её не получил, и это должно быть видно.
+                // Снежа её не получила, и это должно быть видно.
                 borderColor: line.failed
                   ? colors.destructive + "88"
                   : mine ? colors.primary + "44" : colors.border,
@@ -546,7 +616,7 @@ export default function TutorScreen() {
                 color: mine ? colors.primary : colors.mutedForeground,
                 marginBottom: 4,
               }}>
-                {mine ? "ты" : "тьютор"}
+                {mine ? "ты" : NAME}
               </Text>
               <Text style={{ fontSize: 15, lineHeight: 22, color: colors.foreground }}>
                 {line.text}
@@ -577,8 +647,7 @@ export default function TutorScreen() {
           );
         })}
 
-        {/* Ждём ответ. Без подписи: кружок и так означает ожидание, а строка
-            «думаю над ответом» повторяла его словами и занимала место. */}
+        {/* Ждём ответ. Без подписи: и кружок, и сама Снежа уже показывают это. */}
         {sending && (
           <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 4 }} />
         )}
@@ -614,7 +683,7 @@ export default function TutorScreen() {
         {mode === "voice" ? (
           <ChunkyButton
             label={recording ? "Стоп и отправить" : sending ? "Секунду…" : "Говорить"}
-            sublabel={recording ? "идёт запись" : "нажми, скажи фразу, нажми ещё раз"}
+            sublabel={recording ? `${NAME} слушает` : "нажми, скажи фразу, нажми ещё раз"}
             icon={recording ? "check" : "sound"}
             tone={recording ? "warm" : "primary"}
             center
