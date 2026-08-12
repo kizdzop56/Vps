@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Разговор с тьютором: голосовая практика речи.
+// Разговор с тьютором: практика речи голосом или письмом.
 //
 // ── Почему экран появился позже сервера ─────────────────────────────────────
 // Сервер умел это давно (api-server/src/routes/voiceChat.ts): расшифровка речи
@@ -8,35 +8,51 @@
 // статистике профиля — то есть ученик видел награду, которую физически не мог
 // получить.
 //
+// ── Два способа сказать ─────────────────────────────────────────────────────
+// ГОЛОСОМ — то, ради чего раздел и нужен: говорить вслух страшнее и полезнее
+// всего остального в приложении.
+//
+// ПИСЬМОМ — рядом, переключателем. Это не подпорка «на случай поломки», а
+// полноценный режим: в транспорте и в классе вслух не поговоришь, а часть детей
+// стесняется собственного голоса больше, чем ошибок. Заодно письмо обходит
+// распознавание речи целиком, и по нему видно, работает ли остальной раздел,
+// когда микрофон подводит.
+//
+// Ответ тьютора озвучивается в обоих режимах: услышать, как звучит фраза,
+// полезно и тому, кто её напечатал.
+//
 // ── Запись живёт не здесь ───────────────────────────────────────────────────
 // Первая версия писала звук через Audio.Recording из expo-av — и на вебе не
 // работала вовсе: в expo-av записи для веба нет, только проигрывание. Кнопка
 // падала, и раздел выглядел неработающим.
 //
 // Теперь запись за общей ручкой (utils/voiceRecorder.ts): на вебе MediaRecorder
-// из браузера, на телефоне expo-av. Экрану всё равно, чем именно записано, и
-// вторая платформа больше не ломает первую.
+// из браузера, на телефоне expo-av. Экрану всё равно, чем именно записано.
 //
-// ── Готовность спрашивается заранее ─────────────────────────────────────────
-// GET /voice-chat/status отвечает, настроен ли тьютор на сервере. Спрашиваем ДО
-// первой записи: иначе ученик собирается с духом, говорит вслух и только потом
-// узнаёт, что говорить было некому.
+// ── ГРАБЛИ: НИКАКОГО position: absolute ДЛЯ НИЖНЕЙ ПАНЕЛИ ───────────────────
+// Кнопка «Говорить» стояла так:
 //
-// ── Как устроен разговор ────────────────────────────────────────────────────
-// Ученик нажимает кнопку и говорит, нажимает снова — запись уходит на сервер.
-// Оттуда приходит расшифровка его же реплики (это важно: видно, КАК его
-// услышали) и ответ тьютора текстом и голосом. Ответ проигрывается сам,
-// повторить можно нажатием на реплику.
+//   position: "absolute", bottom: screenBottom(insets) - 60
 //
-// Сессия создаётся не при открытии экрана, а перед ПЕРВОЙ удачной записью.
-// Иначе каждый случайный заход плодил бы пустую сессию, и «разговоров» в
-// статистике становилось больше, чем разговоров на самом деле.
+// screenBottom — это отступ ДЛЯ СОДЕРЖИМОГО: он уже включает высоту панели
+// вкладок, её подъём и воздух. Вычитая из него шестьдесят, кнопка оказывалась
+// ВНУТРИ полосы, которую занимает панель, и уходила под неё наполовину.
+//
+// Теперь абсолютного позиционирования нет вовсе: лента и панель ввода — два
+// элемента одного flex-столбца, а screenBottom применяется к нижнему из них
+// целиком, без арифметики. Промахнуться таким способом больше нельзя.
+//
+// ── Клавиатура ──────────────────────────────────────────────────────────────
+// В режиме письма поле ввода прижато к низу, и на телефоне клавиатура накрыла
+// бы его вместе с кнопкой. KeyboardAvoidingView поднимает весь столбец; на вебе
+// он не нужен и не включается — там клавиатура часть окна браузера.
 //
 // Эмодзи не используются: значки — глифы из своего набора.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, ScrollView, ActivityIndicator,
+  View, Text, Pressable, ScrollView, ActivityIndicator, TextInput,
+  KeyboardAvoidingView, Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -73,6 +89,14 @@ type MessagesResponse = {
   pointsEarned?: number;
 };
 
+/** Как ученик отвечает. */
+type Mode = "voice" | "text";
+
+const MODES: { key: Mode; label: string }[] = [
+  { key: "voice", label: "Говорить" },
+  { key: "text", label: "Писать" },
+];
+
 /** С чего начинается разговор: тьютор здоровается первым. */
 const GREETING =
   "Hi! I am your English tutor. Tell me about your day - what did you do today?";
@@ -106,6 +130,8 @@ export default function TutorScreen() {
     { id: "greeting", role: "ai", text: GREETING },
   ]);
   const [sessionId, setSessionId] = React.useState<number | null>(null);
+  const [mode, setMode] = React.useState<Mode>("voice");
+  const [typed, setTyped] = React.useState("");
   const [recording, setRecording] = React.useState(false);
   const [sending, setSending] = React.useState(false);
   const [points, setPoints] = React.useState(0);
@@ -146,6 +172,58 @@ export default function TutorScreen() {
     }
   }, []);
 
+  /**
+   * Отправить реплику: либо запись, либо текст.
+   *
+   * Обе ветки сходятся здесь, потому что дальше всё одинаково — сессия, ответ
+   * тьютора, очки, лента. Две копии этого кода разъехались бы на первой правке.
+   */
+  const send = React.useCallback(async (payload: Record<string, unknown>) => {
+    setSending(true);
+    setError(null);
+    try {
+      // Сессия создаётся только теперь: пустой заход на экран разговором не
+      // считается.
+      let id = sessionId;
+      if (id === null) {
+        const created = await apiFetch<SessionResponse>("/api/voice-chat/sessions", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        id = created.id;
+        setSessionId(id);
+      }
+
+      const data = await apiFetch<MessagesResponse>(
+        `/api/voice-chat/sessions/${id}/messages`,
+        { method: "POST", body: JSON.stringify(payload) },
+      );
+
+      const mine = data.studentMessage?.transcript?.trim();
+      const reply = data.aiMessage?.transcript?.trim();
+      const replyAudio = data.aiMessage?.audioUrl ?? null;
+
+      setLines((prev) => [
+        ...prev,
+        // Расшифровку своей реплики показываем всегда: по ней видно, как ученика
+        // услышали, и половина «тьютор отвечает невпопад» объясняется именно ей.
+        { id: `s-${data.studentMessage?.id ?? Date.now()}`, role: "student", text: mine || "…" },
+        { id: `a-${data.aiMessage?.id ?? Date.now()}`, role: "ai", text: reply || "…", audio: replyAudio },
+      ]);
+      setPoints((p) => p + (data.pointsEarned ?? 0));
+      if (replyAudio) void play(replyAudio);
+
+      // Очки ушли в общий счёт: экраны, где они видны, обязаны перечитать данные.
+      qc.invalidateQueries({ queryKey: ["gamification-stats"] });
+      return true;
+    } catch (e: any) {
+      setError(e?.message ?? "Не удалось отправить реплику");
+      return false;
+    } finally {
+      setSending(false);
+    }
+  }, [sessionId, play, qc]);
+
   /** Начать запись. Разрешение спрашивается здесь: браузер даёт его по действию. */
   const startRecording = React.useCallback(async () => {
     setError(null);
@@ -166,54 +244,32 @@ export default function TutorScreen() {
   const stopAndSend = React.useCallback(async () => {
     const rec = recorder.current;
     if (!rec) return;
-
     setRecording(false);
-    setSending(true);
-    setError(null);
+
+    let recorded;
     try {
-      const { base64, mimeType } = await rec.stop();
-      recorder.current = null;
-
-      // Сессия создаётся только теперь: пустой заход на экран разговором не
-      // считается.
-      let id = sessionId;
-      if (id === null) {
-        const created = await apiFetch<SessionResponse>("/api/voice-chat/sessions", {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        id = created.id;
-        setSessionId(id);
-      }
-
-      const data = await apiFetch<MessagesResponse>(
-        `/api/voice-chat/sessions/${id}/messages`,
-        { method: "POST", body: JSON.stringify({ audioBase64: base64, mimeType }) },
-      );
-
-      const mine = data.studentMessage?.transcript?.trim();
-      const reply = data.aiMessage?.transcript?.trim();
-      const replyAudio = data.aiMessage?.audioUrl ?? null;
-
-      setLines((prev) => [
-        ...prev,
-        // Расшифровку своей реплики показываем всегда: по ней видно, как ученика
-        // услышали, и половина «тьютор отвечает невпопад» объясняется именно ей.
-        { id: `s-${data.studentMessage?.id ?? Date.now()}`, role: "student", text: mine || "…" },
-        { id: `a-${data.aiMessage?.id ?? Date.now()}`, role: "ai", text: reply || "…", audio: replyAudio },
-      ]);
-      setPoints((p) => p + (data.pointsEarned ?? 0));
-      if (replyAudio) void play(replyAudio);
-
-      // Очки ушли в общий счёт: экраны, где они видны, обязаны перечитать данные.
-      qc.invalidateQueries({ queryKey: ["gamification-stats"] });
+      recorded = await rec.stop();
     } catch (e: any) {
+      // Слишком короткая запись и обрыв — это ошибки самой записи, до сервера
+      // дело не доходит.
       recorder.current = null;
-      setError(e?.message ?? "Не удалось отправить запись");
-    } finally {
-      setSending(false);
+      setError(e?.message ?? "Запись не получилась");
+      return;
     }
-  }, [sessionId, play, qc]);
+    recorder.current = null;
+
+    await send({ audioBase64: recorded.base64, mimeType: recorded.mimeType });
+  }, [send]);
+
+  /** Отправить написанную реплику. */
+  const sendTyped = React.useCallback(async () => {
+    const value = typed.trim();
+    if (!value) return;
+    const ok = await send({ text: value });
+    // Поле чистим только при удаче: иначе неотправленная фраза пропадёт и её
+    // придётся набирать заново.
+    if (ok) setTyped("");
+  }, [typed, send]);
 
   const exit = React.useCallback(() => {
     stopPlayback.current?.();
@@ -221,17 +277,33 @@ export default function TutorScreen() {
     router.replace("/flashcards");
   }, [router]);
 
+  /** Переключение режима. Во время записи менять нельзя — сначала остановись. */
+  const switchMode = React.useCallback((next: Mode) => {
+    if (recording || sending) return;
+    setError(null);
+    setMode(next);
+  }, [recording, sending]);
+
+  const blocked = ready === false;
+
   return (
-    <View style={{ flex: 1 }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      // На вебе клавиатура — часть окна браузера, и поведение здесь только
+      // мешает: столбец начинает прыгать при фокусе поля.
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <ScrollView
         ref={(r) => { scroller.current = r; }}
         onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
+        style={{ flex: 1 }}
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: screenTop(insets),
-          paddingBottom: screenBottom(insets) + 150,
+          paddingBottom: 16,
         }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
           <Pressable
@@ -253,20 +325,64 @@ export default function TutorScreen() {
           )}
         </View>
 
+        {/* Переключатель режима. Тот же вид, что у вкладок неправильных
+            глаголов: выбранная кнопка приподнята и залита цветом карточки. */}
+        <View style={{
+          flexDirection: "row",
+          backgroundColor: colors.primary + "14",
+          borderRadius: radii.pill,
+          padding: 4,
+          marginBottom: 12,
+        }}>
+          {MODES.map((m) => {
+            const active = mode === m.key;
+            return (
+              <Pressable
+                key={m.key}
+                onPress={() => switchMode(m.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={m.label}
+                style={{
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: radii.pill,
+                  alignItems: "center",
+                  backgroundColor: active ? colors.card : "transparent",
+                  shadowColor: accents.violetDeep,
+                  shadowOffset: { width: 0, height: active ? 3 : 0 },
+                  shadowOpacity: active ? 0.18 : 0,
+                  shadowRadius: active ? 8 : 0,
+                  elevation: active ? 2 : 0,
+                }}
+              >
+                <Text style={{
+                  fontSize: 13.5,
+                  fontWeight: active ? "900" : "700",
+                  color: active ? colors.primary : colors.mutedForeground,
+                }}>
+                  {m.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginBottom: 16 }}>
-          Говори по-английски вслух. Тьютор поймёт, ответит голосом и мягко
-          поправит ошибки. Под своей репликой видно, как тебя услышали.
+          {mode === "voice"
+            ? "Говори по-английски вслух. Тьютор поймёт, ответит голосом и мягко поправит ошибки. Под своей репликой видно, как тебя услышали."
+            : "Пиши по-английски. Тьютор ответит текстом и голосом и мягко поправит ошибки — удобно, когда вслух говорить негде."}
         </Text>
 
         {/* Раздел не настроен на сервере — говорим это сразу, а не после
             потраченной впустую записи. */}
-        {ready === false && (
+        {blocked && (
           <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 14 }}>
             <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
               Тьютор пока недоступен
             </Text>
             <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              На сервере не задан ключ доступа к распознаванию речи. Остальные
+              На сервере не задан ключ доступа к языковой модели. Остальные
               разделы работают как обычно.
             </Text>
           </Tile>
@@ -322,7 +438,7 @@ export default function TutorScreen() {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 9, marginTop: 4 }}>
             <ActivityIndicator color={colors.primary} />
             <Text style={{ fontSize: 13, color: colors.mutedForeground }}>
-              Слушаю и думаю над ответом…
+              {mode === "voice" ? "Слушаю и думаю над ответом…" : "Читаю и думаю над ответом…"}
             </Text>
           </View>
         )}
@@ -334,7 +450,7 @@ export default function TutorScreen() {
             </Text>
             <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
               Без него говорить не получится. Разреши доступ в окне браузера и нажми
-              кнопку записи ещё раз. Если окно не появилось, проверь настройки сайта.
+              кнопку записи ещё раз — или переключись на «Писать».
             </Text>
           </Tile>
         )}
@@ -351,23 +467,64 @@ export default function TutorScreen() {
         )}
       </ScrollView>
 
-      {/* Кнопка записи прижата к низу: до неё не нужно долистывать ленту.
-          Панель вкладок плавает поверх содержимого, поэтому отступ снизу берётся
-          из screenBottom. */}
-      <View style={{
-        position: "absolute", left: 16, right: 16,
-        bottom: screenBottom(insets) - 60,
-      }}>
-        <ChunkyButton
-          label={recording ? "Стоп и отправить" : sending ? "Секунду…" : "Говорить"}
-          sublabel={recording ? "идёт запись" : "нажми, скажи фразу, нажми ещё раз"}
-          icon={recording ? "check" : "sound"}
-          tone={recording ? "warm" : "primary"}
-          center
-          disabled={sending || ready === false}
-          onPress={() => { void (recording ? stopAndSend() : startRecording()); }}
-        />
+      {/* Панель ввода. НЕ absolute: она обычный элемент столбца, поэтому лента
+          сама отдаёт ей место, а screenBottom честно уводит её выше панели
+          вкладок. См. ГРАБЛИ в шапке файла. */}
+      <View style={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}>
+        {mode === "voice" ? (
+          <ChunkyButton
+            label={recording ? "Стоп и отправить" : sending ? "Секунду…" : "Говорить"}
+            sublabel={recording ? "идёт запись" : "нажми, скажи фразу, нажми ещё раз"}
+            icon={recording ? "check" : "sound"}
+            tone={recording ? "warm" : "primary"}
+            center
+            disabled={sending || blocked}
+            onPress={() => { void (recording ? stopAndSend() : startRecording()); }}
+          />
+        ) : (
+          <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 10 }}>
+            <TextInput
+              value={typed}
+              onChangeText={setTyped}
+              placeholder="Напиши по-английски"
+              placeholderTextColor={colors.mutedForeground}
+              editable={!sending && !blocked}
+              multiline
+              maxLength={500}
+              onSubmitEditing={() => { void sendTyped(); }}
+              returnKeyType="send"
+              style={{
+                flex: 1,
+                minHeight: 52,
+                maxHeight: 120,
+                backgroundColor: colors.card,
+                borderRadius: radii.md,
+                borderWidth: 2,
+                borderColor: colors.border,
+                paddingHorizontal: 14,
+                paddingVertical: Platform.OS === "web" ? 14 : 12,
+                fontSize: 16,
+                fontWeight: "600",
+                color: colors.foreground,
+              }}
+            />
+            <Pressable
+              onPress={() => { void sendTyped(); }}
+              disabled={sending || blocked || typed.trim().length === 0}
+              accessibilityRole="button"
+              accessibilityLabel="Отправить"
+              style={{
+                width: 52, height: 52, borderRadius: radii.md,
+                alignItems: "center", justifyContent: "center",
+                backgroundColor: colors.primary,
+                opacity: sending || blocked || typed.trim().length === 0 ? 0.45 : 1,
+              }}
+            >
+              <Glyph name="arrowRight" size={22} color="#fff" />
+            </Pressable>
+          </View>
+        )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }

@@ -1,9 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Разговор с AI-тьютором: расшифровка речи, ответ и озвучка.
 //
-// Порядок работы: запись ученика → whisper переводит её в текст → языковая
-// модель отвечает как детский преподаватель → tts озвучивает ответ. Всё за один
-// запрос: дробить на три было бы втрое больше кругов по сети на одну реплику.
+// Порядок работы: реплика ученика → ответ языковой модели → озвучка ответа.
+// Всё за один запрос: дробить на три было бы втрое больше кругов по сети на
+// одну реплику.
+//
+// ── Реплика приходит двумя способами ────────────────────────────────────────
+//   audioBase64 — запись голоса, её расшифровывает whisper;
+//   text        — ученик написал руками.
+//
+// Дальше пути сходятся: ответ модели, озвучка, очки и журнал одинаковы. Письмо
+// нужно не только для удобства (шумно, стесняется, нет микрофона) — оно ещё и
+// обходит распознавание речи целиком, поэтому по нему видно, работает ли
+// остальная часть раздела, когда микрофон подводит.
 //
 // ── ГРАБЛИ: ФОРМАТ ЗАПИСИ НЕЛЬЗЯ БРАТЬ ИЗ ЗАЯВЛЕННОГО ТИПА ──────────────────
 // Whisper определяет формат по РАСШИРЕНИЮ ИМЕНИ ФАЙЛА, а не по содержимому.
@@ -64,6 +73,9 @@ const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
  * сказал».
  */
 const MIN_AUDIO_BYTES = 1200;
+
+/** Письменная реплика длиннее этого — вставленный текст, а не фраза ребёнка. */
+const MAX_TEXT_LEN = 500;
 
 // ── Определение формата ─────────────────────────────────────────────────────
 
@@ -252,10 +264,21 @@ router.get("/voice-chat/sessions/:id", requireAuth, async (req, res) => {
 router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) => {
   const sessionId = Number(req.params["id"]);
   const user = getUser(req);
-  const { audioBase64, mimeType } = req.body as { audioBase64?: unknown; mimeType?: unknown };
+  const { audioBase64, mimeType, text } = req.body as {
+    audioBase64?: unknown;
+    mimeType?: unknown;
+    text?: unknown;
+  };
 
-  if (typeof audioBase64 !== "string" || !audioBase64) {
-    res.status(400).json({ error: "Запись не пришла" });
+  const written = typeof text === "string" ? text.trim() : "";
+  const hasAudio = typeof audioBase64 === "string" && audioBase64.length > 0;
+
+  if (!hasAudio && !written) {
+    res.status(400).json({ error: "Реплика не пришла: нужна запись или текст" });
+    return;
+  }
+  if (written.length > MAX_TEXT_LEN) {
+    res.status(413).json({ error: "Слишком длинная реплика. Напиши покороче — одной-двумя фразами." });
     return;
   }
 
@@ -286,58 +309,63 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     return;
   }
 
-  const audioBuffer = Buffer.from(audioBase64, "base64");
-  if (audioBuffer.length === 0) {
-    res.status(400).json({ error: "Запись пустая — скажи фразу вслух и попробуй снова" });
-    return;
-  }
-  if (audioBuffer.length < MIN_AUDIO_BYTES) {
-    res.status(422).json({
-      error: "Запись слишком короткая. Держи кнопку дольше: скажи целую фразу, потом нажми «Стоп».",
-    });
-    return;
-  }
-  if (audioBuffer.length > MAX_AUDIO_BYTES) {
-    res.status(413).json({ error: "Запись слишком длинная. Говори покороче — одной-двумя фразами." });
-    return;
-  }
-
-  // ── Речь в текст ──
-  const audio = resolveAudioName(audioBuffer, mimeType);
-  if (audio.sniffed && audio.declared && EXT_BY_MIME[audio.declared] !== audio.sniffed) {
-    // Именно этот случай и ломал раздел на iPhone. Строка в логе нужна, чтобы
-    // в следующий раз не искать причину на ощупь.
-    req.log.warn(
-      { declared: audio.declared, sniffed: audio.sniffed, bytes: audioBuffer.length },
-      "Клиент заявил один формат записи, а прислал другой",
-    );
-  }
-
-  let studentTranscript = "";
-  try {
-    const audioFile = await toFile(audioBuffer, audio.fileName, {
-      type: MIME_BY_EXT[audio.ext],
-    });
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
-      model: "whisper-1",
-      language: "en",
-    });
-    studentTranscript = (transcription.text ?? "").trim();
-  } catch (err) {
-    req.log.error(
-      { err, fileName: audio.fileName, declared: audio.declared, bytes: audioBuffer.length },
-      "Failed to transcribe audio",
-    );
-    // Раньше здесь подставлялась заглушка, модель отвечала на неё, и ученик
-    // получал бессмысленный ответ вместо объяснения. Ошибку надо назвать.
-    res.status(502).json({ error: "Не удалось разобрать запись. Попробуй сказать ещё раз, чуть ближе к микрофону." });
-    return;
-  }
+  // ── Реплика ученика: из текста или из записи ──
+  let studentTranscript = written;
 
   if (!studentTranscript) {
-    res.status(422).json({ error: "В записи не слышно речи. Скажи фразу вслух и попробуй снова." });
-    return;
+    const audioBuffer = Buffer.from(String(audioBase64), "base64");
+    if (audioBuffer.length === 0) {
+      res.status(400).json({ error: "Запись пустая — скажи фразу вслух и попробуй снова" });
+      return;
+    }
+    if (audioBuffer.length < MIN_AUDIO_BYTES) {
+      res.status(422).json({
+        error: "Запись слишком короткая. Держи кнопку дольше: скажи целую фразу, потом нажми «Стоп».",
+      });
+      return;
+    }
+    if (audioBuffer.length > MAX_AUDIO_BYTES) {
+      res.status(413).json({ error: "Запись слишком длинная. Говори покороче — одной-двумя фразами." });
+      return;
+    }
+
+    const audio = resolveAudioName(audioBuffer, mimeType);
+    if (audio.sniffed && audio.declared && EXT_BY_MIME[audio.declared] !== audio.sniffed) {
+      // Именно этот случай и ломал раздел на iPhone. Строка в логе нужна, чтобы
+      // в следующий раз не искать причину на ощупь.
+      req.log.warn(
+        { declared: audio.declared, sniffed: audio.sniffed, bytes: audioBuffer.length },
+        "Клиент заявил один формат записи, а прислал другой",
+      );
+    }
+
+    try {
+      const audioFile = await toFile(audioBuffer, audio.fileName, {
+        type: MIME_BY_EXT[audio.ext],
+      });
+      const transcription = await openai.audio.transcriptions.create({
+        file: audioFile,
+        model: "whisper-1",
+        language: "en",
+      });
+      studentTranscript = (transcription.text ?? "").trim();
+    } catch (err) {
+      req.log.error(
+        { err, fileName: audio.fileName, declared: audio.declared, bytes: audioBuffer.length },
+        "Failed to transcribe audio",
+      );
+      // Раньше здесь подставлялась заглушка, модель отвечала на неё, и ученик
+      // получал бессмысленный ответ вместо объяснения. Ошибку надо назвать.
+      res.status(502).json({
+        error: "Не удалось разобрать запись. Попробуй сказать ещё раз или переключись на «Писать».",
+      });
+      return;
+    }
+
+    if (!studentTranscript) {
+      res.status(422).json({ error: "В записи не слышно речи. Скажи фразу вслух и попробуй снова." });
+      return;
+    }
   }
 
   // ── Контекст разговора ──
@@ -382,7 +410,8 @@ Always respond in English. Ask simple questions to keep the conversation going.`
   }
 
   // Озвучка — не обязательна: текст ответа уже есть, и молчаливый ответ лучше,
-  // чем потерянная реплика.
+  // чем потерянная реплика. Написавшему её тоже даём: слышать, как звучит
+  // ответ, полезно и в письменном режиме.
   try {
     const ttsResponse = await openai.audio.speech.create({
       model: "tts-1",
