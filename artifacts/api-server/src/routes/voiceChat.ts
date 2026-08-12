@@ -26,18 +26,27 @@
 //   читать, и наружу это выходит как «не удалось разобрать запись».
 //
 // Поэтому формат теперь читается ИЗ САМИХ БАЙТОВ (см. sniffAudioExt). Заявленный
-// тип остаётся только запасным вариантом, когда сигнатура неизвестна. Расхождение
-// пишется в лог: по нему видно, какой клиент врёт, без гадания.
+// тип остаётся только запасным вариантом, когда сигнатура неизвестна.
+//
+// ── ГРАБЛИ: МОДЕЛЬ МОЖЕТ БЫТЬ НЕДОСТУПНА ────────────────────────────────────
+// Ключ OpenAI есть, а «gpt-4o-mini» на нём не открыта — или запрос идёт через
+// прокси, где своя витрина моделей. Ответ на такой запрос — ошибка, и раньше
+// наружу уходило безликое «Тьютор не ответил»: причина оставалась только в
+// логах, а ученик видел неработающий раздел.
+//
+// Теперь модели перебираются по списку (CHAT_MODELS), и если не ответила ни
+// одна, наружу идёт ТЕКСТ ОШИБКИ от OpenAI. Он не секретный: там написано
+// «model not found» или «insufficient quota», и это ровно то, что нужно знать.
 //
 // ── Молчаливых заглушек нет ─────────────────────────────────────────────────
-// Без ключа OpenAI раздел раньше отвечал одной и той же заготовкой на любую
-// реплику: формально работает, на деле — нет. Теперь это честный отказ с
-// внятной причиной, и его видно в интерфейсе (GET /voice-chat/status).
+// Без ключа раздел раньше отвечал одной и той же заготовкой на любую реплику:
+// формально работает, на деле — нет. Теперь это честный отказ, и его видно в
+// интерфейсе (GET /voice-chat/status).
 //
 // ── Очки ────────────────────────────────────────────────────────────────────
 // 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
 // как в словах и грамматике. Без потолка разговор был единственным местом, где
-// очки капали бесконечно, и качать их болтовнёй было выгоднее любой учёбы.
+// очки капали бесконечно.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
@@ -55,6 +64,34 @@ function getOpenAI(): OpenAI | null {
   if (!apiKey) return null;
   return new OpenAI({ apiKey, baseURL });
 }
+
+/**
+ * Модели для ответа тьютора, в порядке предпочтения.
+ *
+ * Первой идёт заданная в окружении: если прокси знает только своё имя модели,
+ * его достаточно прописать переменной, не трогая код. Дальше — самые
+ * распространённые. Перебор нужен потому, что «модель не найдена» и «ключ не
+ * работает» выглядят для ученика одинаково, а причины разные.
+ */
+const CHAT_MODELS = [
+  process.env["OPENAI_CHAT_MODEL"],
+  "gpt-4o-mini",
+  "gpt-4o",
+  "gpt-4.1-mini",
+  "gpt-3.5-turbo",
+].filter((m): m is string => !!m);
+
+/** Модель озвучки: тоже может отсутствовать у прокси. */
+const TTS_MODEL = process.env["OPENAI_TTS_MODEL"] || "tts-1";
+
+/** Модель расшифровки речи. */
+const STT_MODEL = process.env["OPENAI_STT_MODEL"] || "whisper-1";
+
+const SYSTEM_PROMPT = `You are a friendly and encouraging English language tutor for children (ages 5-18).
+Help students improve their English speaking skills through natural conversation.
+Keep responses short (1-3 sentences), encouraging, and age-appropriate.
+Gently correct grammar mistakes by modeling correct usage in your response.
+Always respond in English. Ask simple questions to keep the conversation going.`;
 
 const POINTS_PER_VOICE_EXCHANGE = 5;
 
@@ -76,6 +113,22 @@ const MIN_AUDIO_BYTES = 1200;
 
 /** Письменная реплика длиннее этого — вставленный текст, а не фраза ребёнка. */
 const MAX_TEXT_LEN = 500;
+
+/**
+ * Короткое человеческое описание ошибки от OpenAI.
+ *
+ * Уходит в интерфейс, поэтому обрезается: полный ответ библиотеки бывает в
+ * несколько экранов, и ученику от него никакой пользы.
+ */
+function errorDetail(err: unknown): string {
+  const anyErr = err as any;
+  const raw =
+    anyErr?.error?.message ??
+    anyErr?.response?.data?.error?.message ??
+    anyErr?.message ??
+    String(err);
+  return String(raw).slice(0, 300);
+}
 
 // ── Определение формата ─────────────────────────────────────────────────────
 
@@ -167,6 +220,51 @@ const MIME_BY_EXT: Record<AudioExt, string> = {
   flac: "audio/flac",
 };
 
+// ── Ответ модели ────────────────────────────────────────────────────────────
+
+type ChatOutcome =
+  | { ok: true; text: string; model: string }
+  | { ok: false; detail: string; tried: string[] };
+
+/**
+ * Спросить модель, перебирая доступные.
+ *
+ * Возвращает результат, а не бросает: вызывающему нужно знать не только «не
+ * вышло», но и почему именно, чтобы сказать это ученику.
+ */
+async function askTutor(
+  openai: OpenAI,
+  history: { role: "user" | "assistant"; content: string }[],
+  reply: string,
+  log: { warn: (obj: unknown, msg: string) => void },
+): Promise<ChatOutcome> {
+  const tried: string[] = [];
+  let lastDetail = "Модель не ответила";
+
+  for (const model of CHAT_MODELS) {
+    if (tried.includes(model)) continue;
+    tried.push(model);
+    try {
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...history,
+          { role: "user", content: reply },
+        ],
+      });
+      const text = (response.choices[0]?.message?.content ?? "").trim();
+      if (text) return { ok: true, text, model };
+      lastDetail = "Модель вернула пустой ответ";
+    } catch (err) {
+      lastDetail = errorDetail(err);
+      log.warn({ model, detail: lastDetail }, "Модель тьютора не ответила, пробуем следующую");
+    }
+  }
+
+  return { ok: false, detail: lastDetail, tried };
+}
+
 /** Сколько очков за разговоры уже начислено сегодня. */
 async function voicePointsToday(userId: number): Promise<number> {
   try {
@@ -210,11 +308,36 @@ router.get("/voice-chat/sessions", requireAuth, async (req, res) => {
 
 // ── Готов ли раздел к работе ────────────────────────────────────────────────
 //
-// Экран спрашивает это ДО первой записи. Иначе ученик говорит вслух, ждёт
-// ответа и только потом узнаёт, что тьютор не настроен, — а запись уже потрачена.
-router.get("/voice-chat/status", requireAuth, async (_req, res) => {
+// Экран спрашивает это ДО первой записи: иначе ученик говорит вслух, ждёт
+// ответа и только потом узнаёт, что тьютор не настроен.
+//
+// ?probe=1 — проверка ЖИВЫМ запросом: какая модель отвечает и что именно
+// говорит OpenAI, если не отвечает никакая. Нужна, чтобы разбираться без
+// доступа к логам сервера.
+router.get("/voice-chat/status", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
-  res.json({ ready: getOpenAI() !== null });
+  const openai = getOpenAI();
+  if (!openai) {
+    res.json({ ready: false, reason: "Не задан OPENAI_API_KEY" });
+    return;
+  }
+
+  if (req.query["probe"] !== "1") {
+    res.json({ ready: true });
+    return;
+  }
+
+  const outcome = await askTutor(openai, [], "Say OK.", req.log);
+  if (outcome.ok) {
+    res.json({ ready: true, probe: "ok", model: outcome.model });
+    return;
+  }
+  res.json({
+    ready: false,
+    probe: "failed",
+    tried: outcome.tried,
+    reason: outcome.detail,
+  });
 });
 
 router.post("/voice-chat/sessions", requireAuth, async (req, res) => {
@@ -331,7 +454,7 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
 
     const audio = resolveAudioName(audioBuffer, mimeType);
     if (audio.sniffed && audio.declared && EXT_BY_MIME[audio.declared] !== audio.sniffed) {
-      // Именно этот случай и ломал раздел на iPhone. Строка в логе нужна, чтобы
+      // Именно этот случай ломал раздел на iPhone. Строка в логе нужна, чтобы
       // в следующий раз не искать причину на ощупь.
       req.log.warn(
         { declared: audio.declared, sniffed: audio.sniffed, bytes: audioBuffer.length },
@@ -345,19 +468,19 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
       });
       const transcription = await openai.audio.transcriptions.create({
         file: audioFile,
-        model: "whisper-1",
+        model: STT_MODEL,
         language: "en",
       });
       studentTranscript = (transcription.text ?? "").trim();
     } catch (err) {
+      const detail = errorDetail(err);
       req.log.error(
         { err, fileName: audio.fileName, declared: audio.declared, bytes: audioBuffer.length },
         "Failed to transcribe audio",
       );
-      // Раньше здесь подставлялась заглушка, модель отвечала на неё, и ученик
-      // получал бессмысленный ответ вместо объяснения. Ошибку надо назвать.
       res.status(502).json({
         error: "Не удалось разобрать запись. Попробуй сказать ещё раз или переключись на «Писать».",
+        detail,
       });
       return;
     }
@@ -379,49 +502,34 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   }));
 
   // ── Ответ тьютора ──
-  let aiTranscript = "";
-  let aiAudioUrl: string | null = null;
-  try {
-    const chatResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `You are a friendly and encouraging English language tutor for children (ages 5-18). 
-Help students improve their English speaking skills through natural conversation.
-Keep responses short (1-3 sentences), encouraging, and age-appropriate.
-Gently correct grammar mistakes by modeling correct usage in your response.
-Always respond in English. Ask simple questions to keep the conversation going.`,
-        },
-        ...conversationHistory,
-        { role: "user", content: studentTranscript },
-      ],
+  const outcome = await askTutor(openai, conversationHistory, studentTranscript, req.log);
+  if (!outcome.ok) {
+    req.log.error({ tried: outcome.tried, detail: outcome.detail }, "Ни одна модель не ответила");
+    // Причина уходит наружу: без неё «тьютор не ответил» неотличимо от
+    // «модели нет на ключе» и «кончилась квота».
+    res.status(502).json({
+      error: "Тьютор не ответил.",
+      detail: outcome.detail,
+      tried: outcome.tried,
     });
-    aiTranscript = (chatResponse.choices[0]?.message?.content ?? "").trim();
-  } catch (err) {
-    req.log.error({ err }, "Failed to get AI response");
-    res.status(502).json({ error: "Тьютор не ответил. Попробуй ещё раз через минуту." });
     return;
   }
-
-  if (!aiTranscript) {
-    res.status(502).json({ error: "Тьютор не ответил. Попробуй ещё раз через минуту." });
-    return;
-  }
+  const aiTranscript = outcome.text;
 
   // Озвучка — не обязательна: текст ответа уже есть, и молчаливый ответ лучше,
   // чем потерянная реплика. Написавшему её тоже даём: слышать, как звучит
   // ответ, полезно и в письменном режиме.
+  let aiAudioUrl: string | null = null;
   try {
     const ttsResponse = await openai.audio.speech.create({
-      model: "tts-1",
+      model: TTS_MODEL,
       voice: "nova",
       input: aiTranscript,
     });
     const audioArrayBuffer = await ttsResponse.arrayBuffer();
     aiAudioUrl = `data:audio/mp3;base64,${Buffer.from(audioArrayBuffer).toString("base64")}`;
   } catch (err) {
-    req.log.error({ err }, "Failed to synthesize speech");
+    req.log.warn({ detail: errorDetail(err) }, "Не удалось озвучить ответ");
   }
 
   // ── Записываем обе реплики ──
