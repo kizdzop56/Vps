@@ -11,6 +11,28 @@
 // говорит или просто дышит. Подписи-состояния при этом тоже остались: картинка
 // сообщает быстрее, но текст надёжнее.
 //
+// ── ГРАБЛИ: СНЕЖА УЕЗЖАЛА ВМЕСТЕ С ЛЕНТОЙ ──────────────────────────────────
+// Экран был одним большим ScrollView: заголовок, Снежа, переключатель режима и
+// лента реплик — всё внутри. Пока разговор короткий, разницы не видно. После
+// пяти реплик лента доросла до края, автопрокрутка ушла вниз, и Снежа осталась
+// где-то выше экрана. Собеседник, которого не видно, — это снова переписка с
+// настройкой.
+//
+// Теперь экран — ТРИ элемента одного flex-столбца:
+//
+//   ШАПКА  — заголовок, Снежа, переключатель режима. НЕ прокручивается.
+//   ЛЕНТА  — только реплики. flex: 1, прокручивается она одна.
+//   ПАНЕЛЬ — просьба повторить и кнопка/поле ввода. НЕ прокручивается.
+//
+// Поэтому Снежа видна ВСЕГДА, сколько бы реплик ни было. Это не «липкий
+// заголовок» (stickyHeaderIndices) намеренно: с ним элемент всё равно живёт
+// внутри прокрутки и на вебе подрагивает на границе прилипания.
+//
+// Шапка ужимается, когда разговор начался: пояснение «говори вслух» нужно ровно
+// до первой реплики, а дальше это просто отъеденная у ленты высота. Сама Снежа
+// тоже становится чуть меньше — на телефоне каждый десяток пикселей ленты на
+// счету.
+//
 // ── ОШИБКА ОСТАНАВЛИВАЕТ РАЗГОВОР ──────────────────────────────────────────
 // Снежа проверяет каждую реплику ученика. Ошиблась фраза — под ней появляется
 // разбор (что не так и как правильно), Снежа просит повторить, и над кнопкой
@@ -96,8 +118,8 @@
 // вкладок, её подъём и воздух. Вычитая из него шестьдесят, кнопка оказывалась
 // ВНУТРИ полосы панели и уходила под неё наполовину.
 //
-// Теперь абсолютного позиционирования нет вовсе: лента и панель ввода — два
-// элемента одного flex-столбца, а screenBottom применяется к нижнему целиком.
+// Теперь абсолютного позиционирования нет вовсе: шапка, лента и панель ввода —
+// элементы одного flex-столбца, а screenBottom применяется к нижнему целиком.
 //
 // Эмодзи не используются: значки — глифы из своего набора.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,14 +543,21 @@ export default function TutorScreen() {
 
   const blocked = ready === false;
   const needsRetry = retry > 0;
+  /** Разговор начался — шапку ужимаем, место отдаём ленте. */
+  const started = lines.length > 0;
 
   // Состояние Снежи. Порядок проверок — это приоритет: пока идёт запись, она
   // слушает, чем бы там ни занимался сервер.
   const snezhaState: SnezhaState =
     recording ? "listen" : sending ? "think" : voicing ? "speak" : "idle";
 
-  /** Ростом Снежа занимает четверть ширины экрана: рядом с ней ещё текст. */
-  const mascotW = Math.min(112, Math.max(88, Math.round(W * 0.26)));
+  /**
+   * Рост Снежи. До первой реплики — крупнее (знакомимся), дальше меньше: она
+   * остаётся на экране навсегда, и каждый десяток пикселей ленты на счету.
+   */
+  const mascotW = started
+    ? Math.min(84, Math.max(68, Math.round(W * 0.2)))
+    : Math.min(112, Math.max(88, Math.round(W * 0.26)));
 
   return (
     <KeyboardAvoidingView
@@ -537,18 +566,10 @@ export default function TutorScreen() {
       // мешает: столбец начинает прыгать при фокусе поля.
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <ScrollView
-        ref={(r) => { scroller.current = r; }}
-        onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
-        style={{ flex: 1 }}
-        contentContainerStyle={{
-          paddingHorizontal: 16,
-          paddingTop: screenTop(insets),
-          paddingBottom: 16,
-        }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
+      {/* ═══ ШАПКА: не прокручивается ═══
+          Снежа обязана быть видна всегда, поэтому она ВНЕ ленты. См. ГРАБЛИ в
+          шапке файла. */}
+      <View style={{ paddingHorizontal: 16, paddingTop: screenTop(insets) }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <Pressable
             onPress={exit}
@@ -559,7 +580,16 @@ export default function TutorScreen() {
           >
             <Glyph name="chevron" size={24} color={colors.foreground} />
           </Pressable>
-          <Text style={{ flex: 1, fontSize: 23, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
+          <Text
+            numberOfLines={1}
+            style={{
+              flex: 1,
+              fontSize: started ? 19 : 23,
+              fontWeight: "900",
+              letterSpacing: -0.6,
+              color: colors.foreground,
+            }}
+          >
             {`Разговор со ${NAME}й`}
           </Text>
           {points > 0 && (
@@ -585,7 +615,12 @@ export default function TutorScreen() {
         >
           <SnezhaLive state={snezhaState} width={mascotW} still={blocked} />
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ fontSize: 18, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3 }}>
+            <Text style={{
+              fontSize: started ? 16 : 18,
+              fontWeight: "900",
+              color: colors.foreground,
+              letterSpacing: -0.3,
+            }}>
               {NAME}
             </Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3 }}>
@@ -597,11 +632,15 @@ export default function TutorScreen() {
                 {STATUS[snezhaState]}
               </Text>
             </View>
-            <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
-              {mode === "voice"
-                ? "Говори по-английски вслух. Ошибёшься — Снежа поправит и попросит повторить"
-                : "Пиши по-английски. Ошибёшься — Снежа поправит и попросит повторить"}
-            </Text>
+            {/* Пояснение нужно только до первой реплики: дальше это просто
+                отъеденная у ленты высота. */}
+            {!started && (
+              <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
+                {mode === "voice"
+                  ? "Говори по-английски вслух. Ошибёшься — Снежа поправит и попросит повторить"
+                  : "Пиши по-английски. Ошибёшься — Снежа поправит и попросит повторить"}
+              </Text>
+            )}
           </View>
         </Pressable>
 
@@ -612,7 +651,7 @@ export default function TutorScreen() {
           backgroundColor: colors.primary + "14",
           borderRadius: radii.pill,
           padding: 4,
-          marginBottom: 14,
+          marginBottom: 10,
         }}>
           {MODES.map((m) => {
             const active = mode === m.key;
@@ -625,7 +664,7 @@ export default function TutorScreen() {
                 accessibilityLabel={m.label}
                 style={{
                   flex: 1,
-                  paddingVertical: 10,
+                  paddingVertical: started ? 8 : 10,
                   borderRadius: radii.pill,
                   alignItems: "center",
                   backgroundColor: active ? colors.card : "transparent",
@@ -649,9 +688,10 @@ export default function TutorScreen() {
         </View>
 
         {/* Раздел не настроен на сервере — говорим это сразу, а не после
-            потраченной впустую записи. */}
+            потраченной впустую записи. Тоже в шапке: это про весь экран, а не
+            про какую-то реплику. */}
         {blocked && (
-          <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 14 }}>
+          <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 10 }}>
             <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
               {`${NAME} пока не может говорить`}
             </Text>
@@ -660,7 +700,17 @@ export default function TutorScreen() {
             </Text>
           </Tile>
         )}
+      </View>
 
+      {/* ═══ ЛЕНТА: прокручивается только она ═══ */}
+      <ScrollView
+        ref={(r) => { scroller.current = r; }}
+        onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Приглашение вместо вписанного приветствия: пока ученик не сказал
             ничего, разговора нет. */}
         {lines.length === 0 && !blocked && (
@@ -674,8 +724,8 @@ export default function TutorScreen() {
           </Text>
         )}
 
-        {/* Лента разговора. Свои реплики справа, ответы слева — как в обычной
-            переписке, чтобы не читать подписи «кто сказал». */}
+        {/* Свои реплики справа, ответы слева — как в обычной переписке, чтобы
+            не читать подписи «кто сказал». */}
         {lines.map((line) => {
           const mine = line.role === "student";
           // Реплику Снежи можно послушать и перевести всегда: звук либо готов,
@@ -718,7 +768,7 @@ export default function TutorScreen() {
                 borderRadius: radii.md,
                 paddingVertical: 11,
                 paddingHorizontal: 14,
-                marginBottom: 10,
+                marginTop: 10,
                 opacity: line.pending ? 0.6 : 1,
               }}
             >
@@ -854,11 +904,11 @@ export default function TutorScreen() {
 
         {/* Ждём ответ. Без подписи: и кружок, и сама Снежа уже показывают это. */}
         {sending && (
-          <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 4 }} />
+          <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 12 }} />
         )}
 
         {denied && (
-          <Tile glow={colors.warning} style={{ padding: 15, marginTop: 8 }}>
+          <Tile glow={colors.warning} style={{ padding: 15, marginTop: 10 }}>
             <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
               Нужен доступ к микрофону
             </Text>
@@ -870,7 +920,7 @@ export default function TutorScreen() {
         )}
 
         {!!error && (
-          <Tile glow={colors.destructive} style={{ padding: 15, marginTop: 8 }}>
+          <Tile glow={colors.destructive} style={{ padding: 15, marginTop: 10 }}>
             <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
               Не получилось
             </Text>
@@ -881,9 +931,10 @@ export default function TutorScreen() {
         )}
       </ScrollView>
 
-      {/* Панель ввода. НЕ absolute: она обычный элемент столбца, поэтому лента
-          сама отдаёт ей место, а screenBottom честно уводит её выше панели
-          вкладок. См. ГРАБЛИ в шапке файла. */}
+      {/* ═══ ПАНЕЛЬ ВВОДА: не прокручивается ═══
+          НЕ absolute: она обычный элемент столбца, поэтому лента сама отдаёт ей
+          место, а screenBottom честно уводит её выше панели вкладок. См. ГРАБЛИ
+          в шапке файла. */}
       <View style={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}>
         {/* Просьба повторить. Живёт у кнопки, а не в ленте: ленту прокрутили —
             и просьба уехала вверх, а руки ученика здесь. */}
