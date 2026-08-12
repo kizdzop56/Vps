@@ -5,19 +5,25 @@
 // модель отвечает как детский преподаватель → tts озвучивает ответ. Всё за один
 // запрос: дробить на три было бы втрое больше кругов по сети на одну реплику.
 //
-// ── ГРАБЛИ: имя файла решает всё ────────────────────────────────────────────
-// Whisper определяет формат записи по РАСШИРЕНИЮ ИМЕНИ ФАЙЛА, а не по
-// содержимому. Раньше имя было прошито как «audio.m4a», а браузер пишет webm или
-// mp4 — и запись отвергалась как битая. Наружу это выходило не ошибкой, а
-// бессмысленным ответом: расшифровка подменялась заглушкой, модель отвечала на
-// заглушку, и раздел выглядел неработающим.
+// ── ГРАБЛИ: ФОРМАТ ЗАПИСИ НЕЛЬЗЯ БРАТЬ ИЗ ЗАЯВЛЕННОГО ТИПА ──────────────────
+// Whisper определяет формат по РАСШИРЕНИЮ ИМЕНИ ФАЙЛА, а не по содержимому.
+// Сначала имя было прошито как «audio.m4a» — браузер пишет webm, и запись
+// отвергалась. Починили, стали собирать имя из mimeType, присланного клиентом.
+// Не помогло, и вот почему:
 //
-// Поэтому клиент присылает НАСТОЯЩИЙ тип записи, а имя собирается из него.
+//   SAFARI НА IPHONE ВРЁТ О ФОРМАТЕ. MediaRecorder.isTypeSupported("audio/webm")
+//   отвечает true, recorder.mimeType тоже говорит webm, а на выходе получается
+//   mp4/aac. Файл называется audio.webm, внутри mp4 — whisper отказывается его
+//   читать, и наружу это выходит как «не удалось разобрать запись».
 //
-// ── Молчаливых заглушек больше нет ──────────────────────────────────────────
+// Поэтому формат теперь читается ИЗ САМИХ БАЙТОВ (см. sniffAudioExt). Заявленный
+// тип остаётся только запасным вариантом, когда сигнатура неизвестна. Расхождение
+// пишется в лог: по нему видно, какой клиент врёт, без гадания.
+//
+// ── Молчаливых заглушек нет ─────────────────────────────────────────────────
 // Без ключа OpenAI раздел раньше отвечал одной и той же заготовкой на любую
 // реплику: формально работает, на деле — нет. Теперь это честный отказ с
-// внятной причиной, и его видно в интерфейсе.
+// внятной причиной, и его видно в интерфейсе (GET /voice-chat/status).
 //
 // ── Очки ────────────────────────────────────────────────────────────────────
 // 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
@@ -50,16 +56,28 @@ const DAILY_VOICE_POINTS_CAP = 30;
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 
 /**
- * Расширение файла по типу записи.
+ * Минимальный размер записи.
  *
- * Ключ — тип без параметров: браузер присылает «audio/webm;codecs=opus», а
- * решает здесь только первая часть.
+ * Полсекунды речи в любом из используемых форматов весит заметно больше. Всё,
+ * что мельче, — это случайный тап по кнопке: whisper на таком файле отвечает
+ * ошибкой, и ученик видел «не удалось разобрать запись» вместо «ты ничего не
+ * сказал».
  */
-const EXT_BY_MIME: Record<string, string> = {
+const MIN_AUDIO_BYTES = 1200;
+
+// ── Определение формата ─────────────────────────────────────────────────────
+
+/** Расширения, которые понимает whisper. */
+type AudioExt = "webm" | "mp4" | "m4a" | "ogg" | "wav" | "mp3" | "flac";
+
+/** Расширение по заявленному типу. Запасной путь, если сигнатура неизвестна. */
+const EXT_BY_MIME: Record<string, AudioExt> = {
   "audio/webm": "webm",
+  "video/webm": "webm",
   "audio/ogg": "ogg",
   "audio/oga": "ogg",
   "audio/mp4": "mp4",
+  "video/mp4": "mp4",
   "audio/m4a": "m4a",
   "audio/x-m4a": "m4a",
   "audio/aac": "m4a",
@@ -71,11 +89,71 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/flac": "flac",
 };
 
-/** Имя файла для whisper. Неизвестный тип считаем m4a: так пишут телефоны. */
-function audioFileName(mimeType: unknown): string {
-  const base = String(mimeType ?? "").split(";")[0]!.trim().toLowerCase();
-  return `audio.${EXT_BY_MIME[base] ?? "m4a"}`;
+/** Тип без параметров: «audio/webm;codecs=opus» → «audio/webm». */
+function baseMime(mimeType: unknown): string {
+  return String(mimeType ?? "").split(";")[0]!.trim().toLowerCase();
 }
+
+/**
+ * Формат по сигнатуре файла.
+ *
+ * Единственный надёжный способ: заявленному типу верить нельзя (см. шапку).
+ * null — сигнатура незнакомая, тогда решает заявленный тип.
+ */
+function sniffAudioExt(buf: Buffer): AudioExt | null {
+  if (buf.length < 12) return null;
+
+  // Matroska / WebM: EBML-заголовок.
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return "webm";
+
+  // ISO BMFF (mp4, m4a): «ftyp» на четвёртом байте. Здесь и лежит ловушка
+  // Safari: тип заявлен webm, а сигнатура — mp4.
+  if (buf.toString("ascii", 4, 8) === "ftyp") {
+    const brand = buf.toString("ascii", 8, 12).trim().toLowerCase();
+    // Марка M4A даёт .m4a, всё остальное (isom, mp42, iso5…) — .mp4. Whisper
+    // читает оба, но точное расширение избавляет от лишних догадок.
+    return brand.startsWith("m4a") ? "m4a" : "mp4";
+  }
+
+  const head = buf.toString("ascii", 0, 4);
+  if (head === "OggS") return "ogg";
+  if (head === "fLaC") return "flac";
+  if (head === "RIFF" && buf.toString("ascii", 8, 12) === "WAVE") return "wav";
+  if (head.startsWith("ID3")) return "mp3";
+  // Кадр MPEG: 11 единичных бит подряд.
+  if (buf[0] === 0xff && (buf[1]! & 0xe0) === 0xe0) return "mp3";
+
+  return null;
+}
+
+/**
+ * Имя файла для whisper и то, что об этом стоит записать в лог.
+ *
+ * Неизвестны и сигнатура, и тип — берём m4a: так пишут телефоны, и это самый
+ * вероятный вариант из оставшихся.
+ */
+function resolveAudioName(buf: Buffer, mimeType: unknown): {
+  fileName: string;
+  ext: AudioExt;
+  declared: string;
+  sniffed: AudioExt | null;
+} {
+  const declared = baseMime(mimeType);
+  const sniffed = sniffAudioExt(buf);
+  const ext = sniffed ?? EXT_BY_MIME[declared] ?? "m4a";
+  return { fileName: `audio.${ext}`, ext, declared, sniffed };
+}
+
+/** Тип для отправки: он должен соответствовать РЕАЛЬНОМУ формату, а не заявленному. */
+const MIME_BY_EXT: Record<AudioExt, string> = {
+  webm: "audio/webm",
+  mp4: "audio/mp4",
+  m4a: "audio/m4a",
+  ogg: "audio/ogg",
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  flac: "audio/flac",
+};
 
 /** Сколько очков за разговоры уже начислено сегодня. */
 async function voicePointsToday(userId: number): Promise<number> {
@@ -213,16 +291,32 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     res.status(400).json({ error: "Запись пустая — скажи фразу вслух и попробуй снова" });
     return;
   }
+  if (audioBuffer.length < MIN_AUDIO_BYTES) {
+    res.status(422).json({
+      error: "Запись слишком короткая. Держи кнопку дольше: скажи целую фразу, потом нажми «Стоп».",
+    });
+    return;
+  }
   if (audioBuffer.length > MAX_AUDIO_BYTES) {
     res.status(413).json({ error: "Запись слишком длинная. Говори покороче — одной-двумя фразами." });
     return;
   }
 
   // ── Речь в текст ──
+  const audio = resolveAudioName(audioBuffer, mimeType);
+  if (audio.sniffed && audio.declared && EXT_BY_MIME[audio.declared] !== audio.sniffed) {
+    // Именно этот случай и ломал раздел на iPhone. Строка в логе нужна, чтобы
+    // в следующий раз не искать причину на ощупь.
+    req.log.warn(
+      { declared: audio.declared, sniffed: audio.sniffed, bytes: audioBuffer.length },
+      "Клиент заявил один формат записи, а прислал другой",
+    );
+  }
+
   let studentTranscript = "";
   try {
-    const audioFile = await toFile(audioBuffer, audioFileName(mimeType), {
-      type: String(mimeType ?? "audio/m4a").split(";")[0],
+    const audioFile = await toFile(audioBuffer, audio.fileName, {
+      type: MIME_BY_EXT[audio.ext],
     });
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
@@ -231,7 +325,10 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     });
     studentTranscript = (transcription.text ?? "").trim();
   } catch (err) {
-    req.log.error({ err }, "Failed to transcribe audio");
+    req.log.error(
+      { err, fileName: audio.fileName, declared: audio.declared, bytes: audioBuffer.length },
+      "Failed to transcribe audio",
+    );
     // Раньше здесь подставлялась заглушка, модель отвечала на неё, и ученик
     // получал бессмысленный ответ вместо объяснения. Ошибку надо назвать.
     res.status(502).json({ error: "Не удалось разобрать запись. Попробуй сказать ещё раз, чуть ближе к микрофону." });
