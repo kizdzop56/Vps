@@ -278,7 +278,7 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     return;
   }
   if (written.length > MAX_TEXT_LEN) {
-    res.status(413).json({ error: "Слишком長 длинная реплика. Напиши покороче — одной-двумя фразами." });
+    res.status(413).json({ error: "Слишком длинная реплика. Напиши покороче — одной-двумя фразами." });
     return;
   }
 
