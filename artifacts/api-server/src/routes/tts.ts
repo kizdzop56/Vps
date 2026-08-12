@@ -8,14 +8,26 @@
 //      одиночные слова, у фраз/идиом такой записи в принципе не бывает)
 //   3. Deepgram Aura-2 TTS — всё остальное: словосочетания, идиомы и
 //      одиночные слова, для которых dictionaryapi.dev ничего не нашёл.
-//      Отдаёт готовый mp3 (в отличие от Gemini, PCM разбирать не нужно).
-//   4. Gemini TTS — если когда-нибудь будет добавлен (сейчас нет)
+//      Отдаёт готовый mp3.
+//   4. Gemini TTS — когда Deepgram недоступен. Стоит ПОСЛЕ него намеренно:
+//      Gemini отдаёт сырой PCM, его приходится оборачивать в WAV, и при той же
+//      длительности файл выходит в разы тяжелее mp3. Кэш вечный, слова слушают
+//      тысячи раз — раздувать его вдвое ради одинакового результата незачем.
+//      Зато без ключа Deepgram именно Gemini остаётся единственным
+//      синтезатором, и раздел не остаётся без звука вовсе.
 //   5. Azure Speech TTS (en-US-AriaNeural) — если заданы AZURE_SPEECH_KEY + AZURE_SPEECH_REGION
 //   6. Устаревшая запись из кэша — лучше старая интонация, чем тишина
 //   7. 404 JSON
 //
 // После первого успешного поиска аудио кэшируется и words.audio_url
 // обновляется → повторные запросы идут прямо в кэш.
+//
+// ── ГРАБЛИ: В КЭШЕ ЛЕЖИТ НЕ ТОЛЬКО MP3 ─────────────────────────────────────
+// Файл в кэше называется <sha256>.mp3 и отдаётся с Content-Type audio/mpeg —
+// так было, пока источники давали только mp3. Gemini даёт WAV, поэтому тип
+// содержимого теперь определяется по сигнатуре файла (audioContentType), а
+// расширение в имени осталось прежним: переименовывать накопленный кэш ради
+// косметики — верный способ его потерять (см. историю с TTS_VERSION ниже).
 import { Router } from "express";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
@@ -25,6 +37,7 @@ import { db } from "@workspace/db";
 import { wordsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { s3ClientFromEnv } from "../lib/s3Client";
+import { pcmToWav } from "../lib/ai";
 
 const router = Router();
 
@@ -75,6 +88,21 @@ function legacyKeyFor(text: string): string {
 function cacheKeyFor(text: string): string {
   const normalized = text.toLowerCase().trim();
   return isPhrase(normalized) ? hashOf(`${TTS_VERSION}:${normalized}`) : hashOf(normalized);
+}
+
+/**
+ * Тип содержимого по сигнатуре файла.
+ *
+ * В кэше лежат и mp3, и WAV (Gemini), а имя файла у всех одинаковое. Отдать
+ * WAV с типом audio/mpeg — значит получить тишину в Safari: он доверяет
+ * заголовку, а не содержимому.
+ */
+function audioContentType(buf: Buffer): string {
+  if (buf.length >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WAVE") {
+    return "audio/wav";
+  }
+  if (buf.length >= 4 && buf.toString("ascii", 0, 4) === "OggS") return "audio/ogg";
+  return "audio/mpeg";
 }
 
 // ── Локальный кэш ──────────────────────────────────────────────────────────
@@ -146,7 +174,7 @@ async function saveToCache(key: string, buf: Buffer): Promise<void> {
   const s3 = s3ClientFromEnv();
   if (s3) {
     try {
-      await s3.putObject(s3TtsKey(key), buf, "audio/mpeg");
+      await s3.putObject(s3TtsKey(key), buf, audioContentType(buf));
       return;
     } catch {
       // S3 недоступен — сохраняем на диск
@@ -223,6 +251,61 @@ async function deepgramTts(text: string): Promise<Buffer | null> {
   }
 }
 
+/**
+ * Gemini TTS. Отдаёт сырой PCM без заголовка, поэтому здесь он оборачивается в
+ * WAV (pcmToWav из lib/ai.ts — там же, где это нужно тьютору).
+ *
+ * Указание голосу — часть текста запроса: у моделей озвучки Gemini нет
+ * отдельного поля «читай так». Просим ровно и разборчиво, потому что это учебное
+ * произношение, а не выразительное чтение.
+ */
+async function geminiTts(text: string): Promise<Buffer | null> {
+  const key = process.env["GOOGLE_AI_API_KEY"]?.trim()
+    || process.env["GEMINI_API_KEY"]?.trim()
+    || process.env["GOOGLE_API_KEY"]?.trim();
+  if (!key) return null;
+
+  const model = process.env["GOOGLE_AI_TTS_MODEL"]?.trim() || "gemini-2.5-flash-preview-tts";
+  const voice = process.env["GOOGLE_AI_TTS_VOICE"]?.trim() || "Kore";
+
+  try {
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          contents: [{
+            role: "user",
+            parts: [{
+              text: `Say clearly and calmly, in a neutral American accent: ${speakableText(text)}`,
+            }],
+          }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
+            },
+          },
+        }),
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json() as any;
+    const part = (data?.candidates?.[0]?.content?.parts ?? [])
+      .find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
+    const inline = part?.inlineData ?? part?.inline_data;
+    if (!inline?.data) return null;
+
+    const rateMatch = /rate=(\d+)/i.exec(String(inline.mimeType ?? inline.mime_type ?? ""));
+    const rate = rateMatch ? Number(rateMatch[1]) : 24_000;
+    return pcmToWav(Buffer.from(inline.data, "base64"), Number.isFinite(rate) ? rate : 24_000);
+  } catch {
+    return null;
+  }
+}
+
 /** Azure Cognitive Services TTS: нейронный голос en-US-AriaNeural. */
 async function azureTts(text: string): Promise<Buffer | null> {
   const key = process.env["AZURE_SPEECH_KEY"]?.trim();
@@ -266,9 +349,9 @@ router.get("/tts", async (req, res) => {
   const wordIdParam = req.query["wordId"];
   const textParam = req.query["text"];
 
-  /** Отдать mp3 клиенту. */
+  /** Отдать звук клиенту. Тип — по содержимому: в кэше и mp3, и WAV. */
   const sendAudio = (buf: Buffer) => {
-    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Type", audioContentType(buf));
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.send(buf);
   };
@@ -384,7 +467,10 @@ router.get("/tts", async (req, res) => {
     audioBuf = await deepgramTts(text).catch(() => null);
   }
 
-  // ── 3. Gemini TTS — пока не подключен ────────────────────────────────────
+  // ── 3. Gemini TTS (когда Deepgram не настроен или отказал) ──────────────
+  if (!audioBuf) {
+    audioBuf = await geminiTts(text).catch(() => null);
+  }
 
   // ── 4. Azure TTS ───────────────────────────────────────────────────────
   if (!audioBuf) {
@@ -407,7 +493,13 @@ router.get("/tts", async (req, res) => {
     }
 
     req.log.warn(
-      { text, wordId, hasDeepgramKey: !!process.env["DEEPGRAM_API_KEY"], hasAzureKey: !!process.env["AZURE_SPEECH_KEY"] },
+      {
+        text,
+        wordId,
+        hasDeepgramKey: !!process.env["DEEPGRAM_API_KEY"],
+        hasGoogleKey: !!(process.env["GOOGLE_AI_API_KEY"] || process.env["GEMINI_API_KEY"]),
+        hasAzureKey: !!process.env["AZURE_SPEECH_KEY"],
+      },
       "tts: no audio source produced audio for this text",
     );
     res.status(404).json({ error: "Audio not available for this text" });
