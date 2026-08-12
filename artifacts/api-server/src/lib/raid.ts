@@ -26,6 +26,13 @@
 // бы босса непобиваемым для тех, кто бьёт его с понедельника. В последние сутки
 // подгонка выключена — финиш не должен уезжать из-под ног.
 //
+// ── Один общий топ, без лиг ─────────────────────────────────────────────────
+// Лиги по уровню профиля убраны. Затея была в том, чтобы новичок не сравнивал
+// себя с ветераном, но на деле она давала обратное: в каждой лиге по одному
+// человеку, три таблицы по одной строке и переключатель между пустотами. Рейд —
+// событие ОБЩЕЕ, у него один босс и один пул здоровья, значит и таблица одна.
+// Место считается по всем участникам рейда.
+//
 // ── Валюта одна: монеты ─────────────────────────────────────────────────────
 // Монеты капают за попадания, дневное задание и сундуки. Тратятся на бафы
 // (мощный удар, удвоение, щит) и на энергию. Маны в механике нет: два счётчика
@@ -50,6 +57,7 @@ import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { startOfDay } from "./srs";
 import { localDayKey } from "./timeStats";
+import { EMPTY_LIFETIME, raidMedalCount, raidMedals, type RaidLifetime } from "./raidMedals";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -388,21 +396,6 @@ export function milestonesReached(damage: number): number {
   let n = 0;
   for (const m of MILESTONES) if (damage >= m.at) n++;
   return n;
-}
-
-// ── Лиги ────────────────────────────────────────────────────────────────────
-
-export type League = "bronze" | "silver" | "gold";
-
-export const LEAGUES: readonly { key: League; title: string; min: number; max: number }[] = [
-  { key: "bronze", title: "Бронзовая лига", min: 1, max: 30 },
-  { key: "silver", title: "Серебряная лига", min: 31, max: 60 },
-  { key: "gold", title: "Золотая лига", min: 61, max: 100000 },
-];
-
-export function leagueOf(level: number): League {
-  const found = LEAGUES.find((l) => level >= l.min && level <= l.max);
-  return found?.key ?? "bronze";
 }
 
 // ── Аудитория ───────────────────────────────────────────────────────────────
@@ -824,8 +817,18 @@ export interface RaidRow {
   me: boolean;
 }
 
-async function leagueRows(eventId: number, league: League, meId: number): Promise<RaidRow[]> {
-  const def = LEAGUES.find((l) => l.key === league)!;
+/** Сколько строк показываем в общем топе. */
+const TOP_LIMIT = 20;
+
+/**
+ * Общий топ рейда по урону.
+ *
+ * Один на всех: лиг по уровню больше нет (см. шапку файла). Лимит есть, потому
+ * что таблица едет вместе с остальной картиной рейда и не должна расти
+ * бесконечно; своё место ученик видит отдельной строкой, даже если не попал в
+ * первые двадцать.
+ */
+async function topRows(eventId: number, meId: number): Promise<RaidRow[]> {
   const rows = await db
     .select({
       userId: raidParticipantsTable.userId,
@@ -840,13 +843,9 @@ async function leagueRows(eventId: number, league: League, meId: number): Promis
     })
     .from(raidParticipantsTable)
     .innerJoin(usersTable, eq(usersTable.id, raidParticipantsTable.userId))
-    .where(and(
-      eq(raidParticipantsTable.eventId, eventId),
-      gte(usersTable.xpLevel, def.min),
-      lte(usersTable.xpLevel, def.max),
-    ))
+    .where(eq(raidParticipantsTable.eventId, eventId))
     .orderBy(desc(raidParticipantsTable.damage))
-    .limit(10);
+    .limit(TOP_LIMIT);
 
   return rows.map((r) => ({
     userId: r.userId,
@@ -860,6 +859,49 @@ async function leagueRows(eventId: number, league: League, meId: number): Promis
     crits: r.crits,
     me: r.userId === meId,
   }));
+}
+
+/**
+ * Итоги ученика по ВСЕМ рейдам: из них выводятся медали события.
+ *
+ * Одним запросом с join к событиям: победы считаются только там, где ученик
+ * реально ударил (damage > 0) — «был в базе, но не бил» победой не считается.
+ * При ошибке возвращаются нули: медали украшение, из-за них экран падать не
+ * должен.
+ */
+async function raidLifetime(userId: number): Promise<RaidLifetime> {
+  try {
+    const [row] = await db
+      .select({
+        damage: sql<number>`coalesce(sum(${raidParticipantsTable.damage}), 0)::int`,
+        hits: sql<number>`coalesce(sum(${raidParticipantsTable.hits}), 0)::int`,
+        crits: sql<number>`coalesce(sum(${raidParticipantsTable.crits}), 0)::int`,
+        bestCombo: sql<number>`coalesce(max(${raidParticipantsTable.bestCombo}), 0)::int`,
+        raids: sql<number>`count(*)::int`,
+        wins: sql<number>`count(*) filter (where ${raidEventsTable.status} = 'won' and ${raidParticipantsTable.damage} > 0)::int`,
+      })
+      .from(raidParticipantsTable)
+      .innerJoin(raidEventsTable, eq(raidEventsTable.id, raidParticipantsTable.eventId))
+      .where(eq(raidParticipantsTable.userId, userId));
+
+    const [kills] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(raidEventsTable)
+      .where(eq(raidEventsTable.killerUserId, userId));
+
+    return {
+      damage: Number(row?.damage ?? 0),
+      hits: Number(row?.hits ?? 0),
+      crits: Number(row?.crits ?? 0),
+      bestCombo: Number(row?.bestCombo ?? 0),
+      raids: Number(row?.raids ?? 0),
+      wins: Number(row?.wins ?? 0),
+      lastHits: Number(kills?.n ?? 0),
+    };
+  } catch (err) {
+    logger.error({ err, userId }, "Рейд: итоги за всё время не посчитались");
+    return { ...EMPTY_LIFETIME };
+  }
 }
 
 /** Полная картина рейда для одного ученика. */
@@ -878,23 +920,18 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     .from(usersTable)
     .where(eq(usersTable.id, userId));
   const level = Number(me?.level ?? 1);
-  const league = leagueOf(level);
-  const def = LEAGUES.find((l) => l.key === league)!;
 
   const myDamage = Number(participant?.damage ?? 0);
   const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
   const phase = phaseOf(hpLeft, event.hpTotal);
 
-  // Место в своей лиге: считаем, сколько людей лиги набили больше.
+  // Место в общем топе: сколько участников набили больше.
   const [ahead] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(raidParticipantsTable)
-    .innerJoin(usersTable, eq(usersTable.id, raidParticipantsTable.userId))
     .where(and(
       eq(raidParticipantsTable.eventId, event.id),
       sql`${raidParticipantsTable.damage} > ${myDamage}`,
-      gte(usersTable.xpLevel, def.min),
-      lte(usersTable.xpLevel, def.max),
     ));
 
   const [fighters] = await db
@@ -963,6 +1000,9 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
   const shielded = !!state.shieldUntil && state.shieldUntil.getTime() > now.getTime();
   const weapon = !!state.weaponSkin && state.weaponEventId !== event.id;
 
+  const lifetime = await raidLifetime(userId);
+  const medals = raidMedals(lifetime);
+
   return {
     event: {
       id: event.id,
@@ -994,8 +1034,6 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       combo: state.combo,
       rank: Number(ahead?.n ?? 0) + 1,
       level,
-      league,
-      leagueTitle: def.title,
       share: Number(fighters?.damage ?? 0) > 0
         ? Math.round((myDamage / Number(fighters?.damage ?? 1)) * 1000) / 10
         : 0,
@@ -1035,14 +1073,12 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       shield: { cost: SHIELD_COST, active: shielded },
       stamina: { cost: STAMINA_COST, full: state.stamina >= STAMINA_MAX },
     },
-    leagues: await Promise.all(
-      LEAGUES.map(async (l) => ({
-        key: l.key,
-        title: l.title,
-        mine: l.key === league,
-        rows: await leagueRows(event.id, l.key, userId),
-      })),
-    ),
+    /** Один общий топ по урону. Лиг больше нет. */
+    top: await topRows(event.id, userId),
+    /** Медали события: выводятся из итогов за всё время, нигде не хранятся. */
+    medals,
+    medalCount: raidMedalCount(medals),
+    lifetime,
     chest: pending
       ? {
         eventId: pending.eventId,
