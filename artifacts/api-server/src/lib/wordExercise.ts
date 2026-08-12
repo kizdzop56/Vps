@@ -10,20 +10,40 @@
 //   memoryLevel 0 → choiceRu только (EN → выбор RU, первое узнавание);
 //   memoryLevel 1–2 → choiceRu или choiceEn поровну, детерминировано по сиду
 //                     (слово + день): оба направления чередуются без Math.random;
-//   memoryLevel 3 → listen или typeRu: аудирование и письменный перевод;
-//   memoryLevel 4–5 → build, typeEn или speak: орфография, воспроизведение и речь.
+//   memoryLevel 3 → письмо (фраза с пропуском) или аудирование;
+//   memoryLevel 4–5 → сборка из букв, письмо или произношение.
 //
 // Выбор из вариантов — это узнавание: правильный ответ уже на экране, его надо
 // лишь опознать. Поэтому со среднего уровня подмешиваются упражнения на
-// воспроизведение, где ответ ребёнок достаёт из головы сам:
+// воспроизведение, где ответ ребёнок достаёт из головы сам.
 //
-//   typeRu — видит английское слово, пишет перевод по-русски;
-//   typeEn — видит перевод, пишет слово по-английски;
-//   speak  — произносит слово вслух, клиент распознаёт речь.
+// ── Письмо задаётся ФРАЗОЙ, а не голым словом ───────────────────────────────
+// Здесь была настоящая несправедливость. На карточке help ученик написал
+// «помощь» и получил «Неверно. Правильный ответ: помогать». Ученик прав:
+// help — это и «помогать», и «помощь». Прощение опечатки и сравнение основ такие
+// пары не сводят («помощ» против «помога»), а расширять список переводов
+// бессмысленно — сколько ни добавь, всегда найдётся верный ответ, которого в
+// списке нет.
 //
-// Проверку свободного ответа делает lib/answerCheck.ts: она прощает регистр,
-// пунктуацию и одну опечатку, принимает любой из переводов карточки, а
-// произношению даёт три попытки.
+// Причина не в проверке, а в ВОПРОСЕ: у одного английского слова несколько
+// частей речи (help, work, study, answer, change), и «напиши перевод слова» не
+// определяет, какой ответ ждут. Такой вопрос нельзя проверить честно.
+//
+// Поэтому письменное упражнение теперь выглядит так: предложение-пример из
+// карточки с пропуском на месте слова, под ним русский перевод предложения, а
+// вписать надо пропущенное СЛОВО ПО-АНГЛИЙСКИ:
+//
+//   Can you ____ me, please?
+//   Ты можешь мне помочь?            → help
+//
+// Фраза сама задаёт часть речи и смысл, ответ ровно один — слово карточки.
+// Свободного перевода на русский (typeRu) генератор больше не выдаёт вовсе.
+// Там, где у карточки нет примера, письмо заменяется сборкой слова из букв:
+// плитки ограничивают ответ и двусмысленности не оставляют.
+//
+// Тип упражнения у фразы остаётся typeEn: ответ — английское слово, и проверка
+// (POST /flashcards/check-answer, mode=typeEn) сверяет его с english карточки.
+// Отдельный тип потребовал бы правок во всех клиентах ради одной подписи.
 //
 // Словосочетания и слова длиннее MAX_BUILD_LENGTH из букв не собираются —
 // вместо этого аудирование или choiceEn.
@@ -36,7 +56,7 @@
 // проверки и уезжает на неделю вперёд.
 //
 // Теперь недобор вариантов уводит в СВОБОДНЫЙ ответ (см. fallbackExercise):
-// написать перевод, собрать слово, написать слово. Их проверяет сервер, и
+// фраза с пропуском, сборка слова, написание слова. Их проверяет сервер, и
 // качество подборки дистракторов на честность оценки больше не влияет.
 //
 // Отдельная забота — сами отвлекающие варианты. Раньше они выдавали себя формой:
@@ -56,7 +76,6 @@
 //
 // Модуль без БД и express — тесты в wordExercise.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
-import { LEARNED_LEVEL } from "./srs";
 import { SPEAK_MAX_ATTEMPTS } from "./answerCheck";
 
 export type ExerciseType =
@@ -82,7 +101,12 @@ export function isFreeAnswer(type: ExerciseType): boolean {
 
 export type Exercise = {
   type: ExerciseType;
-  /** Что показать в задании: английское слово или русский перевод. */
+  /**
+   * Что показать в задании: английское слово, русский перевод или предложение с
+   * пропуском. У фразы во второй строке идёт её перевод — клиент показывает
+   * prompt одним блоком, и перевод обязан быть рядом с пропуском, иначе задание
+   * снова становится двусмысленным.
+   */
   prompt: string;
   /** Варианты ответа (для choiceRu / choiceEn / listen). */
   options?: string[];
@@ -114,6 +138,10 @@ export type WordLike = {
   cefrLevel?: string | null;
   /** Колода — первый по приоритету источник: слова одной темы. */
   deckId?: number | null;
+  /** Пример из карточки: из него делается фраза с пропуском. */
+  exampleEn?: string | null;
+  /** Перевод примера: он и снимает двусмысленность части речи. */
+  exampleRu?: string | null;
 };
 
 /** Кандидат в отвлекающие варианты: текст + признаки, по которым он отбирается. */
@@ -138,6 +166,9 @@ export const MAX_BUILD_LENGTH = 12;
  * карточки остаются на выборе и аудировании.
  */
 export const MAX_TYPING_LENGTH = 24;
+
+/** Чем закрывается пропуск во фразе. */
+export const GAP = "____";
 
 // ── Детерминированный генератор случайных чисел ──────────────────────────────
 // Нужен, чтобы порядок вариантов был стабильным для одной и той же карточки в
@@ -175,6 +206,56 @@ export function cardSeed(wordId: number, now: Date = new Date()): number {
   return Math.abs(Math.trunc(wordId) * 2654435761 + daySeed(now)) || 1;
 }
 
+// ── Фраза с пропуском ────────────────────────────────────────────────────────
+
+/** Экранирование для подстановки строки в регулярное выражение. */
+function escapeRe(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Предложение с пропуском на месте слова.
+ *
+ * null — слово не встречается в примере дословно (в примере другая форма:
+ * work → working, go → went). Подставлять пропуск вслепую нельзя: получится
+ * фраза, к которой ожидаемый ответ не подходит, и упражнение станет нечестным
+ * ровно так же, как «напиши перевод».
+ *
+ * Границы ищем по не-буквам, а не по \b: у словосочетаний и слов с апострофом
+ * \b срабатывает внутри, и пропуск съедал бы половину фразы.
+ */
+export function gapSentence(sentence: string, target: string): string | null {
+  const text = (sentence ?? "").trim();
+  const word = (target ?? "").trim();
+  if (!text || !word) return null;
+  const re = new RegExp(`(^|[^A-Za-z'])(${escapeRe(word)})(?=[^A-Za-z']|$)`, "i");
+  if (!re.test(text)) return null;
+  const masked = text.replace(re, (_m, before: string) => `${before}${GAP}`);
+  return masked.includes(GAP) ? masked : null;
+}
+
+/**
+ * Письменное упражнение по фразе: пропуск + перевод фразы, ответ по-английски.
+ *
+ * null — фразы нет или ответ слишком длинный, чтобы просить набрать его целиком.
+ */
+export function gapExercise(word: WordLike): Exercise | null {
+  if (!isTypeable(word.english)) return null;
+  const sentence = gapSentence(word.exampleEn ?? "", word.english);
+  if (!sentence) return null;
+  const translation = (word.exampleRu ?? "").trim() || mainTranslation(word);
+  return {
+    // Тип typeEn: ответ английский, и проверка сверяет его с english карточки.
+    type: "typeEn",
+    // Перевод идёт второй строкой того же prompt: клиент показывает prompt
+    // одним текстовым блоком, а без перевода фраза снова допускает варианты.
+    prompt: translation ? `${sentence}\n\n${translation}` : sentence,
+    answer: word.english.trim(),
+    accept: [word.english.trim()],
+    answerLang: "en",
+  };
+}
+
 // ── Выбор типа упражнения ────────────────────────────────────────────────────
 
 /** Слово годится для сборки из букв: одно слово латиницей и не слишком длинное. */
@@ -209,7 +290,7 @@ export function pickExerciseType(opts: {
   memoryLevel: number;
   isNew: boolean;
   english: string;
-  /** Основной перевод — нужен, чтобы решить, можно ли просить написать его. */
+  /** Основной перевод — нужен, чтобы понимать, есть ли о чём спрашивать вовсе. */
   translation?: string;
   allowListen?: boolean;
   /**
@@ -228,7 +309,6 @@ export function pickExerciseType(opts: {
   const level = Number.isFinite(opts.memoryLevel) ? Math.max(0, Math.trunc(opts.memoryLevel)) : 0;
   const allowListen = opts.allowListen !== false;
   const allowSpeak = opts.allowSpeak !== false;
-  const translation = (opts.translation ?? "").trim();
 
   if (isNew) return "intro";
 
@@ -244,23 +324,24 @@ export function pickExerciseType(opts: {
   // memoryLevel 1–2: чередуем choiceRu (EN→RU) и choiceEn (RU→EN) поровну.
   if (level <= 2) return seed % 2 === 1 ? "choiceEn" : "choiceRu";
 
-  const canTypeRu = isTypeable(translation);
-  const canTypeEn = isTypeable(english);
+  // Письмо всегда идёт в сторону английского: либо фраза с пропуском, либо
+  // само слово по переводу. Русского свободного ответа больше нет — вопрос
+  // «напиши перевод» не определяет ожидаемый ответ (см. шапку файла).
+  const canWrite = isTypeable(english);
   const canSpeak = allowSpeak && isSpeakable(english);
 
-  // memoryLevel 3: узнавание уже пройдено — половину показов отдаём письму,
-  // остальное аудированию.
+  // memoryLevel 3: половину показов отдаём письму, остальное аудированию.
   if (level === 3) {
-    if (seed % 2 === 0 && canTypeRu) return "typeRu";
+    if (seed % 2 === 0 && canWrite) return "typeEn";
     if (allowListen) return "listen";
-    return canTypeRu ? "typeRu" : "choiceEn";
+    return canWrite ? "typeEn" : "choiceEn";
   }
 
   // memoryLevel 4–5: слово выучено, закрепляем воспроизведением — орфография,
-  // письменный перевод и речь по очереди.
+  // письмо и речь по очереди.
   const wheel: ExerciseType[] = [];
   if (isBuildable(english)) wheel.push("build");
-  if (canTypeEn) wheel.push("typeEn");
+  if (canWrite) wheel.push("typeEn");
   if (canSpeak) wheel.push("speak");
   if (wheel.length > 0) return wheel[seed % wheel.length]!;
 
@@ -474,18 +555,7 @@ export function interleaveQueue<T>(due: T[], fresh: T[], everyN: number = 3): T[
 
 // ── Готовые упражнения ───────────────────────────────────────────────────────
 
-/** Письменный перевод: показываем слово, ждём русский ответ. */
-function typeRuExercise(word: WordLike, translation: string): Exercise {
-  return {
-    type: "typeRu",
-    prompt: word.english,
-    answer: translation,
-    accept: word.translationsRu.map((t) => t.trim()).filter(Boolean),
-    answerLang: "ru",
-  };
-}
-
-/** Письмо по-английски: показываем перевод, ждём слово. */
+/** Письмо по-английски по переводу: показываем перевод, ждём слово. */
 function typeEnExercise(word: WordLike, translation: string): Exercise {
   return {
     type: "typeEn",
@@ -507,6 +577,23 @@ function buildLettersExercise(word: WordLike, translation: string, rng: () => nu
 }
 
 /**
+ * Письменное упражнение по слову: сначала фраза с пропуском, потом запасные.
+ *
+ * Порядок именно такой. Фраза — единственная постановка вопроса, у которой
+ * ответ однозначен. Нет примера в карточке — просим собрать слово из букв
+ * (плитки тоже не оставляют вариантов). Ни того, ни другого — пишем слово по
+ * переводу: тут возможна придирка вида «assist вместо help», но эталон хотя бы
+ * фиксирован самой карточкой, в отличие от свободного перевода на русский.
+ */
+function writingExercise(word: WordLike, translation: string, rng: () => number): Exercise | null {
+  const gap = gapExercise(word);
+  if (gap) return gap;
+  if (isBuildable(word.english)) return buildLettersExercise(word, translation, rng);
+  if (isTypeable(word.english)) return typeEnExercise(word, translation);
+  return null;
+}
+
+/**
  * Что дать, когда вариантов ответа не набралось.
  *
  * ЗАЧЕМ. Раньше здесь возвращался intro. Для нового слова это правильно, а для
@@ -515,18 +602,16 @@ function buildLettersExercise(word: WordLike, translation: string, rng: () => nu
  * всякой проверки и уезжало на неделю вперёд. Недобор дистракторов — проблема
  * подборки, а не повод отменить проверку знания.
  *
- * Свободный ответ дистракторов не требует вовсе, поэтому он и берётся:
- * написать перевод, собрать слово из букв, написать слово по-английски.
- * Проверяет его сервер (POST /flashcards/check-answer).
+ * Свободный ответ дистракторов не требует вовсе, поэтому он и берётся: фраза с
+ * пропуском, сборка слова из букв, написание слова по переводу. Проверяет его
+ * сервер (POST /flashcards/check-answer).
  *
- * intro остаётся последней строчкой — для карточки, у которой нет перевода:
- * ни спросить, ни проверить нечего.
+ * intro остаётся последней строчкой — для карточки, у которой нет ни перевода,
+ * ни пригодного к письму слова: ни спросить, ни проверить нечего.
  */
 function fallbackExercise(word: WordLike, translation: string, rng: () => number): Exercise {
-  if (!translation) return { type: "intro", prompt: word.english };
-  if (isTypeable(translation)) return typeRuExercise(word, translation);
-  if (isBuildable(word.english)) return buildLettersExercise(word, translation, rng);
-  if (isTypeable(word.english)) return typeEnExercise(word, translation);
+  const writing = writingExercise(word, translation, rng);
+  if (writing) return writing;
   return { type: "intro", prompt: word.english };
 }
 
@@ -569,15 +654,13 @@ export function buildExercise(opts: {
     return buildLettersExercise(word, translation, rng);
   }
 
-  // Свободный ответ: вариантов не даём вовсе. accept — все допустимые написания;
-  // сравнение делает сервер (POST /flashcards/check-answer), клиент лишь
-  // показывает верный вариант после проверки.
-  if (type === "typeRu") {
-    return typeRuExercise(word, translation);
-  }
-
-  if (type === "typeEn") {
-    return typeEnExercise(word, translation);
+  // Письмо: фраза с пропуском, иначе сборка, иначе слово по переводу.
+  // typeRu генератор больше не выдаёт, но старый клиент мог прислать его как
+  // режим ответа — обрабатываем здесь же, чтобы поведение было одним.
+  if (type === "typeEn" || type === "typeRu") {
+    const writing = writingExercise(word, translation, rng);
+    if (writing) return writing;
+    return fallbackExercise(word, translation, rng);
   }
 
   if (type === "speak") {
