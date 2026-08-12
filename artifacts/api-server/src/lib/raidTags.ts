@@ -22,6 +22,10 @@ export interface TaskKind {
  *
  * null — ответ ударом не считается: «знакомство» это не задание, там нет
  * верного и неверного.
+ *
+ * gap — вставить слово в пропуск в предложении. Это тоже ввод слова, поэтому
+ * ставка как у письма, но ответ однозначен: предложение задаёт и часть речи, и
+ * смысл (см. шапку lib/raidSession.ts).
  */
 export function wordTaskKind(mode: unknown): TaskKind | null {
   switch (mode) {
@@ -34,6 +38,8 @@ export function wordTaskKind(mode: unknown): TaskKind | null {
       return { difficulty: "easy", tags: ["listening", "vocab"] };
     case "build":
       return { difficulty: "medium", tags: ["vocab", "wordorder"] };
+    case "gap":
+      return { difficulty: "medium", tags: ["vocab", "phrasal", "wordorder"] };
     case "typeRu":
     case "typeEn":
       return { difficulty: "medium", tags: ["vocab", "synonyms"] };
