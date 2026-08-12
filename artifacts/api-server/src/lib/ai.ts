@@ -2,19 +2,27 @@
 // Общий слой доступа к ИИ: ответ модели, распознавание речи, озвучка.
 //
 // ── Зачем один файл на три задачи ───────────────────────────────────────────
-// Раньше всё это лежало прямо в routes/voiceChat.ts и было прибито к OpenAI.
-// Стоило понадобиться другому поставщику — и пришлось бы переписывать маршрут,
-// а вместе с ним трогать проверку прав, очки и журнал, которые к ИИ отношения
-// не имеют. Теперь маршрут просто просит «ответь», «расшифруй», «озвучь».
+// Раньше всё это лежало прямо в routes/voiceChat.ts и было прибито к одному
+// поставщику. Стоило понадобиться другому — и пришлось бы переписывать
+// маршрут, а вместе с ним трогать проверку прав, очки и журнал, которые к ИИ
+// отношения не имеют. Теперь маршрут просто просит «ответь», «расшифруй»,
+// «озвучь».
 //
 // ── Порядок поставщиков ─────────────────────────────────────────────────────
-// Первым идёт GOOGLE AI STUDIO (Gemini): это ключ, который есть у проекта.
-// Дальше — Deepgram и OpenAI, каждый включается сам, если его ключ задан в
-// окружении. Ни один не обязателен, и отсутствие ключа не ошибка: слой честно
-// отвечает, что сделать нечего, и называет причину.
+// Первым идёт GOOGLE AI STUDIO (Gemini): это основной ключ проекта, он умеет
+// все три задачи. Вторым — Deepgram, только речь: распознавание и озвучка.
 //
 // Порядок именно такой, а не «что первое ответит»: у поставщиков разная цена и
 // разное качество, и решать это должен человек, а не случай.
+//
+// Ни один не обязателен, и отсутствие ключа не ошибка: слой честно отвечает,
+// что сделать нечего, и называет причину.
+//
+// ── ПОЧЕМУ DEEPGRAM НУЖЕН, А НЕ «НА ВСЯКИЙ СЛУЧАЙ» ─────────────────────────
+// Это ЕДИНСТВЕННЫЙ распознаватель здесь, который спокойно читает то, что
+// пишет браузер (webm/opus в Chrome, mp4 в Safari). Gemini такие форматы
+// принимает через раз (см. ГРАБЛИ ниже). Если убрать ключ Deepgram, голосовой
+// разговор с тьютором начнёт отказывать на части устройств.
 //
 // ── ГРАБЛИ: GEMINI TTS ОТДАЁТ СЫРОЙ PCM ────────────────────────────────────
 // Обычные синтезаторы возвращают готовый mp3. Gemini возвращает НЕОБРАБОТАННЫЕ
@@ -30,9 +38,9 @@
 // На практике часть таких записей принимается, часть отвергается, и заранее
 // это не проверить.
 //
-// Поэтому запись уходит как есть, а при отказе пробуется следующий поставщик.
-// Deepgram здесь особенно кстати: он webm/opus читает без разговоров, а ключ у
-// проекта уже есть — им озвучиваются слова (см. routes/tts.ts).
+// Поэтому запись уходит как есть, а при отказе пробуется Deepgram: он
+// webm/opus читает без разговоров, а ключ у проекта уже есть — им озвучиваются
+// слова (см. routes/tts.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Одна реплика в истории разговора. */
@@ -74,22 +82,6 @@ function deepgramKey(): string | null {
   return process.env["DEEPGRAM_API_KEY"]?.trim() || null;
 }
 
-function openaiKey(): string | null {
-  return (
-    process.env["OPENAI_API_KEY"]?.trim() ||
-    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"]?.trim() ||
-    null
-  );
-}
-
-function openaiBase(): string {
-  return (
-    process.env["OPENAI_API_BASE"]?.trim() ||
-    process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"]?.trim() ||
-    "https://api.openai.com/v1"
-  ).replace(/\/+$/, "");
-}
-
 // ── Модели ──────────────────────────────────────────────────────────────────
 
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
@@ -125,18 +117,9 @@ function geminiTtsModels(): string[] {
   ].filter((m): m is string => !!m);
 }
 
-/** Голос Gemini. Kore — ровный женский, ближе всего к прежнему «nova». */
+/** Голос Gemini. Kore — ровный женский, хорошо слышен на телефоне. */
 function geminiVoice(): string {
   return process.env["GOOGLE_AI_TTS_VOICE"]?.trim() || "Kore";
-}
-
-function openaiChatModels(): string[] {
-  return [
-    process.env["OPENAI_CHAT_MODEL"]?.trim(),
-    "gpt-4o-mini",
-    "gpt-4o",
-    "gpt-3.5-turbo",
-  ].filter((m): m is string => !!m);
 }
 
 /** Сколько ждём ответа. Ребёнок держит телефон в руке — вечность недопустима. */
@@ -164,12 +147,12 @@ export function errorDetail(err: unknown): string {
   return String(raw).slice(0, 300);
 }
 
-/** Ошибка из тела ответа HTTP. Google и OpenAI кладут её в одно и то же место. */
+/** Ошибка из тела ответа HTTP. И Google, и Deepgram кладут её в error.message. */
 async function httpDetail(resp: Response): Promise<string> {
   const text = await resp.text().catch(() => "");
   try {
     const data = JSON.parse(text);
-    const message = data?.error?.message ?? data?.message;
+    const message = data?.error?.message ?? data?.message ?? data?.err_msg;
     if (message) return String(message).slice(0, 300);
   } catch {
     /* не JSON — отдадим начало как есть */
@@ -329,56 +312,14 @@ async function geminiChat(
   return { ok: false, detail, tried };
 }
 
-async function openaiChat(
-  key: string,
-  system: string,
-  history: ChatTurn[],
-  message: string,
-  log: AiLog,
-): Promise<ChatResult> {
-  const tried: string[] = [];
-  let detail = "OpenAI не ответил";
-
-  for (const model of openaiChatModels()) {
-    if (tried.includes(`openai:${model}`)) continue;
-    tried.push(`openai:${model}`);
-    try {
-      const resp = await fetch(`${openaiBase()}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: system },
-            ...history.map((t) => ({ role: t.role, content: t.content })),
-            { role: "user", content: message },
-          ],
-        }),
-        signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
-      });
-      if (!resp.ok) {
-        detail = await httpDetail(resp);
-        log.warn({ provider: "openai", model, detail }, "Модель не ответила, пробуем следующую");
-        continue;
-      }
-      const data = await resp.json() as any;
-      const text = (data?.choices?.[0]?.message?.content ?? "").trim();
-      if (text) return { ok: true, text, provider: "openai", model };
-      detail = "Пустой ответ модели";
-    } catch (err) {
-      detail = errorDetail(err);
-      log.warn({ provider: "openai", model, detail }, "Запрос к модели не удался");
-    }
-  }
-
-  return { ok: false, detail, tried };
-}
-
 /**
  * Спросить модель.
  *
  * Возвращает результат, а не бросает: вызывающему нужно знать не только «не
  * вышло», но и почему именно — эту причину видит ученик на экране.
+ *
+ * Поставщик один: текст умеет только Gemini. Deepgram — про речь, не про
+ * разговор.
  */
 export async function chat(opts: {
   system: string;
@@ -386,26 +327,15 @@ export async function chat(opts: {
   message: string;
   log: AiLog;
 }): Promise<ChatResult> {
-  const tried: string[] = [];
-  let detail = "Не задан ни один ключ доступа к ИИ";
-
   const google = googleKey();
-  if (google) {
-    const result = await geminiChat(google, opts.system, opts.history, opts.message, opts.log);
-    if (result.ok) return result;
-    tried.push(...result.tried);
-    detail = result.detail;
+  if (!google) {
+    return {
+      ok: false,
+      detail: "Не задан ключ GOOGLE_AI_API_KEY",
+      tried: [],
+    };
   }
-
-  const openai = openaiKey();
-  if (openai) {
-    const result = await openaiChat(openai, opts.system, opts.history, opts.message, opts.log);
-    if (result.ok) return result;
-    tried.push(...result.tried);
-    detail = result.detail;
-  }
-
-  return { ok: false, detail, tried };
+  return geminiChat(google, opts.system, opts.history, opts.message, opts.log);
 }
 
 // ── Распознавание речи ──────────────────────────────────────────────────────
@@ -513,46 +443,12 @@ async function deepgramTranscribe(
   }
 }
 
-async function openaiTranscribe(
-  key: string,
-  audio: Buffer,
-  format: AudioFormat,
-  log: AiLog,
-): Promise<TranscribeResult> {
-  const model = process.env["OPENAI_STT_MODEL"]?.trim() || "whisper-1";
-  try {
-    const form = new FormData();
-    // Имя файла обязательно с расширением: whisper определяет формат по нему,
-    // а не по содержимому.
-    form.append("file", new Blob([new Uint8Array(audio)], { type: format.mimeType }), format.fileName);
-    form.append("model", model);
-    form.append("language", "en");
-
-    const resp = await fetch(`${openaiBase()}/audio/transcriptions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}` },
-      body: form,
-      signal: AbortSignal.timeout(STT_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      const detail = await httpDetail(resp);
-      log.warn({ provider: "openai", model, detail }, "Расшифровка не удалась");
-      return { ok: false, detail, tried: [`openai:${model}`] };
-    }
-    const data = await resp.json() as any;
-    return { ok: true, text: String(data?.text ?? "").trim(), provider: "openai" };
-  } catch (err) {
-    const detail = errorDetail(err);
-    log.warn({ provider: "openai", model, detail }, "Расшифровка не удалась");
-    return { ok: false, detail, tried: [`openai:${model}`] };
-  }
-}
-
 /**
  * Расшифровать запись.
  *
- * Порядок: Gemini → Deepgram → OpenAI. Первый — потому что это основной ключ
- * проекта; второй — потому что он спокойнее всех относится к webm из браузера.
+ * Порядок: Gemini → Deepgram. Первый — потому что это основной ключ проекта;
+ * второй — потому что он спокойнее относится к webm и mp4 из браузера, и
+ * именно он спасает разговор на тех устройствах, где Gemini запись не принял.
  */
 export async function transcribe(opts: {
   audio: Buffer;
@@ -584,14 +480,6 @@ export async function transcribe(opts: {
   const deepgram = deepgramKey();
   if (deepgram) {
     const result = await deepgramTranscribe(deepgram, opts.audio, format, opts.log);
-    if (result.ok) return { ...result, format };
-    tried.push(...result.tried);
-    detail = result.detail;
-  }
-
-  const openai = openaiKey();
-  if (openai) {
-    const result = await openaiTranscribe(openai, opts.audio, format, opts.log);
     if (result.ok) return { ...result, format };
     tried.push(...result.tried);
     detail = result.detail;
@@ -720,33 +608,6 @@ async function deepgramSpeak(key: string, text: string, log: AiLog): Promise<Spe
   }
 }
 
-async function openaiSpeak(key: string, text: string, log: AiLog): Promise<SpeechResult> {
-  const model = process.env["OPENAI_TTS_MODEL"]?.trim() || "tts-1";
-  try {
-    const resp = await fetch(`${openaiBase()}/audio/speech`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, voice: "nova", input: text }),
-      signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      const detail = await httpDetail(resp);
-      log.warn({ provider: "openai", model, detail }, "Озвучка не удалась");
-      return { ok: false, detail, tried: [`openai:${model}`] };
-    }
-    const mp3 = Buffer.from(await resp.arrayBuffer());
-    return {
-      ok: true,
-      dataUrl: `data:audio/mp3;base64,${mp3.toString("base64")}`,
-      provider: "openai",
-    };
-  } catch (err) {
-    const detail = errorDetail(err);
-    log.warn({ provider: "openai", model, detail }, "Озвучка не удалась");
-    return { ok: false, detail, tried: [`openai:${model}`] };
-  }
-}
-
 /**
  * Озвучить текст.
  *
@@ -773,14 +634,6 @@ export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechR
     detail = result.detail;
   }
 
-  const openai = openaiKey();
-  if (openai) {
-    const result = await openaiSpeak(openai, opts.text, opts.log);
-    if (result.ok) return result;
-    tried.push(...result.tried);
-    detail = result.detail;
-  }
-
   return { ok: false, detail, tried };
 }
 
@@ -790,16 +643,20 @@ export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechR
  * Какие поставщики доступны. Нужно экрану и диагностике: «ключа нет» и «ключ
  * есть, но модель отказала» — разные беды, и лечатся они по-разному.
  */
-export function aiProviders(): { google: boolean; deepgram: boolean; openai: boolean } {
+export function aiProviders(): { google: boolean; deepgram: boolean } {
   return {
     google: !!googleKey(),
     deepgram: !!deepgramKey(),
-    openai: !!openaiKey(),
   };
 }
 
-/** Есть ли хоть один ключ: без него раздел тьютора работать не может. */
+/**
+ * Можно ли вообще разговаривать с тьютором.
+ *
+ * Смотрим ТОЛЬКО на ключ Google: ответ модели умеет один он. С одним лишь
+ * Deepgram получится расшифровать речь, но отвечать будет некому — раздел
+ * окажется бесполезным, и лучше сказать это сразу.
+ */
 export function hasAnyAi(): boolean {
-  const p = aiProviders();
-  return p.google || p.deepgram || p.openai;
+  return !!googleKey();
 }

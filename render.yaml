@@ -30,7 +30,10 @@ services:
       - key: RUN_DB_SETUP
         value: "true"
       # Optional integrations — add values in the Render dashboard if needed:
-      # RESEND_API_KEY (email verification/reset), OPENAI_API_KEY (voice chat)
+      #   RESEND_API_KEY     email verification / password reset
+      #   GOOGLE_AI_API_KEY  AI tutor (chat + speech). Required for that section
+      #   DEEPGRAM_API_KEY   word pronunciation + speech recognition fallback
+      #   GOOGLE_TRANSLATE_API_KEY  flashcard translations
 
 databases:
   - name: v1-db

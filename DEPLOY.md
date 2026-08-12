@@ -67,7 +67,16 @@ Log in as teacher in one browser window and student in an incognito window.
   Accounts **without** an email address (students created by a teacher) are
   auto-verified on boot; accounts that registered with an email must enter the
   code from the message.
-- **Voice chat (OpenAI)** is optional: set `OPENAI_API_KEY` to enable it.
+- **AI tutor (Google AI Studio / Gemini)** — set `GOOGLE_AI_API_KEY`
+  ([get one here](https://aistudio.google.com/apikey)). It is the only key that
+  can answer the student: chat, speech recognition and the spoken reply all go
+  through Gemini. Without it the section says plainly that it is not configured.
+  Check it from the app itself: `GET /api/voice-chat/status?probe=1` makes a live
+  request and reports which model answered, or the exact error if none did.
+- **`DEEPGRAM_API_KEY`** — pronunciation of flashcard words, and the fallback
+  for speech recognition. Worth setting for the tutor too: the browser records
+  `webm` (Chrome) or `mp4` (Safari), formats Gemini officially does not support
+  and rejects part of the time. Deepgram reads them without complaint.
 - **Automatic flashcard translations:** add `GOOGLE_TRANSLATE_API_KEY` in the
   Render dashboard under **Environment**. Create the key in a Google Cloud project
   with **Cloud Translation API** enabled, and restrict the key to that API. The
