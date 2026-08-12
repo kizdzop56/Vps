@@ -8,6 +8,7 @@ import {
   timeSessionsTable,
   reviewLogTable,
   flashcardSettingsTable,
+  grammarLogTable,
 } from "@workspace/db";
 import { eq, and, sql, gte, gt } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
@@ -20,6 +21,7 @@ import {
   startOfLocalDay,
 } from "../lib/timeStats";
 import { isLearned, startOfDay } from "../lib/srs";
+import { FORM_MASTERY_HITS } from "../lib/grammar/forms";
 import { evaluateDailyPlan } from "../lib/dailyPlan";
 
 const router = Router();
@@ -174,6 +176,105 @@ async function computeWordProgress(userId: number) {
   return { wordsToday, learnedToday, dailyWordGoal: settings?.dailyWordGoal ?? 10 };
 }
 
+// ── Раздел «Учёба»: грамматика ──────────────────────────────────────────────
+//
+// Всё считается по журналу ответов grammar_log (см. routes/grammar.ts): одна
+// строка на ответ, в ней режим, тема, верно или нет.
+//
+// ЛЮБОЙ запрос сюда обёрнут в try/catch и при ошибке отдаёт нули. Причина
+// приземлённая: таблица приехала в базу позже остальных, и на базе без неё
+// профиль обязан открыться целиком, а не падать пятисоткой из-за медалей.
+
+/**
+ * Сколько верных ответов по одному времени считаем «время освоено».
+ *
+ * Два полных захода (SESSION_SIZE = 12). Один заход — это знакомство, по нему
+ * судить рано; десять заходов ученик до конца уровня может и не сделать.
+ */
+const TENSE_MASTERED_ANSWERS = 24;
+
+/** Итоги по разделу за всё время: из них считаются медали. */
+type GrammarTotals = {
+  /** Верных ответов во всех режимах раздела. */
+  grammarSolved: number;
+  /** Глаголов, чьи формы ученик знает (порог тот же, что у режима форм). */
+  verbFormsMastered: number;
+  /** Времён, отработанных до TENSE_MASTERED_ANSWERS верных ответов. */
+  tensesMastered: number;
+  /** Верно собранных предложений. */
+  sentencesBuilt: number;
+};
+
+const EMPTY_GRAMMAR: GrammarTotals = {
+  grammarSolved: 0,
+  verbFormsMastered: 0,
+  tensesMastered: 0,
+  sentencesBuilt: 0,
+};
+
+/**
+ * Итоги раздела ОДНИМ запросом.
+ *
+ * Группировка сразу по режиму и теме: из неё выводится и общее число верных
+ * ответов, и знакомые глаголы, и освоенные времена. Четыре отдельных запроса
+ * дали бы то же самое, но каждый заход в профиль стоил бы вчетверо дороже.
+ */
+async function computeGrammarTotals(userId: number): Promise<GrammarTotals> {
+  try {
+    const rows = await db
+      .select({
+        mode: grammarLogTable.mode,
+        topic: grammarLogTable.topic,
+        correct: sql<number>`count(*) filter (where ${grammarLogTable.correct})::int`,
+      })
+      .from(grammarLogTable)
+      .where(eq(grammarLogTable.userId, userId))
+      .groupBy(grammarLogTable.mode, grammarLogTable.topic);
+
+    const totals: GrammarTotals = { ...EMPTY_GRAMMAR };
+    for (const row of rows) {
+      const correct = Number(row.correct ?? 0);
+      totals.grammarSolved += correct;
+      if (row.mode === "build") totals.sentencesBuilt += correct;
+      // Тема у сборки предложений пустая: там нет ни глагола, ни времени.
+      if (!row.topic) continue;
+      if (row.mode === "forms" && correct >= FORM_MASTERY_HITS) totals.verbFormsMastered += 1;
+      if (row.mode === "tense" && correct >= TENSE_MASTERED_ANSWERS) totals.tensesMastered += 1;
+    }
+    return totals;
+  } catch {
+    return { ...EMPTY_GRAMMAR };
+  }
+}
+
+/**
+ * Сегодняшние счётчики раздела для цели дня.
+ *
+ * verbFormsToday считается по РАЗНЫМ глаголам, а не по ответам: в режиме форм
+ * на каждый глагол приходится три вопроса, и задача «повторить формы пяти
+ * глаголов» закрывалась бы двумя.
+ */
+async function computeGrammarToday(userId: number, todayStart: Date) {
+  try {
+    const [row] = await db
+      .select({
+        answers: sql<number>`count(*)::int`,
+        verbs: sql<number>`count(distinct ${grammarLogTable.topic}) filter (where ${grammarLogTable.mode} = 'forms')::int`,
+      })
+      .from(grammarLogTable)
+      .where(and(
+        eq(grammarLogTable.userId, userId),
+        gte(grammarLogTable.answeredAt, todayStart),
+      ));
+    return {
+      grammarToday: Number(row?.answers ?? 0),
+      verbFormsToday: Number(row?.verbs ?? 0),
+    };
+  } catch {
+    return { grammarToday: 0, verbFormsToday: 0 };
+  }
+}
+
 /** Сдано заданий и состоявшихся разговоров с начала сегодняшнего дня. */
 async function computeTodayActivity(userId: number, todayStart: Date) {
   const todaySubs = await db.select({ count: sql<number>`count(*)::int` })
@@ -283,6 +384,10 @@ type ServerAchievementStats = {
   perfectScoreCount: number;
   xpLevel: number;
   earlyBirdSessions: number;
+  grammarSolved: number;
+  verbFormsMastered: number;
+  tensesMastered: number;
+  sentencesBuilt: number;
 };
 
 // Считает статы пользователя из БД (те же источники, что и /gamification/stats).
@@ -315,6 +420,8 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
     ));
   const completedAssignments = completedSubs[0]?.count ?? 0;
 
+  const grammar = await computeGrammarTotals(userId);
+
   // Те же цифры, что видит клиент в /gamification/stats — иначе клиент считает
   // награду открытой, а сервер её отклоняет (и она не выдаётся никогда).
   let totalTimeMinutes = userData.totalTimeMinutes ?? 0;
@@ -338,10 +445,11 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
     perfectScoreCount,
     xpLevel: computeLevel(userData.totalPoints),
     earlyBirdSessions,
+    ...grammar,
   };
 }
 
-// Условия для всех 50 наград. ДОЛЖНЫ соответствовать каталогу на клиенте
+// Условия для всех наград. ДОЛЖНЫ соответствовать каталогу на клиенте
 // (english-learning/constants/achievements.ts). Награда записывается в БД
 // только если ЕЁ условие реально выполнено — клиенту доверять нельзя.
 // early_* считаются в УТРЕННИХ ДНЯХ (один день — максимум одно занятие).
@@ -362,6 +470,10 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   voice_3:      (s) => s.voiceChatSessions >= 3,
   xp_5:         (s) => s.xpLevel >= 5,
   early_1:      (s) => s.earlyBirdSessions >= 1,
+  grammar_10:   (s) => s.grammarSolved >= 10,
+  forms_5:      (s) => s.verbFormsMastered >= 5,
+  phrases_10:   (s) => s.sentencesBuilt >= 10,
+  tenses_1:     (s) => s.tensesMastered >= 1,
   // medium
   tasks_10:     (s) => s.completedAssignments >= 10,
   tasks_25:     (s) => s.completedAssignments >= 25,
@@ -388,6 +500,12 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   early_5:      (s) => s.earlyBirdSessions >= 5,
   early_15:     (s) => s.earlyBirdSessions >= 15,
   early_30:     (s) => s.earlyBirdSessions >= 30,
+  grammar_100:  (s) => s.grammarSolved >= 100,
+  grammar_500:  (s) => s.grammarSolved >= 500,
+  forms_25:     (s) => s.verbFormsMastered >= 25,
+  forms_60:     (s) => s.verbFormsMastered >= 60,
+  phrases_100:  (s) => s.sentencesBuilt >= 100,
+  tenses_3:     (s) => s.tensesMastered >= 3,
   // hard
   tasks_100:    (s) => s.completedAssignments >= 100,
   tasks_200:    (s) => s.completedAssignments >= 200,
@@ -399,6 +517,9 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   streak_100:   (s) => s.loginStreak >= 100,
   perfect_25:   (s) => s.perfectScoreCount >= 25,
   xp_50:        (s) => s.xpLevel >= 50,
+  grammar_2000: (s) => s.grammarSolved >= 2000,
+  forms_100:    (s) => s.verbFormsMastered >= 100,
+  tenses_6:     (s) => s.tensesMastered >= 6,
 };
 
 // ── Награда за ежедневный вход ──────────────────────────────────────────────
@@ -510,6 +631,10 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     todayVoiceSessions = activity.todayVoiceSessions;
   } catch { /* silent */ }
 
+  // Раздел «Учёба»: итоги для медалей и сегодняшние счётчики для цели дня.
+  const grammar = await computeGrammarTotals(userId);
+  const grammarDay = await computeGrammarToday(userId, todayStart);
+
   // Unlocked achievements from DB
   const dbAchievements = await db.select().from(userAchievementsTable)
     .where(eq(userAchievementsTable.userId, userId));
@@ -531,6 +656,13 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     perfectScoreCount,
     completedAssignments,
     earlyBirdSessions,
+    // Раздел «Учёба»: за всё время (медали) и за сегодня (цель дня).
+    grammarSolved: grammar.grammarSolved,
+    verbFormsMastered: grammar.verbFormsMastered,
+    tensesMastered: grammar.tensesMastered,
+    sentencesBuilt: grammar.sentencesBuilt,
+    grammarToday: grammarDay.grammarToday,
+    verbFormsToday: grammarDay.verbFormsToday,
     unlockedAchievementIds: dbAchievements.map(a => a.achievementId),
     totalTimeMinutes,
     mascotName: (userData.mascotName && userData.mascotName !== "Оливер") ? userData.mascotName : "Снежа",
@@ -581,6 +713,7 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
   const time = await computeTimeStats(userId, userData.totalTimeMinutes ?? 0);
   const activity = await computeTodayActivity(userId, time.todayStart);
   const words = await computeWordProgress(userId);
+  const grammarDay = await computeGrammarToday(userId, time.todayStart);
 
   const plan = evaluateDailyPlan({
     dateKey: today,
@@ -591,6 +724,8 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
     wordsToday: words.wordsToday,
     learnedToday: words.learnedToday,
     dailyWordGoal: words.dailyWordGoal,
+    grammarToday: grammarDay.grammarToday,
+    verbFormsToday: grammarDay.verbFormsToday,
   });
 
   if (!plan.allDone) {
