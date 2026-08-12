@@ -2,27 +2,36 @@
 // Вкладка «Рейд»: недельный босс на всё сообщество.
 //
 // Порядок экрана задан вопросами, которые возникают в этом же порядке:
-//   1. кого бьём и сколько у него осталось (босс, шкала, фаза, таймер);
-//   2. чем ударить прямо сейчас — кнопка боя стоит ПОД ШКАЛОЙ ЗДОРОВЬЯ, внутри
-//      карточки босса: увидел полоску, ударил, не пролистывая экран;
-//   3. что могу я (мой урон, энергия, монеты, бафы);
-//   4. кто впереди (лиги) и что было раньше (история).
+//   1. что я должен сделать сегодня (цель дня стоит ПЕРВОЙ, над боссом);
+//   2. кого бьём и сколько у него осталось, тут же кнопка боя;
+//   3. что могу я (мой урон, энергия, монеты, атаки);
+//   4. что я собрал (медали события) и кто впереди (топ, история).
 //
-// Сам бой — на отдельном экране (raid/battle). Раньше кнопка уводила в «Учёбу»,
-// и это было ошибкой: «Учёба» устроена для обучения (интервальные повторения,
-// разбор ошибок с правилами, дневные нормы), а рейду нужна практика без
-// объяснений. Теперь у боя свои задания и своя проверка.
+// Цель дня подняли наверх намеренно: это единственная строка экрана, которая
+// говорит «сделай столько и получишь награду». Под боссом она читалась как
+// сноска, хотя именно она задаёт дневной ритм; босс же остаётся крупным и
+// никуда не девается — он сразу под ней.
+//
+// Сам бой — на отдельном экране (raid/battle). «Учёба» устроена для обучения
+// (интервальные повторения, разбор ошибок, дневные нормы), а рейду нужна
+// практика без объяснений, поэтому у боя свои задания и своя проверка.
 //
 // Цифры урона вылетают поверх ЛЮБОГО экрана (components/raid/RaidHitOverlay),
 // поэтому здесь их дублировать не нужно: сюда приходят смотреть итог.
 //
-// ── Чего здесь намеренно нет ────────────────────────────────────────────────
-// Шкала вех личного вклада убрана до отдельного разговора о наградах. Сервер её
-// по-прежнему считает (см. lib/raid.ts), поэтому вернуть блок — это правка
-// разметки, а не механики.
+// ── Один топ, без лиг ───────────────────────────────────────────────────────
+// Лиги по уровню профиля убраны: три таблицы по одной строке и переключатель
+// между пустотами. Событие общее — таблица одна. Если ученик не попал в первые
+// двадцать, его место показывается отдельной строкой под таблицей.
 //
-// Валюта одна: монеты. Маны нет — атаки и бафы покупаются монетами, которые
-// капают за попадания, дневное задание и сундуки.
+// ── Монеты рисует Coin, а не Glyph ──────────────────────────────────────────
+// Монеты стояли под глифом «cup»: на маленьком размере кубок читается кружкой.
+// Валюте нужен заливной двухцветный знак, а весь Glyph — контурный и
+// однотонный, поэтому монета живёт отдельным компонентом (components/ui/Coin).
+//
+// ── Чего здесь нет ──────────────────────────────────────────────────────────
+// Шкала вех личного вклада скрыта до отдельного разговора о наградах. Сервер её
+// по-прежнему считает, вернуть блок — правка разметки, а не механики.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -35,6 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { Coin } from "@/components/ui/Coin";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii, timing } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
@@ -42,7 +52,7 @@ import { BossArt } from "@/components/raid/BossArt";
 import { onRaidHit } from "@/utils/raidBus";
 import {
   phaseAbout, phaseTitle, raid, tagTitle,
-  type RaidBuff, type RaidLeague, type RaidSnapshot,
+  type RaidBuff, type RaidMedal, type RaidSnapshot,
 } from "@/hooks/useRaid";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
@@ -124,13 +134,13 @@ function Bar({
   );
 }
 
-/** Счётчик с иконкой: энергия, монеты, ключи. */
+/** Счётчик с иконкой: энергия, монеты, комбо, ключи. */
 function Stat({
-  icon, value, label, color,
-}: { icon: GlyphName; value: string; label: string; color: string }) {
+  icon, coin, value, label, color,
+}: { icon?: GlyphName; coin?: boolean; value: string; label: string; color: string }) {
   return (
     <View style={{ flex: 1, alignItems: "center", gap: 3 }}>
-      <Glyph name={icon} size={18} color={color} />
+      {coin ? <Coin size={18} /> : <Glyph name={icon ?? "star"} size={18} color={color} />}
       <Text style={{ fontSize: 17, fontWeight: "900", color: "#1e1b3a", letterSpacing: -0.4 }}>{value}</Text>
       <Text style={{ fontSize: 10, fontWeight: "700", color: "#7a6ea8", letterSpacing: 0.4, textAlign: "center" }}>
         {label}
@@ -179,9 +189,12 @@ export default function RaidScreen() {
     void qc.invalidateQueries({ queryKey: ["raid"] });
   }), [qc]);
 
-  const [league, setLeague] = React.useState<RaidLeague | null>(null);
   const [chestText, setChestText] = React.useState<string | null>(null);
   const [problem, setProblem] = React.useState<string | null>(null);
+  /** Открытая медаль: по тапу показываем, за что она даётся. */
+  const [medal, setMedal] = React.useState<RaidMedal | null>(null);
+  /** Все медали или только полученные с ближайшими. */
+  const [allMedals, setAllMedals] = React.useState(false);
 
   const refresh = (snapshot: RaidSnapshot) => {
     qc.setQueryData(["raid"], snapshot);
@@ -213,10 +226,6 @@ export default function RaidScreen() {
   const data = q.data;
   const countdown = useCountdown(data?.event.endsAt);
 
-  React.useEffect(() => {
-    if (data && league === null) setLeague(data.me.league);
-  }, [data, league]);
-
   if (q.isLoading || !data) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -229,7 +238,13 @@ export default function RaidScreen() {
   const hpRatio = event.hpTotal > 0 ? event.hpLeft / event.hpTotal : 0;
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
-  const shownLeague = data.leagues.find((l) => l.key === (league ?? me.league)) ?? data.leagues[0];
+  const questDone = quest.done >= quest.need;
+  const medals = data.medals ?? [];
+  const medalCount = data.medalCount ?? { got: 0, total: medals.length };
+  // Свёрнутый вид: полученные и ближайшие. Полный список — по кнопке.
+  const shownMedals = allMedals ? medals : medals.slice(0, 4);
+  const top = data.top ?? [];
+  const meInTop = top.some((r) => r.me);
 
   return (
     <ScrollView
@@ -254,6 +269,50 @@ export default function RaidScreen() {
       <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 14 }}>
         Бьём все вместе. Задания в бою — на практику: ошибку не разбираем, просто показываем ответ.
       </Text>
+
+      {/* ── Цель на сегодня: первый блок экрана ─────────────────────────── */}
+      <SectionLabel>Цель на сегодня</SectionLabel>
+      <View style={card(colors, { marginBottom: 14 })}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <View style={{
+            width: 42, height: 42, borderRadius: radii.sm,
+            alignItems: "center", justifyContent: "center",
+            backgroundColor: questDone ? "rgba(251,191,36,0.2)" : "rgba(99,102,241,0.12)",
+          }}>
+            <Glyph name={questDone ? "check" : "target"} size={21} color={questDone ? accents.gold : colors.primary} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 15.5, fontWeight: "900", color: colors.foreground }}>
+              Нанеси {quest.need} урона боссу
+            </Text>
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+              {quest.done} из {quest.need} · награда {quest.coins} монет
+            </Text>
+          </View>
+          <Text style={{
+            fontSize: 20, fontWeight: "900", letterSpacing: -0.8,
+            color: questDone ? accents.gold : colors.primary,
+          }}>
+            {Math.min(100, Math.round((quest.done / Math.max(1, quest.need)) * 100))}%
+          </Text>
+        </View>
+        <View style={{ marginTop: 11 }}>
+          <Bar ratio={quest.done / Math.max(1, quest.need)} colors={["#a855f7", "#6366f1"]} />
+        </View>
+        {quest.claimed ? (
+          <Text style={{ fontSize: 12, fontWeight: "800", color: colors.primary, marginTop: 9 }}>
+            Награда за сегодня получена
+          </Text>
+        ) : (
+          <ChunkyButton
+            label={questDone ? "Забрать награду" : "Ещё не выполнено"}
+            icon="check"
+            center
+            onPress={() => { if (questDone) questM.mutate(); }}
+            style={{ marginTop: 11, opacity: questDone ? 1 : 0.45 }}
+          />
+        )}
+      </View>
 
       {/* ── Босс ────────────────────────────────────────────────────────── */}
       <LinearGradient
@@ -305,9 +364,7 @@ export default function RaidScreen() {
           colors={event.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7", "#6366f1"]}
         />
 
-        {/* Главное действие — СРАЗУ под шкалой здоровья: увидел полоску, ударил.
-            Ниже по экрану кнопка требовала прокрутки, а бой это то, зачем сюда
-            заходят вообще. */}
+        {/* Главное действие — сразу под шкалой здоровья. */}
         <ChunkyButton
           label={dead ? "Босс повержен" : "Бить босса"}
           sublabel={dead ? "Ждём следующего в понедельник" : "12 заданий на практику · удар за каждый верный ответ"}
@@ -359,7 +416,7 @@ export default function RaidScreen() {
             </Text>
           </View>
           <View style={{ alignItems: "flex-end", gap: 6 }}>
-            <Pill text={`${me.leagueTitle} · ${me.rank} место`} tone="soft" color={colors.primary} />
+            <Pill text={`${me.rank} место`} tone="soft" color={colors.primary} />
             {me.combo >= 3 && <Pill text={`комбо ${me.combo}`} tone="soft" color={accents.amber} />}
             {me.rusty && <Pill text="ржавчина −20%" tone="soft" color="#e11d48" />}
             {me.boosted && <Pill text="множитель ×1.5" tone="soft" color={accents.gold} />}
@@ -368,7 +425,7 @@ export default function RaidScreen() {
 
         <View style={{ flexDirection: "row", marginTop: 14, marginBottom: 10 }}>
           <Stat icon="spark" value={`${me.stamina}/${me.staminaMax}`} label="ЭНЕРГИЯ" color={accents.amber} />
-          <Stat icon="cup" value={String(me.coins)} label="МОНЕТЫ" color={accents.gold} />
+          <Stat coin value={String(me.coins)} label="МОНЕТЫ" color={accents.gold} />
           <Stat icon="flame" value={String(me.bestCombo)} label="КОМБО" color={colors.primary} />
           <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
@@ -423,7 +480,7 @@ export default function RaidScreen() {
           busy={buyM.isPending}
         />
         <Buff
-          icon="cup"
+          icon="cards"
           title="Полная энергия"
           about={`Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`}
           cost={abilities.stamina.cost}
@@ -435,68 +492,89 @@ export default function RaidScreen() {
         />
       </View>
 
-      {/* ── Дневное задание ────────────────────────────────────────────── */}
-      <View style={card(colors, { marginBottom: 12 })}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Glyph name="target" size={22} color={colors.primary} />
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground }}>
-              Нанеси {quest.need} урона за день
-            </Text>
-            <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
-              {quest.done} из {quest.need} · награда {quest.coins} монет
-            </Text>
-          </View>
-        </View>
-        <View style={{ marginTop: 10 }}>
-          <Bar ratio={quest.done / quest.need} colors={["#a855f7", "#6366f1"]} />
-        </View>
-        {quest.claimed ? (
-          <Text style={{ fontSize: 12, fontWeight: "800", color: colors.primary, marginTop: 9 }}>
-            Награда за сегодня получена
-          </Text>
-        ) : (
-          <ChunkyButton
-            label={quest.done >= quest.need ? "Забрать награду" : "Ещё не выполнено"}
-            icon="check"
-            center
-            onPress={() => { if (quest.done >= quest.need) questM.mutate(); }}
-            style={{ marginTop: 11, opacity: quest.done >= quest.need ? 1 : 0.45 }}
-          />
-        )}
-      </View>
+      {/* ── Медали рейдов ──────────────────────────────────────────────── */}
+      {medals.length > 0 && (
+        <>
+          <SectionLabel>Медали рейдов · {medalCount.got} из {medalCount.total}</SectionLabel>
+          <View style={card(colors, { marginBottom: 12, gap: 10 })}>
+            {shownMedals.map((m) => (
+              <Pressable
+                key={m.id}
+                onPress={() => setMedal(m)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 11 }}
+                accessibilityRole="button"
+                accessibilityLabel={`${m.title}. ${m.got ? "получена" : "ещё не получена"}`}
+              >
+                {/* Полученная — золотая заливка, закрытая — пунктир с замком.
+                    Цвет по краям, текст всегда тёмный: см. витрину наград. */}
+                <View style={{
+                  width: 40, height: 40, borderRadius: 20,
+                  alignItems: "center", justifyContent: "center",
+                  backgroundColor: m.got ? "rgba(251,191,36,0.18)" : "rgba(160,140,220,0.12)",
+                  borderWidth: 2,
+                  borderColor: m.got ? accents.gold : "rgba(139,92,246,0.35)",
+                  borderStyle: m.got ? "solid" : "dashed",
+                }}>
+                  <Glyph
+                    name={(m.got ? m.icon : "lock") as GlyphName}
+                    size={19}
+                    color={m.got ? accents.amber : "rgba(91,79,142,0.5)"}
+                  />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      fontSize: 14, fontWeight: m.got ? "900" : "800",
+                      color: m.got ? colors.foreground : colors.mutedForeground,
+                    }}
+                  >
+                    {m.title}
+                  </Text>
+                  {m.got ? (
+                    <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 2 }}>
+                      Получена
+                    </Text>
+                  ) : (
+                    <View style={{ marginTop: 5 }}>
+                      <Bar ratio={m.percent / 100} height={5} colors={["#a855f7", "#6366f1"]} />
+                      <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 3 }}>
+                        {m.current.toLocaleString("ru-RU")} из {m.target.toLocaleString("ru-RU")}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                {m.got && <Glyph name="check" size={17} color={accents.gold} />}
+              </Pressable>
+            ))}
 
-      {/* ── Лиги ───────────────────────────────────────────────────────── */}
+            {medals.length > 4 && (
+              <Pressable
+                onPress={() => setAllMedals((v) => !v)}
+                style={{ alignSelf: "flex-start", paddingVertical: 4 }}
+                accessibilityRole="button"
+              >
+                <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.primary }}>
+                  {allMedals ? "Свернуть" : `Показать все ${medals.length}`}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        </>
+      )}
+
+      {/* ── Единый топ ─────────────────────────────────────────────────── */}
       <SectionLabel>Топ по урону</SectionLabel>
-      <View style={{ flexDirection: "row", gap: 7, marginBottom: 10 }}>
-        {data.leagues.map((l) => {
-          const on = (league ?? me.league) === l.key;
-          return (
-            <Pressable
-              key={l.key}
-              onPress={() => setLeague(l.key)}
-              style={{
-                flex: 1, paddingVertical: 8, borderRadius: radii.pill, alignItems: "center",
-                backgroundColor: on ? colors.primary : "rgba(120,110,170,0.1)",
-              }}
-            >
-              <Text style={{ fontSize: 11.5, fontWeight: "900", color: on ? "#fff" : "#6b5f9c" }}>
-                {l.title.replace(" лига", "")}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
       <View style={card(colors, { marginBottom: 12, gap: 8 })}>
-        {!shownLeague || shownLeague.rows.length === 0 ? (
+        {top.length === 0 ? (
           <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground }}>
-            В этой лиге ещё никто не ударил. Первый удар — первое место.
+            Никто ещё не ударил. Первый удар — первое место.
           </Text>
         ) : (
-          shownLeague.rows.map((row, i) => (
+          top.map((row, i) => (
             <View key={row.userId} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               <Text style={{
-                width: 22, fontSize: 13, fontWeight: "900",
+                width: 24, fontSize: 13, fontWeight: "900",
                 color: i === 0 ? accents.gold : colors.mutedForeground,
               }}>
                 {i + 1}
@@ -522,6 +600,25 @@ export default function RaidScreen() {
               </Text>
             </View>
           ))
+        )}
+
+        {/* Не попал в таблицу — своё место отдельной строкой: она нужна
+            именно тем, кого в списке нет. */}
+        {top.length > 0 && !meInTop && me.damage > 0 && (
+          <View style={{
+            flexDirection: "row", alignItems: "center", gap: 10,
+            borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 9, marginTop: 2,
+          }}>
+            <Text style={{ width: 24, fontSize: 13, fontWeight: "900", color: colors.primary }}>
+              {me.rank}
+            </Text>
+            <Text style={{ flex: 1, fontSize: 13.5, fontWeight: "900", color: colors.primary }}>
+              Ты
+            </Text>
+            <Text style={{ fontSize: 13, fontWeight: "900", color: colors.foreground }}>
+              {me.damage.toLocaleString("ru-RU")}
+            </Text>
+          </View>
         )}
       </View>
 
@@ -549,7 +646,17 @@ export default function RaidScreen() {
         </>
       )}
 
-      {/* ── Окна: сундук, ошибка ──────────────────────────────────────── */}
+      {/* ── Окна: медаль, сундук, ошибка ──────────────────────────────── */}
+      {!!medal && (
+        <Modal
+          title={medal.title}
+          body={medal.got
+            ? `${medal.about}\n\nМедаль получена.`
+            : `${medal.about}\n\nПрогресс: ${medal.current.toLocaleString("ru-RU")} из ${medal.target.toLocaleString("ru-RU")}.`}
+          action="Понятно"
+          onAction={() => setMedal(null)}
+        />
+      )}
       {!!data.chest && (
         <Modal
           title={data.chest.status === "won" ? "Босс повержен" : "Рейд закончился"}
@@ -624,9 +731,20 @@ function Buff({
                 {about}
               </Text>
             </View>
-            {active
-              ? <Pill text={activeText} tone="soft" color={accents.gold} />
-              : <Pill text={`${cost} монет`} tone="soft" color={colors.primary} />}
+            {active ? (
+              <Pill text={activeText} tone="soft" color={accents.gold} />
+            ) : (
+              // Цена — монетой и цифрой рядом: знак валюты объясняет цифру
+              // лучше, чем слово «монет» мелким кеглем.
+              <View style={{
+                flexDirection: "row", alignItems: "center", gap: 5,
+                paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill,
+                backgroundColor: colors.primary + "1a",
+              }}>
+                <Coin size={15} />
+                <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>{cost}</Text>
+              </View>
+            )}
           </View>
         </Pressable>
       </Animated.View>
@@ -634,7 +752,7 @@ function Buff({
   );
 }
 
-/** Простое окно события: сундук. */
+/** Простое окно события: медаль, сундук. */
 function Modal({
   title, body, action, onAction,
 }: { title: string; body: string; action: string; onAction: () => void }) {
