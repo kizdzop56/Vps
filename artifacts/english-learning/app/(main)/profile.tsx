@@ -599,6 +599,13 @@ export default function ProfileScreen() {
       perfectScoreCount: gamStats.perfectScoreCount,
       xpLevel: gamStats.xpLevel,
       earlyBirdSessions: gamStats.earlyBirdSessions,
+      // Раздел «Учёба»: без этих полей медали grammar_*, forms_*, phrases_* и
+      // tenses_* не выдались бы никогда — сервер их проверяет, но просит о
+      // выдаче именно клиент.
+      grammarSolved: gamStats.grammarSolved,
+      verbFormsMastered: gamStats.verbFormsMastered,
+      tensesMastered: gamStats.tensesMastered,
+      sentencesBuilt: gamStats.sentencesBuilt,
     };
     const unlcked = getUnlockedAchievements(stats).map(a => a.id);
     const newOnes = unlcked.filter(id => !gamStats.unlockedAchievementIds.includes(id));
@@ -617,6 +624,12 @@ export default function ProfileScreen() {
     perfectScoreCount: gamStats?.perfectScoreCount ?? 0,
     xpLevel: gamStats?.xpLevel ?? 1,
     earlyBirdSessions: gamStats?.earlyBirdSessions ?? 0,
+    // Показатели раздела «Учёба». На СВОЁМ профиле они есть всегда, поэтому
+    // ноль здесь означает «ещё не занимался», а не «данных нет».
+    grammarSolved: gamStats?.grammarSolved ?? 0,
+    verbFormsMastered: gamStats?.verbFormsMastered ?? 0,
+    tensesMastered: gamStats?.tensesMastered ?? 0,
+    sentencesBuilt: gamStats?.sentencesBuilt ?? 0,
   }), [gamStats, user?.knowledgeLevel]);
 
   const unlocked = React.useMemo(() => getUnlockedAchievements(achievementStats), [achievementStats]);
@@ -635,6 +648,10 @@ export default function ProfileScreen() {
       wordsToday: wordStats.wordsToday,
       learnedToday: wordStats.learnedToday,
       dailyWordGoal: wordStats.dailyWordGoal,
+      // Задачи по разделу «Учёба». Счётчики приходят с сервера тем же запросом,
+      // что и остальные: отдельного похода за ними нет.
+      grammarToday: gamStats.grammarToday ?? 0,
+      verbFormsToday: gamStats.verbFormsToday ?? 0,
     });
   }, [gamStats, wordStats, liveTodayMinutes, liveTodaySeconds]);
 
