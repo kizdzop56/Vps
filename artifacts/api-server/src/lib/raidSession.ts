@@ -42,7 +42,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { db } from "@workspace/db";
 import { wordsTable, userCardStateTable, raidTasksTable } from "@workspace/db";
-import { and, asc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import { checkWritten } from "./answerCheck";
 import { ensureSettings, levelsUpTo, toWordLike, visibleDeckIds } from "./flashcardsCore";
 import {
@@ -58,7 +58,7 @@ import {
   type WordLike,
 } from "./wordExercise";
 import { LEVEL_ORDER, type CefrLevel } from "./grammar/verbs";
-import { buildGrammarSession, checkGrammarAnswer, findTask } from "./grammar/engine";
+import { buildGrammarSession, checkGrammarAnswer } from "./grammar/engine";
 import { grammarTaskKind, wordTaskKind } from "./raidTags";
 import type { RaidDifficulty, RaidTag } from "./raid";
 
@@ -139,8 +139,7 @@ function modesFor(word: WordRow): WordMode[] {
   const translation = mainTranslation(toWordLike(word));
   const out: WordMode[] = [];
   if (translation) {
-    out.push("choiceRu", "listen");
-    out.push("choiceEn");
+    out.push("choiceRu", "listen", "choiceEn");
     if (isTypeable(translation)) out.push("typeRu");
     if (isTypeable(word.english)) out.push("typeEn");
     if (isBuildable(word.english)) out.push("build");
@@ -329,7 +328,8 @@ export async function buildRaidBatch(userId: number, now: Date = new Date()): Pr
   const wordOrder = [
     ...shuffle(untouched.filter((w) => known.has(w.id)), rng),
     ...shuffle(untouched.filter((w) => !known.has(w.id)), rng),
-    // Повторно взятые идут по возрастанию давности: самое забытое первым.
+    // Повторно взятые идут по возрастанию давности: самое забытое первым, и
+    // только в самом конце — то, что спрашивали на этой неделе.
     ...touched.filter((w) => !history.fresh.has(`word:${w.id}`)),
     ...touched.filter((w) => history.fresh.has(`word:${w.id}`)),
   ];
@@ -396,6 +396,7 @@ export async function buildRaidBatch(userId: number, now: Date = new Date()): Pr
         seenRefs.add(ref);
 
         const input = String(card["input"] ?? "choice");
+        const normalized = input === "assemble" ? "assemble" : input === "type" ? "type" : "choice";
         const kind = grammarTaskKind(String(card["mode"] ?? mode), input);
         const options = card["options"];
         const tiles = card["tiles"];
@@ -408,12 +409,12 @@ export async function buildRaidBatch(userId: number, now: Date = new Date()): Pr
         const draft: Draft = {
           kind: "grammar",
           ref,
-          mode: input === "assemble" ? "assemble" : input === "type" ? "type" : "choice",
+          mode: normalized,
           difficulty: kind.difficulty,
           tags: kind.tags,
           question: {
             prompt: String(card["text"] ?? ""),
-            input: input === "assemble" ? "assemble" : input === "type" ? "type" : "choice",
+            input: normalized,
             answerLang: "en",
             ...(Array.isArray(options) && options.length > 0 ? { options: options.map(String) } : {}),
             ...(Array.isArray(tiles) && tiles.length > 0 ? { tiles: tiles.map(String) } : {}),
@@ -547,14 +548,4 @@ export async function checkRaidAnswer(
     .where(eq(raidTasksTable.id, row.id));
 
   return { correct: verdict.correct, typo: verdict.typo, expected, difficulty, tags };
-}
-
-/** Незакрытые задания прошлых заходов: нужны только для отладки подборки. */
-export async function pendingRaidTasks(userId: number): Promise<number> {
-  const [row] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(raidTasksTable)
-    .where(and(eq(raidTasksTable.userId, userId), isNull(raidTasksTable.answeredAt)))
-    .orderBy(asc(raidTasksTable.issuedAt));
-  return Number(row?.n ?? 0);
 }
