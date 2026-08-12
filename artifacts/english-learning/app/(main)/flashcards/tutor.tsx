@@ -5,9 +5,10 @@
 // Раньше собеседник назывался тьютором и никак не выглядел: реплики подписаны
 // «ТЬЮТОР», и всё. Для ребёнка это переписка с настройкой, а не разговор.
 //
-// Снежа в приложении уже есть — она встречает, хвалит и подсказывает. Поэтому
-// наверху сидит живая Снежа (components/SnezhaLive.tsx), и по ней ВИДНО, что
-// происходит: слушает, думает, говорит или просто дышит.
+// Теперь наверху сидит сама Снежа (components/SnezhaFrames.tsx): статичная
+// картинка, а когда отвечает — покадровая мимика из готовых кадров. Что
+// происходит, видно и по ней, и по подписи рядом: картинка сообщает быстрее,
+// текст надёжнее.
 //
 // ── РАЗГОВОР ПРОДОЛЖАЕТСЯ ПОСЛЕ ПЕРЕЗАГРУЗКИ ───────────────────────────────
 // Реплики всегда лежали на сервере, но экран о них не спрашивал: обновил
@@ -77,7 +78,7 @@ import {
   type StopPlayback,
   type VoiceRecorder,
 } from "@/utils/voiceRecorder";
-import { SnezhaLive, type SnezhaState } from "@/components/SnezhaLive";
+import { SnezhaFrames, type SnezhaState } from "@/components/SnezhaFrames";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
@@ -608,7 +609,9 @@ export default function TutorScreen() {
           )}
         </View>
 
-        {/* ── Сама Снежа ── */}
+        {/* ── Сама Снежа ──
+            Нажатие на неё переозвучивает последний ответ: по персонажу хочется
+            потыкать, и это самое ожидаемое, что может произойти. */}
         <Pressable
           onPress={() => {
             const last = [...lines].reverse().find((l) => l.role === "ai");
@@ -617,9 +620,9 @@ export default function TutorScreen() {
           }}
           accessibilityRole="button"
           accessibilityLabel={`${NAME}: ${STATUS[snezhaState]}`}
-          style={{ flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 8 }}
+          style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}
         >
-          <SnezhaLive state={snezhaState} width={mascotW} still={blocked} />
+          <SnezhaFrames state={snezhaState} width={mascotW} still={blocked} />
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={{
               fontSize: started ? 16 : 18,
