@@ -393,7 +393,7 @@ export default function RaidScreen() {
         />
         <Ability
           icon="spark"
-          title="Área-удар"
+          title="AOE-удар"
           about={`Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`}
           cost={abilities.aoe.cost}
           mana={me.mana}
