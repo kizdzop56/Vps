@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Запись голоса ученика: одна ручка на две несовместимые платформы.
+// Голос ученика и голос тьютора: запись и проигрывание.
 //
 // ── Зачем отдельный файл ────────────────────────────────────────────────────
 // Первая версия экрана тьютора писала звук через Audio.Recording из expo-av. На
@@ -18,18 +18,19 @@
 // ── ГРАБЛИ: SAFARI ВРЁТ О ФОРМАТЕ ───────────────────────────────────────────
 // MediaRecorder.isTypeSupported("audio/webm") в Safari на iPhone отвечает true,
 // recorder.mimeType тоже говорит webm — а на выходе получается mp4/aac. Запись
-// уезжала на сервер под именем audio.webm, whisper смотрит на расширение и
-// отказывался её читать. Наружу это выходило как «не удалось разобрать запись»,
-// и так на каждой попытке.
+// уезжала на сервер под именем audio.webm, распознаватель смотрит на расширение
+// и отказывался её читать. Наружу это выходило как «не удалось разобрать
+// запись», и так на каждой попытке.
 //
 // Лечится с двух сторон. Здесь — просим у Safari сразу mp4, чтобы заявленный
 // тип совпадал с настоящим. На сервере — формат определяется по сигнатуре
-// файла, а не по названию (см. sniffAudioExt в routes/voiceChat.ts). Одной
-// стороны мало: браузеры врут по-разному, и вторая проверка ловит остальных.
+// файла, а не по названию (см. sniffAudioExt в lib/ai.ts). Одной стороны мало:
+// браузеры врут по-разному, и вторая проверка ловит остальных.
 //
 // ── Слишком короткая запись ─────────────────────────────────────────────────
-// Whisper на файле в десяток миллисекунд отвечает ошибкой, и это выглядело как
-// «речь не распознана», хотя речи там и не было. Такие записи не отправляются.
+// Распознаватель на файле в десяток миллисекунд отвечает ошибкой, и это
+// выглядело как «речь не распознана», хотя речи там и не было. Такие записи не
+// отправляются.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Platform } from "react-native";
 
@@ -53,7 +54,7 @@ export class MicDeniedError extends Error {
   }
 }
 
-/** Записи короче этого не отправляем: whisper на них падает. */
+/** Записи короче этого не отправляем: распознаватель на них падает. */
 const MIN_RECORDING_MS = 400;
 
 /** И не отправляем совсем маленькие файлы: та же причина, другая мера. */
@@ -239,29 +240,171 @@ export function createVoiceRecorder(): VoiceRecorder {
   return Platform.OS === "web" ? new WebRecorder() : new NativeRecorder();
 }
 
-// ── Проигрывание ответа ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ПРОИГРЫВАНИЕ ОТВЕТА ТЬЮТОРА
+//
+// ── ГРАБЛИ, ИЗ-ЗА КОТОРЫХ ОТВЕТ ОЗВУЧИВАЛСЯ ЧЕРЕЗ РАЗ ──────────────────────
+// Было так: на каждый ответ создавался НОВЫЙ Audio, и play() вызывался после
+// того, как запрос вернулся с сервера — то есть через несколько секунд после
+// нажатия кнопки.
+//
+// Safari (а на iPhone это любой браузер) разрешает звук только элементу,
+// который уже начинал играть ПО ДЕЙСТВИЮ ЧЕЛОВЕКА. Свежесозданный элемент
+// таким не считается: play() отвечает NotAllowedError. Ошибку глотал
+// .catch(() => {}), поэтому наружу это выходило как «иногда озвучивает, иногда
+// нет» — без единого следа.
+//
+// Отсюда два правила, и оба обязательны:
+//
+//   1. ПЛЕЕР ОДИН на весь экран, и его «разблокировывают» (primeAudio) прямо в
+//      обработчике нажатия — он проигрывает 40 мс тишины. Дальше этому же
+//      элементу можно менять src и звать play() когда угодно.
+//
+//   2. ЗВУК ОТДАЁТСЯ ЧЕРЕЗ blob:, а не data:. Ответ приходит как
+//      data:audio/wav;base64,... на несколько сотен килобайт, и Safari такие
+//      ссылки читает неохотно (иногда просто не начинает играть). Blob-ссылка
+//      для него — обычный файл.
+//
+// Если звук всё же заблокирован, это ВОЗВРАЩАЕТСЯ наружу (blocked: true), а не
+// проглатывается: экран показывает подсказку «нажми, чтобы послушать», и
+// нажатие уже идёт от человека — тогда играет всегда.
+// ─────────────────────────────────────────────────────────────────────────────
 
-/** Остановить и забыть текущий звук. Возвращается новая ручка остановки. */
+/** Остановить и забыть текущий звук. */
 export type StopPlayback = () => void;
 
+export type Playback = {
+  stop: StopPlayback;
+  /** true — браузер не дал играть без нажатия. Текст ответа уже на экране. */
+  blocked: boolean;
+};
+
+/** 40 мс тишины: этим разблокируется плеер. */
+const SILENCE =
+  "data:audio/wav;base64,UklGRqQCAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YYACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+/** Единственный плеер веб-версии и его состояние. */
+let webPlayer: HTMLAudioElement | null = null;
+let webUnlocked = false;
+let webBlobUrl: string | null = null;
+
+function ensureWebPlayer(): HTMLAudioElement | null {
+  const Ctor: any = (globalThis as any).Audio;
+  if (typeof Ctor !== "function") return null;
+  if (!webPlayer) {
+    webPlayer = new Ctor() as HTMLAudioElement;
+    webPlayer.preload = "auto";
+    // Без playsinline iOS открывает звук в своём полноэкранном плеере.
+    (webPlayer as any).playsInline = true;
+    webPlayer.setAttribute?.("playsinline", "true");
+  }
+  return webPlayer;
+}
+
 /**
- * Проиграть ответ тьютора.
+ * Разблокировать звук. Вызывать СИНХРОННО в обработчике нажатия — до любого
+ * await, иначе браузер уже не считает вызов следствием действия человека.
  *
- * На вебе — обычный Audio из браузера: expo-av здесь ничего не добавляет, а
- * тянуть его ради проигрывания data-URL незачем. На телефоне — expo-av.
- *
- * Возвращает функцию остановки: звук не должен продолжать говорить после того,
- * как ученик ушёл с экрана.
+ * Вызывать можно сколько угодно: после успеха работа не повторяется.
  */
-export async function playAudio(uri: string): Promise<StopPlayback> {
-  if (Platform.OS === "web") {
-    const el = new ((globalThis as any).Audio)(uri) as HTMLAudioElement;
-    await el.play().catch(() => { /* автозапуск мог быть запрещён — не беда */ });
-    return () => { try { el.pause(); } catch { /* уже остановлен */ } };
+export function primeAudio(): void {
+  if (Platform.OS !== "web" || webUnlocked) return;
+  const el = ensureWebPlayer();
+  if (!el) return;
+  try {
+    el.src = SILENCE;
+    const started = el.play() as unknown as Promise<void> | undefined;
+    const done = () => {
+      webUnlocked = true;
+      try { el.pause(); el.currentTime = 0; } catch { /* уже остановлен */ }
+    };
+    if (started?.then) started.then(done).catch(() => { /* нажатие не в счёт */ });
+    else done();
+  } catch {
+    /* нет звука в этом браузере — ответ всё равно виден текстом */
+  }
+}
+
+/** Освободить прошлую blob-ссылку: иначе они копятся в памяти вкладки. */
+function revokeWebBlob(): void {
+  if (!webBlobUrl) return;
+  try { (globalThis as any).URL?.revokeObjectURL?.(webBlobUrl); } catch { /* и так уйдёт */ }
+  webBlobUrl = null;
+}
+
+/**
+ * data:…base64 → blob:… (см. ГРАБЛИ выше). Не получилось — отдаём как было:
+ * прямая ссылка хуже, но лучше тишины.
+ */
+async function toPlayableUrl(uri: string): Promise<string> {
+  if (!uri.startsWith("data:")) return uri;
+  const createUrl = (globalThis as any).URL?.createObjectURL;
+  if (typeof createUrl !== "function") return uri;
+  try {
+    const blob = await (await fetch(uri)).blob();
+    revokeWebBlob();
+    webBlobUrl = createUrl.call((globalThis as any).URL, blob) as string;
+    return webBlobUrl;
+  } catch {
+    return uri;
+  }
+}
+
+async function playOnWeb(uri: string): Promise<Playback> {
+  const el = ensureWebPlayer();
+  if (!el) return { stop: () => {}, blocked: false };
+
+  const stop = () => {
+    try { el.pause(); } catch { /* уже остановлен */ }
+  };
+
+  el.src = await toPlayableUrl(uri);
+  try {
+    el.load?.();
+  } catch {
+    /* не все браузеры это любят, но play() ниже всё равно попробует */
   }
 
+  try {
+    await el.play();
+    webUnlocked = true;
+    return { stop, blocked: false };
+  } catch (e: any) {
+    // NotAllowedError — запрет автозапуска, а не поломка: ученик нажмёт на
+    // реплику и услышит ответ. Остальные ошибки (битый файл, нет кодека)
+    // выглядят так же, и разделять их незачем: снаружи действие одно.
+    return { stop, blocked: true };
+  }
+}
+
+async function playOnNative(uri: string): Promise<Playback> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { Audio } = require("expo-av");
+
+  // ГРАБЛИ: запись оставляет iOS в режиме микрофона (allowsRecordingIOS), и в
+  // нём динамик почти не слышно — ответ «не озвучивался» ровно после того, как
+  // ученик поговорил вслух. Режим обязан вернуться к проигрыванию.
+  try {
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+  } catch {
+    /* не вышло — пробуем играть как есть */
+  }
+
   const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
-  return () => { void sound.unloadAsync(); };
+  return { stop: () => { void sound.unloadAsync(); }, blocked: false };
+}
+
+/**
+ * Проиграть ответ тьютора и рассказать, вышло ли.
+ *
+ * Возвращает ручку остановки: звук не должен продолжать говорить после того,
+ * как ученик ушёл с экрана.
+ */
+export async function playSpeech(uri: string): Promise<Playback> {
+  return Platform.OS === "web" ? playOnWeb(uri) : playOnNative(uri);
+}
+
+/** Прежняя ручка: только остановка, без ответа «получилось ли». */
+export async function playAudio(uri: string): Promise<StopPlayback> {
+  return (await playSpeech(uri)).stop;
 }
