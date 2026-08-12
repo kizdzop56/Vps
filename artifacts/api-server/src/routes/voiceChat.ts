@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Разговор со Снежей: реплика ученика → ответ модели → озвучка.
+// Разговор со Снежей: реплика ученика → разбор → ответ модели → озвучка.
 //
 // ── Про поставщиков здесь НИЧЕГО нет ────────────────────────────────────────
 // Раньше маршрут напрямую знал про поставщика: и модель ответа, и
@@ -15,9 +15,9 @@
 //   audioBase64 — запись голоса, её расшифровывает распознаватель;
 //   text        — ученик написал руками.
 //
-// Дальше пути сходятся: ответ модели, озвучка, очки и журнал одинаковы. Письмо
-// нужно не только для удобства (шумно, стесняется, нет микрофона) — оно ещё и
-// обходит распознавание речи целиком, поэтому по нему видно, работает ли
+// Дальше пути сходятся: разбор, ответ модели, озвучка, очки и журнал одинаковы.
+// Письмо нужно не только для удобства (шумно, стесняется, нет микрофона) — оно
+// ещё и обходит распознавание речи целиком, поэтому по нему видно, работает ли
 // остальная часть раздела, когда микрофон подводит.
 //
 // ── ОЗВУЧКА НЕ ОБЯЗАТЕЛЬНА, НО И НЕ ОДНОРАЗОВА ─────────────────────────────
@@ -54,6 +54,10 @@
 // 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
 // как в словах и грамматике. Без потолка разговор был единственным местом, где
 // очки капали бесконечно.
+//
+// Очки идут и за неудачную попытку тоже. Ребёнок сказал фразу, ошибся и
+// повторил правильно — это РАБОТА, и наказывать за неё нулём нельзя: иначе
+// выгоднее говорить только заученное.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
@@ -67,34 +71,71 @@ import { aiProviders, chat, geminiModelReport, hasAnyAi, speak, transcribe } fro
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// КТО ОТВЕЧАЕТ
+// КТО ОТВЕЧАЕТ И КАК ПРОВЕРЯЕТ
 //
 // Собеседник — Снежа, маскот приложения. Не «ассистент» и не «тьютор»: ребёнок
 // разговаривает с тем, кого уже знает по остальным экранам, и это единственная
 // причина, по которой он вообще начнёт говорить вслух на чужом языке.
 //
-// ── ПОЧЕМУ СНЕЖА НЕ ПОПРАВЛЯЕТ ОШИБКИ ──────────────────────────────────────
-// Раньше здесь стояло «мягко исправляй грамматику, повторяя фразу правильно».
-// Звучит полезно, а на практике каждый ответ превращался в урок: ребёнок сказал
-// про кота — получил разбор времени. Говорить после такого страшнее, чем до.
+// ── ОШИБКА ОСТАНАВЛИВАЕТ РАЗГОВОР ──────────────────────────────────────────
+// Снежа проверяет каждую реплику. Есть ошибка — она называет её и просит
+// сказать ту же фразу правильно, и разговор НЕ идёт дальше, пока фраза не
+// прозвучит верно. Всё правильно — обычный ответ и следующий вопрос.
 //
-// Разбор ошибок в приложении уже есть, и целых четыре раздела: слова, сборка
-// предложений, формы глаголов, времена. Там ошибка — это смысл упражнения, и
-// объясняется она подробно. У разговора задача ровно одна: чтобы ребёнок
-// заговорил. Поэтому Снежа понимает сказанное и продолжает разговор, а не
-// оценивает его.
+// Это отличается и от «молчать про ошибки» (тогда ребёнок закрепляет неверное),
+// и от «поправить и поехали дальше» (исправление, которое не повторили вслух,
+// не запоминается вообще).
 //
-// ── ПОЧЕМУ ПРОСИМ ДОКАНЧИВАТЬ ФРАЗУ ────────────────────────────────────────
-// Ответы обрывались на полуслове. Причина техническая (см. maxOutputTokens в
-// lib/ai.ts), но просьба в задании — вторая линия обороны: модель, которой
-// велено уложиться в три коротких предложения, реже упирается в предел.
+// ── ОТВЕТ ПРИХОДИТ РАЗБОРОМ, А НЕ ТЕКСТОМ ──────────────────────────────────
+// Модель обязана вернуть JSON: верна ли фраза, как она звучит правильно, что
+// именно было не так (по-русски) и сама реплика Снежи.
+//
+// Почему не одним текстом: экрану нужно ЗНАТЬ, была ошибка или нет — от этого
+// зависит, показывать ли разбор под своей репликой и просить ли повтор. Вытащить
+// это из свободного текста нечем, кроме угадывания по словам, а угадывание тут
+// ошибается на каждой второй фразе.
+//
+// Объяснение по-русски намеренно: ребёнок, который ошибся в английском, не
+// поймёт объяснения ошибки на английском. Сама реплика Снежи при этом всегда
+// английская — иначе разговор перестанет быть разговором на языке.
+//
+// ── ПОЧЕМУ НЕ БОЛЬШЕ ДВУХ ЗАХОДОВ ──────────────────────────────────────────
+// Без предела ребёнок может застрять на одной фразе навсегда: он не понимает,
+// чего от него хотят, и повторяет то же самое. Поэтому на третью попытку Снежа
+// принимает фразу как есть и ведёт разговор дальше — упражнение важно, но
+// бросить приложение из-за него важнее не дать.
 // ─────────────────────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are Snezha (Снежа), a friendly snow leopard cub. You chat in English with a child (age 5-18) who is learning English.
+
+/** Столько раз просим повторить одну и ту же фразу. Дальше принимаем как есть. */
+const MAX_RETRIES = 2;
+
+function systemPrompt(retry: number): string {
+  const base = `You are Snezha (Снежа), a friendly snow leopard cub. You chat in English with a child (age 5-18) who is learning English.
 Speak as Snezha in the first person. Never say you are an AI, a model, an assistant or a tutor.
-Keep every reply to 1-3 SHORT sentences and always finish your last sentence.
-NEVER correct the student's grammar, spelling or pronunciation, and never repeat their mistakes back to them. Just understand what they meant and keep the conversation going.
-Be warm, curious and playful. End most replies with one simple question.
-Use only words a child knows. Always reply in English.`;
+
+You ALWAYS answer with a single JSON object and nothing else. No markdown, no code fences:
+{"ok": true|false, "fixed": "...", "issue": "...", "reply": "..."}
+
+How to fill it:
+- "ok": true if the student's last message is correct English, false if it has a real mistake in grammar, word choice, word order or spelling.
+- "fixed": the same sentence written correctly. When "ok" is true, repeat their sentence unchanged.
+- "issue": ONE short sentence IN RUSSIAN naming the mistake, for a child. Empty string when "ok" is true.
+- "reply": what you say out loud, ALWAYS in English, 1-3 short sentences, always finished.
+
+When "ok" is false: in "reply" tell them warmly what to fix, say the correct sentence, and ask them to repeat it. Do NOT ask a new question and do NOT continue the topic.
+When "ok" is true: reply naturally, be warm, curious and playful, and end with one simple question to keep the conversation going.
+
+Be gentle. Ignore missing capital letters, missing final punctuation and obvious speech-to-text noise: the child often speaks out loud and the text comes from a recognizer. Never mock a mistake.
+Use only words a child knows.`;
+
+  if (retry < MAX_RETRIES) return base;
+
+  // Третья попытка: хватит. Ребёнок уже старался, дальше это не упражнение, а
+  // тупик.
+  return `${base}
+
+IMPORTANT: the student has already tried this sentence several times. Set "ok" to true no matter what, praise the effort in "reply" and move the conversation on with a new question.`;
+}
 
 const POINTS_PER_VOICE_EXCHANGE = 5;
 
@@ -119,6 +160,53 @@ const MAX_TEXT_LEN = 500;
 
 /** Столько символов озвучиваем и переводим: реплика Снежи всегда короче. */
 const MAX_SPEAK_LEN = 700;
+
+// ── Разбор ответа модели ────────────────────────────────────────────────────
+
+type Verdict = {
+  ok: boolean;
+  fixed: string;
+  issue: string;
+  reply: string;
+};
+
+/**
+ * Вытащить JSON из ответа модели.
+ *
+ * Модели то и дело оборачивают ответ в ```json, добавляют «Here is the JSON» или
+ * ставят перевод строки перед объектом — при всём том, что их об этом прямо
+ * просили не делать. Поэтому берём подстроку от первой «{» до последней «}»:
+ * этого хватает во всех виденных случаях.
+ *
+ * НЕ РАЗОБРАЛОСЬ — не ошибка. Тогда весь текст считается репликой, а фраза
+ * ученика — верной: потерять ответ целиком из-за формата хуже, чем один раз не
+ * заметить ошибку в грамматике.
+ */
+function parseVerdict(raw: string): Verdict {
+  const fallback: Verdict = { ok: true, fixed: "", issue: "", reply: raw.trim() };
+
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return fallback;
+
+  try {
+    const data = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+    const reply = typeof data["reply"] === "string" ? data["reply"].trim() : "";
+    // Реплики нет — объект бесполезен, что бы в нём ещё ни лежало.
+    if (!reply) return fallback;
+
+    return {
+      // Явное false и только оно означает ошибку: пропущенное поле — это «всё
+      // хорошо», иначе на любой заминке модели ребёнок получал бы придирку.
+      ok: data["ok"] !== false,
+      fixed: typeof data["fixed"] === "string" ? data["fixed"].trim() : "",
+      issue: typeof data["issue"] === "string" ? data["issue"].trim() : "",
+      reply,
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 /** Сколько очков за разговоры уже начислено сегодня. */
 async function voicePointsToday(userId: number): Promise<number> {
@@ -349,14 +437,19 @@ router.get("/voice-chat/sessions/:id", requireAuth, async (req, res) => {
 router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) => {
   const sessionId = Number(req.params["id"]);
   const user = getUser(req);
-  const { audioBase64, mimeType, text } = req.body as {
+  const { audioBase64, mimeType, text, retry } = req.body as {
     audioBase64?: unknown;
     mimeType?: unknown;
     text?: unknown;
+    /** Сколько раз ученик уже пробовал сказать ЭТУ фразу. Считает клиент. */
+    retry?: unknown;
   };
 
   const written = typeof text === "string" ? text.trim() : "";
   const hasAudio = typeof audioBase64 === "string" && audioBase64.length > 0;
+  // Счётчику попыток верим от клиента: врать себе в свою же сторону смысла нет,
+  // а серверу хранить его негде — в таблице сообщений такого поля не существует.
+  const attempt = Number.isFinite(Number(retry)) ? Math.max(0, Math.min(9, Number(retry))) : 0;
 
   if (!hasAudio && !written) {
     res.status(400).json({ error: "Реплика не пришла: нужна запись или текст" });
@@ -449,9 +542,9 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     content: m.transcript,
   }));
 
-  // ── Ответ Снежи ──
+  // ── Разбор и ответ Снежи ──
   const outcome = await chat({
-    system: SYSTEM_PROMPT,
+    system: systemPrompt(attempt),
     history,
     message: studentTranscript,
     log: req.log,
@@ -465,12 +558,19 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     });
     return;
   }
-  const aiTranscript = outcome.text;
+
+  const verdict = parseVerdict(outcome.text);
+  const aiTranscript = verdict.reply;
+  // Ошибка есть, но заходов больше не даём — экран не должен просить повтор.
+  const needsRetry = !verdict.ok && attempt < MAX_RETRIES;
 
   // Озвучка — не обязательна: текст ответа уже есть, и молчаливый ответ лучше,
   // чем потерянная реплика. Написавшему её тоже даём: слышать, как звучит
   // ответ, полезно и в письменном режиме. Не вышло — реплику можно озвучить
   // нажатием (POST /voice-chat/speak).
+  //
+  // Озвучиваем ТОЛЬКО reply: разбор ошибки написан по-русски, и английский
+  // голос прочитал бы его как набор звуков.
   const voice = await speak({ text: aiTranscript, log: req.log });
   const aiAudioUrl = voice.ok ? voice.dataUrl : null;
   if (!voice.ok) {
@@ -478,6 +578,9 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   }
 
   // ── Записываем обе реплики ──
+  //
+  // В историю идёт то, что ученик сказал НА САМОМ ДЕЛЕ, а не исправленная
+  // версия: это запись разговора, а не протокол того, как надо было.
   const [studentMsg] = await db.insert(voiceChatMessagesTable).values({
     sessionId,
     role: "student",
@@ -521,6 +624,19 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     pointsEarned,
     pointsToday: earnedToday + pointsEarned,
     pointsCap: DAILY_VOICE_POINTS_CAP,
+    // ── Разбор фразы ──
+    // ok       — фраза верна;
+    // fixed    — как она звучит правильно (пусто, если и так верно);
+    // issue    — что было не так, по-русски;
+    // needsRetry — экран просит повторить, разговор дальше не идёт.
+    correction: {
+      ok: verdict.ok,
+      fixed: verdict.ok ? "" : verdict.fixed,
+      issue: verdict.ok ? "" : verdict.issue,
+      needsRetry,
+      attempt,
+      maxRetries: MAX_RETRIES,
+    },
     // Кто ответил. Не украшение: по этому полю видно, что переключение
     // поставщика реально состоялось, без чтения логов.
     provider: outcome.provider,

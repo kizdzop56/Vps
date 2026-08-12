@@ -11,6 +11,19 @@
 // говорит или просто дышит. Подписи-состояния при этом тоже остались: картинка
 // сообщает быстрее, но текст надёжнее.
 //
+// ── ОШИБКА ОСТАНАВЛИВАЕТ РАЗГОВОР ──────────────────────────────────────────
+// Снежа проверяет каждую реплику ученика. Ошиблась фраза — под ней появляется
+// разбор (что не так и как правильно), Снежа просит повторить, и над кнопкой
+// висит полоса «повтори правильно». Разговор дальше не идёт, пока фраза не
+// прозвучит верно.
+//
+// Полоса нужна отдельно от реплики: ленту прокрутили — и просьба уехала вверх,
+// а руки ученика внизу, у кнопки. Там же ей и место.
+//
+// Больше двух заходов на одну фразу не бывает: на третьей попытке сервер
+// принимает как есть (см. MAX_RETRIES в routes/voiceChat.ts). Ребёнок, который
+// не понимает, чего от него хотят, иначе застревает навсегда.
+//
 // ── ПЕРЕВОД ПО СТРЕЛОЧКЕ ───────────────────────────────────────────────────
 // У каждой реплики Снежи справа стрелка. Нажал — под текстом раскрылся перевод
 // на русский; нажал ещё раз — свернулся.
@@ -134,6 +147,11 @@ type Line = {
   ruOpen?: boolean;
   /** Перевести не удалось. */
   ruFailed?: boolean;
+  // ── Разбор своей реплики (только у role === "student") ──
+  /** Как надо было сказать. Пусто — сказано верно. */
+  fixed?: string;
+  /** Что было не так, по-русски. */
+  issue?: string;
 };
 
 type SessionResponse = { id: number };
@@ -145,6 +163,12 @@ type MessagesResponse = {
   studentMessage?: { id?: number; transcript?: string };
   aiMessage?: { id?: number; transcript?: string; audioUrl?: string | null };
   pointsEarned?: number;
+  correction?: {
+    ok?: boolean;
+    fixed?: string;
+    issue?: string;
+    needsRetry?: boolean;
+  };
 };
 
 /** Как ученик отвечает. */
@@ -216,6 +240,13 @@ export default function TutorScreen() {
   const [translating, setTranslating] = React.useState<string | null>(null);
   /** Браузер не дал играть без нажатия. Подсказка на репликах меняется. */
   const [audioBlocked, setAudioBlocked] = React.useState(false);
+  /**
+   * Сколько раз подряд ученик ошибся на текущей фразе. Уходит на сервер: по
+   * нему он решает, просить повтор снова или принять фразу как есть.
+   */
+  const [retry, setRetry] = React.useState(0);
+  /** Правильный вариант последней неверной фразы: его и просим повторить. */
+  const [awaited, setAwaited] = React.useState<string | null>(null);
   /** null — ещё не спросили; false — разговор не настроен на сервере. */
   const [ready, setReady] = React.useState<boolean | null>(null);
   const [notReadyReason, setNotReadyReason] = React.useState<string | null>(null);
@@ -334,8 +365,9 @@ export default function TutorScreen() {
   /**
    * Отправить реплику: либо запись, либо текст.
    *
-   * Обе ветки сходятся здесь, потому что дальше всё одинаково — сессия, ответ
-   * Снежи, очки, лента. Две копии этого кода разъехались бы на первой правке.
+   * Обе ветки сходятся здесь, потому что дальше всё одинаково — сессия, разбор,
+   * ответ Снежи, очки, лента. Две копии этого кода разъехались бы на первой
+   * правке.
    */
   const send = React.useCallback(async (payload: Record<string, unknown>, shown: string) => {
     // Своя реплика появляется в ленте ДО запроса: см. шапку файла.
@@ -359,17 +391,30 @@ export default function TutorScreen() {
 
       const data = await apiFetch<MessagesResponse>(
         `/api/voice-chat/sessions/${id}/messages`,
-        { method: "POST", body: JSON.stringify(payload) },
+        // retry едет вместе с репликой: сервер по нему понимает, сколько раз
+        // ученик уже пробовал эту фразу.
+        { method: "POST", body: JSON.stringify({ ...payload, retry }) },
       );
 
       const mine = data.studentMessage?.transcript?.trim();
       const reply = data.aiMessage?.transcript?.trim();
       const replyAudio = data.aiMessage?.audioUrl ?? null;
+      const correction = data.correction;
+      const mistake = correction?.ok === false;
 
       setLines((prev) => [
         // Уточняем свою реплику расшифровкой: в голосовом режиме по ней видно,
         // как ученика услышали, и половина «отвечает невпопад» объясняется ей.
-        ...prev.map((l) => (l.id === localId ? { ...l, text: mine || l.text, pending: false } : l)),
+        // Заодно вешаем разбор — он показывается прямо под сказанным.
+        ...prev.map((l) => (l.id === localId
+          ? {
+              ...l,
+              text: mine || l.text,
+              pending: false,
+              fixed: mistake ? (correction?.fixed || "") : "",
+              issue: mistake ? (correction?.issue || "") : "",
+            }
+          : l)),
         {
           id: `a-${data.aiMessage?.id ?? Date.now()}`,
           role: "ai" as const,
@@ -377,6 +422,17 @@ export default function TutorScreen() {
           audio: replyAudio,
         },
       ]);
+
+      // Ошиблись — счётчик попыток растёт, и над кнопкой появляется просьба.
+      // Сказали верно — всё сбрасывается, разговор идёт дальше.
+      if (correction?.needsRetry) {
+        setRetry((n) => n + 1);
+        setAwaited(correction?.fixed?.trim() || null);
+      } else {
+        setRetry(0);
+        setAwaited(null);
+      }
+
       setPoints((p) => p + (data.pointsEarned ?? 0));
       if (replyAudio) void play(replyAudio);
 
@@ -396,7 +452,7 @@ export default function TutorScreen() {
     } finally {
       setSending(false);
     }
-  }, [sessionId, play, qc]);
+  }, [sessionId, play, qc, retry]);
 
   /** Начать запись. Разрешение спрашивается здесь: браузер даёт его по действию. */
   const startRecording = React.useCallback(async () => {
@@ -464,6 +520,7 @@ export default function TutorScreen() {
   }, [recording, sending]);
 
   const blocked = ready === false;
+  const needsRetry = retry > 0;
 
   // Состояние Снежи. Порядок проверок — это приоритет: пока идёт запись, она
   // слушает, чем бы там ни занимался сервер.
@@ -542,8 +599,8 @@ export default function TutorScreen() {
             </View>
             <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
               {mode === "voice"
-                ? "Говори по-английски вслух — она поймёт и ответит голосом"
-                : "Пиши по-английски — она ответит текстом и голосом"}
+                ? "Говори по-английски вслух. Ошибёшься — Снежа поправит и попросит повторить"
+                : "Пиши по-английски. Ошибёшься — Снежа поправит и попросит повторить"}
             </Text>
           </View>
         </Pressable>
@@ -626,6 +683,7 @@ export default function TutorScreen() {
           const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
           const busy = asking === line.id;
           const ruBusy = translating === line.id;
+          const hasFix = mine && (!!line.fixed || !!line.issue);
 
           const hint = busy
             ? "озвучиваю…"
@@ -649,11 +707,14 @@ export default function TutorScreen() {
                 maxWidth: "88%",
                 backgroundColor: mine ? colors.primary + "1f" : colors.card,
                 borderWidth: 1,
-                // Не доставленная реплика обведена красным: она сказана, но
-                // Снежа её не получила, и это должно быть видно.
+                // Не доставленная реплика обведена красным, ошибочная — жёлтым.
+                // Цвет ошибки НЕ красный намеренно: ошибка в упражнении это не
+                // поломка, а нормальная часть учёбы.
                 borderColor: line.failed
                   ? colors.destructive + "88"
-                  : mine ? colors.primary + "44" : colors.border,
+                  : hasFix
+                    ? colors.warning + "99"
+                    : mine ? colors.primary + "44" : colors.border,
                 borderRadius: radii.md,
                 paddingVertical: 11,
                 paddingHorizontal: 14,
@@ -734,6 +795,37 @@ export default function TutorScreen() {
                 </View>
               )}
 
+              {/* ── Разбор своей реплики ──
+                  Сначала КАК ПРАВИЛЬНО, потом что было не так. Именно в таком
+                  порядке: повторять ученик будет верный вариант, и он должен
+                  быть первым, что попадается глазу. */}
+              {hasFix && (
+                <View style={{
+                  marginTop: 9, paddingTop: 8,
+                  borderTopWidth: 1, borderTopColor: colors.warning + "55",
+                }}>
+                  {!!line.fixed && (
+                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 7 }}>
+                      <Glyph name="check" size={13} color={colors.warning} />
+                      <Text style={{
+                        flex: 1, fontSize: 14.5, lineHeight: 21,
+                        fontWeight: "800", color: colors.foreground,
+                      }}>
+                        {line.fixed}
+                      </Text>
+                    </View>
+                  )}
+                  {!!line.issue && (
+                    <Text style={{
+                      fontSize: 12.5, lineHeight: 18,
+                      color: colors.mutedForeground, marginTop: line.fixed ? 6 : 0,
+                    }}>
+                      {line.issue}
+                    </Text>
+                  )}
+                </View>
+              )}
+
               {line.failed && (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
                   <Glyph name="alert" size={13} color={colors.destructive} />
@@ -793,12 +885,41 @@ export default function TutorScreen() {
           сама отдаёт ей место, а screenBottom честно уводит её выше панели
           вкладок. См. ГРАБЛИ в шапке файла. */}
       <View style={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}>
+        {/* Просьба повторить. Живёт у кнопки, а не в ленте: ленту прокрутили —
+            и просьба уехала вверх, а руки ученика здесь. */}
+        {needsRetry && !blocked && (
+          <View style={{
+            flexDirection: "row", alignItems: "flex-start", gap: 8,
+            backgroundColor: colors.warning + "1f",
+            borderWidth: 1, borderColor: colors.warning + "66",
+            borderRadius: radii.sm,
+            paddingVertical: 9, paddingHorizontal: 12,
+            marginBottom: 10,
+          }}>
+            <Glyph name="repeat" size={14} color={colors.warning} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.foreground }}>
+                {mode === "voice" ? "Скажи это ещё раз, правильно" : "Напиши это ещё раз, правильно"}
+              </Text>
+              {!!awaited && (
+                <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 3 }}>
+                  {awaited}
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+
         {mode === "voice" ? (
           <ChunkyButton
-            label={recording ? "Стоп и отправить" : sending ? "Секунду…" : "Говорить"}
-            sublabel={recording ? `${NAME} слушает` : "нажми, скажи фразу, нажми ещё раз"}
-            icon={recording ? "check" : "sound"}
-            tone={recording ? "warm" : "primary"}
+            label={recording
+              ? "Стоп и отправить"
+              : sending ? "Секунду…" : needsRetry ? "Повторить" : "Говорить"}
+            sublabel={recording
+              ? `${NAME} слушает`
+              : needsRetry ? "скажи исправленную фразу" : "нажми, скажи фразу, нажми ещё раз"}
+            icon={recording ? "check" : needsRetry ? "repeat" : "sound"}
+            tone={recording || needsRetry ? "warm" : "primary"}
             center
             disabled={sending || blocked}
             onPress={() => {
@@ -813,7 +934,7 @@ export default function TutorScreen() {
             <TextInput
               value={typed}
               onChangeText={setTyped}
-              placeholder="Напиши по-английски"
+              placeholder={needsRetry ? "Напиши правильно" : "Напиши по-английски"}
               placeholderTextColor={colors.mutedForeground}
               editable={!sending && !blocked}
               multiline
@@ -827,7 +948,7 @@ export default function TutorScreen() {
                 backgroundColor: colors.card,
                 borderRadius: radii.md,
                 borderWidth: 2,
-                borderColor: colors.border,
+                borderColor: needsRetry ? colors.warning + "aa" : colors.border,
                 paddingHorizontal: 14,
                 paddingVertical: Platform.OS === "web" ? 14 : 12,
                 fontSize: 16,
@@ -843,7 +964,7 @@ export default function TutorScreen() {
               style={{
                 width: 52, height: 52, borderRadius: radii.md,
                 alignItems: "center", justifyContent: "center",
-                backgroundColor: colors.primary,
+                backgroundColor: needsRetry ? colors.warning : colors.primary,
                 opacity: sending || blocked || typed.trim().length === 0 ? 0.45 : 1,
               }}
             >
