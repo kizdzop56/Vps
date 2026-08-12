@@ -21,6 +21,8 @@ import flashcardsAnswerRouter from "./flashcardsAnswer";
 import grammarRouter from "./grammar";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
+import raidRouter from "./raid";
+import raidHook from "./raidHook";
 import maintenanceRouter from "./maintenance";
 
 const router: IRouter = Router();
@@ -48,6 +50,10 @@ router.use(gamificationRouter);
 // Лента событий ученика: /notifications. Своё пространство путей, ни с чем не
 // пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
 router.use(notificationsRouter);
+// Рейд-босс подключается ДО тренажёров: перехватчик дописывает к ответу поле
+// raid с уроном, а для этого он должен стоять раньше того, чей ответ правит.
+// Снимите эту строку — событие выключится целиком, тренажёры не заметят.
+router.use(raidHook);
 // Раздел «Слова» разделён надвое: колоды, каталог, импорт и назначения — в
 // flashcards, сам тренажёр (очередь, ответы, статистика, марафон) — в
 // flashcardsLearn. Пути не пересекаются, поэтому порядок значения не имеет.
@@ -62,6 +68,8 @@ router.use(flashcardsAnswerRouter);
 router.use(grammarRouter);
 router.use(messagingRouter);
 router.use(ttsRouter);
+// Экран рейда: /raid/*. Своё пространство путей.
+router.use(raidRouter);
 // Обслуживание данных — не часть приложения, поэтому последним: инструмент не
 // должен перехватывать пути у обычных маршрутов. Без MAINTENANCE_KEY в
 // окружении он отвечает 404 на всё, что бы ни спросили.
