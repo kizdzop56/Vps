@@ -7,12 +7,18 @@
 // сейчас и много ли осталось, приходилось считать в уме.
 //
 // Порог достаём из самого id: все награды названы по схеме `метрика_число`
-// (tasks_25, points_500, streak_7, time_600, xp_20 …), и это число ровно то,
-// с которым сравнивает check(). Так мы не дублируем данные и не рискуем
-// разойтись: файл наград не меняется вообще.
+// (tasks_25, points_500, streak_7, time_600, xp_20, grammar_100 …), и это число
+// ровно то, с которым сравнивает check(). Так мы не дублируем данные и не
+// рискуем разойтись: файл наград не меняется вообще.
 //
 // Единственная награда без прогресса — welcome (check: () => true): у неё нет
 // ни метрики, ни порога, и она выдаётся сразу.
+//
+// ── Метрики, которых может не быть ──────────────────────────────────────────
+// Показатели раздела «Учёба» отдаются только на своём профиле: чужому ученику
+// сервер их не считает. Поэтому метрика умеет отвечать undefined, и тогда
+// полоса прогресса не рисуется вовсе. Показать «0 из 100» там, где данных
+// просто нет, — значит соврать в обе стороны сразу.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Achievement, AchievementStats } from "@/constants/achievements";
@@ -37,8 +43,8 @@ function humanMinutes(min: number): string {
 }
 
 type Metric = {
-  /** Текущее значение показателя у ученика. */
-  value: (s: AchievementStats) => number;
+  /** Текущее значение показателя у ученика. undefined — показателя нет. */
+  value: (s: AchievementStats) => number | undefined;
   /** Фраза «Осталось …» для оставшегося количества. */
   remaining: (n: number) => string;
   /** Короткая подпись под полосой: «12 из 25 заданий». */
@@ -92,6 +98,28 @@ const METRICS: Record<string, Metric> = {
     remaining: (n) => `Осталось ${n} ${plural(n, ["утреннее занятие", "утренних занятия", "утренних занятий"])}`,
     unit: (n) => plural(n, ["утреннее", "утренних", "утренних"]),
   },
+
+  // ── Раздел «Учёба» ──
+  grammar: {
+    value: (s) => s.grammarSolved,
+    remaining: (n) => `Осталось ${n} ${plural(n, ["верный ответ", "верных ответа", "верных ответов"])}`,
+    unit: (n) => plural(n, ["верный", "верных", "верных"]),
+  },
+  forms: {
+    value: (s) => s.verbFormsMastered,
+    remaining: (n) => `Осталось ${n} ${plural(n, ["глагол", "глагола", "глаголов"])}`,
+    unit: (n) => plural(n, ["глагол", "глагола", "глаголов"]),
+  },
+  phrases: {
+    value: (s) => s.sentencesBuilt,
+    remaining: (n) => `Осталось ${n} ${plural(n, ["предложение", "предложения", "предложений"])}`,
+    unit: (n) => plural(n, ["предложение", "предложения", "предложений"]),
+  },
+  tenses: {
+    value: (s) => s.tensesMastered,
+    remaining: (n) => `Осталось ${n} ${plural(n, ["время", "времени", "времён"])}`,
+    unit: (n) => plural(n, ["время", "времени", "времён"]),
+  },
 };
 
 export interface AchievementProgress {
@@ -111,8 +139,9 @@ export interface AchievementProgress {
 
 /**
  * Прогресс по конкретной награде. null — у награды нет измеримого условия
- * (welcome) или префикс id неизвестен: в этом случае экран просто не рисует
- * полосу, вместо того чтобы показывать выдуманное число.
+ * (welcome), префикс id неизвестен или показателя нет у этого пользователя:
+ * в этом случае экран просто не рисует полосу, вместо того чтобы показывать
+ * выдуманное число.
  */
 export function achievementProgress(
   achievement: Achievement,
@@ -127,7 +156,10 @@ export function achievementProgress(
   const target = Number(parsed[2]);
   if (!Number.isFinite(target) || target <= 0) return null;
 
-  const current = Math.max(0, metric.value(stats));
+  const raw = metric.value(stats);
+  if (raw === undefined) return null;
+
+  const current = Math.max(0, raw);
   const remaining = Math.max(0, target - current);
   const percent = Math.max(0, Math.min(100, Math.round((current / target) * 100)));
 

@@ -44,6 +44,22 @@ export interface GamificationStats {
   unlockedAchievementIds: string[];
   totalTimeMinutes: number;
   mascotName: string;
+
+  // ── Раздел «Учёба» ──
+  // За всё время — из них считаются медали grammar_*, forms_*, phrases_*,
+  // tenses_*. За сегодня — из них собирается цель дня.
+  /** Верных ответов во всех режимах раздела. */
+  grammarSolved: number;
+  /** Глаголов, чьи три формы ученик знает наизусть. */
+  verbFormsMastered: number;
+  /** Времён, отработанных до устойчивого результата. */
+  tensesMastered: number;
+  /** Верно собранных предложений. */
+  sentencesBuilt: number;
+  /** Ответов в разделе сегодня — любой режим. */
+  grammarToday: number;
+  /** Разных глаголов, чьи формы трогали сегодня. */
+  verbFormsToday: number;
 }
 
 /**
@@ -97,6 +113,15 @@ export function useGamification() {
         ...raw,
         nextDailyGoalMinutes: raw.nextDailyGoalMinutes ?? raw.dailyGoalMinutes,
         dailyGoalClaimedToday: raw.dailyGoalClaimedToday ?? false,
+        // Показатели раздела «Учёба» приехали позже остальных: со старого
+        // сервера они не придут вовсе, и без запасного нуля медали считались бы
+        // по undefined.
+        grammarSolved: raw.grammarSolved ?? 0,
+        verbFormsMastered: raw.verbFormsMastered ?? 0,
+        tensesMastered: raw.tensesMastered ?? 0,
+        sentencesBuilt: raw.sentencesBuilt ?? 0,
+        grammarToday: raw.grammarToday ?? 0,
+        verbFormsToday: raw.verbFormsToday ?? 0,
         mascotName: (raw.mascotName === "Оливер" || raw.mascotName === "Oliver" || !raw.mascotName)
           ? "Снежа"
           : raw.mascotName,

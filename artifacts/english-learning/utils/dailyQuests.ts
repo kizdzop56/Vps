@@ -8,9 +8,10 @@
 //   • ВРЕМЯ — заголовок карточки и кольцо прогресса. Главное число дня
 //     («5 из 20 минут»), но уже не единственная задача.
 //   • ЗАДАЧИ — чек-лист из 2–4 пунктов. ВСЕ задачи требуют реальной учёбы:
-//     повторить слова, выучить новые, сдать задание, поговорить с тьютором.
-//     Пунктов вроде «зайти в приложение» здесь намеренно нет: галочка за вход
-//     в приложение поощряет открыть вкладку, а не заниматься.
+//     повторить слова, выучить новые, сдать задание, поговорить с тьютором,
+//     порешать грамматику, повторить формы глаголов. Пунктов вроде «зайти в
+//     приложение» здесь намеренно нет: галочка за вход поощряет открыть
+//     вкладку, а не заниматься.
 //
 // ── Награда ─────────────────────────────────────────────────────────────────
 // Награда за день ОДНА и выдаётся только за полностью закрытый день: время и
@@ -46,7 +47,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Что именно требует задача. Время сюда не входит — оно в шапке карточки. */
-export type QuestKind = "words" | "newWords" | "assignment" | "voice";
+export type QuestKind =
+  | "words"
+  | "newWords"
+  | "assignment"
+  | "voice"
+  | "grammar"
+  | "verbForms";
 
 export interface Quest {
   kind: QuestKind;
@@ -118,6 +125,10 @@ export interface QuestInput {
   learnedToday: number;
   /** Личная цель по словам. */
   dailyWordGoal: number;
+  /** Ответов в разделе «Учёба» сегодня — любой режим грамматики. */
+  grammarToday?: number;
+  /** РАЗНЫХ глаголов, чьи формы трогали сегодня (не ответов — глаголов). */
+  verbFormsToday?: number;
 }
 
 /**
@@ -197,6 +208,16 @@ function buildQuest(kind: QuestKind, target: number, current: number): Quest {
       };
     case "voice":
       return { kind, target, current, done, counter, title: "Поговорить с тьютором" };
+    case "grammar":
+      return {
+        kind, target, current, done, counter,
+        title: `Решить ${target} ${plural(target, ["задание", "задания", "заданий"])} по грамматике`,
+      };
+    case "verbForms":
+      return {
+        kind, target, current, done, counter,
+        title: `Повторить формы ${target} ${plural(target, ["глагола", "глаголов", "глаголов"])}`,
+      };
   }
 }
 
@@ -213,6 +234,15 @@ function goalTier(minutes: number): 0 | 1 | 2 | 3 {
   if (minutes >= 15) return 1;
   return 0;
 }
+
+/**
+ * Из чего собирается день, кроме повторения слов.
+ *
+ * ПОРЯДОК ЗНАЧИМ: вместе с датой он определяет, какие задачи выпадут. На
+ * сервере (lib/dailyPlan.ts) список обязан быть точно таким же, иначе экран
+ * покажет один день, а очки начислятся за другой.
+ */
+const QUEST_POOL: QuestKind[] = ["assignment", "newWords", "voice", "grammar", "verbForms"];
 
 /**
  * План на сегодня: сегодняшняя цель по времени и от двух до четырёх учебных
@@ -263,7 +293,7 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
   const wordGoal = Math.max(5, input.dailyWordGoal || 10) + (tier >= 1 ? 2 : 0) + (tier >= 3 ? 3 : 0);
   quests.push(buildQuest("words", wordGoal, input.wordsToday));
 
-  const pool: QuestKind[] = ["assignment", "newWords", "voice"];
+  const pool = QUEST_POOL;
   const offset = seed % pool.length;
 
   for (let i = 0; i < pool.length && quests.length < count; i++) {
@@ -280,6 +310,20 @@ export function buildDailyPlan(input: QuestInput, dateKey = todayKey()): DailyPl
       // Новые слова даются тяжелее повторения, поэтому их всего 2–5 за день.
       const n = 2 + tier;
       quests.push(buildQuest("newWords", n, input.learnedToday));
+      continue;
+    }
+
+    if (kind === "grammar") {
+      // Заход в разделе — 12 заданий, поэтому даже на тяжёлой цели это меньше
+      // полутора заходов: день не должен упираться в одну грамматику.
+      const n = 10 + tier * 2;
+      quests.push(buildQuest("grammar", n, input.grammarToday ?? 0));
+      continue;
+    }
+
+    if (kind === "verbForms") {
+      const n = 3 + tier;
+      quests.push(buildQuest("verbForms", n, input.verbFormsToday ?? 0));
       continue;
     }
 
