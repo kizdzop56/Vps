@@ -252,6 +252,10 @@ export const HARD_MAX_CARDS = 20;
  * Часть речи, уровень и колода нужны для подбора отвлекающих вариантов:
  * buildExercise берёт дистракторы той же части речи и сначала из той же колоды,
  * затем из того же уровня CEFR.
+ *
+ * Пример и его перевод нужны для письменного упражнения: оно задаётся фразой с
+ * пропуском, а не просьбой перевести голое слово (см. шапку wordExercise.ts).
+ * Без этих полей письмо всегда падало бы в запасной сценарий — сборку из букв.
  */
 export function toWordLike(w: WordRow): WordLike {
   return {
@@ -261,6 +265,8 @@ export function toWordLike(w: WordRow): WordLike {
     partOfSpeech: w.partOfSpeech,
     cefrLevel: w.cefrLevel,
     deckId: w.deckId,
+    exampleEn: w.exampleEn,
+    exampleRu: w.exampleRu,
   };
 }
 
