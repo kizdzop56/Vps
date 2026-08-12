@@ -1,50 +1,57 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Разговор с тьютором: голосовая практика речи.
 //
-// ── Почему экран появился только сейчас ─────────────────────────────────────
-// Сервер умел это давно (api-server/src/routes/voice-chat): расшифровка речи
+// ── Почему экран появился позже сервера ─────────────────────────────────────
+// Сервер умел это давно (api-server/src/routes/voiceChat.ts): расшифровка речи
 // через whisper, ответ языковой модели, озвучка ответа и начисление очков. Не
-// было ТОЛЬКО экрана. Раздел existовал в наградах («провести N разговоров») и в
+// было ТОЛЬКО экрана. Раздел жил в наградах («провести N разговоров») и в
 // статистике профиля — то есть ученик видел награду, которую физически не мог
 // получить.
 //
+// ── Запись живёт не здесь ───────────────────────────────────────────────────
+// Первая версия писала звук через Audio.Recording из expo-av — и на вебе не
+// работала вовсе: в expo-av записи для веба нет, только проигрывание. Кнопка
+// падала, и раздел выглядел неработающим.
+//
+// Теперь запись за общей ручкой (utils/voiceRecorder.ts): на вебе MediaRecorder
+// из браузера, на телефоне expo-av. Экрану всё равно, чем именно записано, и
+// вторая платформа больше не ломает первую.
+//
+// ── Готовность спрашивается заранее ─────────────────────────────────────────
+// GET /voice-chat/status отвечает, настроен ли тьютор на сервере. Спрашиваем ДО
+// первой записи: иначе ученик собирается с духом, говорит вслух и только потом
+// узнаёт, что говорить было некому.
+//
 // ── Как устроен разговор ────────────────────────────────────────────────────
-// Ученик держит кнопку и говорит, отпускает — запись уходит на сервер. Оттуда
-// приходит расшифровка его же реплики (это важно: видно, КАК его услышали) и
-// ответ тьютора текстом и голосом. Ответ проигрывается сам, повторить можно
-// нажатием на реплику.
+// Ученик нажимает кнопку и говорит, нажимает снова — запись уходит на сервер.
+// Оттуда приходит расшифровка его же реплики (это важно: видно, КАК его
+// услышали) и ответ тьютора текстом и голосом. Ответ проигрывается сам,
+// повторить можно нажатием на реплику.
 //
-// Сессия создаётся не при открытии экрана, а перед ПЕРВОЙ записью. Иначе каждый
-// случайный заход плодил бы пустую сессию, и «разговоров» в статистике
-// становилось больше, чем разговоров на самом деле.
-//
-// ── Запись ──────────────────────────────────────────────────────────────────
-// expo-av: на вебе он берёт MediaRecorder, на телефоне — системный рекордер.
-// Файл читается через fetch + FileReader, потому что expo-file-system в проект
-// не подключён, а этот путь работает на обеих платформах одинаково.
-//
-// Тип файла отправляем НАСТОЯЩИЙ (на вебе это чаще webm, на iOS — m4a): whisper
-// разбирает оба, но по неверно названному типу отказывается.
-//
-// ── Разрешение на микрофон ──────────────────────────────────────────────────
-// Отказ — это не ошибка приложения, поэтому вместо красного экрана спокойное
-// объяснение и кнопка «Попробовать снова»: на вебе браузер спрашивает заново
-// только по действию пользователя.
+// Сессия создаётся не при открытии экрана, а перед ПЕРВОЙ удачной записью.
+// Иначе каждый случайный заход плодил бы пустую сессию, и «разговоров» в
+// статистике становилось больше, чем разговоров на самом деле.
 //
 // Эмодзи не используются: значки — глифы из своего набора.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, ScrollView, ActivityIndicator, Platform,
+  View, Text, Pressable, ScrollView, ActivityIndicator,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Audio } from "expo-av";
 import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { apiFetch } from "@/hooks/useFlashcards";
+import {
+  MicDeniedError,
+  createVoiceRecorder,
+  playAudio,
+  type StopPlayback,
+  type VoiceRecorder,
+} from "@/utils/voiceRecorder";
 import { Glyph } from "@/components/ui/Glyph";
-import { ChunkyButton, Pill, Tile } from "@/components/ui/GameKit";
+import { ChunkyButton, Tile } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 
@@ -58,6 +65,7 @@ type Line = {
 };
 
 type SessionResponse = { id: number };
+type StatusResponse = { ready?: boolean };
 
 type MessagesResponse = {
   studentMessage?: { id?: number; transcript?: string };
@@ -88,30 +96,6 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
   );
 }
 
-/**
- * Файл записи в base64.
- *
- * Через fetch и FileReader, а не через expo-file-system: его в проекте нет, а
- * этот путь одинаково работает и с blob-адресом на вебе, и с file:// на
- * телефоне. Возвращаем и сам тип файла: whisper отказывается разбирать запись,
- * названную не своим типом.
- */
-async function readRecording(uri: string): Promise<{ base64: string; mimeType: string }> {
-  const res = await fetch(uri);
-  const blob = await res.blob();
-  const dataUrl: string = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Не удалось прочитать запись"));
-    reader.onloadend = () => resolve(String(reader.result ?? ""));
-    reader.readAsDataURL(blob);
-  });
-  const comma = dataUrl.indexOf(",");
-  const head = dataUrl.slice(0, comma);
-  const base64 = dataUrl.slice(comma + 1);
-  const mimeType = head.replace(/^data:/, "").replace(/;base64$/, "") || blob.type || "audio/m4a";
-  return { base64, mimeType };
-}
-
 export default function TutorScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -122,68 +106,76 @@ export default function TutorScreen() {
     { id: "greeting", role: "ai", text: GREETING },
   ]);
   const [sessionId, setSessionId] = React.useState<number | null>(null);
-  const [recording, setRecording] = React.useState<Audio.Recording | null>(null);
+  const [recording, setRecording] = React.useState(false);
   const [sending, setSending] = React.useState(false);
   const [points, setPoints] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
   const [denied, setDenied] = React.useState(false);
+  /** null — ещё не спросили; false — тьютор не настроен на сервере. */
+  const [ready, setReady] = React.useState<boolean | null>(null);
 
   const scroller = React.useRef<ScrollView | null>(null);
-  const sound = React.useRef<Audio.Sound | null>(null);
+  const recorder = React.useRef<VoiceRecorder | null>(null);
+  const stopPlayback = React.useRef<StopPlayback | null>(null);
 
-  // Звук живёт дольше экрана, если его не выгрузить: уйдёшь на другую вкладку, а
-  // тьютор продолжает говорить.
+  // Настроен ли раздел. Спрашиваем один раз при открытии: ответ не меняется без
+  // перезапуска сервера.
+  React.useEffect(() => {
+    let alive = true;
+    apiFetch<StatusResponse>("/api/voice-chat/status")
+      .then((s) => { if (alive) setReady(s?.ready !== false); })
+      // Не смогли спросить — считаем, что готов: лучше дать попробовать, чем
+      // закрыть раздел из-за одного неудачного запроса.
+      .catch(() => { if (alive) setReady(true); });
+    return () => { alive = false; };
+  }, []);
+
+  // Уход с экрана обязан оборвать и запись, и звук: иначе тьютор продолжает
+  // говорить с другой вкладки, а в браузере горит индикатор микрофона.
   React.useEffect(() => () => {
-    void sound.current?.unloadAsync();
-    void recording?.stopAndUnloadAsync().catch(() => {});
-  }, [recording]);
+    stopPlayback.current?.();
+    void recorder.current?.cancel();
+  }, []);
 
   const play = React.useCallback(async (uri: string) => {
     try {
-      await sound.current?.unloadAsync();
-      const { sound: next } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
-      sound.current = next;
+      stopPlayback.current?.();
+      stopPlayback.current = await playAudio(uri);
     } catch {
       /* не проигралось — текст ответа всё равно на экране */
     }
   }, []);
 
-  /** Начать запись. Разрешение спрашиваем здесь: браузер даёт его по действию. */
+  /** Начать запись. Разрешение спрашивается здесь: браузер даёт его по действию. */
   const startRecording = React.useCallback(async () => {
     setError(null);
     try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) { setDenied(true); return; }
+      const rec = createVoiceRecorder();
+      await rec.start();
+      recorder.current = rec;
       setDenied(false);
-
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      const { recording: rec } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
-      );
-      setRecording(rec);
+      setRecording(true);
     } catch (e: any) {
+      recorder.current = null;
+      if (e instanceof MicDeniedError) { setDenied(true); return; }
       setError(e?.message ?? "Микрофон не запустился");
     }
   }, []);
 
   /** Остановить запись и отправить её тьютору. */
   const stopAndSend = React.useCallback(async () => {
-    if (!recording) return;
+    const rec = recorder.current;
+    if (!rec) return;
+
+    setRecording(false);
     setSending(true);
     setError(null);
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(null);
-      if (!uri) throw new Error("Запись пустая");
+      const { base64, mimeType } = await rec.stop();
+      recorder.current = null;
 
-      const { base64, mimeType } = await readRecording(uri);
-
-      // Сессия создаётся перед первой отправкой, а не при открытии экрана:
-      // иначе каждый случайный заход считался бы разговором.
+      // Сессия создаётся только теперь: пустой заход на экран разговором не
+      // считается.
       let id = sessionId;
       if (id === null) {
         const created = await apiFetch<SessionResponse>("/api/voice-chat/sessions", {
@@ -216,19 +208,18 @@ export default function TutorScreen() {
       // Очки ушли в общий счёт: экраны, где они видны, обязаны перечитать данные.
       qc.invalidateQueries({ queryKey: ["gamification-stats"] });
     } catch (e: any) {
+      recorder.current = null;
       setError(e?.message ?? "Не удалось отправить запись");
     } finally {
       setSending(false);
     }
-  }, [recording, sessionId, play, qc]);
+  }, [sessionId, play, qc]);
 
   const exit = React.useCallback(() => {
-    void sound.current?.unloadAsync();
+    stopPlayback.current?.();
+    void recorder.current?.cancel();
     router.replace("/flashcards");
   }, [router]);
-
-  const busy = sending;
-  const isRecording = !!recording;
 
   return (
     <View style={{ flex: 1 }}>
@@ -266,6 +257,20 @@ export default function TutorScreen() {
           Говори по-английски вслух. Тьютор поймёт, ответит голосом и мягко
           поправит ошибки. Под своей репликой видно, как тебя услышали.
         </Text>
+
+        {/* Раздел не настроен на сервере — говорим это сразу, а не после
+            потраченной впустую записи. */}
+        {ready === false && (
+          <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 14 }}>
+            <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
+              Тьютор пока недоступен
+            </Text>
+            <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
+              На сервере не задан ключ доступа к распознаванию речи. Остальные
+              разделы работают как обычно.
+            </Text>
+          </Tile>
+        )}
 
         {/* Лента разговора. Свои реплики справа, ответы тьютора слева — как в
             обычной переписке, чтобы не читать подписи «кто сказал». */}
@@ -354,22 +359,14 @@ export default function TutorScreen() {
         bottom: screenBottom(insets) - 60,
       }}>
         <ChunkyButton
-          label={isRecording ? "Стоп и отправить" : busy ? "Секунду…" : "Говорить"}
-          sublabel={isRecording ? "идёт запись" : "нажми, скажи фразу, нажми ещё раз"}
-          icon={isRecording ? "check" : "sound"}
-          tone={isRecording ? "warm" : "primary"}
+          label={recording ? "Стоп и отправить" : sending ? "Секунду…" : "Говорить"}
+          sublabel={recording ? "идёт запись" : "нажми, скажи фразу, нажми ещё раз"}
+          icon={recording ? "check" : "sound"}
+          tone={recording ? "warm" : "primary"}
           center
-          disabled={busy}
-          onPress={() => { void (isRecording ? stopAndSend() : startRecording()); }}
+          disabled={sending || ready === false}
+          onPress={() => { void (recording ? stopAndSend() : startRecording()); }}
         />
-        {Platform.OS === "web" && !isRecording && !busy && (
-          <Text style={{
-            fontSize: 11, color: colors.mutedForeground,
-            textAlign: "center", marginTop: 7,
-          }}>
-            Говори целыми фразами — так тьютор понимает точнее
-          </Text>
-        )}
       </View>
     </View>
   );
