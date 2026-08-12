@@ -136,6 +136,26 @@ const TABLES: TablePatch[] = [
     ],
   },
   {
+    table: "raid_tasks",
+    reason: "журнал выданных заданий боя: ротация подборки и проверка ответа",
+    ddl: [
+      `create table if not exists "raid_tasks" (
+         "id" serial primary key,
+         "user_id" integer not null references "users"("id") on delete cascade,
+         "kind" text not null,
+         "ref" text not null,
+         "mode" text not null,
+         "difficulty" text not null,
+         "tags" jsonb,
+         "issued_at" timestamp not null default now(),
+         "answered_at" timestamp,
+         "correct" boolean
+       )`,
+      `create index if not exists "raid_tasks_user_time_idx" on "raid_tasks" ("user_id", "issued_at")`,
+      `create index if not exists "raid_tasks_user_ref_idx" on "raid_tasks" ("user_id", "ref")`,
+    ],
+  },
+  {
     table: "raid_state",
     reason: "боевое состояние ученика: энергия, комбо, монеты, бафы",
     ddl: [

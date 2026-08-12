@@ -1,7 +1,11 @@
 // Клиентский слой рейда. apiFetch берётся из useFlashcards — авторизация и
 // разбор ошибок должны быть общими на всё приложение.
 //
-// Валюта в рейде одна: монеты. Маны нет, бафы покупаются монетами.
+// Валюта в рейде одна: монеты. Маны нет, атаки и бафы покупаются монетами.
+//
+// Задание боя приходит с номером ВЫДАЧИ (taskId): правильного ответа в нём нет,
+// способ ответа выбрал сервер, и ответ отправляется по этому номеру. Поэтому
+// клиент не может ни подсмотреть ответ, ни выдать выбор за сборку ради урона.
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
@@ -109,9 +113,9 @@ export interface RaidSnapshot {
 
 /** Задание боя. Правильного ответа в нём нет: проверка серверная. */
 export interface RaidTask {
-  key: string;
+  /** Номер выданного задания: с ним же уходит ответ. */
+  taskId: number;
   kind: "word" | "grammar";
-  id: string;
   prompt: string;
   hint?: string;
   input: "choice" | "type" | "assemble";
@@ -160,10 +164,10 @@ export interface RaidAnswer {
 export const raid = {
   current: () => apiFetch<RaidSnapshot>("/api/raid/current"),
   battle: () => apiFetch<RaidBattle>("/api/raid/battle"),
-  answer: (task: RaidTask, given: string) =>
+  answer: (taskId: number, given: string) =>
     apiFetch<RaidAnswer>("/api/raid/answer", {
       method: "POST",
-      body: JSON.stringify({ kind: task.kind, id: task.id, given }),
+      body: JSON.stringify({ taskId, given }),
     }),
   buy: (buff: RaidBuff) =>
     apiFetch<RaidSnapshot>("/api/raid/buy", { method: "POST", body: JSON.stringify({ buff }) }),
