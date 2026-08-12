@@ -15,8 +15,30 @@
 // Порядок именно такой, а не «что первое ответит»: у поставщиков разная цена и
 // разное качество, и решать это должен человек, а не случай.
 //
-// Ни один не обязателен, и отсутствие ключа не ошибка: слой честно отвечает,
-// что сделать нечего, и называет причину.
+// ── ГРАБЛИ, ИЗ-ЗА КОТОРЫХ ТЬЮТОР МОЛЧАЛ: СПИСОК ИМЁН МОДЕЛЕЙ ───────────────
+// Здесь был вписанный руками список: gemini-2.5-flash, gemini-2.0-flash,
+// gemini-1.5-flash. Выглядело как надёжная цепочка отступления, а оказалось
+// наоборот: Google ВЫКЛЮЧИЛ вторую и третью, и каждый запрос ученика упирался
+// в 404 «model is not found for API version v1beta».
+//
+// Имена моделей у Google живут своей жизнью и умирают без нашего участия.
+// Поэтому список больше не выдумывается: он СПРАШИВАЕТСЯ у самого Google
+// (ListModels — ровно то, что советует текст ошибки), и из ответа берутся те
+// модели, которые реально существуют и умеют generateContent.
+//
+// Предпочтения остались (см. CHAT_PREFERRED), но теперь это пожелание, а не
+// приговор: нет любимой модели — берём самую новую подходящую из списка.
+// Такая правка лечит не одну сегодняшнюю поломку, а весь класс: следующее
+// выключение модели приложение переживёт само.
+//
+// ── ГРАБЛИ: ПРИЧИНА ОТКАЗА БЫЛА ТОЛЬКО ОДНА, ПОСЛЕДНЯЯ ─────────────────────
+// Цикл по моделям перезаписывал detail на каждом круге. Ученик видел ошибку
+// самой последней модели, а первые две молчали — и по экрану выходило, будто
+// пробовали только её.
+//
+// Теперь причины СОБИРАЮТСЯ: в detail уходит «модель: ошибка» по каждой
+// попытке. Это единственный способ разобраться, не имея доступа к логам с
+// телефона.
 //
 // ── ПОЧЕМУ DEEPGRAM НУЖЕН, А НЕ «НА ВСЯКИЙ СЛУЧАЙ» ─────────────────────────
 // Это ЕДИНСТВЕННЫЙ распознаватель здесь, который спокойно читает то, что
@@ -82,50 +104,14 @@ function deepgramKey(): string | null {
   return process.env["DEEPGRAM_API_KEY"]?.trim() || null;
 }
 
-// ── Модели ──────────────────────────────────────────────────────────────────
-
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
-
-/**
- * Модели Gemini для ответа тьютора, в порядке предпочтения.
- *
- * Первой идёт заданная переменной: имена моделей у Google меняются чаще, чем
- * выходят наши правки, и переименование не должно требовать коммита.
- */
-function geminiChatModels(): string[] {
-  return [
-    process.env["GOOGLE_AI_CHAT_MODEL"]?.trim(),
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-  ].filter((m): m is string => !!m);
-}
-
-/** Модели Gemini для распознавания речи: те же, что и для текста. */
-function geminiSttModels(): string[] {
-  return [
-    process.env["GOOGLE_AI_STT_MODEL"]?.trim(),
-    ...geminiChatModels(),
-  ].filter((m): m is string => !!m);
-}
-
-/** Модель Gemini для озвучки. Отдельная: обычные модели звук не синтезируют. */
-function geminiTtsModels(): string[] {
-  return [
-    process.env["GOOGLE_AI_TTS_MODEL"]?.trim(),
-    "gemini-2.5-flash-preview-tts",
-  ].filter((m): m is string => !!m);
-}
-
-/** Голос Gemini. Kore — ровный женский, хорошо слышен на телефоне. */
-function geminiVoice(): string {
-  return process.env["GOOGLE_AI_TTS_VOICE"]?.trim() || "Kore";
-}
 
 /** Сколько ждём ответа. Ребёнок держит телефон в руке — вечность недопустима. */
 const CHAT_TIMEOUT_MS = 25_000;
 const STT_TIMEOUT_MS = 30_000;
 const TTS_TIMEOUT_MS = 30_000;
+/** Список моделей — короткий служебный запрос, ждать его долго незачем. */
+const LIST_TIMEOUT_MS = 10_000;
 
 // ── Разбор ошибок ───────────────────────────────────────────────────────────
 
@@ -158,6 +144,251 @@ async function httpDetail(resp: Response): Promise<string> {
     /* не JSON — отдадим начало как есть */
   }
   return `HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ""}`;
+}
+
+/** Одна неудачная попытка: какая модель и что ответила. */
+type Attempt = { model: string; detail: string };
+
+/**
+ * Собрать причины всех попыток в одну строку для экрана.
+ *
+ * Именно ЗДЕСЬ лечится «видно только последнюю ошибку»: пока причины
+ * перезаписывались, отладка сводилась к угадыванию.
+ */
+function joinAttempts(attempts: Attempt[], fallback: string): string {
+  if (attempts.length === 0) return fallback;
+  return attempts.map((a) => `${a.model}: ${a.detail}`).join(" | ").slice(0, 500);
+}
+
+// ── Какие модели вообще существуют ──────────────────────────────────────────
+
+/** Модель из ответа ListModels. */
+export type GeminiModel = { id: string; methods: string[] };
+
+/**
+ * Список моделей меняется редко, а запрашивать его перед каждой репликой —
+ * лишняя задержка на глазах у ученика. Десять минут: достаточно, чтобы
+ * выключенная модель перестала мешать до следующего перезапуска.
+ */
+const MODELS_TTL_MS = 10 * 60 * 1000;
+
+let modelsCache: { key: string; at: number; models: GeminiModel[] } | null = null;
+
+/**
+ * Спросить Google, какие модели доступны этому ключу.
+ *
+ * Пустой список — не ошибка: значит спросить не удалось (нет сети, ключ
+ * отвергнут). Тогда работаем по своим предпочтениям, как раньше.
+ */
+async function fetchGeminiModels(key: string, log: AiLog, force = false): Promise<GeminiModel[]> {
+  if (!force && modelsCache && modelsCache.key === key && Date.now() - modelsCache.at < MODELS_TTL_MS) {
+    return modelsCache.models;
+  }
+
+  const found: GeminiModel[] = [];
+  let pageToken = "";
+
+  try {
+    // Страниц немного, но их больше одной: моделей у Google десятки.
+    for (let page = 0; page < 4; page += 1) {
+      const url = new URL(`${GEMINI_API}/models`);
+      url.searchParams.set("pageSize", "200");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+      const resp = await fetch(url, {
+        headers: { "x-goog-api-key": key },
+        signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        log.warn(
+          { provider: "gemini", detail: await httpDetail(resp) },
+          "Не удалось получить список моделей — работаем по своим предпочтениям",
+        );
+        break;
+      }
+
+      const data = await resp.json() as any;
+      for (const m of data?.models ?? []) {
+        const id = String(m?.name ?? "").replace(/^models\//, "").trim();
+        if (!id) continue;
+        const methods = Array.isArray(m?.supportedGenerationMethods)
+          ? m.supportedGenerationMethods.map(String)
+          : [];
+        found.push({ id, methods });
+      }
+
+      pageToken = String(data?.nextPageToken ?? "");
+      if (!pageToken) break;
+    }
+  } catch (err) {
+    log.warn({ provider: "gemini", detail: errorDetail(err) }, "Список моделей не получен");
+  }
+
+  // Кэшируем только удачу: иначе одна неудачная попытка запомнилась бы
+  // пустотой на десять минут.
+  if (found.length > 0) modelsCache = { key, at: Date.now(), models: found };
+  return found;
+}
+
+/**
+ * Предпочитаемые модели для разговора, от лучшей к худшей.
+ *
+ * Это ПОЖЕЛАНИЕ. Если модели нет в списке доступных, она молча пропускается —
+ * ровно то, чего не хватало, когда Google выключил 2.0 и 1.5.
+ *
+ * gemini-flash-latest — псевдоним, который Google сам переводит на свежую
+ * flash-модель. Стоит после конкретных версий намеренно: у псевдонима
+ * поведение может измениться без предупреждения, и лучше, когда это подстилка,
+ * а не основа.
+ */
+const CHAT_PREFERRED = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+];
+
+/** Предпочитаемые модели озвучки. Обычные модели звук не синтезируют. */
+const TTS_PREFERRED = [
+  "gemini-3.1-flash-tts",
+  "gemini-2.5-flash-preview-tts",
+];
+
+/**
+ * Модели, которые нельзя подставлять в разговор, даже если они в списке:
+ * картинки, видео, музыка, векторы, роботы. Ответа текстом от них не будет.
+ */
+const NOT_FOR_TEXT =
+  /(tts|live|image|nano-banana|veo|lyria|imagen|embedding|robotics|computer-use|deep-research|aqa|gemma)/i;
+
+/**
+ * Сколько моделей пробуем за один запрос ученика.
+ *
+ * Не «все доступные»: каждая неудачная попытка — это секунды ожидания с
+ * телефоном в руке. Четырёх достаточно, чтобы пережить выключение модели, и
+ * мало, чтобы не превратить отказ в минуту тишины.
+ */
+const MAX_ATTEMPTS = 4;
+
+/**
+ * Насколько модель предпочтительна, когда выбирать приходится самим.
+ * Больше — лучше: сначала свежая версия, стабильная раньше предварительной.
+ */
+function modelRank(id: string): number {
+  const version = /(\d+)[._-](\d+)/.exec(id);
+  const major = version ? Number(version[1]) : 0;
+  const minor = version ? Number(version[2]) : 0;
+  let rank = major * 100 + minor;
+  // Предварительные и экспериментальные — только когда стабильных нет.
+  if (/preview|exp\b|experimental/i.test(id)) rank -= 1_000;
+  // Lite дешевле, но заметно слабее объясняет ошибки ученику.
+  if (/lite/i.test(id)) rank -= 5;
+  return rank;
+}
+
+/**
+ * Что пробовать, в каком порядке.
+ *
+ * Порядок: заданное человеком в переменной окружения → наши предпочтения из
+ * тех, что реально доступны → самая новая подходящая flash-модель → вообще
+ * любая подходящая. Последние две ступени и есть страховка от выключенных
+ * моделей.
+ */
+function orderCandidates(
+  kind: "chat" | "tts",
+  available: GeminiModel[],
+  override: string | null,
+): string[] {
+  const picked: string[] = [];
+  const add = (id: string | null | undefined) => {
+    if (id && !picked.includes(id)) picked.push(id);
+  };
+
+  // Человек назвал модель явно — пробуем её первой, даже если её нет в списке:
+  // список мог не прийти, а спорить с прямым указанием мы не вправе.
+  add(override);
+
+  const usable = available
+    // Пустой methods бывает у моделей, где Google его не заполнил: не повод
+    // выбрасывать.
+    .filter((m) => m.methods.length === 0 || m.methods.includes("generateContent"))
+    .map((m) => m.id);
+
+  const preferred = kind === "tts" ? TTS_PREFERRED : CHAT_PREFERRED;
+
+  if (usable.length === 0) {
+    // Список не пришёл — работаем по предпочтениям, как до этой правки.
+    preferred.forEach(add);
+    return picked.slice(0, MAX_ATTEMPTS);
+  }
+
+  const has = new Set(usable);
+  for (const p of preferred) if (has.has(p)) add(p);
+
+  const fits = (id: string) =>
+    kind === "tts" ? /tts/i.test(id) : !NOT_FOR_TEXT.test(id);
+
+  const byRank = (a: string, b: string) => modelRank(b) - modelRank(a);
+
+  // Сначала flash: он быстрый и дешёвый, а разговор с ребёнком не требует
+  // рассуждений уровня pro.
+  if (kind === "chat") {
+    usable.filter((id) => fits(id) && /flash/i.test(id)).sort(byRank).forEach(add);
+  }
+  usable.filter(fits).sort(byRank).forEach(add);
+
+  return picked.slice(0, MAX_ATTEMPTS);
+}
+
+/**
+ * Модели, которые стоит попробовать для задачи. Пустой список — нет ключа.
+ *
+ * Вынесено наружу, потому что этим же пользуется озвучка слов (routes/tts.ts):
+ * иначе там завёлся бы второй вписанный руками список имён — та же ловушка,
+ * из которой мы сейчас выбираемся.
+ */
+export async function geminiModelCandidates(
+  kind: "chat" | "tts",
+  log: AiLog,
+): Promise<string[]> {
+  const key = googleKey();
+  if (!key) return [];
+  const override = kind === "tts"
+    ? process.env["GOOGLE_AI_TTS_MODEL"]?.trim() || null
+    : process.env["GOOGLE_AI_CHAT_MODEL"]?.trim() || null;
+  return orderCandidates(kind, await fetchGeminiModels(key, log), override);
+}
+
+/**
+ * Что видит наш ключ. Только для диагностики: с телефона в логи Render не
+ * заглянешь, а «модель не найдена» без списка доступных — тупик.
+ */
+export async function geminiModelReport(log: AiLog, force = false): Promise<{
+  listed: number;
+  chat: string[];
+  tts: string[];
+  generateContent: string[];
+}> {
+  const key = googleKey();
+  if (!key) return { listed: 0, chat: [], tts: [], generateContent: [] };
+
+  const models = await fetchGeminiModels(key, log, force);
+  const generateContent = models
+    .filter((m) => m.methods.length === 0 || m.methods.includes("generateContent"))
+    .map((m) => m.id)
+    .sort();
+
+  return {
+    listed: models.length,
+    chat: orderCandidates("chat", models, process.env["GOOGLE_AI_CHAT_MODEL"]?.trim() || null),
+    tts: orderCandidates("tts", models, process.env["GOOGLE_AI_TTS_MODEL"]?.trim() || null),
+    generateContent,
+  };
+}
+
+/** Голос Gemini. Kore — ровный женский, хорошо слышен на телефоне. */
+function geminiVoice(): string {
+  return process.env["GOOGLE_AI_TTS_VOICE"]?.trim() || "Kore";
 }
 
 // ── Формат записи ───────────────────────────────────────────────────────────
@@ -262,8 +493,17 @@ async function geminiChat(
   message: string,
   log: AiLog,
 ): Promise<ChatResult> {
+  const models = await geminiModelCandidates("chat", log);
+  if (models.length === 0) {
+    return {
+      ok: false,
+      detail: "Google не вернул ни одной модели для этого ключа",
+      tried: [],
+    };
+  }
+
   const tried: string[] = [];
-  let detail = "Gemini не ответил";
+  const attempts: Attempt[] = [];
 
   // В Gemini ответ модели называется «model», а не «assistant».
   const contents = [
@@ -274,8 +514,7 @@ async function geminiChat(
     { role: "user", parts: [{ text: message }] },
   ];
 
-  for (const model of geminiChatModels()) {
-    if (tried.includes(`gemini:${model}`)) continue;
+  for (const model of models) {
     tried.push(`gemini:${model}`);
     try {
       const resp = await fetch(`${GEMINI_API}/models/${model}:generateContent`, {
@@ -291,7 +530,8 @@ async function geminiChat(
         signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
       });
       if (!resp.ok) {
-        detail = await httpDetail(resp);
+        const detail = await httpDetail(resp);
+        attempts.push({ model, detail });
         log.warn({ provider: "gemini", model, detail }, "Модель не ответила, пробуем следующую");
         continue;
       }
@@ -301,15 +541,17 @@ async function geminiChat(
       if (text) return { ok: true, text, provider: "gemini", model };
       // Пустой ответ бывает при срабатывании фильтров безопасности: причина
       // лежит в finishReason, и без неё это выглядит как молчание без повода.
-      detail = `Пустой ответ (finishReason: ${data?.candidates?.[0]?.finishReason ?? "неизвестно"})`;
+      const detail = `Пустой ответ (finishReason: ${data?.candidates?.[0]?.finishReason ?? "неизвестно"})`;
+      attempts.push({ model, detail });
       log.warn({ provider: "gemini", model, detail }, "Модель вернула пустой ответ");
     } catch (err) {
-      detail = errorDetail(err);
+      const detail = errorDetail(err);
+      attempts.push({ model, detail });
       log.warn({ provider: "gemini", model, detail }, "Запрос к модели не удался");
     }
   }
 
-  return { ok: false, detail, tried };
+  return { ok: false, detail: joinAttempts(attempts, "Gemini не ответил"), tried };
 }
 
 /**
@@ -357,12 +599,21 @@ async function geminiTranscribe(
   format: AudioFormat,
   log: AiLog,
 ): Promise<TranscribeResult> {
+  // Те же модели, что и для разговора: расшифровка идёт тем же generateContent.
+  // Отдельная переменная остаётся для случая, когда хочется другую модель.
+  const override = process.env["GOOGLE_AI_STT_MODEL"]?.trim();
+  const discovered = await geminiModelCandidates("chat", log);
+  const models = override ? [override, ...discovered.filter((m) => m !== override)] : discovered;
+
+  if (models.length === 0) {
+    return { ok: false, detail: "Google не вернул ни одной модели для этого ключа", tried: [] };
+  }
+
   const tried: string[] = [];
-  let detail = "Gemini не расшифровал запись";
+  const attempts: Attempt[] = [];
   const base64 = audio.toString("base64");
 
-  for (const model of geminiSttModels()) {
-    if (tried.includes(`gemini:${model}`)) continue;
+  for (const model of models.slice(0, MAX_ATTEMPTS)) {
     tried.push(`gemini:${model}`);
     try {
       const resp = await fetch(`${GEMINI_API}/models/${model}:generateContent`, {
@@ -381,7 +632,8 @@ async function geminiTranscribe(
         signal: AbortSignal.timeout(STT_TIMEOUT_MS),
       });
       if (!resp.ok) {
-        detail = await httpDetail(resp);
+        const detail = await httpDetail(resp);
+        attempts.push({ model, detail });
         // Тот самый случай из шапки: формат записи может оказаться не из
         // списка поддерживаемых. Пишем формат рядом с ошибкой, иначе причину
         // придётся угадывать.
@@ -397,12 +649,13 @@ async function geminiTranscribe(
       // Пустая строка — это законный ответ «речи нет», а не ошибка.
       return { ok: true, text, provider: "gemini" };
     } catch (err) {
-      detail = errorDetail(err);
+      const detail = errorDetail(err);
+      attempts.push({ model, detail });
       log.warn({ provider: "gemini", model, detail }, "Расшифровка не удалась");
     }
   }
 
-  return { ok: false, detail, tried };
+  return { ok: false, detail: joinAttempts(attempts, "Gemini не расшифровал запись"), tried };
 }
 
 /**
@@ -429,7 +682,7 @@ async function deepgramTranscribe(
     if (!resp.ok) {
       const detail = await httpDetail(resp);
       log.warn({ provider: "deepgram", model, detail }, "Расшифровка не удалась");
-      return { ok: false, detail, tried: [`deepgram:${model}`] };
+      return { ok: false, detail: `deepgram/${model}: ${detail}`, tried: [`deepgram:${model}`] };
     }
     const data = await resp.json() as any;
     const text = String(
@@ -439,7 +692,7 @@ async function deepgramTranscribe(
   } catch (err) {
     const detail = errorDetail(err);
     log.warn({ provider: "deepgram", model, detail }, "Расшифровка не удалась");
-    return { ok: false, detail, tried: [`deepgram:${model}`] };
+    return { ok: false, detail: `deepgram/${model}: ${detail}`, tried: [`deepgram:${model}`] };
   }
 }
 
@@ -467,6 +720,7 @@ export async function transcribe(opts: {
   }
 
   const tried: string[] = [];
+  const reasons: string[] = [];
   let detail = "Не задан ни один ключ для распознавания речи";
 
   const google = googleKey();
@@ -474,7 +728,7 @@ export async function transcribe(opts: {
     const result = await geminiTranscribe(google, opts.audio, format, opts.log);
     if (result.ok) return { ...result, format };
     tried.push(...result.tried);
-    detail = result.detail;
+    reasons.push(result.detail);
   }
 
   const deepgram = deepgramKey();
@@ -482,8 +736,12 @@ export async function transcribe(opts: {
     const result = await deepgramTranscribe(deepgram, opts.audio, format, opts.log);
     if (result.ok) return { ...result, format };
     tried.push(...result.tried);
-    detail = result.detail;
+    reasons.push(result.detail);
   }
+
+  // Причины ОБОИХ поставщиков: у Gemini и Deepgram отказы бывают по совершенно
+  // разным поводам, и потерять один из них — снова гадать.
+  if (reasons.length > 0) detail = reasons.join(" || ").slice(0, 500);
 
   return { ok: false, detail, tried, format };
 }
@@ -526,11 +784,15 @@ function rateFromMime(mimeType: string): number {
 }
 
 async function geminiSpeak(key: string, text: string, log: AiLog): Promise<SpeechResult> {
-  const tried: string[] = [];
-  let detail = "Gemini не озвучил ответ";
+  const models = await geminiModelCandidates("tts", log);
+  if (models.length === 0) {
+    return { ok: false, detail: "У ключа нет ни одной модели озвучки", tried: [] };
+  }
 
-  for (const model of geminiTtsModels()) {
-    if (tried.includes(`gemini:${model}`)) continue;
+  const tried: string[] = [];
+  const attempts: Attempt[] = [];
+
+  for (const model of models) {
     tried.push(`gemini:${model}`);
     try {
       const resp = await fetch(`${GEMINI_API}/models/${model}:generateContent`, {
@@ -548,7 +810,8 @@ async function geminiSpeak(key: string, text: string, log: AiLog): Promise<Speec
         signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
       });
       if (!resp.ok) {
-        detail = await httpDetail(resp);
+        const detail = await httpDetail(resp);
+        attempts.push({ model, detail });
         log.warn({ provider: "gemini", model, detail }, "Озвучка не удалась");
         continue;
       }
@@ -557,7 +820,8 @@ async function geminiSpeak(key: string, text: string, log: AiLog): Promise<Speec
         .find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
       const inline = part?.inlineData ?? part?.inline_data;
       if (!inline?.data) {
-        detail = "В ответе нет звука";
+        const detail = "В ответе нет звука";
+        attempts.push({ model, detail });
         log.warn({ provider: "gemini", model, detail }, "Озвучка не удалась");
         continue;
       }
@@ -569,12 +833,13 @@ async function geminiSpeak(key: string, text: string, log: AiLog): Promise<Speec
         provider: "gemini",
       };
     } catch (err) {
-      detail = errorDetail(err);
+      const detail = errorDetail(err);
+      attempts.push({ model, detail });
       log.warn({ provider: "gemini", model, detail }, "Озвучка не удалась");
     }
   }
 
-  return { ok: false, detail, tried };
+  return { ok: false, detail: joinAttempts(attempts, "Gemini не озвучил ответ"), tried };
 }
 
 /** Deepgram Aura-2: отдаёт готовый mp3, тот же голос, что у слов в карточках. */
@@ -593,7 +858,7 @@ async function deepgramSpeak(key: string, text: string, log: AiLog): Promise<Spe
     if (!resp.ok) {
       const detail = await httpDetail(resp);
       log.warn({ provider: "deepgram", model, detail }, "Озвучка не удалась");
-      return { ok: false, detail, tried: [`deepgram:${model}`] };
+      return { ok: false, detail: `deepgram/${model}: ${detail}`, tried: [`deepgram:${model}`] };
     }
     const mp3 = Buffer.from(await resp.arrayBuffer());
     return {
@@ -604,7 +869,7 @@ async function deepgramSpeak(key: string, text: string, log: AiLog): Promise<Spe
   } catch (err) {
     const detail = errorDetail(err);
     log.warn({ provider: "deepgram", model, detail }, "Озвучка не удалась");
-    return { ok: false, detail, tried: [`deepgram:${model}`] };
+    return { ok: false, detail: `deepgram/${model}: ${detail}`, tried: [`deepgram:${model}`] };
   }
 }
 
@@ -616,6 +881,7 @@ async function deepgramSpeak(key: string, text: string, log: AiLog): Promise<Spe
  */
 export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechResult> {
   const tried: string[] = [];
+  const reasons: string[] = [];
   let detail = "Не задан ни один ключ для озвучки";
 
   const google = googleKey();
@@ -623,7 +889,7 @@ export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechR
     const result = await geminiSpeak(google, opts.text, opts.log);
     if (result.ok) return result;
     tried.push(...result.tried);
-    detail = result.detail;
+    reasons.push(result.detail);
   }
 
   const deepgram = deepgramKey();
@@ -631,8 +897,10 @@ export async function speak(opts: { text: string; log: AiLog }): Promise<SpeechR
     const result = await deepgramSpeak(deepgram, opts.text, opts.log);
     if (result.ok) return result;
     tried.push(...result.tried);
-    detail = result.detail;
+    reasons.push(result.detail);
   }
+
+  if (reasons.length > 0) detail = reasons.join(" || ").slice(0, 500);
 
   return { ok: false, detail, tried };
 }

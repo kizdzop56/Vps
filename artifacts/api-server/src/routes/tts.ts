@@ -37,7 +37,7 @@ import { db } from "@workspace/db";
 import { wordsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { s3ClientFromEnv } from "../lib/s3Client";
-import { pcmToWav } from "../lib/ai";
+import { geminiModelCandidates, pcmToWav, type AiLog } from "../lib/ai";
 
 const router = Router();
 
@@ -255,55 +255,64 @@ async function deepgramTts(text: string): Promise<Buffer | null> {
  * Gemini TTS. Отдаёт сырой PCM без заголовка, поэтому здесь он оборачивается в
  * WAV (pcmToWav из lib/ai.ts — там же, где это нужно тьютору).
  *
+ * Имя модели НЕ вписано руками: здесь лежал gemini-2.5-flash-preview-tts, и
+ * это была вторая копия той же ловушки, из-за которой замолчал тьютор — Google
+ * выключает модели, а вписанное имя остаётся. Список доступных спрашивается у
+ * самого Google (geminiModelCandidates).
+ *
  * Указание голосу — часть текста запроса: у моделей озвучки Gemini нет
  * отдельного поля «читай так». Просим ровно и разборчиво, потому что это учебное
  * произношение, а не выразительное чтение.
  */
-async function geminiTts(text: string): Promise<Buffer | null> {
+async function geminiTts(text: string, log: AiLog): Promise<Buffer | null> {
   const key = process.env["GOOGLE_AI_API_KEY"]?.trim()
     || process.env["GEMINI_API_KEY"]?.trim()
     || process.env["GOOGLE_API_KEY"]?.trim();
   if (!key) return null;
 
-  const model = process.env["GOOGLE_AI_TTS_MODEL"]?.trim() || "gemini-2.5-flash-preview-tts";
   const voice = process.env["GOOGLE_AI_TTS_VOICE"]?.trim() || "Kore";
+  const models = await geminiModelCandidates("tts", log);
 
-  try {
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({
-          contents: [{
-            role: "user",
-            parts: [{
-              text: `Say clearly and calmly, in a neutral American accent: ${speakableText(text)}`,
+  for (const model of models) {
+    try {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [{
+                text: `Say clearly and calmly, in a neutral American accent: ${speakableText(text)}`,
+              }],
             }],
-          }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
+              },
             },
-          },
-        }),
-        signal: AbortSignal.timeout(20_000),
-      },
-    );
-    if (!resp.ok) return null;
-    const data = await resp.json() as any;
-    const part = (data?.candidates?.[0]?.content?.parts ?? [])
-      .find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
-    const inline = part?.inlineData ?? part?.inline_data;
-    if (!inline?.data) return null;
+          }),
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json() as any;
+      const part = (data?.candidates?.[0]?.content?.parts ?? [])
+        .find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
+      const inline = part?.inlineData ?? part?.inline_data;
+      if (!inline?.data) continue;
 
-    const rateMatch = /rate=(\d+)/i.exec(String(inline.mimeType ?? inline.mime_type ?? ""));
-    const rate = rateMatch ? Number(rateMatch[1]) : 24_000;
-    return pcmToWav(Buffer.from(inline.data, "base64"), Number.isFinite(rate) ? rate : 24_000);
-  } catch {
-    return null;
+      const rateMatch = /rate=(\d+)/i.exec(String(inline.mimeType ?? inline.mime_type ?? ""));
+      const rate = rateMatch ? Number(rateMatch[1]) : 24_000;
+      return pcmToWav(Buffer.from(inline.data, "base64"), Number.isFinite(rate) ? rate : 24_000);
+    } catch {
+      // Следующая модель. Озвучка не обязательна: дальше ждёт Azure, а за ним
+      // запись по старому ключу кэша.
+    }
   }
+  return null;
 }
 
 /** Azure Cognitive Services TTS: нейронный голос en-US-AriaNeural. */
@@ -469,7 +478,7 @@ router.get("/tts", async (req, res) => {
 
   // ── 3. Gemini TTS (когда Deepgram не настроен или отказал) ──────────────
   if (!audioBuf) {
-    audioBuf = await geminiTts(text).catch(() => null);
+    audioBuf = await geminiTts(text, req.log).catch(() => null);
   }
 
   // ── 4. Azure TTS ───────────────────────────────────────────────────────

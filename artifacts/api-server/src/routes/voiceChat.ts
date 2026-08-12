@@ -8,8 +8,8 @@
 //
 // Теперь всё это за общим слоем (lib/ai.ts): маршрут просит «ответь»,
 // «расшифруй», «озвучь». Кто именно это сделал — Gemini или Deepgram —
-// маршрут не знает и знать не должен. Порядок поставщиков и разбор их ошибок
-// живут в одном месте.
+// маршрут не знает и знать не должен. Порядок поставщиков, выбор модели и
+// разбор их ошибок живут в одном месте.
 //
 // ── Реплика приходит двумя способами ────────────────────────────────────────
 //   audioBase64 — запись голоса, её расшифровывает распознаватель;
@@ -26,6 +26,10 @@
 // ответе есть поле detail с текстом ошибки от поставщика, и экран его
 // показывает. Секретного там нет: «model not found», «quota exceeded».
 //
+// Причина приходит СРАЗУ ПО ВСЕМ попыткам: «модель: ошибка | модель: ошибка».
+// Пока показывалась только последняя, отладка сводилась к угадыванию — именно
+// на этом мы потеряли заход с выключенными моделями Google.
+//
 // ── Очки ────────────────────────────────────────────────────────────────────
 // 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
 // как в словах и грамматике. Без потолка разговор был единственным местом, где
@@ -37,7 +41,7 @@ import { voiceChatSessionsTable, voiceChatMessagesTable, usersTable } from "@wor
 import { eq, and, gte, sql } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import { startOfLocalDay } from "../lib/timeStats";
-import { aiProviders, chat, hasAnyAi, speak, transcribe } from "../lib/ai";
+import { aiProviders, chat, geminiModelReport, hasAnyAi, speak, transcribe } from "../lib/ai";
 
 const router = Router();
 
@@ -115,8 +119,8 @@ router.get("/voice-chat/sessions", requireAuth, async (req, res) => {
 // ответа и только потом узнаёт, что тьютор не настроен.
 //
 // ?probe=1 — проверка ЖИВЫМ запросом: какой поставщик и какая модель отвечают,
-// а если никто — что именно они сказали. Нужна, чтобы разбираться без доступа
-// к логам сервера.
+// а если никто — что именно они сказали и какие модели вообще доступны ключу.
+// Нужна, чтобы разбираться без доступа к логам сервера.
 router.get("/voice-chat/status", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   const providers = aiProviders();
@@ -137,6 +141,10 @@ router.get("/voice-chat/status", requireAuth, async (req, res) => {
     return;
   }
 
+  // Список моделей — в ответ проверки всегда: «модель не найдена» без того, что
+  // НАЙДЕНО, ничего не объясняет.
+  const report = await geminiModelReport(req.log, req.query["fresh"] === "1");
+
   const outcome = await chat({
     system: "You are a test probe. Reply with the single word OK.",
     history: [],
@@ -151,6 +159,7 @@ router.get("/voice-chat/status", requireAuth, async (req, res) => {
       provider: outcome.provider,
       model: outcome.model,
       answer: outcome.text.slice(0, 80),
+      models: report,
     });
     return;
   }
@@ -160,7 +169,22 @@ router.get("/voice-chat/status", requireAuth, async (req, res) => {
     probe: "failed",
     tried: outcome.tried,
     reason: outcome.detail,
+    models: report,
   });
+});
+
+// ── Что видит наш ключ ──────────────────────────────────────────────────────
+//
+// Отдельно от проверки: список моделей нужен и когда всё работает — например,
+// чтобы выбрать имя для GOOGLE_AI_CHAT_MODEL. Живого запроса к модели здесь
+// нет, поэтому вызов бесплатный.
+router.get("/voice-chat/models", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!hasAnyAi()) {
+    res.json({ error: "Не задан ключ GOOGLE_AI_API_KEY", listed: 0, chat: [], tts: [], generateContent: [] });
+    return;
+  }
+  res.json(await geminiModelReport(req.log, req.query["fresh"] === "1"));
 });
 
 router.post("/voice-chat/sessions", requireAuth, async (req, res) => {
