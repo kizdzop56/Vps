@@ -19,12 +19,33 @@
 //   FriendsSheet     — лист связей: учитель, друзья, добавление по коду
 //                      (components/FriendsSheet.tsx);
 //   NotificationCenter — история уведомлений за колокольчиком в шапке
-//                      (components/NotificationCenter.tsx).
+//                      (components/NotificationCenter.tsx);
+//   LevelUpCelebration — окно нового уровня
+//                      (components/LevelUpCelebration.tsx).
 //
 // Все карточки статистики устроены одинаково: нижняя грань и графики, которые
 // вырастают от нуля при появлении. Плоских карточек рядом с объёмными на этом
 // экране быть не должно — одна такая сразу читается как недоделанная.
 // Проседает при нажатии только то, что реально открывается: задания и время.
+//
+// ── НОВЫЙ УРОВЕНЬ ───────────────────────────────────────────────────────────
+// Повышение показывается окном с крупной полосой опыта и свечением. Здесь же
+// решается, КОГДА его показать, и это сложнее, чем кажется.
+//
+// Очки начисляются не тут: в словах, в грамматике, в разговоре, за вход и за
+// цель дня. Профиль узнаёт о повышении задним числом — при следующем открытии
+// вкладки. Поэтому «показать при повышении» здесь невозможно; можно только
+// «показать то, чего ученик ещё не видел».
+//
+// Отсюда УВИДЕННЫЙ уровень хранится на устройстве (AsyncStorage, ключ на
+// каждого пользователя свой). Правила простые:
+//   • записи нет — это первый запуск, запоминаем текущий уровень и МОЛЧИМ,
+//     иначе окно вылезало бы каждому при первом входе;
+//   • записанный уровень меньше текущего — показываем окно и обновляем запись;
+//   • равен или больше — ничего не делаем.
+//
+// Такой порядок переживает и перезагрузку страницы, и повышение сразу на два
+// уровня: окно всё равно покажется один раз и назовёт оба номера.
 //
 // ── Колокольчик ─────────────────────────────────────────────────────────────
 // Счётчик непрочитанного берётся тем же запросом, что и всплывающие окна в
@@ -75,6 +96,7 @@ import authStorage from "@/utils/authStorage";
 import { AchievementsShowcase } from "@/components/AchievementsShowcase";
 import { MascotModal, getMascotMessage } from "@/components/Mascot";
 import { AchievementToast } from "@/components/AchievementToast";
+import { LevelUpCelebration } from "@/components/LevelUpCelebration";
 import { DailyQuests } from "@/components/DailyQuests";
 import { AboutCard } from "@/components/AboutCard";
 import { ScoreCard } from "@/components/ScoreCard";
@@ -157,6 +179,16 @@ const SESSION_START_KEY = "timer_session_start";
 
 /** Как часто перезапрашивать прогресс задач дня, пока экран открыт. */
 const PLAN_REFRESH_MS = 60_000;
+
+/**
+ * Ключ, под которым лежит последний УВИДЕННЫЙ уровень.
+ *
+ * На каждого пользователя свой: на одном телефоне занимаются и брат, и сестра,
+ * и чужое повышение показывать нельзя.
+ */
+function seenLevelKey(userId: number): string {
+  return `xp_level_seen_${userId}`;
+}
 
 function useLiveTimer() {
   const [seconds, setSeconds] = useState(0);
@@ -337,6 +369,14 @@ export default function ProfileScreen() {
    * Без него анимации играли один раз за сессию — вкладка живёт в памяти.
    */
   const [replay, setReplay] = useState(0);
+  /** Какое повышение показываем. null — окна нет. */
+  const [levelUp, setLevelUp] = useState<{ from: number; to: number } | null>(null);
+  /**
+   * Последний увиденный уровень. Держим и в памяти, и в хранилище: в памяти —
+   * чтобы не читать диск на каждом обновлении статистики, в хранилище — чтобы
+   * пережить перезагрузку.
+   */
+  const seenLevel = useRef<number | null>(null);
   const [teacherRequests, setTeacherRequests] = useState<Array<{
     requestId: number;
     teacher: { id: number; name: string; username: string; avatarEmoji: string | null; avatarColor: string | null; role: string };
@@ -657,6 +697,52 @@ export default function ProfileScreen() {
 
   const xp = gamStats?.totalPoints ?? 0;
   const xpProgress = getXpProgress(xp);
+  const currentLevel = xpProgress.current.level;
+
+  /**
+   * Не пропустить повышение.
+   *
+   * Уровень считается из очков на клиенте (getXpProgress), а не берётся из
+   * gamStats.xpLevel: на экране показывается именно это число, и окно должно
+   * говорить о том же, что шапка.
+   *
+   * Правила и причина, по которой увиденный уровень хранится на устройстве, —
+   * в шапке файла.
+   */
+  useEffect(() => {
+    if (!isStudent || !gamStats || !user?.id) return;
+    const key = seenLevelKey(user.id);
+    let alive = true;
+
+    (async () => {
+      try {
+        if (seenLevel.current === null) {
+          const stored = await AsyncStorage.getItem(key);
+          if (!alive) return;
+          if (stored === null) {
+            // Первая встреча с этим аккаунтом: молча запоминаем, где он сейчас.
+            seenLevel.current = currentLevel;
+            await AsyncStorage.setItem(key, String(currentLevel));
+            return;
+          }
+          const parsed = Number(stored);
+          seenLevel.current = Number.isFinite(parsed) ? parsed : currentLevel;
+        }
+
+        const seen = seenLevel.current ?? currentLevel;
+        if (currentLevel > seen) {
+          seenLevel.current = currentLevel;
+          await AsyncStorage.setItem(key, String(currentLevel));
+          if (alive) setLevelUp({ from: seen, to: currentLevel });
+        }
+      } catch {
+        // Хранилище недоступно — просто не показываем окно. Ронять профиль из-за
+        // праздничной анимации нельзя.
+      }
+    })();
+
+    return () => { alive = false; };
+  }, [isStudent, gamStats, user?.id, currentLevel]);
 
   const respondToTeacherRequest = async (requestId: number, accept: boolean) => {
     try {
@@ -894,6 +980,16 @@ export default function ProfileScreen() {
         message={mascotMsg.message}
         mascotName={gamStats?.mascotName ?? "Снежа"}
         onClose={() => setMascotVisible(false)}
+      />
+
+      {/* Новый уровень. Стоит ПОСЛЕ окна маскота намеренно: если в один вход
+          пришлись и приветствие за серию, и повышение, наверху должно быть
+          повышение — оно случается редко. */}
+      <LevelUpCelebration
+        visible={!!levelUp}
+        fromLevel={levelUp?.from ?? 1}
+        toLevel={levelUp?.to ?? 1}
+        onClose={() => setLevelUp(null)}
       />
 
       <Modal visible={avatarMenuOpen} transparent animationType="slide" onRequestClose={() => setAvatarMenuOpen(false)}>

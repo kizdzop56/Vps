@@ -29,6 +29,18 @@
 // вместе с сообщением, и второй попытки не существовало. Отсюда
 // POST /voice-chat/speak: нажатие на реплику синтезирует её заново.
 //
+// ── ПЕРЕВОД РЕПЛИКИ ────────────────────────────────────────────────────────
+// POST /voice-chat/translate переводит реплику Снежи на русский по требованию.
+//
+// Переводится ЦЕЛАЯ реплика, а не отдельные слова: у предложения контекст сам
+// снимает многозначность, и это единственный безопасный способ применить
+// машинный перевод (то же правило действует в карточках, см. шапку
+// lib/phraseSource.ts).
+//
+// Перевод НЕ хранится в базе и не пишется в историю разговора. Он подсказка для
+// ученика, а не часть беседы: попав в историю, он приехал бы модели во входе и
+// она начала бы отвечать по-русски.
+//
 // ── Причина отказа уходит НАРУЖУ ────────────────────────────────────────────
 // Ключ есть, а модель недоступна; квота кончилась; формат записи не принят —
 // для ученика это всё выглядело одинаково: «не ответила». Поэтому в ответе есть
@@ -47,6 +59,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { voiceChatSessionsTable, voiceChatMessagesTable, usersTable } from "@workspace/db";
 import { eq, and, gte, sql } from "drizzle-orm";
+import { googleTranslate } from "@workspace/translate";
 import { requireAuth, getUser } from "../lib/auth";
 import { startOfLocalDay } from "../lib/timeStats";
 import { aiProviders, chat, geminiModelReport, hasAnyAi, speak, transcribe } from "../lib/ai";
@@ -104,7 +117,7 @@ const MIN_AUDIO_BYTES = 1200;
 /** Письменная реплика длиннее этого — вставленный текст, а не фраза ребёнка. */
 const MAX_TEXT_LEN = 500;
 
-/** Столько символов озвучиваем по требованию: ответ Снежи всегда короче. */
+/** Столько символов озвучиваем и переводим: реплика Снежи всегда короче. */
 const MAX_SPEAK_LEN = 700;
 
 /** Сколько очков за разговоры уже начислено сегодня. */
@@ -219,6 +232,41 @@ router.get("/voice-chat/models", requireAuth, async (req, res) => {
     return;
   }
   res.json(await geminiModelReport(req.log, req.query["fresh"] === "1"));
+});
+
+// ── Перевод реплики на русский ──────────────────────────────────────────────
+//
+// Работает БЕЗ ключей ИИ: перевод идёт через @workspace/translate, то есть тем
+// же путём, что переводы примеров в карточках. Поэтому раздел объясняет фразу
+// даже когда сама Снежа отвечать не может.
+//
+// Модель для перевода не используется намеренно. Она справилась бы, но это
+// лишний запрос к дорогому поставщику ради задачи, которую переводчик решает
+// мгновенно и бесплатно.
+router.post("/voice-chat/translate", requireAuth, async (req, res) => {
+  const { text } = req.body as { text?: unknown };
+  const value = typeof text === "string" ? text.trim() : "";
+
+  if (!value) {
+    res.status(400).json({ error: "Нечего переводить" });
+    return;
+  }
+  if (value.length > MAX_SPEAK_LEN) {
+    res.status(413).json({ error: "Слишком длинный текст для перевода" });
+    return;
+  }
+
+  const ru = await googleTranslate(value, "en", "ru");
+  if (!ru) {
+    req.log.warn({ length: value.length }, "Перевод реплики не удался");
+    res.status(502).json({
+      error: "Не удалось перевести. Попробуй ещё раз.",
+      detail: "Переводчик не ответил",
+    });
+    return;
+  }
+
+  res.json({ text: ru });
 });
 
 // ── Озвучить текст по требованию ────────────────────────────────────────────

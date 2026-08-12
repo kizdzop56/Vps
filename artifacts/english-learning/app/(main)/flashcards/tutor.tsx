@@ -6,18 +6,22 @@
 // «ТЬЮТОР», и всё. Для ребёнка это переписка с настройкой, а не разговор.
 //
 // Снежа в приложении уже есть — она встречает, хвалит и подсказывает. Логично,
-// что и говорить ученик будет с ней, а не с безымянной службой. Поэтому наверху
-// сидит живая Снежа (components/SnezhaLive.tsx), и по ней ВИДНО, что происходит:
-// слушает, думает, говорит или просто дышит. Подписи-состояния при этом тоже
-// остались: картинка сообщает быстрее, но текст надёжнее.
+// что и говорить ученик будет с ней. Поэтому наверху сидит живая Снежа
+// (components/SnezhaLive.tsx), и по ней ВИДНО, что происходит: слушает, думает,
+// говорит или просто дышит. Подписи-состояния при этом тоже остались: картинка
+// сообщает быстрее, но текст надёжнее.
 //
-// ── ПЕРВЫМ ГОВОРИТ УЧЕНИК ───────────────────────────────────────────────────
-// Тут было готовое приветствие Снежи, вписанное в код. Оно выглядело как
-// разговор, которого не было: реплика висела в ленте до всякого соединения с
-// сервером, и по ней нельзя было понять, работает раздел или нет.
+// ── ПЕРЕВОД ПО СТРЕЛОЧКЕ ───────────────────────────────────────────────────
+// У каждой реплики Снежи справа стрелка. Нажал — под текстом раскрылся перевод
+// на русский; нажал ещё раз — свернулся.
 //
-// Теперь лента начинается пустой, а вместо приветствия — приглашение сказать
-// первое слово. Первая реплика Снежи в разговоре ВСЕГДА настоящая, из модели.
+// Свёрнут ПО УМОЛЧАНИЮ, и это главное решение здесь. Перевод, который висит
+// рядом всегда, убивает смысл упражнения: глаз читает русское и до английского
+// просто не доходит. Стрелка делает перевод осознанным выбором — «я попробовал
+// понять, не вышло, показывай».
+//
+// Перевод приходит с сервера один раз и остаётся в реплике: свернуть и
+// развернуть заново можно сколько угодно, второго запроса не будет.
 //
 // ── Два способа сказать ─────────────────────────────────────────────────────
 // ГОЛОСОМ — то, ради чего раздел и нужен: говорить вслух страшнее и полезнее
@@ -28,6 +32,14 @@
 // стесняется собственного голоса больше, чем ошибок. Заодно письмо обходит
 // распознавание речи целиком, и по нему видно, работает ли остальной раздел,
 // когда микрофон подводит.
+//
+// ── ПЕРВЫМ ГОВОРИТ УЧЕНИК ───────────────────────────────────────────────────
+// Тут было готовое приветствие Снежи, вписанное в код. Оно выглядело как
+// разговор, которого не было: реплика висела в ленте до всякого соединения с
+// сервером, и по ней нельзя было понять, работает раздел или нет.
+//
+// Теперь лента начинается пустой, а вместо приветствия — приглашение сказать
+// первое слово. Первая реплика Снежи в разговоре ВСЕГДА настоящая, из модели.
 //
 // ── ЛЮБУЮ РЕПЛИКУ СНЕЖИ МОЖНО ОЗВУЧИТЬ НАЖАТИЕМ ────────────────────────────
 // Озвучка приходит вместе с ответом, но не всегда: у синтезаторов бывают лимиты
@@ -116,11 +128,18 @@ type Line = {
   failed?: boolean;
   /** Озвучить не удалось. Показываем на самой реплике, а не плашкой. */
   voiceFailed?: boolean;
+  /** Перевод на русский. Приходит один раз и остаётся. */
+  ru?: string;
+  /** Перевод раскрыт. По умолчанию нет: см. шапку файла. */
+  ruOpen?: boolean;
+  /** Перевести не удалось. */
+  ruFailed?: boolean;
 };
 
 type SessionResponse = { id: number };
 type StatusResponse = { ready?: boolean; reason?: string };
 type SpeakResponse = { audioUrl?: string | null };
+type TranslateResponse = { text?: string | null };
 
 type MessagesResponse = {
   studentMessage?: { id?: number; transcript?: string };
@@ -193,6 +212,8 @@ export default function TutorScreen() {
   const [denied, setDenied] = React.useState(false);
   /** Какую реплику озвучиваем по нажатию: у неё вместо подсказки «озвучиваю…». */
   const [asking, setAsking] = React.useState<string | null>(null);
+  /** Какую реплику переводим прямо сейчас. */
+  const [translating, setTranslating] = React.useState<string | null>(null);
   /** Браузер не дал играть без нажатия. Подсказка на репликах меняется. */
   const [audioBlocked, setAudioBlocked] = React.useState(false);
   /** null — ещё не спросили; false — разговор не настроен на сервере. */
@@ -215,8 +236,7 @@ export default function TutorScreen() {
       })
       // Не смогли спросить — считаем, что готов: лучше дать попробовать, чем
       // закрыть раздел из-за одного неудачного запроса.
-      .catch(() => { if (alive) setReady(true); })
-    ;
+      .catch(() => { if (alive) setReady(true); });
     return () => { alive = false; };
   }, []);
 
@@ -280,6 +300,36 @@ export default function TutorScreen() {
       setAsking(null);
     }
   }, [play, asking]);
+
+  /**
+   * Развернуть или свернуть перевод реплики.
+   *
+   * Перевод запрашивается только в первый раз: дальше он лежит в самой реплике,
+   * и стрелка работает мгновенно.
+   */
+  const toggleTranslation = React.useCallback(async (line: Line) => {
+    const open = !line.ruOpen;
+    setLines((prev) =>
+      prev.map((l) => (l.id === line.id ? { ...l, ruOpen: open, ruFailed: false } : l)),
+    );
+    // Сворачиваем, уже переведено или перевод в пути — сети не нужно.
+    if (!open || line.ru || translating) return;
+
+    setTranslating(line.id);
+    try {
+      const data = await apiFetch<TranslateResponse>("/api/voice-chat/translate", {
+        method: "POST",
+        body: JSON.stringify({ text: line.text }),
+      });
+      const ru = data?.text?.trim();
+      if (!ru) throw new Error("Перевод не пришёл");
+      setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, ru } : l)));
+    } catch {
+      setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, ruFailed: true } : l)));
+    } finally {
+      setTranslating(null);
+    }
+  }, [translating]);
 
   /**
    * Отправить реплику: либо запись, либо текст.
@@ -420,7 +470,7 @@ export default function TutorScreen() {
   const snezhaState: SnezhaState =
     recording ? "listen" : sending ? "think" : voicing ? "speak" : "idle";
 
-  /** Ростом Снежа занимает шестую часть ширины экрана: рядом с ней ещё текст. */
+  /** Ростом Снежа занимает четверть ширины экрана: рядом с ней ещё текст. */
   const mascotW = Math.min(112, Math.max(88, Math.round(W * 0.26)));
 
   return (
@@ -571,10 +621,11 @@ export default function TutorScreen() {
             переписке, чтобы не читать подписи «кто сказал». */}
         {lines.map((line) => {
           const mine = line.role === "student";
-          // Реплику Снежи можно послушать всегда: звук либо готов, либо
-          // синтезируется по нажатию.
+          // Реплику Снежи можно послушать и перевести всегда: звук либо готов,
+          // либо синтезируется по нажатию.
           const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
           const busy = asking === line.id;
+          const ruBusy = translating === line.id;
 
           const hint = busy
             ? "озвучиваю…"
@@ -610,17 +661,79 @@ export default function TutorScreen() {
                 opacity: line.pending ? 0.6 : 1,
               }}
             >
-              <Text style={{
-                fontSize: 10, fontWeight: "900", letterSpacing: 1,
-                textTransform: "uppercase",
-                color: mine ? colors.primary : colors.mutedForeground,
-                marginBottom: 4,
-              }}>
-                {mine ? "ты" : NAME}
-              </Text>
+              {/* Шапка реплики: кто сказал и стрелка перевода. Стрелка только у
+                  Снежи — свою реплику ученик переводить не станет. */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                <Text style={{
+                  flex: 1,
+                  fontSize: 10, fontWeight: "900", letterSpacing: 1,
+                  textTransform: "uppercase",
+                  color: mine ? colors.primary : colors.mutedForeground,
+                }}>
+                  {mine ? "ты" : NAME}
+                </Text>
+                {listenable && (
+                  <Pressable
+                    onPress={(e: any) => {
+                      // Гасим всплытие: на вебе нажатие иначе дойдёт до
+                      // пузыря и заодно включит озвучку.
+                      e?.stopPropagation?.();
+                      void toggleTranslation(line);
+                    }}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={line.ruOpen ? "Скрыть перевод" : "Показать перевод"}
+                    accessibilityState={{ expanded: !!line.ruOpen }}
+                    style={{
+                      flexDirection: "row", alignItems: "center", gap: 4,
+                      paddingHorizontal: 7, paddingVertical: 3,
+                      borderRadius: radii.pill,
+                      backgroundColor: line.ruOpen ? colors.primary + "1f" : "transparent",
+                    }}
+                  >
+                    <Text style={{ fontSize: 9.5, fontWeight: "900", letterSpacing: 0.6, color: colors.primary }}>
+                      RU
+                    </Text>
+                    {ruBusy
+                      ? <ActivityIndicator size="small" color={colors.primary} />
+                      : (
+                        // Шеврон из набора смотрит вправо: вниз — «раскрыть»,
+                        // вверх — «свернуть».
+                        <View style={{ transform: [{ rotate: line.ruOpen ? "270deg" : "90deg" }] }}>
+                          <Glyph name="chevron" size={13} color={colors.primary} />
+                        </View>
+                      )}
+                  </Pressable>
+                )}
+              </View>
+
               <Text style={{ fontSize: 15, lineHeight: 22, color: colors.foreground }}>
                 {line.text}
               </Text>
+
+              {/* Перевод под текстом, за тонкой линией: он поясняет реплику, а
+                  не спорит с ней за внимание. */}
+              {line.ruOpen && (line.ru || line.ruFailed || ruBusy) && (
+                <View style={{
+                  marginTop: 9, paddingTop: 8,
+                  borderTopWidth: 1, borderTopColor: colors.border,
+                }}>
+                  {line.ru ? (
+                    <Text style={{ fontSize: 14, lineHeight: 20, color: colors.mutedForeground }}>
+                      {line.ru}
+                    </Text>
+                  ) : line.ruFailed ? (
+                    <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.destructive }}>
+                      Перевод не пришёл. Нажми стрелку ещё раз.
+                    </Text>
+                  ) : (
+                    <Text style={{ fontSize: 12.5, color: colors.mutedForeground }}>
+                      перевожу…
+                    </Text>
+                  )}
+                </View>
+              )}
+
               {line.failed && (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
                   <Glyph name="alert" size={13} color={colors.destructive} />
