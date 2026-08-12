@@ -67,6 +67,100 @@ const TABLES: TablePatch[] = [
          on "grammar_log" ("user_id", "answered_at")`,
     ],
   },
+  {
+    table: "raid_events",
+    reason: "рейд недели: без него вкладка «Рейд» отвечает ошибкой",
+    ddl: [
+      `create table if not exists "raid_events" (
+         "id" serial primary key,
+         "boss" text not null,
+         "week_key" text not null,
+         "starts_at" timestamp not null,
+         "ends_at" timestamp not null,
+         "hp_total" integer not null,
+         "damage_dealt" integer not null default 0,
+         "status" text not null default 'active',
+         "killer_user_id" integer,
+         "hp_tuned_at" timestamp not null default now(),
+         "resolved_at" timestamp,
+         "created_at" timestamp not null default now(),
+         constraint "raid_event_week_unique" unique ("week_key")
+       )`,
+    ],
+  },
+  {
+    table: "raid_participants",
+    reason: "вклад ученика в рейд: рейтинг, вехи и сундук",
+    ddl: [
+      `create table if not exists "raid_participants" (
+         "id" serial primary key,
+         "event_id" integer not null references "raid_events"("id") on delete cascade,
+         "user_id" integer not null references "users"("id") on delete cascade,
+         "damage" integer not null default 0,
+         "hits" integer not null default 0,
+         "crits" integer not null default 0,
+         "best_combo" integer not null default 0,
+         "milestone" integer not null default 0,
+         "chest_claimed" boolean not null default false,
+         "last_hit_at" timestamp,
+         "created_at" timestamp not null default now(),
+         constraint "raid_participant_unique" unique ("event_id", "user_id")
+       )`,
+      `create index if not exists "raid_participants_event_damage_idx"
+         on "raid_participants" ("event_id", "damage")`,
+    ],
+  },
+  {
+    table: "raid_hits",
+    reason: "журнал ударов: дневное задание и лента последних попаданий",
+    ddl: [
+      `create table if not exists "raid_hits" (
+         "id" serial primary key,
+         "event_id" integer not null references "raid_events"("id") on delete cascade,
+         "user_id" integer not null references "users"("id") on delete cascade,
+         "damage" integer not null default 0,
+         "tag" text,
+         "difficulty" text not null,
+         "crit" boolean not null default false,
+         "super_effective" boolean not null default false,
+         "combo" integer not null default 0,
+         "at" timestamp not null default now()
+       )`,
+      `create index if not exists "raid_hits_user_time_idx" on "raid_hits" ("user_id", "at")`,
+      `create index if not exists "raid_hits_event_time_idx" on "raid_hits" ("event_id", "at")`,
+    ],
+  },
+  {
+    table: "raid_state",
+    reason: "боевое состояние ученика: энергия, мана, комбо, монеты",
+    ddl: [
+      `create table if not exists "raid_state" (
+         "user_id" integer primary key references "users"("id") on delete cascade,
+         "stamina" integer not null default 20,
+         "stamina_at" timestamp not null default now(),
+         "mana" integer not null default 0,
+         "mana_day" date,
+         "combo" integer not null default 0,
+         "clean_streak" integer not null default 0,
+         "power_armed" boolean not null default false,
+         "aoe_left" integer not null default 0,
+         "shield_until" timestamp,
+         "rust_until" timestamp,
+         "boost_until" timestamp,
+         "last_active_at" timestamp,
+         "coins" integer not null default 0,
+         "keys" integer not null default 0,
+         "frames" jsonb,
+         "weapon_skin" text,
+         "weapon_event_id" integer,
+         "title" text,
+         "title_until" timestamp,
+         "quest_day" date,
+         "quest_claimed" boolean not null default false,
+         "updated_at" timestamp not null default now()
+       )`,
+    ],
+  },
 ];
 
 const PATCHES: ColumnPatch[] = [

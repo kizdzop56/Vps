@@ -43,7 +43,7 @@ function wordExercise(mode: unknown): { difficulty: RaidDifficulty; tags: RaidTa
     case "speak":
       return { difficulty: "hard", tags: ["pronunciation", "vocab"] };
     default:
-      // Режим не пришёл: считаем самым дешёвым. Подделать сложность вверх
+      // Режим не пришёл: считаем самым дешёвым. Завысить сложность подделкой
       // нельзя — тот же принцип, что у ставок очков в грамматике.
       return { difficulty: "easy", tags: ["vocab"] };
   }
@@ -57,14 +57,17 @@ function grammarExercise(
   const difficulty: RaidDifficulty =
     input === "assemble" ? "hard" : input === "type" ? "medium" : "easy";
 
+  // Вид задания читаем строкой, а не сравнением с литералами движка: формат
+  // номеров заданий — внутреннее дело банка, и рейд не должен от него зависеть.
   const found = typeof taskId === "string" ? findTask(taskId) : null;
-  const tags: RaidTag[] = (() => {
-    if (!found) return ["grammar"];
-    if (found.kind === "tense") return ["grammar", "tenses"];
-    if (found.kind === "verbs") return ["grammar", "tenses"];
-    if (found.kind === "build") return ["grammar", "wordorder", "phrasal"];
-    return ["grammar"];
-  })();
+  const kind = found ? String((found as { kind?: unknown }).kind ?? "") : "";
+
+  const tags: RaidTag[] =
+    kind === "tense" || kind === "verbs"
+      ? ["grammar", "tenses"]
+      : kind === "build"
+        ? ["grammar", "wordorder", "phrasal"]
+        : ["grammar"];
 
   return { difficulty, tags };
 }
@@ -120,8 +123,11 @@ export const raidHook: RequestHandler = (req, res, next) => {
     if (done) return res;
     done = true;
 
+    // Пользователя в запрос кладёт requireAuth, и к этому моменту он уже там:
+    // подмена срабатывает после обработчика, а не до него.
+    const userId = (req as unknown as { user?: { userId?: number } }).user?.userId;
+
     // Ошибки, не-объекты и неавторизованные ответы уходят как есть.
-    const userId = (req as { user?: { userId?: number } }).user?.userId;
     if (res.statusCode >= 400 || !payload || typeof payload !== "object" || !userId) {
       original(payload);
       return res;
