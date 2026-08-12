@@ -10,64 +10,57 @@
 // «расшифруй», «озвучь». Кто именно это сделал — Gemini или Deepgram —
 // маршрут не знает и знать не должен.
 //
+// ── РАЗГОВОР ПРОДОЛЖАЕТСЯ ПОСЛЕ ПЕРЕЗАГРУЗКИ ───────────────────────────────
+// Реплики всегда писались в базу, но клиент о них не спрашивал: обновил
+// страницу — и лента пустая, хотя разговор лежит на сервере целиком.
+//
+// GET /voice-chat/latest отдаёт ПОСЛЕДНИЙ разговор ученика вместе с репликами.
+// Экран забирает его при открытии и продолжает с того же места, а модель
+// получает ту же историю — значит и контекст беседы не теряется.
+//
+// ── СНЕЖА ЗНАЕТ, С КЕМ ГОВОРИТ ─────────────────────────────────────────────
+// Она переспрашивала имя в каждом разговоре, потому что в задании о человеке не
+// было ни слова.
+//
+// Теперь в задание уходит короткая справка: имя, возраст, уровень и интересы —
+// всё это уже лежит в профиле (users), заполняется при регистрации и в блоке
+// «О себе». Отдельного хранилища «памяти» не появилось намеренно: держать
+// второй набор тех же фактов означало бы, что они разойдутся.
+//
+// Интересы важнее, чем кажется: имея «футбол» и «игры», Снежа спрашивает о том,
+// о чём ребёнку есть что сказать. Разговор на чужом языке и без того трудный,
+// чтобы вести его о погоде.
+//
 // ── ГРАБЛИ: ЗВУК В ОТВЕТЕ РВАЛ ЗАПРОС НА МОБИЛЬНОЙ СЕТИ ────────────────────
 // Ответ на реплику раньше содержал ГОТОВУЮ ОЗВУЧКУ прямо в JSON:
 // data:audio/mp3;base64,... то есть несколько сотен килобайт на каждое
 // сообщение.
 //
 // На вайфае это незаметно. На 3G запрос висел десятки секунд и рвался, а Safari
-// сообщал ровно «Load failed» — ни кода, ни причины. Со стороны это выглядело
-// как «диалог сломался», причём сломаться он мог на любой реплике, что и
-// сбивало с толку окончательно.
+// сообщал ровно «Load failed» — ни кода, ни причины.
 //
 // Теперь маршрут отдаёт ТОЛЬКО ТЕКСТ: ответ весит около килобайта и приходит
-// сразу. Звук клиент берёт вторым запросом (POST /voice-chat/speak) и играет,
-// когда он пришёл. Лишний обмен по сети здесь честная плата: разговор начинает
-// работать на плохой связи, а не только на хорошей.
-//
-// Заодно исчез двойной синтез: раньше при отказе озвучки ученик нажимал на
-// реплику, и она синтезировалась ВТОРОЙ раз тем же самым вызовом.
+// сразу. Звук клиент берёт вторым запросом (POST /voice-chat/speak).
 //
 // ── Реплика приходит двумя способами ────────────────────────────────────────
 //   audioBase64 — запись голоса, её расшифровывает распознаватель;
 //   text        — ученик написал руками.
 //
-// Дальше пути сходятся: разбор, ответ модели, очки и журнал одинаковы. Письмо
-// нужно не только для удобства (шумно, стесняется, нет микрофона) — оно ещё и
-// обходит распознавание речи целиком, поэтому по нему видно, работает ли
-// остальная часть раздела, когда микрофон подводит.
-//
 // ── ПЕРЕВОД РЕПЛИКИ ────────────────────────────────────────────────────────
 // POST /voice-chat/translate переводит реплику Снежи на русский по требованию.
-//
-// Переводится ЦЕЛАЯ реплика, а не отдельные слова: у предложения контекст сам
-// снимает многозначность, и это единственный безопасный способ применить
-// машинный перевод (то же правило действует в карточках, см. шапку
-// lib/phraseSource.ts).
-//
-// Перевод НЕ хранится в базе и не пишется в историю разговора. Он подсказка для
-// ученика, а не часть беседы: попав в историю, он приехал бы модели во входе и
-// она начала бы отвечать по-русски.
-//
-// ── Причина отказа уходит НАРУЖУ ────────────────────────────────────────────
-// Ключ есть, а модель недоступна; квота кончилась; формат записи не принят —
-// для ученика это всё выглядело одинаково: «не ответила». Поэтому в ответе есть
-// поле detail с текстом ошибки от поставщика, и экран его показывает.
-// Секретного там нет: «model not found», «quota exceeded».
+// Переводится ЦЕЛАЯ реплика: у предложения контекст сам снимает
+// многозначность. Перевод не хранится и в историю не попадает — иначе он
+// приехал бы модели во входе, и она начала бы отвечать по-русски.
 //
 // ── Очки ────────────────────────────────────────────────────────────────────
-// 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
-// как в словах и грамматике. Без потолка разговор был единственным местом, где
-// очки капали бесконечно.
-//
-// Очки идут и за неудачную попытку тоже. Ребёнок сказал фразу, ошибся и
-// повторил правильно — это РАБОТА, и наказывать за неё нулём нельзя: иначе
-// выгоднее говорить только заученное.
+// 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки.
+// Очки идут и за неудачную попытку тоже: ребёнок сказал фразу, ошибся и
+// повторил правильно — это РАБОТА.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { voiceChatSessionsTable, voiceChatMessagesTable, usersTable } from "@workspace/db";
-import { eq, and, gte, sql } from "drizzle-orm";
+import { eq, and, gte, sql, desc } from "drizzle-orm";
 import { googleTranslate } from "@workspace/translate";
 import { requireAuth, getUser } from "../lib/auth";
 import { startOfLocalDay } from "../lib/timeStats";
@@ -79,56 +72,69 @@ const router = Router();
 // КТО ОТВЕЧАЕТ И КАК ПРОВЕРЯЕТ
 //
 // Собеседник — Снежа, маскот приложения. Не «ассистент» и не «тьютор»: ребёнок
-// разговаривает с тем, кого уже знает по остальным экранам, и это единственная
-// причина, по которой он вообще начнёт говорить вслух на чужом языке.
+// разговаривает с тем, кого уже знает по остальным экранам.
 //
 // ── ОШИБКА ОСТАНАВЛИВАЕТ РАЗГОВОР ──────────────────────────────────────────
 // Снежа проверяет каждую реплику. Есть ошибка — она называет её и просит
 // сказать ту же фразу правильно, и разговор НЕ идёт дальше, пока фраза не
-// прозвучит верно. Всё правильно — обычный ответ и следующий вопрос.
-//
-// Это отличается и от «молчать про ошибки» (тогда ребёнок закрепляет неверное),
-// и от «поправить и поехали дальше» (исправление, которое не повторили вслух,
-// не запоминается вообще).
+// прозвучит верно.
 //
 // ── РУССКАЯ РЕПЛИКА — ТОЖЕ СЛУЧАЙ ДЛЯ РАЗБОРА ──────────────────────────────
-// Ребёнок то и дело отвечает по-русски: не знает слова, устал, забыл про
-// правило. Это не сбой и не повод молчать — это ровно та ситуация, ради которой
-// раздел и сделан.
-//
-// Поэтому русская фраза считается ошибкой: в fixed уходит ЕЁ ПЕРЕВОД на
-// английский, в issue — «ты написал по-русски, скажи это по-английски». Ученику
-// остаётся повторить готовую английскую фразу, то есть он получает именно то,
-// чего ему не хватало.
-//
-// Отдельно оговорено, что делать с именами и отдельными словами: «Sego» в
-// ответ на «What is your name?» — это верный ответ, а не ошибка. Без этой
-// оговорки модель придиралась к имени собственному.
+// Русская фраза считается ошибкой: в fixed уходит ЕЁ ПЕРЕВОД на английский, в
+// issue — «ты написал по-русски, скажи это по-английски». Ученику остаётся
+// повторить готовую английскую фразу.
 //
 // ── ОТВЕТ ПРИХОДИТ РАЗБОРОМ, А НЕ ТЕКСТОМ ──────────────────────────────────
 // Модель обязана вернуть JSON: верна ли фраза, как она звучит правильно, что
-// именно было не так (по-русски) и сама реплика Снежи.
-//
-// Почему не одним текстом: экрану нужно ЗНАТЬ, была ошибка или нет — от этого
-// зависит, показывать ли разбор под своей репликой и просить ли повтор. Вытащить
-// это из свободного текста нечем, кроме угадывания по словам, а угадывание тут
-// ошибается на каждой второй фразе.
-//
-// Объяснение по-русски намеренно: ребёнок, который ошибся в английском, не
-// поймёт объяснения ошибки на английском. Сама реплика Снежи при этом всегда
-// английская — иначе разговор перестанет быть разговором на языке.
+// именно было не так (по-русски) и сама реплика Снежи. Экрану нужно ЗНАТЬ, была
+// ошибка или нет — из свободного текста это не вытащить.
 //
 // ── ПОЧЕМУ НЕ БОЛЬШЕ ДВУХ ЗАХОДОВ ──────────────────────────────────────────
-// Без предела ребёнок может застрять на одной фразе навсегда: он не понимает,
-// чего от него хотят, и повторяет то же самое. Поэтому на третью попытку Снежа
-// принимает фразу как есть и ведёт разговор дальше — упражнение важно, но
-// бросить приложение из-за него важнее не дать.
+// Без предела ребёнок застревает на одной фразе навсегда. На третью попытку
+// Снежа принимает фразу как есть и ведёт разговор дальше.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Столько раз просим повторить одну и ту же фразу. Дальше принимаем как есть. */
 const MAX_RETRIES = 2;
 
-function systemPrompt(retry: number): string {
+/** Уровень словами: модели нужна подсказка, насколько простыми быть. */
+const LEVEL_HINT: Record<string, string> = {
+  starter: "absolute beginner, knows only a few words",
+  beginner: "beginner",
+  elementary: "elementary (A1-A2)",
+  intermediate: "intermediate (B1)",
+  upper_intermediate: "upper-intermediate (B2)",
+};
+
+type StudentProfile = {
+  name: string;
+  age: number | null;
+  level: string | null;
+  bio: string | null;
+  interests: string[];
+};
+
+/**
+ * Справка о собеседнике для модели.
+ *
+ * Пустые поля не пишем вовсе: строка «Age: null» модель прочитает буквально и
+ * начнёт про это спрашивать.
+ */
+function profileBlock(p: StudentProfile | null): string {
+  if (!p) return "";
+  const facts: string[] = [`The student's name is ${p.name}.`];
+  if (p.age) facts.push(`They are ${p.age} years old.`);
+  const level = p.level ? LEVEL_HINT[p.level] : null;
+  if (level) facts.push(`Their English level: ${level} — keep your words that simple.`);
+  if (p.interests.length > 0) {
+    facts.push(`They like: ${p.interests.slice(0, 6).join(", ")}. Ask about these things.`);
+  }
+  if (p.bio) facts.push(`About them: ${p.bio.slice(0, 200)}`);
+
+  return `\n\nWHAT YOU ALREADY KNOW ABOUT THE STUDENT (never ask about it again, use it naturally):\n${facts.join("\n")}`;
+}
+
+function systemPrompt(retry: number, profile: StudentProfile | null): string {
   const base = `You are Snezha (Снежа), a friendly snow leopard cub. You chat in English with a child (age 5-18) who is learning English.
 Speak as Snezha in the first person. Never say you are an AI, a model, an assistant or a tutor.
 
@@ -147,16 +153,45 @@ When "ok" is true: reply naturally, be warm, curious and playful, and end with o
 IF THE STUDENT WRITES IN RUSSIAN (or any language other than English), treat it as a mistake: set "ok" to false, put the ENGLISH TRANSLATION of what they wanted to say into "fixed", and in "issue" say in Russian that they wrote in Russian and should say the same thing in English. Stay calm and kind about it.
 
 A single word or a name is a valid answer when the question allows it: "Sego" answering "What is your name?" is correct English, not a mistake.
+Never ask the same question twice in one conversation, and never ask about something you were already told.
 Be gentle. Ignore missing capital letters, missing final punctuation and obvious speech-to-text noise: the child often speaks out loud and the text comes from a recognizer. Never mock a mistake.
 Use only words a child knows.`;
 
-  if (retry < MAX_RETRIES) return base;
+  const withProfile = base + profileBlock(profile);
+
+  if (retry < MAX_RETRIES) return withProfile;
 
   // Третья попытка: хватит. Ребёнок уже старался, дальше это не упражнение, а
   // тупик.
-  return `${base}
+  return `${withProfile}
 
 IMPORTANT: the student has already tried this sentence several times. Set "ok" to true no matter what, praise the effort in "reply" and move the conversation on with a new question.`;
+}
+
+/** Справка о собеседнике из профиля. Ошибку глотаем: разговор важнее справки. */
+async function loadProfile(userId: number): Promise<StudentProfile | null> {
+  try {
+    const [row] = await db
+      .select({
+        name: usersTable.name,
+        age: usersTable.age,
+        knowledgeLevel: usersTable.knowledgeLevel,
+        bio: usersTable.bio,
+        interests: usersTable.interests,
+      })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId));
+    if (!row) return null;
+    return {
+      name: row.name,
+      age: row.age ?? null,
+      level: row.knowledgeLevel ?? null,
+      bio: row.bio ?? null,
+      interests: Array.isArray(row.interests) ? row.interests.filter((i) => typeof i === "string") : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 const POINTS_PER_VOICE_EXCHANGE = 5;
@@ -168,12 +203,8 @@ const DAILY_VOICE_POINTS_CAP = 30;
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 
 /**
- * Минимальный размер записи.
- *
- * Полсекунды речи в любом из используемых форматов весит заметно больше. Всё,
- * что мельче, — это случайный тап по кнопке: распознаватель на таком файле
- * отвечает ошибкой, и ученик видел «не удалось разобрать запись» вместо «ты
- * ничего не сказал».
+ * Минимальный размер записи. Полсекунды речи весит заметно больше; всё, что
+ * мельче, — случайный тап по кнопке.
  */
 const MIN_AUDIO_BYTES = 1200;
 
@@ -182,6 +213,15 @@ const MAX_TEXT_LEN = 500;
 
 /** Столько символов озвучиваем и переводим: реплика Снежи всегда короче. */
 const MAX_SPEAK_LEN = 700;
+
+/**
+ * Сколько реплик восстанавливать и сколько отдавать модели.
+ *
+ * Не весь разговор: он может идти неделями, а во входе модели каждая реплика
+ * стоит денег и места. Двадцати хватает, чтобы помнить, о чём речь.
+ */
+const RESUME_LIMIT = 40;
+const HISTORY_LIMIT = 20;
 
 // ── Разбор ответа модели ────────────────────────────────────────────────────
 
@@ -195,14 +235,13 @@ type Verdict = {
 /**
  * Вытащить JSON из ответа модели.
  *
- * Модели то и дело оборачивают ответ в ```json, добавляют «Here is the JSON» или
- * ставят перевод строки перед объектом — при всём том, что их об этом прямо
- * просили не делать. Поэтому берём подстроку от первой «{» до последней «}»:
- * этого хватает во всех виденных случаях.
+ * Модели то и дело оборачивают ответ в ```json или добавляют «Here is the JSON»,
+ * при всём том, что их об этом просили не делать. Поэтому берём подстроку от
+ * первой «{» до последней «}».
  *
- * НЕ РАЗОБРАЛОСЬ — не ошибка. Тогда весь текст считается репликой, а фраза
- * ученика — верной: потерять ответ целиком из-за формата хуже, чем один раз не
- * заметить ошибку в грамматике.
+ * НЕ РАЗОБРАЛОСЬ — не ошибка: весь текст считается репликой, а фраза ученика
+ * верной. Потерять ответ целиком из-за формата хуже, чем один раз не заметить
+ * ошибку в грамматике.
  */
 function parseVerdict(raw: string): Verdict {
   const fallback: Verdict = { ok: true, fixed: "", issue: "", reply: raw.trim() };
@@ -214,11 +253,10 @@ function parseVerdict(raw: string): Verdict {
   try {
     const data = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
     const reply = typeof data["reply"] === "string" ? data["reply"].trim() : "";
-    // Реплики нет — объект бесполезен, что бы в нём ещё ни лежало.
     if (!reply) return fallback;
 
     return {
-      // Явное false и только оно означает ошибку: пропущенное поле — это «всё
+      // Явное false и только оно означает ошибку: пропущенное поле — «всё
       // хорошо», иначе на любой заминке модели ребёнок получал бы придирку.
       ok: data["ok"] !== false,
       fixed: typeof data["fixed"] === "string" ? data["fixed"].trim() : "",
@@ -271,20 +309,62 @@ router.get("/voice-chat/sessions", requireAuth, async (req, res) => {
   res.json(sessions);
 });
 
+// ── Последний разговор с репликами ──────────────────────────────────────────
+//
+// Этим экран восстанавливается после перезагрузки страницы. Отдельный маршрут, а
+// не «список сессий, потом сессия по номеру»: клиенту нужен ровно последний
+// разговор, и два запроса подряд ради этого — лишний обмен на медленной сети.
+//
+// Пустой ответ (session: null) — законное состояние: ученик здесь впервые.
+router.get("/voice-chat/latest", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const user = getUser(req);
+
+  const [session] = await db
+    .select({
+      id: voiceChatSessionsTable.id,
+      messageCount: voiceChatSessionsTable.messageCount,
+      pointsEarned: voiceChatSessionsTable.pointsEarned,
+      createdAt: voiceChatSessionsTable.createdAt,
+      updatedAt: voiceChatSessionsTable.updatedAt,
+    })
+    .from(voiceChatSessionsTable)
+    .where(eq(voiceChatSessionsTable.studentId, user.userId))
+    .orderBy(desc(voiceChatSessionsTable.updatedAt))
+    .limit(1);
+
+  if (!session) {
+    res.json({ session: null, messages: [] });
+    return;
+  }
+
+  // Берём ХВОСТ разговора: он может быть длинным, а нужны последние реплики.
+  // Сортируем по убыванию, режем и переворачиваем — иначе пришлось бы тащить
+  // всё и отрезать на клиенте.
+  const tail = await db
+    .select({
+      id: voiceChatMessagesTable.id,
+      role: voiceChatMessagesTable.role,
+      transcript: voiceChatMessagesTable.transcript,
+      createdAt: voiceChatMessagesTable.createdAt,
+    })
+    .from(voiceChatMessagesTable)
+    .where(eq(voiceChatMessagesTable.sessionId, session.id))
+    .orderBy(desc(voiceChatMessagesTable.createdAt))
+    .limit(RESUME_LIMIT);
+
+  res.json({ session, messages: tail.reverse() });
+});
+
 // ── Готов ли раздел к работе ────────────────────────────────────────────────
 //
 // Экран спрашивает это ДО первой записи: иначе ученик говорит вслух, ждёт
 // ответа и только потом узнаёт, что раздел не настроен.
-//
-// ?probe=1 — проверка ЖИВЫМ запросом: какой поставщик и какая модель отвечают,
-// а если никто — что именно они сказали и какие модели вообще доступны ключу.
 router.get("/voice-chat/status", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   const providers = aiProviders();
 
   if (!hasAnyAi()) {
-    // Названа ровно одна переменная, потому что отвечать умеет только Gemini.
-    // DEEPGRAM_API_KEY здесь не помощник: он про речь, а не про разговор.
     res.json({
       ready: false,
       providers,
@@ -298,8 +378,6 @@ router.get("/voice-chat/status", requireAuth, async (req, res) => {
     return;
   }
 
-  // Список моделей — в ответ проверки всегда: «модель не найдена» без того, что
-  // НАЙДЕНО, ничего не объясняет.
   const report = await geminiModelReport(req.log, req.query["fresh"] === "1");
 
   const outcome = await chat({
@@ -331,10 +409,6 @@ router.get("/voice-chat/status", requireAuth, async (req, res) => {
 });
 
 // ── Что видит наш ключ ──────────────────────────────────────────────────────
-//
-// Отдельно от проверки: список моделей нужен и когда всё работает — например,
-// чтобы выбрать имя для GOOGLE_AI_CHAT_MODEL. Живого запроса к модели здесь
-// нет, поэтому вызов бесплатный.
 router.get("/voice-chat/models", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   if (!hasAnyAi()) {
@@ -346,13 +420,8 @@ router.get("/voice-chat/models", requireAuth, async (req, res) => {
 
 // ── Перевод реплики на русский ──────────────────────────────────────────────
 //
-// Работает БЕЗ ключей ИИ: перевод идёт через @workspace/translate, то есть тем
-// же путём, что переводы примеров в карточках. Поэтому раздел объясняет фразу
-// даже когда сама Снежа отвечать не может.
-//
-// Модель для перевода не используется намеренно. Она справилась бы, но это
-// лишний запрос к дорогому поставщику ради задачи, которую переводчик решает
-// мгновенно и бесплатно.
+// Работает БЕЗ ключей ИИ: перевод идёт через @workspace/translate, тем же путём,
+// что переводы примеров в карточках.
 router.post("/voice-chat/translate", requireAuth, async (req, res) => {
   const { text } = req.body as { text?: unknown };
   const value = typeof text === "string" ? text.trim() : "";
@@ -381,9 +450,7 @@ router.post("/voice-chat/translate", requireAuth, async (req, res) => {
 
 // ── Озвучить текст ──────────────────────────────────────────────────────────
 //
-// ЕДИНСТВЕННЫЙ путь к звуку. Ответ на реплику озвучку больше не содержит (см.
-// ГРАБЛИ в шапке файла): клиент получает текст, показывает его и отдельно
-// просит голос. Тяжёлый ответ едет по своему запросу и никому не мешает.
+// ЕДИНСТВЕННЫЙ путь к звуку: ответ на реплику озвучку больше не содержит.
 router.post("/voice-chat/speak", requireAuth, async (req, res) => {
   const { text } = req.body as { text?: unknown };
   const value = typeof text === "string" ? text.trim() : "";
@@ -499,8 +566,6 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   }
 
   if (!hasAnyAi()) {
-    // Честный отказ вместо заготовки. Раньше на любую реплику приходил один и
-    // тот же текст, и понять, что ключа просто нет, было невозможно.
     res.status(503).json({
       error: "Снежа не настроена: на сервере нет ключа доступа к ИИ.",
     });
@@ -554,18 +619,33 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   }
 
   // ── Контекст разговора ──
-  const previousMessages = await db.select().from(voiceChatMessagesTable)
+  //
+  // Хвост, а не весь разговор: он может идти неделями, и каждая реплика во
+  // входе модели стоит денег и места.
+  const previousMessages = await db
+    .select({
+      role: voiceChatMessagesTable.role,
+      transcript: voiceChatMessagesTable.transcript,
+      createdAt: voiceChatMessagesTable.createdAt,
+    })
+    .from(voiceChatMessagesTable)
     .where(eq(voiceChatMessagesTable.sessionId, sessionId))
-    .orderBy(voiceChatMessagesTable.createdAt);
+    .orderBy(desc(voiceChatMessagesTable.createdAt))
+    .limit(HISTORY_LIMIT);
 
-  const history = previousMessages.slice(-10).map((m) => ({
+  const history = previousMessages.reverse().map((m) => ({
     role: m.role === "student" ? "user" as const : "assistant" as const,
     content: m.transcript,
   }));
 
   // ── Разбор и ответ Снежи ──
+  //
+  // Профиль тянем параллельно истории: он нужен, чтобы Снежа не переспрашивала
+  // имя, но ждать его отдельным кругом незачем.
+  const profile = await loadProfile(user.userId);
+
   const outcome = await chat({
-    system: systemPrompt(attempt),
+    system: systemPrompt(attempt, profile),
     history,
     message: studentTranscript,
     log: req.log,
@@ -590,9 +670,7 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   // В историю идёт то, что ученик сказал НА САМОМ ДЕЛЕ, а не исправленная
   // версия: это запись разговора, а не протокол того, как надо было.
   //
-  // audioUrl всегда null: озвучка больше не едет в этом ответе (см. ГРАБЛИ в
-  // шапке файла). Поле в таблице оставлено — переделывать схему ради этого
-  // незачем, а история и так читается только целиком.
+  // audioUrl всегда null: озвучка едет отдельным запросом.
   const [studentMsg] = await db.insert(voiceChatMessagesTable).values({
     sessionId,
     role: "student",
@@ -636,11 +714,6 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     pointsEarned,
     pointsToday: earnedToday + pointsEarned,
     pointsCap: DAILY_VOICE_POINTS_CAP,
-    // ── Разбор фразы ──
-    // ok       — фраза верна;
-    // fixed    — как она звучит правильно (пусто, если и так верно);
-    // issue    — что было не так, по-русски;
-    // needsRetry — экран просит повторить, разговор дальше не идёт.
     correction: {
       ok: verdict.ok,
       fixed: verdict.ok ? "" : verdict.fixed,
@@ -649,8 +722,6 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
       attempt,
       maxRetries: MAX_RETRIES,
     },
-    // Кто ответил. Не украшение: по этому полю видно, что переключение
-    // поставщика реально состоялось, без чтения логов.
     provider: outcome.provider,
     model: outcome.model,
   });
