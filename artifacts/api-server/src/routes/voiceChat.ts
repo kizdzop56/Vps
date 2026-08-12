@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Разговор со Снежей: реплика ученика → разбор → ответ модели → озвучка.
+// Разговор со Снежей: реплика ученика → разбор → ответ модели.
 //
 // ── Про поставщиков здесь НИЧЕГО нет ────────────────────────────────────────
 // Раньше маршрут напрямую знал про поставщика: и модель ответа, и
@@ -8,26 +8,34 @@
 //
 // Теперь всё это за общим слоем (lib/ai.ts): маршрут просит «ответь»,
 // «расшифруй», «озвучь». Кто именно это сделал — Gemini или Deepgram —
-// маршрут не знает и знать не должен. Порядок поставщиков, выбор модели и
-// разбор их ошибок живут в одном месте.
+// маршрут не знает и знать не должен.
+//
+// ── ГРАБЛИ: ЗВУК В ОТВЕТЕ РВАЛ ЗАПРОС НА МОБИЛЬНОЙ СЕТИ ────────────────────
+// Ответ на реплику раньше содержал ГОТОВУЮ ОЗВУЧКУ прямо в JSON:
+// data:audio/mp3;base64,... то есть несколько сотен килобайт на каждое
+// сообщение.
+//
+// На вайфае это незаметно. На 3G запрос висел десятки секунд и рвался, а Safari
+// сообщал ровно «Load failed» — ни кода, ни причины. Со стороны это выглядело
+// как «диалог сломался», причём сломаться он мог на любой реплике, что и
+// сбивало с толку окончательно.
+//
+// Теперь маршрут отдаёт ТОЛЬКО ТЕКСТ: ответ весит около килобайта и приходит
+// сразу. Звук клиент берёт вторым запросом (POST /voice-chat/speak) и играет,
+// когда он пришёл. Лишний обмен по сети здесь честная плата: разговор начинает
+// работать на плохой связи, а не только на хорошей.
+//
+// Заодно исчез двойной синтез: раньше при отказе озвучки ученик нажимал на
+// реплику, и она синтезировалась ВТОРОЙ раз тем же самым вызовом.
 //
 // ── Реплика приходит двумя способами ────────────────────────────────────────
 //   audioBase64 — запись голоса, её расшифровывает распознаватель;
 //   text        — ученик написал руками.
 //
-// Дальше пути сходятся: разбор, ответ модели, озвучка, очки и журнал одинаковы.
-// Письмо нужно не только для удобства (шумно, стесняется, нет микрофона) — оно
-// ещё и обходит распознавание речи целиком, поэтому по нему видно, работает ли
+// Дальше пути сходятся: разбор, ответ модели, очки и журнал одинаковы. Письмо
+// нужно не только для удобства (шумно, стесняется, нет микрофона) — оно ещё и
+// обходит распознавание речи целиком, поэтому по нему видно, работает ли
 // остальная часть раздела, когда микрофон подводит.
-//
-// ── ОЗВУЧКА НЕ ОБЯЗАТЕЛЬНА, НО И НЕ ОДНОРАЗОВА ─────────────────────────────
-// Синтез иногда не удаётся: у моделей озвучки жёсткие лимиты, у Deepgram может
-// кончиться квота. Терять из-за этого весь ответ нельзя — текст уже есть, и
-// молчаливый ответ лучше потерянного.
-//
-// Но раньше такая реплика оставалась без звука НАВСЕГДА: аудио клали в базу
-// вместе с сообщением, и второй попытки не существовало. Отсюда
-// POST /voice-chat/speak: нажатие на реплику синтезирует её заново.
 //
 // ── ПЕРЕВОД РЕПЛИКИ ────────────────────────────────────────────────────────
 // POST /voice-chat/translate переводит реплику Снежи на русский по требованию.
@@ -46,9 +54,6 @@
 // для ученика это всё выглядело одинаково: «не ответила». Поэтому в ответе есть
 // поле detail с текстом ошибки от поставщика, и экран его показывает.
 // Секретного там нет: «model not found», «quota exceeded».
-//
-// Причина приходит СРАЗУ ПО ВСЕМ попыткам: «модель: ошибка | модель: ошибка».
-// Пока показывалась только последняя, отладка сводилась к угадыванию.
 //
 // ── Очки ────────────────────────────────────────────────────────────────────
 // 5 очков за обмен репликами, но не больше DAILY_VOICE_POINTS_CAP в сутки —
@@ -86,6 +91,20 @@ const router = Router();
 // и от «поправить и поехали дальше» (исправление, которое не повторили вслух,
 // не запоминается вообще).
 //
+// ── РУССКАЯ РЕПЛИКА — ТОЖЕ СЛУЧАЙ ДЛЯ РАЗБОРА ──────────────────────────────
+// Ребёнок то и дело отвечает по-русски: не знает слова, устал, забыл про
+// правило. Это не сбой и не повод молчать — это ровно та ситуация, ради которой
+// раздел и сделан.
+//
+// Поэтому русская фраза считается ошибкой: в fixed уходит ЕЁ ПЕРЕВОД на
+// английский, в issue — «ты написал по-русски, скажи это по-английски». Ученику
+// остаётся повторить готовую английскую фразу, то есть он получает именно то,
+// чего ему не хватало.
+//
+// Отдельно оговорено, что делать с именами и отдельными словами: «Sego» в
+// ответ на «What is your name?» — это верный ответ, а не ошибка. Без этой
+// оговорки модель придиралась к имени собственному.
+//
 // ── ОТВЕТ ПРИХОДИТ РАЗБОРОМ, А НЕ ТЕКСТОМ ──────────────────────────────────
 // Модель обязана вернуть JSON: верна ли фраза, как она звучит правильно, что
 // именно было не так (по-русски) и сама реплика Снежи.
@@ -118,13 +137,16 @@ You ALWAYS answer with a single JSON object and nothing else. No markdown, no co
 
 How to fill it:
 - "ok": true if the student's last message is correct English, false if it has a real mistake in grammar, word choice, word order or spelling.
-- "fixed": the same sentence written correctly. When "ok" is true, repeat their sentence unchanged.
+- "fixed": the same sentence written correctly in English. When "ok" is true, repeat their sentence unchanged.
 - "issue": ONE short sentence IN RUSSIAN naming the mistake, for a child. Empty string when "ok" is true.
 - "reply": what you say out loud, ALWAYS in English, 1-3 short sentences, always finished.
 
 When "ok" is false: in "reply" tell them warmly what to fix, say the correct sentence, and ask them to repeat it. Do NOT ask a new question and do NOT continue the topic.
 When "ok" is true: reply naturally, be warm, curious and playful, and end with one simple question to keep the conversation going.
 
+IF THE STUDENT WRITES IN RUSSIAN (or any language other than English), treat it as a mistake: set "ok" to false, put the ENGLISH TRANSLATION of what they wanted to say into "fixed", and in "issue" say in Russian that they wrote in Russian and should say the same thing in English. Stay calm and kind about it.
+
+A single word or a name is a valid answer when the question allows it: "Sego" answering "What is your name?" is correct English, not a mistake.
 Be gentle. Ignore missing capital letters, missing final punctuation and obvious speech-to-text noise: the child often speaks out loud and the text comes from a recognizer. Never mock a mistake.
 Use only words a child knows.`;
 
@@ -357,12 +379,11 @@ router.post("/voice-chat/translate", requireAuth, async (req, res) => {
   res.json({ text: ru });
 });
 
-// ── Озвучить текст по требованию ────────────────────────────────────────────
+// ── Озвучить текст ──────────────────────────────────────────────────────────
 //
-// Нужен, когда синтез при ответе не удался: ученик нажимает на реплику, и она
-// озвучивается со второй попытки. Отдельный маршрут, а не поле сообщения,
-// потому что причины отказа временные — лимит, квота, недоступная модель, — и
-// повтор через минуту обычно проходит.
+// ЕДИНСТВЕННЫЙ путь к звуку. Ответ на реплику озвучку больше не содержит (см.
+// ГРАБЛИ в шапке файла): клиент получает текст, показывает его и отдельно
+// просит голос. Тяжёлый ответ едет по своему запросу и никому не мешает.
 router.post("/voice-chat/speak", requireAuth, async (req, res) => {
   const { text } = req.body as { text?: unknown };
   const value = typeof text === "string" ? text.trim() : "";
@@ -378,7 +399,7 @@ router.post("/voice-chat/speak", requireAuth, async (req, res) => {
 
   const voice = await speak({ text: value, log: req.log });
   if (!voice.ok) {
-    req.log.warn({ tried: voice.tried, detail: voice.detail }, "Озвучка по требованию не удалась");
+    req.log.warn({ tried: voice.tried, detail: voice.detail }, "Озвучка не удалась");
     res.status(502).json({
       error: "Не удалось озвучить ответ.",
       detail: voice.detail,
@@ -564,23 +585,14 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   // Ошибка есть, но заходов больше не даём — экран не должен просить повтор.
   const needsRetry = !verdict.ok && attempt < MAX_RETRIES;
 
-  // Озвучка — не обязательна: текст ответа уже есть, и молчаливый ответ лучше,
-  // чем потерянная реплика. Написавшему её тоже даём: слышать, как звучит
-  // ответ, полезно и в письменном режиме. Не вышло — реплику можно озвучить
-  // нажатием (POST /voice-chat/speak).
-  //
-  // Озвучиваем ТОЛЬКО reply: разбор ошибки написан по-русски, и английский
-  // голос прочитал бы его как набор звуков.
-  const voice = await speak({ text: aiTranscript, log: req.log });
-  const aiAudioUrl = voice.ok ? voice.dataUrl : null;
-  if (!voice.ok) {
-    req.log.warn({ tried: voice.tried, detail: voice.detail }, "Ответ остался без озвучки");
-  }
-
   // ── Записываем обе реплики ──
   //
   // В историю идёт то, что ученик сказал НА САМОМ ДЕЛЕ, а не исправленная
   // версия: это запись разговора, а не протокол того, как надо было.
+  //
+  // audioUrl всегда null: озвучка больше не едет в этом ответе (см. ГРАБЛИ в
+  // шапке файла). Поле в таблице оставлено — переделывать схему ради этого
+  // незачем, а история и так читается только целиком.
   const [studentMsg] = await db.insert(voiceChatMessagesTable).values({
     sessionId,
     role: "student",
@@ -591,7 +603,7 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
   const [aiMsg] = await db.insert(voiceChatMessagesTable).values({
     sessionId,
     role: "ai",
-    audioUrl: aiAudioUrl,
+    audioUrl: null,
     transcript: aiTranscript,
   }).returning();
 
@@ -641,9 +653,6 @@ router.post("/voice-chat/sessions/:id/messages", requireAuth, async (req, res) =
     // поставщика реально состоялось, без чтения логов.
     provider: outcome.provider,
     model: outcome.model,
-    // Почему ответ без звука. Экран это не показывает, но при разборе видно
-    // сразу: «нет ключа», «квота», «нет модели озвучки».
-    speechDetail: voice.ok ? undefined : voice.detail,
   });
 });
 
