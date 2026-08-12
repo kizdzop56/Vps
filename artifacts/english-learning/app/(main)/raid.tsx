@@ -1,27 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Вкладка «Рейд»: недельный босс на всё сообщество.
 //
-// Экран отвечает на четыре вопроса и в этом порядке:
+// Порядок экрана задан вопросами, которые возникают в этом же порядке:
 //   1. кого бьём и сколько у него осталось (босс, шкала, фаза, таймер);
-//   2. чем бить выгоднее прямо сейчас (слабости босса);
+//   2. чем ударить прямо сейчас — кнопка боя стоит ПОД ШКАЛОЙ ЗДОРОВЬЯ, внутри
+//      карточки босса: увидел полоску, ударил, не пролистывая экран;
 //   3. что могу я (мой урон, энергия, монеты, бафы);
 //   4. кто впереди (лиги) и что было раньше (история).
 //
-// Сам бой — на отдельном экране (raid/battle): туда ведёт главная кнопка. Ранее
-// она уводила в «Учёбу», и это было ошибкой: «Учёба» устроена для обучения
-// (интервальные повторения, разбор ошибок, дневные нормы), а рейду нужна
-// практика без объяснений. Теперь у боя свои задания и своя проверка.
+// Сам бой — на отдельном экране (raid/battle). Раньше кнопка уводила в «Учёбу»,
+// и это было ошибкой: «Учёба» устроена для обучения (интервальные повторения,
+// разбор ошибок с правилами, дневные нормы), а рейду нужна практика без
+// объяснений. Теперь у боя свои задания и своя проверка.
 //
 // Цифры урона вылетают поверх ЛЮБОГО экрана (components/raid/RaidHitOverlay),
 // поэтому здесь их дублировать не нужно: сюда приходят смотреть итог.
 //
 // ── Чего здесь намеренно нет ────────────────────────────────────────────────
-// Шкала вех личного вклада скрыта до отдельного разговора о наградах. Сервер её
+// Шкала вех личного вклада убрана до отдельного разговора о наградах. Сервер её
 // по-прежнему считает (см. lib/raid.ts), поэтому вернуть блок — это правка
 // разметки, а не механики.
 //
-// Валюта одна: монеты. Маны нет — бафы покупаются монетами, которые капают за
-// попадания, дневное задание и сундуки.
+// Валюта одна: монеты. Маны нет — атаки и бафы покупаются монетами, которые
+// капают за попадания, дневное задание и сундуки.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -131,7 +132,9 @@ function Stat({
     <View style={{ flex: 1, alignItems: "center", gap: 3 }}>
       <Glyph name={icon} size={18} color={color} />
       <Text style={{ fontSize: 17, fontWeight: "900", color: "#1e1b3a", letterSpacing: -0.4 }}>{value}</Text>
-      <Text style={{ fontSize: 10, fontWeight: "700", color: "#7a6ea8", letterSpacing: 0.4 }}>{label}</Text>
+      <Text style={{ fontSize: 10, fontWeight: "700", color: "#7a6ea8", letterSpacing: 0.4, textAlign: "center" }}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -302,7 +305,20 @@ export default function RaidScreen() {
           colors={event.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7", "#6366f1"]}
         />
 
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+        {/* Главное действие — СРАЗУ под шкалой здоровья: увидел полоску, ударил.
+            Ниже по экрану кнопка требовала прокрутки, а бой это то, зачем сюда
+            заходят вообще. */}
+        <ChunkyButton
+          label={dead ? "Босс повержен" : "Бить босса"}
+          sublabel={dead ? "Ждём следующего в понедельник" : "12 заданий на практику · удар за каждый верный ответ"}
+          icon="flame"
+          chevron={!dead}
+          disabled={dead}
+          onPress={() => router.push("/raid/battle" as any)}
+          style={{ marginTop: 12 }}
+        />
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
           <View style={{
             paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
             backgroundColor: "rgba(255,255,255,0.16)",
@@ -327,16 +343,6 @@ export default function RaidScreen() {
           Слабости: {weak}
         </Text>
       </LinearGradient>
-
-      {/* Главное действие стоит сразу под боссом: за этим сюда и заходят. */}
-      <ChunkyButton
-        label="В бой"
-        sublabel="12 заданий на практику · один удар за каждый верный ответ"
-        icon="flame"
-        chevron
-        onPress={() => router.push("/raid/battle" as any)}
-        style={{ marginBottom: 14 }}
-      />
 
       {/* ── Мой вклад ───────────────────────────────────────────────────── */}
       <View style={card(colors, { marginBottom: 12 })}>
@@ -363,7 +369,7 @@ export default function RaidScreen() {
         <View style={{ flexDirection: "row", marginTop: 14, marginBottom: 10 }}>
           <Stat icon="spark" value={`${me.stamina}/${me.staminaMax}`} label="ЭНЕРГИЯ" color={accents.amber} />
           <Stat icon="cup" value={String(me.coins)} label="МОНЕТЫ" color={accents.gold} />
-          <Stat icon="flame" value={String(me.bestCombo)} label="ЛУЧШЕЕ КОМБО" color={colors.primary} />
+          <Stat icon="flame" value={String(me.bestCombo)} label="КОМБО" color={colors.primary} />
           <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
         <Bar ratio={me.stamina / me.staminaMax} colors={["#fbbf24", "#f59e0b"]} />
@@ -380,8 +386,8 @@ export default function RaidScreen() {
         )}
       </View>
 
-      {/* ── Бафы за монеты ─────────────────────────────────────────────── */}
-      <SectionLabel>Бафы за монеты</SectionLabel>
+      {/* ── Атаки и бафы за монеты ─────────────────────────────────────── */}
+      <SectionLabel>Атаки за монеты</SectionLabel>
       <View style={{ gap: 9, marginBottom: 14 }}>
         <Buff
           icon="flame"
@@ -419,7 +425,7 @@ export default function RaidScreen() {
         <Buff
           icon="cup"
           title="Полная энергия"
-          about={`Сразу ${me.staminaMax} энергии — можно бить дальше, не ожидая`}
+          about={`Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`}
           cost={abilities.stamina.cost}
           coins={me.coins}
           active={abilities.stamina.full}
@@ -571,7 +577,7 @@ export default function RaidScreen() {
   );
 }
 
-/** Кнопка бафа: цена монетами, состояние «уже действует». */
+/** Кнопка атаки или бафа: цена монетами, состояние «уже действует». */
 function Buff({
   icon, title, about, cost, coins, active, activeText, onPress, busy,
 }: {
