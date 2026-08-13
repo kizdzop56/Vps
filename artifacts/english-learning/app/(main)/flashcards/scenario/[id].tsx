@@ -9,6 +9,20 @@
 //     разговоре наоборот — там фразу просят повторить;
 //   • всё это уезжает учителю: диалог с ошибками и итоговый разбор.
 //
+// ── ГРАБЛИ: ЗАДАНИЕ ОСТАВАЛОСЬ НЕЗАКОНЧЕННЫМ ───────────────────────────────
+// «Закончить задание» иногда не срабатывало: метка «есть задание» продолжала
+// гореть, а кнопка предлагала продолжить разговор.
+//
+// Причин было две, и обе здесь:
+//   1. Сервер закрывал попытку только ПОСЛЕ того, как нейросеть напишет разбор
+//      для учителя. На телефоне запрос столько не живёт (починено на сервере).
+//   2. Этот экран ловил любую ошибку завершения и молча уходил назад. Выглядело
+//      как успех, хотя разговор остался открытым.
+//
+// Теперь ошибка показывается и остаётся возможность нажать ещё раз, а после
+// успешного завершения список заданий перечитывается сразу — метка гаснет, не
+// дожидаясь, пока сработает опрос.
+//
 // ── Перевод по стрелочке ────────────────────────────────────────────────────
 // У реплики Снежи справа кнопка RU — та же механика, что в свободном разговоре и
 // тем же маршрутом (/voice-chat/translate). Свёрнуто по умолчанию: перевод,
@@ -30,6 +44,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
@@ -76,6 +91,7 @@ export default function ScenarioRunScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const qc = useQueryClient();
   const params = useLocalSearchParams<{ id?: string }>();
   const scenarioId = Number(params.id);
 
@@ -90,7 +106,11 @@ export default function ScenarioRunScreen() {
   const [goalReached, setGoalReached] = React.useState(false);
   const [finished, setFinished] = React.useState(false);
   const [summary, setSummary] = React.useState<string | null>(null);
+  /** Разбор для учителя ещё считается на сервере. */
+  const [summaryPending, setSummaryPending] = React.useState(false);
   const [attemptId, setAttemptId] = React.useState<number | null>(null);
+  /** Идёт завершение задания: кнопку надо погасить, иначе нажмут дважды. */
+  const [stopping, setStopping] = React.useState(false);
 
   /** Переводы реплик Снежи по номеру реплики. */
   const [ru, setRu] = React.useState<Record<number, Translation>>({});
@@ -105,6 +125,14 @@ export default function ScenarioRunScreen() {
   const speechInput = React.useMemo(() => isSpeechInputAvailable(), []);
 
   const listRef = React.useRef<ScrollView | null>(null);
+
+  /**
+   * Список заданий устарел: разговор закончен, метка «есть задание» должна
+   * погаснуть сразу. Тот же ключ, что у вкладки заданий и у оглавления «Учёбы».
+   */
+  const refreshTasks = React.useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ["scenarios-mine"] });
+  }, [qc]);
 
   // Начать или продолжить: сервер сам решает, есть ли активная попытка.
   React.useEffect(() => {
@@ -137,7 +165,10 @@ export default function ScenarioRunScreen() {
     };
   }, [scenarioId]);
 
-  const leave = () => router.replace("/flashcards/tutor" as any);
+  const leave = React.useCallback(() => {
+    refreshTasks();
+    router.replace("/flashcards/tutor" as any);
+  }, [refreshTasks, router]);
 
   /**
    * Развернуть или свернуть перевод реплики.
@@ -183,6 +214,10 @@ export default function ScenarioRunScreen() {
       if (res.finished) {
         setFinished(true);
         setSummary(res.attempt.summary);
+        setSummaryPending(res.summaryPending === true);
+        // Задание закрылось само: список должен узнать об этом сейчас, а не
+        // через минуту.
+        refreshTasks();
       }
       // Реплику роли сразу озвучиваем: это разговор, а не переписка.
       if (speechAvailable()) speakWord(undefined, res.reply.text);
@@ -192,7 +227,7 @@ export default function ScenarioRunScreen() {
     } finally {
       setSending(false);
     }
-  }, [attemptId, sending, finished]);
+  }, [attemptId, sending, finished, refreshTasks]);
 
   /** Итог записи: пришёл после нажатия «Стоп». */
   const onSpeech = React.useCallback(async (result: SpeechResult) => {
@@ -235,15 +270,31 @@ export default function ScenarioRunScreen() {
     session.stop();
   };
 
+  /**
+   * Закончить задание.
+   *
+   * Ошибку НЕ проглатываем и с экрана не уходим: раньше любой сбой выглядел как
+   * успешное завершение, а задание оставалось открытым (см. ГРАБЛИ в шапке).
+   */
   const stopTask = async () => {
     if (!attemptId) return leave();
+    if (stopping) return;
+    setStopping(true);
+    setMicHint(null);
     try {
       const res = await scenarios.finish(attemptId);
+      refreshTasks();
+      // Ни одной реплики — попытки не было, показывать итог нечему.
       if (res.status === "discarded") return leave();
       setFinished(true);
       setSummary(res.summary);
-    } catch {
-      leave();
+      setSummaryPending((res as any).summaryPending === true);
+    } catch (err) {
+      setMicHint(err instanceof Error
+        ? `Не удалось закончить задание: ${err.message}`
+        : "Не удалось закончить задание. Проверь интернет и нажми ещё раз.");
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -508,7 +559,9 @@ export default function ScenarioRunScreen() {
               </Text>
             )}
             <Text style={{ fontSize: 12, lineHeight: 18, color: colors.mutedForeground, marginTop: 8 }}>
-              Диалог с разбором уже у учителя.
+              {summaryPending && !summary
+                ? "Диалог уже у учителя, итоговый разбор допишется через несколько секунд."
+                : "Диалог с разбором уже у учителя."}
             </Text>
             {!!attemptId && (
               <ChunkyButton
@@ -616,9 +669,16 @@ export default function ScenarioRunScreen() {
             )}
           </View>
 
-          <Pressable onPress={() => void stopTask()} style={{ alignSelf: "center", paddingVertical: 6 }}>
+          <Pressable
+            onPress={() => void stopTask()}
+            disabled={stopping}
+            style={{ alignSelf: "center", paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 7 }}
+            accessibilityRole="button"
+            accessibilityLabel="Закончить задание"
+          >
+            {stopping && <ActivityIndicator size="small" color={colors.mutedForeground} />}
             <Text style={{ fontSize: 12, fontWeight: "800", color: colors.mutedForeground }}>
-              Закончить задание
+              {stopping ? "Заканчиваю…" : "Закончить задание"}
             </Text>
           </Pressable>
         </View>

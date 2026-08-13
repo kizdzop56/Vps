@@ -36,6 +36,22 @@
 // lib/scenarioChat.ts), а finishMode остаётся в базе только как подпись для
 // старых записей и списков.
 //
+// ── ГРАБЛИ: ЗАВЕРШЕНИЕ ЖДАЛО НЕЙРОСЕТЬ И НЕ ДОЖИДАЛОСЬ ─────────────────────
+// Раньше закрытие попытки выглядело так: сначала попросить у модели итоговый
+// разбор, потом записать статус. Разбор — это обычный запрос к Gemini: до 25
+// секунд на модель и до четырёх моделей подряд, если первые отказали. То есть
+// «Закончить задание» на телефоне могло висеть больше минуты.
+//
+// На мобильной сети запрос за это время просто обрывался. Клиент ловил ошибку,
+// уходил с экрана — и всё выглядело законченным, а в базе попытка оставалась
+// active. Отсюда и «задание горит красным, а кнопка предлагает продолжить»:
+// сервер честно считал разговор незаконченным.
+//
+// Теперь порядок обратный и единственно верный: СНАЧАЛА закрываем попытку и
+// отвечаем клиенту, разбор считается фоном и дописывается в ту же строку.
+// Учитель увидит его через несколько секунд, а ученик не ждёт вовсе: итог по
+// ошибкам он и так видит из своих реплик.
+//
 // ── Очки ────────────────────────────────────────────────────────────────────
 // За закрытую ситуацию ученик получает SCENARIO_POINTS один раз на попытку. В
 // дневной потолок свободных разговоров это НЕ входит: там своя механика и свои
@@ -56,6 +72,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
 import { canViewStudent } from "../lib/flashcardsCore";
 import { chat, hasAnyAi, transcribe } from "../lib/ai";
+import { logger } from "../lib/logger";
 import {
   LEVEL_HINT,
   MIN_TURNS_FOR_GOAL,
@@ -241,6 +258,9 @@ router.get("/scenarios/students", requireAuth, async (req, res) => {
 
 // ── Ученик: выданные мне ситуации ───────────────────────────────────────────
 router.get("/scenarios/mine", requireAuth, async (req, res) => {
+  // Метка «есть задание» считается по этому ответу, а он меняется в ту же
+  // секунду, когда ученик закончил разговор. Кэшировать нельзя.
+  res.set("Cache-Control", "no-store");
   const user = getUser(req);
 
   const rows = await db
@@ -271,8 +291,17 @@ router.get("/scenarios/mine", requireAuth, async (req, res) => {
 
   // Последняя попытка по каждой ситуации: по ней клиент решает, что писать на
   // кнопке — «Начать», «Продолжить» или «Пройдено».
+  //
+  // ВАЖНО: активная попытка важнее свежей. Их не может быть двух сразу, но
+  // порядок по startedAt при одинаковой секунде непредсказуем, и «Продолжить»
+  // не должно теряться из-за этого.
   const last = new Map<number, typeof attempts[number]>();
-  for (const a of attempts) if (!last.has(a.scenarioId)) last.set(a.scenarioId, a);
+  for (const a of attempts) {
+    const cur = last.get(a.scenarioId);
+    if (!cur || (a.status === "active" && cur.status !== "active")) {
+      last.set(a.scenarioId, a);
+    }
+  }
 
   res.json(rows.map((r) => {
     const attempt = last.get(r.scenario.id);
@@ -760,64 +789,28 @@ router.get("/scenario-attempts/:id", requireAuth, async (req, res) => {
 });
 
 /**
- * Итоговый разбор для учителя.
+ * Закрыть попытку: статус, время и очки. БЕЗ обращения к модели.
  *
- * Считается ОДИН раз при закрытии попытки и сохраняется: пересчёт на каждом
- * открытии отчёта давал бы учителю каждый раз новый текст об одном и том же
- * диалоге, да ещё и за деньги.
+ * Отвечает на единственный вопрос, который важен и ученику, и метке «есть
+ * задание»: разговор закончен. Занимает миллисекунды, поэтому вызывается до
+ * ответа клиенту (см. ГРАБЛИ в шапке файла).
  *
- * Не получилось — не беда: отчёт остаётся без итоговой строки, сам диалог с
- * ошибками важнее и он уже в базе.
+ * Возвращает true, если закрытие произошло именно этим вызовом: условие по
+ * статусу гасит гонку двух одновременных запросов, и очки начисляются один раз.
  */
-async function writeSummary(
-  attemptId: number,
-  scenario: ScenarioRow,
-  log: Parameters<typeof chat>[0]["log"],
-): Promise<string | null> {
-  try {
-    if (!hasAnyAi()) return null;
-    const turns = await db
-      .select({ role: dialogTurnsTable.role, text: dialogTurnsTable.text, issue: dialogTurnsTable.issue })
-      .from(dialogTurnsTable)
-      .where(eq(dialogTurnsTable.attemptId, attemptId))
-      .orderBy(asc(dialogTurnsTable.at));
-
-    const script = turns
-      .map((t) => `${t.role === "student" ? "Student" : "Character"}: ${t.text}${t.issue ? `  [ошибка: ${t.issue}]` : ""}`)
-      .join("\n")
-      .slice(0, 6000);
-
-    const outcome = await chat({
-      system: summarySystemPrompt(),
-      history: [],
-      message: `Ситуация: ${scenario.situation}\nРоль собеседника: ${scenario.role}\nЦель ученика: ${scenario.goal ?? "не задана"}\n\nДиалог:\n${script}`,
-      log,
-    });
-    if (!outcome.ok) return null;
-    return outcome.text.trim().slice(0, 2000);
-  } catch {
-    return null;
-  }
-}
-
-/** Закрыть попытку: статус, время, итоговый разбор и очки. */
-async function closeAttempt(
+async function closeAttemptNow(
   attempt: typeof dialogAttemptsTable.$inferSelect,
-  scenario: ScenarioRow,
   status: "done" | "stopped",
-  log: Parameters<typeof chat>[0]["log"],
-): Promise<string | null> {
-  const summary = await writeSummary(attempt.id, scenario, log);
-
+): Promise<boolean> {
   const closed = await db
     .update(dialogAttemptsTable)
-    .set({ status, finishedAt: new Date(), summary })
-    // Условие по статусу: две одновременные попытки закрыть дадут одну запись,
-    // а значит и очки начислятся один раз.
+    .set({ status, finishedAt: new Date() })
     .where(and(eq(dialogAttemptsTable.id, attempt.id), eq(dialogAttemptsTable.status, "active")))
     .returning({ id: dialogAttemptsTable.id });
 
-  if (status === "done" && closed.length > 0) {
+  if (closed.length === 0) return false;
+
+  if (status === "done") {
     const [row] = await db
       .select({ totalPoints: usersTable.totalPoints })
       .from(usersTable)
@@ -828,7 +821,57 @@ async function closeAttempt(
       .where(eq(usersTable.id, attempt.studentId));
   }
 
-  return summary;
+  return true;
+}
+
+/**
+ * Итоговый разбор для учителя. Считается ФОНОМ, после ответа клиенту.
+ *
+ * Один раз на попытку и сохраняется: пересчёт на каждом открытии отчёта давал
+ * бы учителю каждый раз новый текст об одном и том же диалоге, да ещё и за
+ * деньги.
+ *
+ * Не получилось — не беда: отчёт остаётся без итоговой строки, сам диалог с
+ * ошибками важнее и он уже в базе. Ошибку не бросаем никогда: это фоновая
+ * задача, и необработанный отказ уронил бы весь процесс сервера.
+ */
+function writeSummaryLater(attemptId: number, scenario: ScenarioRow): void {
+  if (!hasAnyAi()) return;
+
+  void (async () => {
+    try {
+      const turns = await db
+        .select({ role: dialogTurnsTable.role, text: dialogTurnsTable.text, issue: dialogTurnsTable.issue })
+        .from(dialogTurnsTable)
+        .where(eq(dialogTurnsTable.attemptId, attemptId))
+        .orderBy(asc(dialogTurnsTable.at));
+
+      if (turns.length === 0) return;
+
+      const script = turns
+        .map((t) => `${t.role === "student" ? "Student" : "Character"}: ${t.text}${t.issue ? `  [ошибка: ${t.issue}]` : ""}`)
+        .join("\n")
+        .slice(0, 6000);
+
+      const outcome = await chat({
+        system: summarySystemPrompt(),
+        history: [],
+        message: `Ситуация: ${scenario.situation}\nРоль собеседника: ${scenario.role}\nЦель ученика: ${scenario.goal ?? "не задана"}\n\nДиалог:\n${script}`,
+        log: logger,
+      });
+      if (!outcome.ok) return;
+
+      const summary = outcome.text.trim().slice(0, 2000);
+      if (!summary) return;
+
+      await db
+        .update(dialogAttemptsTable)
+        .set({ summary })
+        .where(eq(dialogAttemptsTable.id, attemptId));
+    } catch (err) {
+      logger.warn({ err, attemptId }, "Итоговый разбор диалога не записался");
+    }
+  })();
 }
 
 // ── Ученик: реплика ─────────────────────────────────────────────────────────
@@ -973,9 +1016,12 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
     hasGoal: !!found.scenario.goal,
   });
 
-  let summary: string | null = null;
   if (complete) {
-    summary = await closeAttempt(updated ?? found.attempt, found.scenario, "done", req.log);
+    // Закрываем сразу, разбор считается фоном: ответ на реплику и так ждал
+    // модель, ждать её второй раз в том же запросе — верный способ получить
+    // обрыв связи и незакрытую попытку.
+    await closeAttemptNow(updated ?? found.attempt, "done");
+    writeSummaryLater(id, found.scenario);
   }
 
   res.json({
@@ -1001,10 +1047,13 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
       turnsTarget: found.scenario.turnsTarget,
       mistakes,
       goalReached,
-      summary,
+      // Разбор пишется фоном и появится в отчёте через несколько секунд.
+      summary: null,
     },
     /** Задание закрыто этой репликой: клиент показывает итог. */
     finished: complete,
+    /** Итоговый разбор ещё считается: экран может об этом сказать. */
+    summaryPending: complete,
     pointsEarned: complete ? SCENARIO_POINTS : 0,
   });
 });
@@ -1013,6 +1062,9 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
 //
 // Отдельный статус stopped, а не done: учитель должен видеть разницу между
 // «прошёл» и «вышел на середине». Очки за это не выдаются.
+//
+// Отвечает БЫСТРО: закрытие — это один UPDATE. Разбор для учителя считается
+// фоном (см. ГРАБЛИ в шапке файла).
 router.post("/scenario-attempts/:id/finish", requireAuth, async (req, res) => {
   const user = getUser(req);
   const id = Number(req.params["id"]);
@@ -1026,19 +1078,21 @@ router.post("/scenario-attempts/:id/finish", requireAuth, async (req, res) => {
     return;
   }
   if (found.attempt.status !== "active") {
-    res.json({ status: found.attempt.status, summary: found.attempt.summary });
+    res.json({ status: found.attempt.status, summary: found.attempt.summary, summaryPending: false });
     return;
   }
 
   // Ни одной реплики — попытку удаляем: пустой отчёт учителю не нужен.
   if (found.attempt.turns === 0) {
     await db.delete(dialogAttemptsTable).where(eq(dialogAttemptsTable.id, id));
-    res.json({ status: "discarded", summary: null });
+    res.json({ status: "discarded", summary: null, summaryPending: false });
     return;
   }
 
-  const summary = await closeAttempt(found.attempt, found.scenario, "stopped", req.log);
-  res.json({ status: "stopped", summary });
+  await closeAttemptNow(found.attempt, "stopped");
+  writeSummaryLater(id, found.scenario);
+
+  res.json({ status: "stopped", summary: null, summaryPending: true });
 });
 
 export default router;
