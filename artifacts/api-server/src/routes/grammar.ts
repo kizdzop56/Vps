@@ -4,6 +4,7 @@
 // Маршруты:
 //   GET  /grammar/overview        — режимы, времена, буквы и объём банка
 //   GET  /grammar/session         — подборка (?mode=&tense=&letter=&round=)
+//   GET  /grammar/review          — повторение ошибок: что созрело на сегодня
 //   POST /grammar/check           — проверка ответа, разбор ошибки, очки
 //   GET  /grammar/stats           — точность по темам: что даётся хуже всего
 //
@@ -15,10 +16,11 @@
 // ── Что хранится ────────────────────────────────────────────────────────────
 // Одна строка на ответ в grammar_log: задание, режим, тема, способ ответа,
 // результат и начисленные очки. Ровно то, из чего считаются дневной потолок,
-// «слабые места», знакомость глагола и курсор ротации, и ничего больше.
+// «слабые места», знакомость глагола, курсор ротации и расписание повторений, и
+// ничего больше.
 //
-// ── Почему знакомость и курсор считает сервер ───────────────────────────────
-// Обе величины живут в журнале и обязаны переживать выход из раздела и
+// ── Почему знакомость, курсор и повторения считает сервер ───────────────────
+// Все три величины живут в журнале и обязаны переживать выход из раздела и
 // переустановку приложения.
 //
 // От знакомости зависит способ ответа в режиме форм: незнакомый глагол —
@@ -30,6 +32,9 @@
 // остался, но теперь он лишь подстраховка на случай недоехавших ответов —
 // движок берёт максимум из двух (см. шапку engine.ts).
 //
+// Расписание повторений выводится из того же журнала (lib/grammar/review.ts):
+// отдельной таблицы у него нет намеренно, причины — в шапке того файла.
+//
 // ── Буквы ───────────────────────────────────────────────────────────────────
 // Формы глаголов разложены по первой букве, как в таблице в конце учебника.
 // Курсор у каждой буквы СВОЙ: занятия по букве B не должны прокручивать букву C,
@@ -40,7 +45,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { usersTable, grammarLogTable } from "@workspace/db";
-import { and, eq, gte, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, inArray, sql, type SQL } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
 import { ensureSettings } from "../lib/flashcardsCore";
 import { startOfDay } from "../lib/srs";
@@ -59,10 +64,17 @@ import {
   SESSION_SIZE,
   batchCount,
   buildGrammarSession,
+  buildReviewSession,
   checkGrammarAnswer,
   findTask,
   type GrammarMode,
 } from "../lib/grammar/engine";
+import {
+  dueReviews,
+  reviewStates,
+  reviewSummary,
+  type GrammarReviewState,
+} from "../lib/grammar/review";
 import {
   DAILY_GRAMMAR_POINTS_CAP,
   awardableGrammarPoints,
@@ -81,6 +93,15 @@ const STATS_LIMIT = 600;
 
 /** Потолок номера захода: дальше это уже не занятие, а перебор банка. */
 const MAX_ROUND = 50;
+
+/**
+ * Сколько «спотыкавшихся» заданий берём в расписание повторений.
+ *
+ * Потолок нужен, чтобы запрос не разрастался вместе с историей, а не ради
+ * скорости арифметики. Тысяча промахов — это заведомо больше, чем ученик успеет
+ * отработать, и самые давние из них к этому моменту уже неактуальны.
+ */
+const REVIEW_POOL_LIMIT = 1000;
 
 const MODES: GrammarMode[] = ["forms", "verbs", "tense", "build"];
 const INPUTS: GrammarInput[] = ["type", "choice", "assemble"];
@@ -143,6 +164,11 @@ async function earnedToday(userId: number): Promise<number> {
  * счётчик гонял бы курсор Past Simple вперёд из-за занятий по Present Perfect, а
  * букву C — из-за занятий по букве B.
  *
+ * Ответы из повторения ошибок сюда тоже попадают: режим у них настоящий, и
+ * отличить их можно было бы только новой колонкой в БД. Двенадцать повторений
+ * сдвигают обычную подборку на порцию вперёд — задания при этом не теряются, на
+ * следующем круге порядок тасуется заново (подробнее в шапке review.ts).
+ *
  * Деление с округлением вниз: половина захода курсор не двигает — ученик не
  * дошёл до конца порции, и показать её остаток честнее, чем перескочить.
  */
@@ -201,6 +227,49 @@ async function masteredVerbs(userId: number): Promise<Set<string>> {
     if (row.topic && Number(row.hits) >= FORM_MASTERY_HITS) out.add(row.topic);
   }
   return out;
+}
+
+/**
+ * Расписание повторений ученика.
+ *
+ * Читаем не всю историю, а только задания, на которых ученик КОГДА-ЛИБО
+ * ошибался: остальные в повторения не попадают по определению (см. шапку
+ * review.ts), и тянуть их из базы незачем. На большой истории это разница между
+ * десятками тысяч строк и сотнями.
+ *
+ * Двумя запросами, а не одним с подзапросом: так видно, что происходит, и
+ * первый запрос сразу отвечает на вопрос «а есть ли вообще ошибки».
+ */
+async function reviewStatesOf(userId: number): Promise<Map<string, GrammarReviewState>> {
+  const wrong = await db
+    .select({ taskId: grammarLogTable.taskId })
+    .from(grammarLogTable)
+    .where(and(
+      eq(grammarLogTable.userId, userId),
+      eq(grammarLogTable.correct, false),
+    ))
+    .groupBy(grammarLogTable.taskId)
+    .limit(REVIEW_POOL_LIMIT);
+
+  const ids = wrong.map((r) => r.taskId).filter((id): id is string => !!id);
+  if (ids.length === 0) return new Map();
+
+  // Порядок не задаём: расписание сортирует журнал само — ему нужен полный набор
+  // ответов по заданию, а не их порядок в выдаче базы.
+  const rows = await db
+    .select({
+      taskId: grammarLogTable.taskId,
+      correct: grammarLogTable.correct,
+      typo: grammarLogTable.typo,
+      answeredAt: grammarLogTable.answeredAt,
+    })
+    .from(grammarLogTable)
+    .where(and(
+      eq(grammarLogTable.userId, userId),
+      inArray(grammarLogTable.taskId, ids),
+    ));
+
+  return reviewStates(rows);
 }
 
 /** Тема задания: время или глагол. По ней собирается статистика. */
@@ -262,6 +331,10 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
     knownVerbs: knownBases.filter((b) => verbLetter(b) === group.letter).length,
   }));
 
+  // Повторение ошибок: сколько созрело и когда придёт следующее. Оглавление по
+  // этим числам решает, показывать ли вход в повторение вообще.
+  const review = reviewSummary(await reviewStatesOf(user.userId), new Date());
+
   res.json({
     level,
     sessionSize: SESSION_SIZE,
@@ -305,6 +378,11 @@ router.get("/grammar/overview", requireAuth, async (req, res) => {
     ],
     tenses,
     verbLetters,
+    review: {
+      due: review.due,
+      pool: review.pool,
+      nextDueAt: review.nextDueAt?.toISOString() ?? null,
+    },
   });
 });
 
@@ -344,11 +422,56 @@ router.get("/grammar/session", requireAuth, async (req, res) => {
   res.json({ mode, level, tense, ...session });
 });
 
+// ── GET /grammar/review ─────────────────────────────────────────────────────
+//
+// Повторение ошибок. Задания приходят не порцией банка, а по срокам: впереди то,
+// что ждёт дольше всех (расписание — lib/grammar/review.ts).
+//
+// Пустой ответ — нормальное состояние, а не ошибка: ошибок может не быть вовсе
+// или все сроки ещё впереди. Поэтому рядом с карточками едут due, pool и
+// nextDueAt — из них клиент собирает честный пустой экран вместо «загрузка не
+// удалась».
+router.get("/grammar/review", requireAuth, async (req, res) => {
+  const user = getUser(req);
+  const now = new Date();
+  const level = await levelOf(user.userId);
+
+  const states = await reviewStatesOf(user.userId);
+  const summary = reviewSummary(states, now);
+  const due = dueReviews(states, now, SESSION_SIZE);
+
+  // Знакомость глаголов нужна и здесь: способ ответа в режиме форм от неё
+  // зависит, и в повторении он должен быть таким же, как в обычном заходе.
+  const mastered = await masteredVerbs(user.userId);
+
+  const cards = buildReviewSession({
+    ids: due.map((s) => s.taskId),
+    level,
+    now,
+    mastered,
+  });
+
+  res.json({
+    mode: "review",
+    level,
+    // Всего ошибок в работе — и созревших, и ждущих срока.
+    total: summary.pool,
+    due: summary.due,
+    nextDueAt: summary.nextDueAt?.toISOString() ?? null,
+    cards,
+  });
+});
+
 // ── POST /grammar/check ─────────────────────────────────────────────────────
 //
 // Эталон берётся из банка по номеру задания, а не из тела запроса: иначе клиент
 // мог бы прислать свой «правильный ответ» и засчитать себе что угодно. Ровно та
 // же причина, что у проверки свободного ответа в словах.
+//
+// Одна ручка на обычный заход и на повторение ошибок. Режим и тема выводятся из
+// НОМЕРА задания (topicOf), а не приходят от клиента, поэтому ответ из
+// повторения ложится в журнал со своим настоящим режимом — и статистика, и
+// медали, и расписание считаются по нему правильно.
 router.post("/grammar/check", requireAuth, async (req, res) => {
   const user = getUser(req);
   const body = req.body as { taskId?: unknown; given?: unknown; input?: unknown };
@@ -454,6 +577,8 @@ router.get("/grammar/stats", requireAuth, async (req, res) => {
   const answers = Number(totals?.answers ?? 0);
   const correct = Number(totals?.correct ?? 0);
 
+  const review = reviewSummary(await reviewStatesOf(user.userId), new Date());
+
   res.json({
     answers,
     correct,
@@ -462,6 +587,11 @@ router.get("/grammar/stats", requireAuth, async (req, res) => {
     pointsCap: DAILY_GRAMMAR_POINTS_CAP,
     topics: named,
     weak: named.filter((t) => t.weak),
+    review: {
+      due: review.due,
+      pool: review.pool,
+      nextDueAt: review.nextDueAt?.toISOString() ?? null,
+    },
   });
 });
 

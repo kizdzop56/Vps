@@ -14,6 +14,17 @@
 // предложений-заготовок (sentenceUnits.ts). Движку разницы нет — он видит
 // обычные задания.
 //
+// ── Два входа, одна карточка ────────────────────────────────────────────────
+// Заданий сюда приходит два разных потока:
+//   • обычный заход — порция банка по курсору ротации (buildGrammarSession);
+//   • повторение ошибок — список номеров заданий, на которых ученик когда-то
+//     споткнулся (buildReviewSession, расписание в lib/grammar/review.ts).
+//
+// Карточку в обоих случаях собирает ОДНА функция grammarCard(). Иначе повторение
+// показывало бы задания в чуть другом виде, чем обычный заход: другие ловушки,
+// другой способ ответа, другая подсказка — и расхождение никто бы не замечал
+// месяцами, потому что оба экрана выглядят правильными по отдельности.
+//
 // ── Опечатки здесь прощаются ИНАЧЕ, чем в словах ────────────────────────────
 // В словах одна опечатка в длинном слове — описка, и наказывать за неё нельзя
 // (см. lib/answerCheck.ts). В грамматике наоборот: «lived» и «lives»
@@ -115,6 +126,16 @@ export type GrammarCard = {
   /** Время задания — только в режиме tense. */
   tense?: string;
 };
+
+/**
+ * Задание, найденное по номеру. Тип общий для проверки ответа и для сборки
+ * карточки: и там, и там нужно знать, из какого банка задание пришло.
+ */
+export type FoundTask =
+  | { kind: "forms"; task: FormTask }
+  | { kind: "verbs"; task: VerbGapTask }
+  | { kind: "tense"; task: TenseGapTask }
+  | { kind: "build"; task: AssembleTask };
 
 /**
  * Все формы глагола. Нужны для двух вещей: дистракторы в заданиях с
@@ -414,6 +435,112 @@ function tenseHint(task: TenseGapTask, title: string): string {
   return title;
 }
 
+/** Что нужно знать сборщику карточки помимо самого задания. */
+export type GrammarCardOpts = {
+  /**
+   * Порядковый номер в заходе. От него зависит способ ответа в режимах verbs и
+   * tense: каждое CHOICE_EVERY-е задание даётся вариантами, остальные письмом.
+   */
+  index: number;
+  now: Date;
+  /**
+   * Только для forms: глаголы, которые ученик уже знает. По ним спрашиваем
+   * письмом, по остальным даём варианты.
+   */
+  mastered?: ReadonlySet<string>;
+  /**
+   * Только для forms: из чего брать ловушки. В заходе по одной букве это глаголы
+   * той же буквы — так выбор труднее и осмысленнее.
+   */
+  formPool?: FormTask[];
+};
+
+/**
+ * Собрать карточку из задания.
+ *
+ * Один код на обычный заход и на повторение ошибок: см. «Два входа, одна
+ * карточка» в шапке файла.
+ *
+ * Плитки и варианты мешаются от НОМЕРА задания и дня, а не от позиции в заходе:
+ * одно и то же задание в течение дня выглядит одинаково, сколько бы раз оно ни
+ * попалось. Обновление экрана не должно перетасовывать варианты под руками.
+ */
+export function grammarCard(found: FoundTask, opts: GrammarCardOpts): GrammarCard {
+  const rng = mulberry32(daySeed(opts.now) + textSeed(found.task.id));
+  const choice = (opts.index + 1) % CHOICE_EVERY === 0;
+
+  if (found.kind === "forms") {
+    const task = found.task;
+    const answers = formAnswers(task);
+    const view = formCard(task);
+    const pool = opts.formPool ?? formTasksUpTo(task.level);
+    // Знакомый глагол пишем, незнакомый выбираем. Порог — FORM_MASTERY_HITS.
+    const pick = !(opts.mastered ?? new Set<string>()).has(task.verb.base);
+    return {
+      id: task.id,
+      mode: "forms",
+      level: task.level,
+      text: view.text,
+      ru: view.ru,
+      input: pick ? "choice" : "type",
+      options: !pick
+        ? undefined
+        : task.kind === "toEn"
+          ? verbWordOptions(answers, pool, rng)
+          : formOptions(task, answers, pool, rng),
+      hint: view.hint,
+    };
+  }
+
+  if (found.kind === "build") {
+    const task = found.task;
+    return {
+      id: task.id,
+      mode: "build",
+      level: task.level,
+      text: "",
+      ru: task.ru,
+      input: "assemble",
+      tiles: shuffle([...sentenceTiles(task.en), ...(task.extra ?? [])], rng),
+      hint: "собери предложение по переводу",
+    };
+  }
+
+  if (found.kind === "tense") {
+    const task = found.task;
+    const tense = tenseById(task.tense);
+    return {
+      id: task.id,
+      mode: "tense",
+      level: task.level,
+      text: task.text,
+      ru: task.ru,
+      base: task.base,
+      input: choice ? "choice" : "type",
+      options: choice ? tenseOptions(task, rng) : undefined,
+      hint: tenseHint(task, tense?.title ?? task.tense),
+      tense: task.tense,
+    };
+  }
+
+  const task = found.task;
+  // Верный ответ достаём в переменную: в проекте включена строгая проверка
+  // индексов, и answers[0] прямо в тернарнике имел бы тип string|undefined.
+  const answers = verbGapAnswers(task);
+  const main = answers[0];
+  return {
+    id: task.id,
+    mode: "verbs",
+    level: task.level,
+    text: task.text,
+    ru: task.ru,
+    base: task.base,
+    input: choice ? "choice" : "type",
+    options: choice && main ? gapOptions(task.base, main, rng) : undefined,
+    hint: verbFormHint(task),
+  };
+}
+
 export type GrammarSessionResult = {
   cards: GrammarCard[];
   /** Сколько заданий доступно ученику в этом режиме вообще. */
@@ -473,9 +600,6 @@ export function buildGrammarSession(opts: {
   // на каждом «Ещё заход» — журнал к этому моменту уже сдвинулся сам.
   const step = daySeed(now) + Math.max(consumed, round);
 
-  /** Плитки и варианты мешаются от НОМЕРА задания: одна карточка — один вид. */
-  const cardRng = (id: string) => mulberry32(daySeed(now) + textSeed(id));
-
   if (opts.mode === "forms") {
     // Буква задана — берём только её глаголы. Именно на это и была просьба:
     // «если вкладка называется „на букву B“, там и должны попадаться глаголы
@@ -483,34 +607,20 @@ export function buildGrammarSession(opts: {
     const pool = letter ? formTasksByLetter(opts.level, letter) : formTasksUpTo(opts.level);
     const picked = rotateBatch(pool, size, step, seed);
     const batches = batchCount(pool.length, size);
-    const mastered = opts.mastered ?? new Set<string>();
     return {
       total: pool.length,
       round,
       batches,
       freshLeft: freshBatchesLeft(step, batches),
       ...(letter ? { letter } : {}),
-      cards: picked.map((t: FormTask) => {
-        const answers = formAnswers(t);
-        const view = formCard(t);
-        // Знакомый глагол пишем, незнакомый выбираем. Порог — FORM_MASTERY_HITS.
-        const choice = !mastered.has(t.verb.base);
-        const rng = cardRng(t.id);
-        return {
-          id: t.id,
-          mode: "forms" as const,
-          level: t.level,
-          text: view.text,
-          ru: view.ru,
-          input: choice ? ("choice" as const) : ("type" as const),
-          options: !choice
-            ? undefined
-            : t.kind === "toEn"
-              ? verbWordOptions(answers, pool, rng)
-              : formOptions(t, answers, pool, rng),
-          hint: view.hint,
-        };
-      }),
+      cards: picked.map((t: FormTask, i) =>
+        grammarCard({ kind: "forms", task: t }, {
+          index: i,
+          now,
+          ...(opts.mastered ? { mastered: opts.mastered } : {}),
+          formPool: pool,
+        }),
+      ),
     };
   }
 
@@ -523,16 +633,9 @@ export function buildGrammarSession(opts: {
       round,
       batches,
       freshLeft: freshBatchesLeft(step, batches),
-      cards: picked.map((t: AssembleTask) => ({
-        id: t.id,
-        mode: "build" as const,
-        level: t.level,
-        text: "",
-        ru: t.ru,
-        input: "assemble" as const,
-        tiles: shuffle([...sentenceTiles(t.en), ...(t.extra ?? [])], cardRng(t.id)),
-        hint: "собери предложение по переводу",
-      })),
+      cards: picked.map((t: AssembleTask, i) =>
+        grammarCard({ kind: "build", task: t }, { index: i, now }),
+      ),
     };
   }
 
@@ -546,22 +649,9 @@ export function buildGrammarSession(opts: {
       round,
       batches,
       freshLeft: freshBatchesLeft(step, batches),
-      cards: picked.map((t: TenseGapTask, i) => {
-        const tense = tenseById(t.tense);
-        const choice = (i + 1) % CHOICE_EVERY === 0;
-        return {
-          id: t.id,
-          mode: "tense" as const,
-          level: t.level,
-          text: t.text,
-          ru: t.ru,
-          base: t.base,
-          input: choice ? ("choice" as const) : ("type" as const),
-          options: choice ? tenseOptions(t, cardRng(t.id)) : undefined,
-          hint: tenseHint(t, tense?.title ?? t.tense),
-          tense: t.tense,
-        };
-      }),
+      cards: picked.map((t: TenseGapTask, i) =>
+        grammarCard({ kind: "tense", task: t }, { index: i, now }),
+      ),
     };
   }
 
@@ -573,25 +663,47 @@ export function buildGrammarSession(opts: {
     round,
     batches,
     freshLeft: freshBatchesLeft(step, batches),
-    cards: picked.map((t: VerbGapTask, i) => {
-      // Верный ответ достаём в переменную: в проекте включена строгая проверка
-      // индексов, и answers[0] прямо в тернарнике имел бы тип string|undefined.
-      const answers = verbGapAnswers(t);
-      const main = answers[0];
-      const choice = (i + 1) % CHOICE_EVERY === 0;
-      return {
-        id: t.id,
-        mode: "verbs" as const,
-        level: t.level,
-        text: t.text,
-        ru: t.ru,
-        base: t.base,
-        input: choice ? ("choice" as const) : ("type" as const),
-        options: choice && main ? gapOptions(t.base, main, cardRng(t.id)) : undefined,
-        hint: verbFormHint(t),
-      };
-    }),
+    cards: picked.map((t: VerbGapTask, i) =>
+      grammarCard({ kind: "verbs", task: t }, { index: i, now }),
+    ),
   };
+}
+
+/**
+ * Собрать заход ПОВТОРЕНИЯ ОШИБОК по готовому списку номеров.
+ *
+ * Расписание считает lib/grammar/review.ts, здесь только сборка карточек.
+ * Ротации тут нет вовсе: порядок задан сроками повторения, а не курсором банка —
+ * впереди то, что ждёт дольше всех.
+ *
+ * Неизвестный номер молча пропускается. Так и надо: в журнале лежат ответы за
+ * всю историю, а банк меняется — переписанное задание не должно ронять заход
+ * ошибкой «задание не найдено».
+ */
+export function buildReviewSession(opts: {
+  ids: string[];
+  level: CefrLevel;
+  now?: Date;
+  mastered?: ReadonlySet<string>;
+}): GrammarCard[] {
+  const now = opts.now ?? new Date();
+  const formPool = formTasksUpTo(opts.level);
+  const cards: GrammarCard[] = [];
+
+  for (const id of opts.ids) {
+    const found = findTask(id);
+    if (!found) continue;
+    cards.push(
+      grammarCard(found, {
+        index: cards.length,
+        now,
+        ...(opts.mastered ? { mastered: opts.mastered } : {}),
+        formPool,
+      }),
+    );
+  }
+
+  return cards;
 }
 
 // ── Проверка ответа ─────────────────────────────────────────────────────────
@@ -611,12 +723,7 @@ export type GrammarVerdict = {
 };
 
 /** Найти задание по номеру в любом из банков. */
-export function findTask(id: string):
-  | { kind: "forms"; task: FormTask }
-  | { kind: "verbs"; task: VerbGapTask }
-  | { kind: "tense"; task: TenseGapTask }
-  | { kind: "build"; task: AssembleTask }
-  | null {
+export function findTask(id: string): FoundTask | null {
   // Задания режима форм не лежат в массиве: их номер сам описывает глагол и
   // форму, поэтому проверяется первым — по префиксу, без перебора банков.
   const form = parseFormTask(id);

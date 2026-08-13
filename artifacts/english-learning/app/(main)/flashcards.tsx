@@ -20,6 +20,21 @@
 //   • времена — гонять все времена вперемешку почти бесполезно, ученик каждый
 //     раз выводит форму с нуля вместо того, чтобы увидеть закономерность.
 //
+// ── ПОВТОРЕНИЕ ОШИБОК СТОИТ ПЕРВЫМ И ТОЛЬКО КОГДА ЕСТЬ ЧТО ПОВТОРЯТЬ ────────
+// Это не шестой режим, а единственный блок экрана, который отвечает на вопрос
+// «чем заняться ИМЕННО СЕЙЧАС». Своего банка заданий у него нет: сервер
+// отбирает задания, на которых ученик спотыкался и у которых подошёл срок
+// (расписание — api-server/src/lib/grammar/review.ts).
+//
+// Карточка появляется, только когда есть созревшие ошибки, и исчезает, когда их
+// нет. Постоянный вход с нулём внутри — это обещание, которое экран не
+// выполняет; а исчезающая карточка со счётчиком работает как метка «есть
+// задание» на разговоре со Снежей: её замечают.
+//
+// Сводка второстепенна: пока она не загрузилась или не загрузилась вовсе, экран
+// работает как раньше. Ставить оглавление раздела в зависимость от одного
+// запроса нельзя.
+//
 // ── Ситуации от учителя больше НЕ отдельная карточка ────────────────────────
 // Раньше они стояли последним режимом, рядом с «Разговором со Снежей». Два
 // соседних входа в один и тот же разговор ученик читает как «одно и то же
@@ -61,6 +76,7 @@ import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii, timing } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 import { freshScenarioCount, scenarios } from "@/hooks/useScenarios";
+import { grammar } from "@/hooks/useGrammar";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
 
@@ -219,6 +235,16 @@ function ChunkyTap({
   );
 }
 
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
 export default function PracticeHub() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -238,6 +264,16 @@ export default function PracticeHub() {
   });
   const waiting = freshScenarioCount(scenariosQ.data ?? []);
 
+  // Сводка раздела: нужна ради счётчика созревших ошибок. Ключ тот же, что у
+  // остальных экранов грамматики, поэтому лишнего похода на сервер не
+  // появляется — а при выходе из тренажёра она перечитывается сама.
+  const overviewQ = useQuery({
+    queryKey: ["grammar-overview"],
+    queryFn: grammar.getOverview,
+    staleTime: 30_000,
+  });
+  const dueMistakes = overviewQ.data?.review?.due ?? 0;
+
   const ready = MODES.filter((m) => m.href);
   const soon = MODES.filter((m) => !m.href);
 
@@ -256,6 +292,59 @@ export default function PracticeHub() {
       <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 18 }}>
         Выбери, чем заняться сейчас
       </Text>
+
+      {/* Повторение ошибок. Стоит выше режимов и появляется только когда есть
+          созревшие: см. шапку файла. */}
+      {dueMistakes > 0 && (
+        <ChunkyTap
+          color="#9f123966"
+          onPress={() => router.push("/flashcards/grammar/review" as any)}
+          style={{ marginBottom: 12 }}
+          accessibilityLabel={`Повторение ошибок. Ждут повторения: ${dueMistakes}`}
+        >
+          <View style={cardBody(colors, { flexDirection: "row", alignItems: "center", gap: 13 })}>
+            <View>
+              <LinearGradient
+                colors={["#fb7185", "#e11d48"]}
+                start={{ x: 0.1, y: 0 }}
+                end={{ x: 0.9, y: 1 }}
+                style={{
+                  width: ICON, height: ICON, borderRadius: radii.sm + 3,
+                  alignItems: "center", justifyContent: "center",
+                }}
+              >
+                <Glyph name="repeat" size={Math.round(ICON * 0.5)} color="#fff" />
+              </LinearGradient>
+
+              {/* Счётчик на значке, а не строкой ниже: заметен боковым зрением. */}
+              <View style={{
+                position: "absolute", top: -6, right: -8,
+                backgroundColor: "#e11d48", borderRadius: 10,
+                minWidth: 20, height: 20, paddingHorizontal: 5,
+                alignItems: "center", justifyContent: "center",
+                borderWidth: 2, borderColor: "#ffffff",
+              }}>
+                <Text style={{ color: "#fff", fontSize: 11, fontWeight: "900", lineHeight: 14 }}>
+                  {dueMistakes > 9 ? "9+" : dueMistakes}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                <Text style={{ fontSize: 17, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3 }}>
+                  Повторение ошибок
+                </Text>
+                <Pill text="по расписанию" tone="soft" color="#e11d48" />
+              </View>
+              <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginTop: 3 }}>
+                {`${dueMistakes} ${plural(dueMistakes, ["задание", "задания", "заданий"])}, где ты споткнулся, ${plural(dueMistakes, ["ждёт", "ждут", "ждут"])} второго подхода`}
+              </Text>
+            </View>
+            <Glyph name="chevron" size={21} color={colors.mutedForeground} />
+          </View>
+        </ChunkyTap>
+      )}
 
       {ready.map((mode) => {
         // Метка о заданиях от учителя висит на разговоре: ситуации теперь внутри

@@ -1,14 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Тренажёр раздела «Учёба». Один экран на четыре режима:
+// Тренажёр раздела «Учёба». Один экран на четыре режима и на повторение:
 //
-//   forms — сама форма глагола: «покупать» → buy, buy → bought (?letter=B);
-//   verbs — вставить форму неправильного глагола в предложение;
-//   tense — поставить глагол в заданное время (?tense=present_perfect);
-//   build — собрать предложение по русскому переводу.
+//   forms  — сама форма глагола: «покупать» → buy, buy → bought (?letter=B);
+//   verbs  — вставить форму неправильного глагола в предложение;
+//   tense  — поставить глагол в заданное время (?tense=present_perfect);
+//   build  — собрать предложение по русскому переводу;
+//   review — повторение ошибок: задания из всех режимов, отобранные по срокам.
 //
 // Отличается только способ ответа и то, что стоит крупно: слово, форма или
 // предложение. Четыре почти одинаковых экрана означали бы, что одну и ту же
 // ошибку придётся починить четыре раза.
+//
+// ── ПОВТОРЕНИЕ ОШИБОК ───────────────────────────────────────────────────────
+// Отдельного банка у него нет: сервер выбирает задания, на которых ученик когда-
+// то споткнулся и у которых подошёл срок (расписание — api-server/src/lib/
+// grammar/review.ts). Поэтому здесь нет ни номера захода, ни буквы, ни времени —
+// набор задан сроками, а не выбором.
+//
+// Карточки в повторении приходят из РАЗНЫХ режимов подряд, и это единственное
+// место, где под заголовком написано, откуда именно текущее задание. Без этой
+// строки переход от таблицы форм к сборке предложения читается как сбой.
+//
+// Пустой экран здесь нормальное состояние, а не ошибка: ошибок может не быть
+// вовсе или все сроки ещё впереди. Поэтому он называет срок ближайшего
+// повторения — «нет ошибок» без продолжения читается как «раздел кончился».
 //
 // ── ПОЧЕМУ ЭКРАН МОНТИРУЕТСЯ ЗАНОВО ─────────────────────────────────────────
 // Все режимы живут на одном маршруте. Уход через панель вкладок экран не
@@ -32,6 +47,9 @@
 // Теперь у захода есть номер, он уходит на сервер, и приходит следующая порция
 // банка. Номер живёт здесь, а не в key маршрута: экран остаётся тем же самым,
 // меняется только подборка, и незачем ради этого пересобирать компонент.
+//
+// В повторении номер не нужен вовсе: отвеченные задания уже уехали по срокам
+// вперёд, поэтому повторный запрос сам приносит следующие созревшие.
 //
 // ── ПОЛОЖЕНИЕ В БАНКЕ ЗНАЕТ СЕРВЕР, А НЕ ЭТОТ ЭКРАН ─────────────────────────
 // Номер захода обнуляется при каждом входе, поэтому местом в банке он быть не
@@ -86,7 +104,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
-import { grammar, type GrammarCard, type GrammarMode, type GrammarSession, type GrammarVerdict } from "@/hooks/useGrammar";
+import { grammar, type GrammarCard, type GrammarMode, type GrammarVerdict } from "@/hooks/useGrammar";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Tile, XpBar } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
@@ -98,22 +116,83 @@ const NEXT_DELAY_OK = 1200;
 /** Прочерк на месте пропуска: длиннее, чем «___», иначе его не видно. */
 const BLANK = "______";
 
-const TITLES: Record<GrammarMode, string> = {
+/** Режим экрана. review — не банк заданий, а расписание повторений. */
+type TrainerMode = GrammarMode | "review";
+
+const TITLES: Record<TrainerMode, string> = {
   forms: "Формы глаголов",
   verbs: "Глагол в предложении",
   tense: "Времена",
   build: "Собери предложение",
+  review: "Повторение ошибок",
+};
+
+/**
+ * Откуда пришло задание. Показывается только в повторении: там карточки идут из
+ * разных режимов подряд, и без подписи переход от таблицы форм к сборке
+ * предложения читается как сбой.
+ */
+const FROM: Record<GrammarMode, string> = {
+  forms: "формы глаголов",
+  verbs: "глагол в предложении",
+  tense: "времена",
+  build: "сборка предложения",
 };
 
 /** Куда возвращаться из режима: туда, откуда ученик пришёл. */
-const EXITS: Record<GrammarMode, string> = {
+const EXITS: Record<TrainerMode, string> = {
   forms: "/flashcards/verbs",
   verbs: "/flashcards/verbs",
   tense: "/flashcards/tenses",
   build: "/flashcards",
+  review: "/flashcards",
 };
 
-const MODES: GrammarMode[] = ["forms", "verbs", "tense", "build"];
+const MODES: TrainerMode[] = ["forms", "verbs", "tense", "build", "review"];
+
+/** Русское склонение по числу. */
+function plural(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  if (abs >= 11 && abs <= 14) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+/**
+ * Срок ближайшего повторения человеческим языком.
+ *
+ * Точное время («в 21:40») здесь бесполезно: важно не когда именно, а скоро или
+ * не скоро. Возвращает null на пустой и битой дате — тогда строка просто не
+ * рисуется, а не показывает «Invalid Date».
+ */
+function dueIn(iso?: string | null): string | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return null;
+  if (ms <= 0) return "уже сейчас";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `через ${minutes} ${plural(minutes, ["минуту", "минуты", "минут"])}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `через ${hours} ${plural(hours, ["час", "часа", "часов"])}`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return "завтра";
+  return `через ${days} ${plural(days, ["день", "дня", "дней"])}`;
+}
+
+/** Заход в том виде, в котором он нужен экрану. */
+type LoadedSession = {
+  level: string;
+  /** Сколько заданий доступно в подборке вообще. */
+  total: number;
+  cards: GrammarCard[];
+  /** Сколько заходов ещё пройдёт без повторов. Только у обычной подборки. */
+  freshLeft?: number;
+};
+
+/** Сводка повторений: нужна пустому экрану и подписи на кнопке. */
+type ReviewInfo = { due: number; nextDueAt: string | null };
 
 /**
  * Падение этого экрана иначе выглядело бы как «кнопка не работает»: навигатор
@@ -146,8 +225,8 @@ export default function GrammarTrainerRoute() {
 
   // Неизвестный режим считаем глаголами в предложении, а не падаем: адрес мог
   // прийти из старой ссылки или из опечатки.
-  const mode: GrammarMode = MODES.includes(params.mode as GrammarMode)
-    ? (params.mode as GrammarMode)
+  const mode: TrainerMode = MODES.includes(params.mode as TrainerMode)
+    ? (params.mode as TrainerMode)
     : "verbs";
   const tense = typeof params.tense === "string" ? params.tense : undefined;
   // Буква только у форм. Проверку на «одну латинскую букву» делает сервер: он
@@ -186,7 +265,7 @@ export default function GrammarTrainerRoute() {
 function GrammarTrainer({
   mode, tense, letter,
 }: {
-  mode: GrammarMode;
+  mode: TrainerMode;
   tense?: string;
   letter?: string;
 }) {
@@ -195,7 +274,10 @@ function GrammarTrainer({
   const router = useRouter();
   const qc = useQueryClient();
 
-  const [session, setSession] = React.useState<GrammarSession | null>(null);
+  const isReview = mode === "review";
+
+  const [session, setSession] = React.useState<LoadedSession | null>(null);
+  const [reviewInfo, setReviewInfo] = React.useState<ReviewInfo | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [pos, setPos] = React.useState(0);
   const [done, setDone] = React.useState(false);
@@ -224,15 +306,31 @@ function GrammarTrainer({
   // вот номер захода меняется кнопкой «Ещё заход» и приносит новую порцию.
   React.useEffect(() => {
     let alive = true;
-    grammar.getSession({ mode, tense, letter, round })
+
+    const load = isReview
+      ? grammar.getReview().then((r) => {
+        // Сводку держим отдельно: пустой экран повторения обязан назвать срок
+        // ближайшего, иначе он читается как «раздел кончился».
+        if (alive) setReviewInfo({ due: r.due, nextDueAt: r.nextDueAt ?? null });
+        return { level: r.level, total: r.total, cards: r.cards } as LoadedSession;
+      })
+      : grammar.getSession({ mode, tense, letter, round }).then((s) => ({
+        level: s.level,
+        total: s.total,
+        cards: s.cards ?? [],
+        ...(typeof s.freshLeft === "number" ? { freshLeft: s.freshLeft } : {}),
+      } as LoadedSession));
+
+    load
       .then((s) => {
         if (!alive) return;
         setSession(s);
-        setDone((s.cards ?? []).length === 0);
+        setDone(s.cards.length === 0);
       })
       .catch((e) => alive && setError(e?.message ?? "Не удалось загрузить задания."));
+
     return () => { alive = false; };
-  }, [mode, tense, letter, round]);
+  }, [mode, tense, letter, round, isReview]);
 
   const cards: GrammarCard[] = session?.cards ?? [];
   const card = cards[pos];
@@ -244,8 +342,13 @@ function GrammarTrainer({
    * захода обнуляется на каждом входе и положение в банке не описывает. Раньше
    * подпись считалась по нему — и после повторного входа всегда обещала новые
    * задания, даже когда банк был пройден целиком.
+   *
+   * В повторении смысл другой: «есть ли ещё созревшие ошибки, которые не влезли
+   * в этот заход».
    */
-  const hasFresh = (session?.freshLeft ?? 0) > 0;
+  const hasFresh = isReview
+    ? (reviewInfo?.due ?? 0) > cards.length
+    : (session?.freshLeft ?? 0) > 0;
 
   /** Название подборки: у буквенной группы буква стоит прямо в заголовке. */
   const title = letter ? `${TITLES[mode]} · ${letter}` : TITLES[mode];
@@ -257,7 +360,8 @@ function GrammarTrainer({
   // места, откуда он пришёл.
   const exit = React.useCallback(() => {
     // Очки ушли в общий счёт, а статистика тем изменилась: экраны, которые их
-    // показывают, обязаны перечитать данные.
+    // показывают, обязаны перечитать данные. Сюда же входит сводка повторений —
+    // от неё зависит вход в повторение на оглавлении раздела.
     qc.invalidateQueries({ queryKey: ["grammar-overview"] });
     qc.invalidateQueries({ queryKey: ["grammar-stats"] });
     qc.invalidateQueries({ queryKey: ["gamification-stats"] });
@@ -290,6 +394,11 @@ function GrammarTrainer({
    * session обнуляется намеренно — пока идёт загрузка, на экране крутится
    * ожидание. Оставить старые карточки значило бы показать ученику прежний
    * заход, который через секунду подменится другим прямо под руками.
+   *
+   * В повторении номер захода не меняется: набор задан сроками, и достаточно
+   * перечитать его заново — отвеченные задания уже уехали вперёд. Поэтому там
+   * счётчик round двигается тоже (эффект загрузки висит на нём), но на запрос
+   * не влияет.
    */
   const nextRound = React.useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -364,6 +473,7 @@ function GrammarTrainer({
 
   if (done) {
     const accuracy = answered > 0 ? Math.round((correctCount / answered) * 100) : 0;
+    const waitFor = isReview ? dueIn(reviewInfo?.nextDueAt) : null;
     return (
       <ScrollView contentContainerStyle={{
         paddingHorizontal: 16,
@@ -371,7 +481,9 @@ function GrammarTrainer({
         paddingBottom: screenBottom(insets),
       }}>
         <Text style={{ fontSize: 26, fontWeight: "900", color: colors.foreground, marginBottom: 16 }}>
-          {answered > 0 ? "Заход закончен" : "Пока нет заданий"}
+          {answered > 0
+            ? "Заход закончен"
+            : isReview ? "Всё повторено" : "Пока нет заданий"}
         </Text>
 
         {answered > 0 ? (
@@ -396,6 +508,17 @@ function GrammarTrainer({
               </Tile>
             )}
 
+            {/* В повторении итог полезно назвать словами: ошибка уходит из
+                повторений не с первого верного ответа, и без этой строки ученик
+                решит, что повторение сломано, когда задание вернётся. */}
+            {isReview && (
+              <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginBottom: 12 }}>
+                Отвеченные задания вернутся ещё несколько раз — через день, через
+                три, через неделю. Ошибка уходит из повторений, когда выдержит все
+                эти сроки.
+              </Text>
+            )}
+
             {capped && (
               <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginBottom: 12 }}>
                 Очки за грамматику на сегодня закончились — дальше занятие идёт без
@@ -408,16 +531,31 @@ function GrammarTrainer({
                 больше нет, подпись предупреждает об этом честно: обещать
                 бесконечную новизну нельзя, банк конечен. */}
             <ChunkyButton
-              label="Ещё заход"
-              sublabel={hasFresh
-                ? "дальше новые задания"
-                : letter
-                  ? `глаголы на ${letter} кончились, пойдёт второй круг`
-                  : "новые кончились, пойдёт второй круг"}
+              label={isReview ? "Ещё повторение" : "Ещё заход"}
+              sublabel={isReview
+                ? (hasFresh ? "есть ещё созревшие ошибки" : "проверить, не подошёл ли срок у других")
+                : hasFresh
+                  ? "дальше новые задания"
+                  : letter
+                    ? `глаголы на ${letter} кончились, пойдёт второй круг`
+                    : "новые кончились, пойдёт второй круг"}
               icon="repeat"
               onPress={nextRound}
               style={{ marginBottom: 12 }}
             />
+          </>
+        ) : isReview ? (
+          <>
+            <Text style={{ fontSize: 14, lineHeight: 21, color: colors.mutedForeground, marginBottom: 12 }}>
+              {(session.total ?? 0) > 0
+                ? "Все ошибки, у которых подошёл срок, уже отработаны. Остальные ждут своего дня: повторять их раньше времени бесполезно."
+                : "Ошибок к повторению нет. Они появятся сами: любое задание, на котором ты споткнёшься, вернётся сюда через десять минут, потом через день, потом через неделю."}
+            </Text>
+            {!!waitFor && (
+              <Text style={{ fontSize: 13, fontWeight: "800", color: colors.primary, marginBottom: 18 }}>
+                {`Следующее повторение ${waitFor}`}
+              </Text>
+            )}
           </>
         ) : (
           <Text style={{ fontSize: 14, lineHeight: 21, color: colors.mutedForeground, marginBottom: 18 }}>
@@ -448,11 +586,13 @@ function GrammarTrainer({
 
   const builtText = built.map((i) => card.tiles?.[i] ?? "").join(" ");
 
-  // Подпись над заданием. В режиме форм спрашивают не только форму («как по-
-  // английски покупать» — это про слово), поэтому там формулировка нейтральная.
+  // Подпись над заданием. Считается по режиму КАРТОЧКИ, а не экрана: в повторении
+  // подряд идут задания из разных режимов. В режиме форм спрашивают не только
+  // форму («как по-английски покупать» — это про слово), поэтому там
+  // формулировка нейтральная.
   const askLabel =
     card.input === "assemble" ? "собери предложение"
-      : mode === "forms" ? (card.input === "choice" ? "выбери ответ" : "напиши ответ")
+      : card.mode === "forms" ? (card.input === "choice" ? "выбери ответ" : "напиши ответ")
       : card.input === "choice" ? "выбери форму"
       : "напиши форму";
 
@@ -474,8 +614,10 @@ function GrammarTrainer({
           <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }} numberOfLines={1}>
             {title}
           </Text>
+          {/* В повторении вместо уровня написано, откуда задание: карточки идут
+              из разных режимов, и это важнее уровня. */}
           <Text style={{ fontSize: 11, color: colors.mutedForeground, fontVariant: ["tabular-nums"] }}>
-            {pos + 1} из {cards.length} · уровень {card.level}
+            {`${pos + 1} из ${cards.length} · ${isReview ? FROM[card.mode] : `уровень ${card.level}`}`}
           </Text>
         </View>
         {/* Счётчик очков за заход. Появляется с первым начислением: нулевой
