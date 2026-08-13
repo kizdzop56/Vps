@@ -23,6 +23,7 @@ import {
 import { isLearned, startOfDay } from "../lib/srs";
 import { FORM_MASTERY_HITS } from "../lib/grammar/forms";
 import { evaluateDailyPlan } from "../lib/dailyPlan";
+import { EMPTY_RAID_STATS, raidAchievementStats, type RaidAchievementStats } from "../lib/raidStats";
 
 const router = Router();
 
@@ -388,7 +389,7 @@ type ServerAchievementStats = {
   verbFormsMastered: number;
   tensesMastered: number;
   sentencesBuilt: number;
-};
+} & RaidAchievementStats;
 
 // Считает статы пользователя из БД (те же источники, что и /gamification/stats).
 async function computeAchievementStats(userId: number): Promise<ServerAchievementStats | null> {
@@ -421,6 +422,8 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
   const completedAssignments = completedSubs[0]?.count ?? 0;
 
   const grammar = await computeGrammarTotals(userId);
+  // Показатели рейда: из них выдаются медали за боссов, урон и комбо.
+  const raid = await raidAchievementStats(userId);
 
   // Те же цифры, что видит клиент в /gamification/stats — иначе клиент считает
   // награду открытой, а сервер её отклоняет (и она не выдаётся никогда).
@@ -446,6 +449,7 @@ async function computeAchievementStats(userId: number): Promise<ServerAchievemen
     xpLevel: computeLevel(userData.totalPoints),
     earlyBirdSessions,
     ...grammar,
+    ...raid,
   };
 }
 
@@ -474,6 +478,7 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   forms_5:      (s) => s.verbFormsMastered >= 5,
   phrases_10:   (s) => s.sentencesBuilt >= 10,
   tenses_1:     (s) => s.tensesMastered >= 1,
+  raidhits_1:   (s) => s.raidHits >= 1,
   // medium
   tasks_10:     (s) => s.completedAssignments >= 10,
   tasks_25:     (s) => s.completedAssignments >= 25,
@@ -506,6 +511,8 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   forms_60:     (s) => s.verbFormsMastered >= 60,
   phrases_100:  (s) => s.sentencesBuilt >= 100,
   tenses_3:     (s) => s.tensesMastered >= 3,
+  raiddamage_10000: (s) => s.raidDamage >= 10000,
+  raidcombo_10: (s) => s.raidBestCombo >= 10,
   // hard
   tasks_100:    (s) => s.completedAssignments >= 100,
   tasks_200:    (s) => s.completedAssignments >= 200,
@@ -520,6 +527,18 @@ const ACHIEVEMENT_CONDITIONS: Record<string, (s: ServerAchievementStats) => bool
   grammar_2000: (s) => s.grammarSolved >= 2000,
   forms_100:    (s) => s.verbFormsMastered >= 100,
   tenses_6:     (s) => s.tensesMastered >= 6,
+  raidlast_1:   (s) => s.raidLastHits >= 1,
+  raidbosses_5: (s) => s.raidBosses.length >= 5,
+
+  // ── Медали за конкретных боссов ──
+  // Условие одно: ученик бил босса в той неделе, которая закончилась победой
+  // сообщества. Ключи те же, что в BOSSES (lib/raid.ts) — расхождение здесь
+  // выглядело бы как «босса добили, медаль не пришла».
+  raidboss_golem:     (s) => s.raidBosses.includes("golem"),
+  raidboss_dragon:    (s) => s.raidBosses.includes("dragon"),
+  raidboss_phantom:   (s) => s.raidBosses.includes("phantom"),
+  raidboss_elemental: (s) => s.raidBosses.includes("elemental"),
+  raidboss_titan:     (s) => s.raidBosses.includes("titan"),
 };
 
 // ── Награда за ежедневный вход ──────────────────────────────────────────────
@@ -635,6 +654,13 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
   const grammar = await computeGrammarTotals(userId);
   const grammarDay = await computeGrammarToday(userId, todayStart);
 
+  // Рейд: показатели для медалей витрины. Отдельного экрана у них больше нет —
+  // рейдовые медали лежат в общем каталоге вместе с остальными.
+  let raid: RaidAchievementStats = { ...EMPTY_RAID_STATS, raidBosses: [] };
+  try {
+    raid = await raidAchievementStats(userId);
+  } catch { /* нули: медали просто останутся закрытыми */ }
+
   // Unlocked achievements from DB
   const dbAchievements = await db.select().from(userAchievementsTable)
     .where(eq(userAchievementsTable.userId, userId));
@@ -663,6 +689,15 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     sentencesBuilt: grammar.sentencesBuilt,
     grammarToday: grammarDay.grammarToday,
     verbFormsToday: grammarDay.verbFormsToday,
+    // Рейд: из них считаются медали raidboss_*, raiddamage_*, raidcombo_*,
+    // raidlast_* и raidbosses_*.
+    raidDamage: raid.raidDamage,
+    raidHits: raid.raidHits,
+    raidCrits: raid.raidCrits,
+    raidBestCombo: raid.raidBestCombo,
+    raidWins: raid.raidWins,
+    raidLastHits: raid.raidLastHits,
+    raidBosses: raid.raidBosses,
     unlockedAchievementIds: dbAchievements.map(a => a.achievementId),
     totalTimeMinutes,
     mascotName: (userData.mascotName && userData.mascotName !== "Оливер") ? userData.mascotName : "Снежа",
