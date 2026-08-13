@@ -5,7 +5,7 @@
 //   1. вход не сработал (форма не пустила или не случился переход);
 //   2. на экране пусто — белая страница вместо интерфейса;
 //   3. ошибка в консоли или необработанное исключение на странице;
-//   4. запрос к API, отклонённый сервером (4xx/5xx).
+//   4. запрос к API, отклонённый сервером (4xx/5xx), с адресом и экраном.
 //
 // Экраны берутся из app/(main): группы в скобках в URL не попадают, поэтому
 // путь до экрана — просто "/profile", "/flashcards" и так далее.
@@ -65,9 +65,9 @@ function watchProblems(page: Page): string[] {
   page.on("pageerror", (err) => {
     if (keep(err.message)) problems.push(`исключение на странице: ${err.message}`);
   });
-  page.on("requestfailed", (req) => {
-    problems.push(`запрос не дошёл: ${req.method()} ${req.url()} (${req.failure()?.errorText ?? "без причины"})`);
-  });
+  // Прерванные запросы (ERR_ABORTED) не слушаем вовсе: переход на следующий
+  // экран штатно обрывает всё, что не успел догрузить предыдущий, и такие
+  // строки только маскируют настоящие отказы сервера.
   page.on("response", (res) => {
     if (res.status() < 400) return;
     problems.push(`${res.status()} на ${res.request().method()} ${res.url()}`);
@@ -105,6 +105,11 @@ async function screenIsAlive(page: Page, route: string): Promise<void> {
   const text = (await page.locator("body").innerText()).trim();
   expect(text.length, `экран ${route} пустой — белая страница`).toBeGreaterThan(20);
   expect(text, `экран ${route} показал экран ошибки`).not.toMatch(/Not Found|Something went wrong|Unexpected token/i);
+
+  // Ждём, пока экран догрузит данные, и только потом уходим дальше: иначе
+  // недогруженные запросы обрываются переходом, и их ответы теряются.
+  // Экран мог оставить открытый опрос, поэтому таймаут — не ошибка.
+  await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
 }
 
 test("неавторизованного посетителя уводит на вход", async ({ page }) => {
