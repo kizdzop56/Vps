@@ -15,6 +15,15 @@
 // кнопкой, а не пересозданием. Всё это лежит в components/TeacherDialogs.tsx —
 // экран и без того велик.
 //
+// ── РАБОТЫ НА ПРОВЕРКЕ ВИДНЫ ПЕРВЫМИ ────────────────────────────────────────
+// Свободный ответ проверяет человек, и до проверки у работы честный ноль: ноль
+// правильных из нуля вопросов. В списке ответов она и выглядела как двойка —
+// «0%», ничем не отличаясь от плохо написанного теста. В шапке при этом висело
+// «1 работа ждёт проверки», и найти эту работу глазами было нечем.
+//
+// Теперь такие работы стоят В НАЧАЛЕ списка, вместо балла у них метка «ждёт
+// проверки», а строка в шапке нажимается и ведёт прямо сюда.
+//
 // ── Оформление ───────────────────────────────────────────────────────────────
 // Экран приведён к общему языку приложения («объёмная» вёрстка, как в разделах
 // «Слова», «Рейтинг», «Календарь» и в профиле): у каждой карточки есть нижний
@@ -118,6 +127,8 @@ const EDGE_SM = 4;
 const EDGE_LIGHT = "#c9bdf0";
 const EDGE_DARK = "#4c1d95";
 const EDGE_DANGER = "#f0bcc7";
+/** Торец под работой, которая ждёт проверки: тёплый, как и её метка. */
+const EDGE_WARN = "#f3d7a3";
 
 // В вебе трансформации через нативный драйвер не проходят — анимация просто
 // не запускается. Правило по всему проекту одно и то же.
@@ -239,6 +250,9 @@ const DUE_ICONS: Record<DueUrgency, GlyphName> = {
  * показывать её как обычный ноль нельзя — иначе выглядит как «решал и не решил».
  */
 const EXPIRED = "expired";
+
+/** Работа сдана, но её ещё не проверил человек. Балла у неё пока нет. */
+const PENDING = "pending";
 
 /**
  * Пресет срока по числу дней. Нужен, чтобы окно отправки заранее вставало на
@@ -538,6 +552,15 @@ export default function AssignmentsScreen() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [teacherSubs, setTeacherSubs] = useState<any[]>([]);
   const [loadingTeacherSubs, setLoadingTeacherSubs] = useState(false);
+  /**
+   * Ответы учеников не загрузились.
+   *
+   * Раньше ошибка проглатывалась молча, и вкладка показывала «Ответов ещё нет»
+   * — то же самое, что при пустом списке. Отличить «сервер не ответил» от
+   * «никто не сдавал» было нельзя, а разница принципиальная: в шапке при этом
+   * могло висеть «1 работа ждёт проверки».
+   */
+  const [subsError, setSubsError] = useState("");
   const [myCompleted, setMyCompleted] = useState<any[]>([]);
   const [loadingCompleted, setLoadingCompleted] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; title: string } | null>(null);
@@ -596,9 +619,12 @@ export default function AssignmentsScreen() {
   const loadTeacherSubs = useCallback(async () => {
     if (!isTeacher) return;
     setLoadingTeacherSubs(true);
-    try { setTeacherSubs(asArray(await apiFetch("/api/assignments/teacher-results"))); }
-    catch { /* silent */ }
-    finally { setLoadingTeacherSubs(false); }
+    try {
+      setTeacherSubs(asArray(await apiFetch("/api/assignments/teacher-results")));
+      setSubsError("");
+    } catch (e: any) {
+      setSubsError(e?.message ?? "Не удалось загрузить ответы учеников");
+    } finally { setLoadingTeacherSubs(false); }
   }, [isTeacher]);
 
   const loadMyCompleted = useCallback(async () => {
@@ -970,6 +996,35 @@ export default function AssignmentsScreen() {
             )}
           </TouchableOpacity>
 
+          {/* Работа на проверке — не строка статистики, а дело: под неё
+              отдельная кнопка, ведущая прямо в итоги задания, где стоит форма
+              оценки. Раньше про такую работу сообщал только маленький значок
+              с часами, и что с ним делать, было непонятно. */}
+          {pending > 0 && (
+            <ChunkyTap
+              style={{ marginTop: 10 }}
+              lift={EDGE_SM}
+              radius={radii.sm - 2}
+              edge={EDGE_WARN}
+              onPress={() => router.push(`/(main)/teacher-results/${item.id}` as any)}
+              accessibilityLabel="Проверить работы"
+            >
+              <View style={{
+                flexDirection: "row", alignItems: "center", gap: 8,
+                paddingHorizontal: 12, paddingVertical: 11,
+                borderRadius: radii.sm - 2,
+                backgroundColor: colors.warning + "1f",
+                borderWidth: 1, borderColor: colors.warning + "66",
+              }}>
+                <Glyph name="pen" size={15} color={colors.warning} />
+                <Text style={{ flex: 1, fontSize: 13, fontWeight: "800", color: colors.foreground }}>
+                  {pending} {pluralRu(pending, "работа ждёт", "работы ждут", "работ ждут")} вашей оценки
+                </Text>
+                <Glyph name="chevron" size={16} color={colors.warning} />
+              </View>
+            </ChunkyTap>
+          )}
+
           {/* Кнопки действий. «Назначить» залита цветом и стоит на тёмном торце,
               «Итоги» и удаление тихие и на светлом: раньше все три кнопки весили
               одинаково и главное действие не читалось. */}
@@ -1030,7 +1085,10 @@ export default function AssignmentsScreen() {
     // Автозакрытая работа — не результат ученика, а факт пропуска срока.
     // Красим её тревожным цветом независимо от нулевого балла.
     const expired = sub.status === EXPIRED;
-    const tint = expired ? colors.destructive : scoreTint(score);
+    // Работа ждёт человека: балла у неё ЕЩЁ НЕТ. Показывать «0%» нельзя — это
+    // читается как двойка, и именно поэтому свободный ответ терялся в списке.
+    const awaiting = sub.status === PENDING;
+    const tint = expired ? colors.destructive : awaiting ? colors.warning : scoreTint(score);
     // Сдано после срока: учителю это важнее самой даты сдачи, поэтому метка.
     const late = !expired && !!item.dueAt &&
       new Date(sub.submittedAt).getTime() > new Date(item.dueAt).getTime();
@@ -1038,15 +1096,16 @@ export default function AssignmentsScreen() {
       <ChunkyTap
         key={`${item.assignedTaskId}`}
         style={styles.cardWrap}
-        edge={expired ? EDGE_DANGER : EDGE_LIGHT}
+        edge={expired ? EDGE_DANGER : awaiting ? EDGE_WARN : EDGE_LIGHT}
         onPress={() => router.push(`/(main)/teacher-results/${item.assignmentId}` as any)}
-        accessibilityLabel={`${item.studentName}: ${item.assignmentTitle}`}
+        accessibilityLabel={`${item.studentName}: ${item.assignmentTitle}${awaiting ? ". Ждёт проверки" : ""}`}
       >
         <View
           style={[
             styles.subCard,
             { shadowColor: tint },
             expired && { borderColor: colors.destructive + "55" },
+            awaiting && { borderColor: colors.warning + "66" },
           ]}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}>
@@ -1063,6 +1122,8 @@ export default function AssignmentsScreen() {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {expired ? (
                 <Glyph name="alert" size={20} color={colors.destructive} />
+              ) : awaiting ? (
+                <Pill text="ждёт проверки" icon="clock" tone="warn" />
               ) : (
                 <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
                   <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{score}%</Text>
@@ -1071,6 +1132,22 @@ export default function AssignmentsScreen() {
               <Glyph name="chevron" size={16} color={colors.mutedForeground} />
             </View>
           </View>
+
+          {/* Что именно прислал ученик: у свободного ответа это единственное,
+              что вообще есть до проверки. Одна строка — дальше в итогах. */}
+          {awaiting && !!sub.textAnswer && (
+            <Text
+              numberOfLines={2}
+              style={{
+                fontSize: 13, lineHeight: 19, color: colors.foreground,
+                backgroundColor: colors.warning + "14",
+                borderRadius: radii.sm - 2, padding: 9, marginBottom: 8,
+              }}
+            >
+              {sub.textAnswer}
+            </Text>
+          )}
+
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {/* Значок типа и здесь: список ответов перестаёт быть одинаковым. */}
             <TypePlate type={item.assignmentType} size={28} />
@@ -1079,6 +1156,10 @@ export default function AssignmentsScreen() {
             </View>
             {expired ? (
               <Pill text="не сдано в срок" icon="alert" tone="danger" />
+            ) : awaiting ? (
+              <Text style={[styles.ageText, { fontWeight: "800", color: colors.warning }]}>
+                нажми, чтобы оценить
+              </Text>
             ) : (
               <Text style={styles.ageText}>
                 {sub.correctCount}/{sub.totalQuestions} правильно
@@ -1098,12 +1179,15 @@ export default function AssignmentsScreen() {
   const renderCompletedCard = (item: any) => {
     const color = TYPE_COLORS[item.type] || colors.primary;
     const expired = item.status === EXPIRED;
-    const tint = expired ? colors.destructive : scoreTint(Number(item.score ?? 0));
+    const awaiting = item.status === PENDING;
+    const tint = expired ? colors.destructive
+      : awaiting ? colors.warning
+        : scoreTint(Number(item.score ?? 0));
     return (
       <ChunkyTap
         key={`${item.submissionId}`}
         style={styles.cardWrap}
-        edge={expired ? EDGE_DANGER : EDGE_LIGHT}
+        edge={expired ? EDGE_DANGER : awaiting ? EDGE_WARN : EDGE_LIGHT}
         onPress={() => router.push(`/(main)/submission-review/${item.submissionId}` as any)}
         accessibilityLabel={item.title}
       >
@@ -1113,6 +1197,7 @@ export default function AssignmentsScreen() {
             styles.subCard,
             { shadowColor: tint },
             expired && { borderColor: colors.destructive + "55" },
+            awaiting && { borderColor: colors.warning + "66" },
           ]}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 }}>
@@ -1121,6 +1206,8 @@ export default function AssignmentsScreen() {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {expired ? (
                 <Glyph name="alert" size={20} color={colors.destructive} />
+              ) : awaiting ? (
+                <Pill text="на проверке" icon="clock" tone="warn" />
               ) : (
                 <View style={[styles.scoreBadge, { backgroundColor: tint + "18" }]}>
                   <Text style={{ fontSize: 16, fontWeight: "900", color: tint, fontVariant: ["tabular-nums"] }}>{item.score}%</Text>
@@ -1135,6 +1222,8 @@ export default function AssignmentsScreen() {
             </View>
             {expired ? (
               <Pill text="срок вышел, не сдано" icon="alert" tone="danger" />
+            ) : awaiting ? (
+              <Text style={styles.ageText}>учитель ещё не оценил</Text>
             ) : (
               <>
                 <Text style={styles.ageText}>{item.correctCount}/{item.totalQuestions} правильно</Text>
@@ -1177,18 +1266,25 @@ export default function AssignmentsScreen() {
           )}
         </View>
 
-        {/* Сводка у учителя: сколько работ ждёт проверки. Раньше это можно было
-            узнать, только перейдя во вкладку ответов и пересчитав глазами. */}
+        {/* Сводка у учителя: сколько работ ждёт проверки. Строка НАЖИМАЕТСЯ и
+            уводит в «Ответы учеников» — раньше она сообщала о работе, но не
+            подсказывала, где её искать. */}
         {isTeacher && (() => {
           const pending = myAssignments.reduce((sum, a) => sum + Number(a?.pendingCount ?? 0), 0);
           if (pending === 0) return null;
           return (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
+            <Pressable
+              onPress={() => setViewMode("results")}
+              accessibilityRole="button"
+              accessibilityLabel="Открыть работы на проверке"
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}
+            >
               <Glyph name="clock" size={14} color={accents.amber} />
               <Text style={{ fontSize: 13, fontWeight: "800", color: accents.amber }}>
                 {pending} {pluralRu(pending, "работа ждёт", "работы ждут", "работ ждут")} проверки
               </Text>
-            </View>
+              <Glyph name="chevron" size={14} color={accents.amber} />
+            </Pressable>
           );
         })()}
 
@@ -1327,27 +1423,65 @@ export default function AssignmentsScreen() {
             contentContainerStyle={[styles.list, { paddingTop: 12 }]}
             showsVerticalScrollIndicator={false}
           >
+            {/* Ответы не загрузились. Показывать «Ответов ещё нет» в этом случае
+                нельзя: учитель решит, что ученик не сдавал. */}
+            {isTeacher && !!subsError && (
+              <View style={{
+                flexDirection: "row", alignItems: "flex-start", gap: 9,
+                backgroundColor: colors.destructive + "12",
+                borderRadius: radii.sm, borderWidth: 1, borderColor: colors.destructive + "44",
+                padding: 12, marginBottom: 14,
+              }}>
+                <View style={{ marginTop: 1 }}>
+                  <Glyph name="alert" size={15} color={colors.destructive} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.destructive, fontSize: 13, fontWeight: "800" }}>
+                    Ответы не загрузились
+                  </Text>
+                  <Text style={{ color: colors.mutedForeground, fontSize: 12.5, lineHeight: 18, marginTop: 3 }}>
+                    {subsError}
+                  </Text>
+                </View>
+                <Pressable onPress={() => { void loadTeacherSubs(); }} hitSlop={8}>
+                  <Glyph name="repeat" size={17} color={colors.destructive} />
+                </Pressable>
+              </View>
+            )}
+
             {/* Разборы диалогов идут ПЕРВЫМИ: их учитель ждёт, а ответы на тесты
                 видит и так. Раздел сам себя прячет, когда разборов нет. */}
             {isTeacher && <TeacherDialogReviews />}
 
             {isTeacher && (() => {
               const withSub = teacherSubs.filter(t => !!t?.submission);
-              if (withSub.length === 0) return (
-                <View style={[styles.empty, { paddingTop: 40 }]}>
-                  <View style={styles.emptyIcon}>
-                    <Glyph name="tray" size={32} color={colors.primary} />
+              if (withSub.length === 0) {
+                if (subsError) return null;
+                return (
+                  <View style={[styles.empty, { paddingTop: 40 }]}>
+                    <View style={styles.emptyIcon}>
+                      <Glyph name="tray" size={32} color={colors.primary} />
+                    </View>
+                    <Text style={styles.emptyText}>Ответов на задания ещё нет</Text>
                   </View>
-                  <Text style={styles.emptyText}>Ответов на задания ещё нет</Text>
-                </View>
-              );
+                );
+              }
+              // Ждущие проверки — В НАЧАЛЕ. Это единственные работы, где от
+              // учителя что-то требуется; остальные он просто просматривает.
+              const ordered = [...withSub].sort((a, b) => {
+                const aWait = a.submission.status === PENDING ? 1 : 0;
+                const bWait = b.submission.status === PENDING ? 1 : 0;
+                if (aWait !== bWait) return bWait - aWait;
+                return new Date(b.submission.submittedAt).getTime()
+                  - new Date(a.submission.submittedAt).getTime();
+              });
+              const waiting = withSub.filter((t) => t.submission.status === PENDING).length;
               return (
                 <>
-                  <SectionLabel>Ответы учеников · {withSub.length}</SectionLabel>
-                  {[...withSub]
-                    .sort((a, b) => new Date(b.submission.submittedAt).getTime() - new Date(a.submission.submittedAt).getTime())
-                    .map((item) => renderTeacherSubCard(item))
-                  }
+                  <SectionLabel>
+                    Ответы учеников · {withSub.length}{waiting > 0 ? ` · на проверке ${waiting}` : ""}
+                  </SectionLabel>
+                  {ordered.map((item) => renderTeacherSubCard(item))}
                 </>
               );
             })()}
