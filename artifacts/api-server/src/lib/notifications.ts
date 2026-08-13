@@ -4,12 +4,13 @@
 // ── Главное решение: события ВЫВОДЯТСЯ ИЗ СОСТОЯНИЯ ─────────────────────────
 // Уведомления не пишутся в момент события. Они собираются при чтении ленты из
 // того, что уже лежит в базе: принятые медали, входящие заявки, назначенные
-// задания, посчитанный план дня. Каждое событие получает ключ (dedupeKey),
-// уникальный в пределах пользователя, и вставка идёт с onConflictDoNothing.
+// задания, выданные ситуации для разговора, посчитанный план дня. Каждое
+// событие получает ключ (dedupeKey), уникальный в пределах пользователя, и
+// вставка идёт с onConflictDoNothing.
 //
 // Почему так, а не «отправить уведомление там, где событие происходит»:
-//   • эти пять мест живут в четырёх разных роутерах, и достаточно забыть про
-//     одно, чтобы раздел молча перестал работать;
+//   • эти места живут в разных роутерах, и достаточно забыть про одно, чтобы
+//     раздел молча перестал работать;
 //   • история появляется сразу: медали и задания, полученные до этой ленты,
 //     тоже в ней окажутся;
 //   • пересчёт идемпотентен, поэтому его можно звать хоть на каждый запрос.
@@ -43,6 +44,8 @@ import {
   teacherStudentsTable,
   assignedTasksTable,
   assignmentsTable,
+  dialogScenariosTable,
+  dialogAssignmentsTable,
   usersTable,
 } from "@workspace/db";
 import { and, desc, eq, isNull } from "drizzle-orm";
@@ -101,7 +104,7 @@ const FIRST_SYNC_LOUD = 3;
  *
  * Расчёт тянет весь журнал повторений ученика, а ленту опрашивает таймер на
  * клиенте. Без этого ограничения каждый опрос сканировал бы историю целиком.
- * Остальные источники — четыре коротких запроса, их проверяем каждый раз.
+ * Остальные источники — короткие запросы, их проверяем каждый раз.
  */
 const QUEST_SYNC_TTL_MS = 45_000;
 
@@ -249,6 +252,54 @@ async function collectAssignments(userId: number): Promise<Draft[]> {
   }));
 }
 
+/**
+ * Ситуации для разговора, выданные ученику.
+ *
+ * Отдельный источник, но тот же вид уведомления, что у обычного задания
+ * (kind: assignment): для ученика это одно и то же — учитель что-то задал.
+ * Заводить ради этого новый вид значило бы описывать его во всех местах, где
+ * вид определяет значок и цвет, а ленте от этого не легче.
+ *
+ * Ключ идёт по строке ВЫДАЧИ, а не по ситуации: снял и выдал заново — это новое
+ * событие, и ученик должен о нём узнать.
+ */
+async function collectScenarios(userId: number): Promise<Draft[]> {
+  const rows = await db
+    .select({
+      id: dialogAssignmentsTable.id,
+      createdAt: dialogAssignmentsTable.createdAt,
+      scenarioId: dialogScenariosTable.id,
+      title: dialogScenariosTable.title,
+      goal: dialogScenariosTable.goal,
+      teacherName: usersTable.name,
+    })
+    .from(dialogAssignmentsTable)
+    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAssignmentsTable.scenarioId))
+    .leftJoin(usersTable, eq(usersTable.id, dialogScenariosTable.teacherId))
+    .where(and(
+      eq(dialogAssignmentsTable.studentId, userId),
+      // Снятую с выдачи ситуацию начать нельзя, значит и уведомлять о ней не о
+      // чем.
+      eq(dialogScenariosTable.archived, false),
+    ))
+    .orderBy(desc(dialogAssignmentsTable.createdAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => ({
+    kind: "assignment" as const,
+    dedupeKey: `scenario:${row.id}`,
+    title: "Новый диалог от учителя",
+    body: row.title,
+    detail: [
+      row.teacherName ? `Разговор с ролью от учителя ${row.teacherName}.` : "Разговор с ролью от учителя.",
+      row.goal ? `Цель: ${row.goal}.` : "",
+      "Открыть можно в «Учёбе»: «Разговор со Снежей», блок «Задания от учителя».",
+    ].filter(Boolean).join(" "),
+    meta: { scenarioId: row.scenarioId, dialogAssignmentId: row.id },
+    createdAt: row.createdAt,
+  }));
+}
+
 async function collectDailyPlan(userId: number): Promise<Draft[]> {
   const progress = await computeDailyProgress(userId);
   if (!progress) return [];
@@ -325,6 +376,7 @@ export async function syncNotifications(userId: number): Promise<void> {
     collectFriendRequests(userId),
     collectTeacherRequests(userId),
     collectAssignments(userId),
+    collectScenarios(userId),
   ];
   if (questsAreDue) {
     rememberQuestSync(userId, now);
