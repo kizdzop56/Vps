@@ -6,7 +6,10 @@
 // POST /notifications/read   — уведомление открыто (гасит счётчик)
 //
 // Показ и прочтение разведены намеренно: окно всплывает один раз, а счётчик у
-// колокольчика держится до тех пор, пока ученик не откроет уведомление.
+// колокольчика держится до тех пор, пока пользователь не откроет уведомление.
+//
+// Набор событий зависит от роли: у ученика медали и задачи дня, у учителя —
+// сданные работы и заявки на время (см. lib/notifications.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Router } from "express";
@@ -14,7 +17,7 @@ import { db } from "@workspace/db";
 import { notificationsTable } from "@workspace/db";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { requireAuth, getUser } from "../lib/auth";
-import { FEED_LIMIT, syncNotifications } from "../lib/notifications";
+import { FEED_LIMIT, dropForeignKinds, syncNotifications } from "../lib/notifications";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -67,6 +70,10 @@ async function readFeed(userId: number) {
 router.get("/notifications", requireAuth, async (req, res) => {
   const user = getUser(req);
   try {
+    // Сначала уборка, потом сборка: у учителей осталась предыстория из медалей
+    // и задач дня, записанная прежней общей сборкой. Разбор одноразовый — на
+    // второй заход удалять уже нечего.
+    await dropForeignKinds(user.userId, user.role);
     await syncNotifications(user.userId);
   } catch (err) {
     // Сборка сорвалась — отдаём то, что уже накоплено. Пустой экран профиля
