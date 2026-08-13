@@ -3,13 +3,12 @@
 //
 // Раньше эта вкладка была сразу экраном слов. Пока режим был один, так и
 // работало, но у раздела появились соседи — конструктор предложений,
-// неправильные глаголы, времена, разговор со Снежей, ситуации от учителя, — и
-// деть их было некуда: либо кнопка среди колод (там она теряется), либо ещё одна
-// вкладка в панели (места нет, и панель не резиновая).
+// неправильные глаголы, времена, разговор со Снежей, — и деть их было некуда:
+// либо кнопка среди колод (там она теряется), либо ещё одна вкладка в панели
+// (места нет, и панель не резиновая).
 //
 // Поэтому вкладка стала оглавлением. Её работа — за один взгляд показать, что
-// вообще есть в разделе, и увести внутрь. Никаких данных она не грузит: списки
-// колод, статистика и прогресс живут на экранах режимов.
+// вообще есть в разделе, и увести внутрь.
 //
 // ── Куда ведут карточки ─────────────────────────────────────────────────────
 // Слова, сборка предложений и разговор начинаются сразу: выбирать там нечего.
@@ -21,12 +20,14 @@
 //   • времена — гонять все времена вперемешку почти бесполезно, ученик каждый
 //     раз выводит форму с нуля вместо того, чтобы увидеть закономерность.
 //
-// ── Ситуации стоят последними ───────────────────────────────────────────────
-// Это задания от учителя: разговор в заданной обстановке с ролью и целью, а
-// после — разбор ошибок, который уходит учителю. Отдельная карточка, а не часть
-// «Разговора со Снежей», потому что это ПРОВЕРКА, а не болтовня: у неё есть
-// конец, оценка и адресат. Смешивать их в одном экране значит превратить
-// свободный разговор в экзамен.
+// ── Ситуации от учителя больше НЕ отдельная карточка ────────────────────────
+// Раньше они стояли последним режимом, рядом с «Разговором со Снежей». Два
+// соседних входа в один и тот же разговор ученик читает как «одно и то же
+// дважды»: он открывал то одно, то другое и не понимал, где задание.
+//
+// Теперь ситуации живут ВНУТРИ разговора со Снежей — там же, где сама Снежа, — а
+// здесь о них сообщает метка на карточке разговора: «есть задание». Метка
+// красная и с числом: задание от учителя не должно теряться среди тренажёров.
 //
 // ── Заглушки стоят в списке, а не спрятаны ──────────────────────────────────
 // Режим без адреса показывается с подписью «Скоро»: карточка сразу говорит, что
@@ -41,7 +42,7 @@
 // Не по алфавиту и не по сложности разработки, а по порядку обучения: сначала
 // слова (без них остальное бессмысленно), потом сборка фразы из готовых слов,
 // потом формы глагола, потом времена — самое абстрактное. Разговор стоит
-// предпоследним намеренно: говорить имеет смысл, когда есть чем.
+// последним намеренно: говорить имеет смысл, когда есть чем.
 //
 // Эмодзи не используются: значки — глифы из своего набора.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,11 +54,13 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useQuery } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, gradients, radii, timing } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
+import { freshScenarioCount, scenarios } from "@/hooks/useScenarios";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
 
@@ -127,22 +130,12 @@ const MODES: Mode[] = [
     key: "tutor",
     title: "Разговор со Снежей",
     // Единственный режим, где отвечают голосом, — это и сказано первым словом.
-    about: "Говоришь вслух, Снежа отвечает голосом и просит повторить с ошибками",
+    // Здесь же лежат ситуации от учителя: они внутри разговора, а не рядом.
+    about: "Говоришь вслух, Снежа отвечает голосом. Здесь же задания-диалоги от учителя",
     icon: "sound",
     fill: ["#f472b6", "#db2777"] as const,
     edge: "#9d174d",
     href: "/flashcards/tutor",
-  },
-  {
-    key: "scenarios",
-    title: "Ситуации от учителя",
-    // Главное отличие от разговора — это задание с целью и разбором, и об этом
-    // сказано прямо: ученик должен понимать, что его работу увидят.
-    about: "Разговор в заданной обстановке. Учитель ставит цель и потом смотрит разбор",
-    icon: "handshake",
-    fill: ["#818cf8", "#4338ca"] as const,
-    edge: "#312e81",
-    href: "/flashcards/scenarios",
   },
 ];
 
@@ -234,6 +227,17 @@ export default function PracticeHub() {
   /** Какая заглушка раскрыта: подпись «в работе» показывается по нажатию. */
   const [asked, setAsked] = React.useState<string | null>(null);
 
+  // Ситуации от учителя: нужны только ради метки на карточке разговора. Сам
+  // список живёт внутри разговора со Снежей.
+  const scenariosQ = useQuery({
+    queryKey: ["scenarios-mine"],
+    queryFn: scenarios.mine,
+    // Учитель может выдать задание, пока приложение открыто.
+    refetchOnMount: "always",
+    staleTime: 15_000,
+  });
+  const waiting = freshScenarioCount(scenariosQ.data ?? []);
+
   const ready = MODES.filter((m) => m.href);
   const soon = MODES.filter((m) => !m.href);
 
@@ -253,38 +257,67 @@ export default function PracticeHub() {
         Выбери, чем заняться сейчас
       </Text>
 
-      {ready.map((mode) => (
-        <ChunkyTap
-          key={mode.key}
-          color={mode.edge + "66"}
-          onPress={() => router.push(mode.href as any)}
-          style={{ marginBottom: 12 }}
-          accessibilityLabel={`${mode.title}. ${mode.about}`}
-        >
-          <View style={cardBody(colors, { flexDirection: "row", alignItems: "center", gap: 13 })}>
-            <LinearGradient
-              colors={mode.fill as unknown as string[]}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={{
-                width: ICON, height: ICON, borderRadius: radii.sm + 3,
-                alignItems: "center", justifyContent: "center",
-              }}
-            >
-              <Glyph name={mode.icon} size={Math.round(ICON * 0.5)} color="#fff" />
-            </LinearGradient>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 17, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3 }}>
-                {mode.title}
-              </Text>
-              <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginTop: 3 }}>
-                {mode.about}
-              </Text>
+      {ready.map((mode) => {
+        // Метка о заданиях от учителя висит на разговоре: ситуации теперь внутри
+        // него, и узнать о них ученик должен здесь.
+        const badge = mode.key === "tutor" && waiting > 0 ? waiting : 0;
+        return (
+          <ChunkyTap
+            key={mode.key}
+            color={mode.edge + "66"}
+            onPress={() => router.push(mode.href as any)}
+            style={{ marginBottom: 12 }}
+            accessibilityLabel={badge > 0
+              ? `${mode.title}. ${mode.about}. Заданий от учителя: ${badge}`
+              : `${mode.title}. ${mode.about}`}
+          >
+            <View style={cardBody(colors, { flexDirection: "row", alignItems: "center", gap: 13 })}>
+              <View>
+                <LinearGradient
+                  colors={mode.fill as unknown as string[]}
+                  start={{ x: 0.1, y: 0 }}
+                  end={{ x: 0.9, y: 1 }}
+                  style={{
+                    width: ICON, height: ICON, borderRadius: radii.sm + 3,
+                    alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <Glyph name={mode.icon} size={Math.round(ICON * 0.5)} color="#fff" />
+                </LinearGradient>
+
+                {/* Счётчик на значке, а не строкой ниже: заметен боковым
+                    зрением, как метка на календаре. */}
+                {badge > 0 && (
+                  <View style={{
+                    position: "absolute", top: -6, right: -8,
+                    backgroundColor: "#e11d48", borderRadius: 10,
+                    minWidth: 20, height: 20, paddingHorizontal: 5,
+                    alignItems: "center", justifyContent: "center",
+                    borderWidth: 2, borderColor: "#ffffff",
+                  }}>
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "900", lineHeight: 14 }}>
+                      {badge > 9 ? "9+" : badge}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                  <Text style={{ fontSize: 17, fontWeight: "900", color: colors.foreground, letterSpacing: -0.3 }}>
+                    {mode.title}
+                  </Text>
+                  {badge > 0 && <Pill text="есть задание" tone="soft" color="#e11d48" />}
+                </View>
+                <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginTop: 3 }}>
+                  {mode.about}
+                </Text>
+              </View>
+              <Glyph name="chevron" size={21} color={colors.mutedForeground} />
             </View>
-            <Glyph name="chevron" size={21} color={colors.mutedForeground} />
-          </View>
-        </ChunkyTap>
-      ))}
+          </ChunkyTap>
+        );
+      })}
 
       {soon.length > 0 && (
         <>
