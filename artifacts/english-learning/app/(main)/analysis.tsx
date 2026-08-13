@@ -2,14 +2,24 @@
 // разбор по видам заданий и, главное, готовые рекомендации: что не так и что
 // с этим делать.
 //
-// Раньше экран выдавал только проценты: пять полос на ученика, вывод учитель
-// делал сам. Теперь тот же набор цифр проходит через набор правил
-// (utils/insights.ts) и превращается в короткие фразы. Правила, а не языковая
-// модель: считается мгновенно и локально, вывод воспроизводим и проверяем по
-// цифрам, которые лежат рядом на том же экране.
+// ── ДВА СЛОЯ ВЫВОДОВ, И ЭТО НАМЕРЕННО ────────────────────────────────────────
+// 1. Правила (utils/insights.ts). Считаются мгновенно и локально, без ключей и
+//    сети, вывод воспроизводим и проверяем по цифрам рядом. Видят только цифры:
+//    «аудирование просело», «работа ждёт проверки».
+// 2. Нейросеть (GET /api/analysis/ai). Читает САМИ ОШИБКИ — неверные ответы и
+//    формулировки ошибок из диалогов — и говорит, какая тема провалена и что
+//    задать на этой неделе. Правилом такое не опишешь: для этого надо читать
+//    ответы, а не проценты.
 //
-// Данные живые: перезапрос при каждом открытии вкладки, по свайпу вниз и раз в
-// 30 секунд, пока экран открыт. Рекомендации пересчитываются вместе с ними.
+// Первый слой всегда на месте, даже когда модель недоступна. Второй стоит
+// сверху и подписан, чтобы учитель знал, чей это вывод.
+//
+// Разбор от модели ПЛАТНЫЙ и медленный, поэтому сервер держит его в кэше и
+// пересчитывает, только когда данные изменились (или по кнопке «Обновить»).
+// Экран запрашивает его при открытии и по свайпу, но НЕ по таймеру.
+//
+// Данные цифр живые: перезапрос при каждом открытии вкладки, по свайпу вниз и
+// раз в 30 секунд, пока экран открыт.
 //
 // Оформление сдержаннее ученических экранов: те же плитки с цветной тенью,
 // но без наклонов и игровых эффектов. Эмодзи не используются — значки видов
@@ -17,7 +27,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
-  TouchableOpacity, Platform, RefreshControl,
+  TouchableOpacity, Pressable, Platform, RefreshControl,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -66,7 +76,7 @@ const TONE_ICONS: Record<InsightTone, GlyphName> = {
   info: "help",
 };
 
-/** Как часто обновляются данные, пока экран открыт. */
+/** Как часто обновляются цифры, пока экран открыт. Разбора это не касается. */
 const POLL_MS = 30_000;
 
 type Student = {
@@ -78,6 +88,19 @@ type StudentWithStats = Student & {
   loading: boolean;
   /** Просроченные назначения этого ученика: считается по teacher-results. */
   overdue: number;
+};
+
+/** Разбор от модели: сводка по классу, общие советы и советы по ученикам. */
+type AiAdvice = { studentId: number; name: string; verdict: string; advice: string[] };
+type AiReport = { summary: string; focus: string[]; students: AiAdvice[] };
+type AiState = {
+  report: AiReport | null;
+  loading: boolean;
+  /** Почему разбора нет. Пусто — всё в порядке. */
+  problem: string;
+  generatedAt: string | null;
+  /** Показан прошлый разбор: свежий не собрался. */
+  stale: boolean;
 };
 
 /** Цвет балла в фирменной гамме: зелёного в палитре нет намеренно. */
@@ -95,6 +118,49 @@ export default function AnalysisScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [ai, setAi] = useState<AiState>({
+    report: null, loading: true, problem: "", generatedAt: null, stale: false,
+  });
+
+  /**
+   * Разбор от модели. force — кнопка «Обновить разбор»: пересобрать сейчас,
+   * не дожидаясь, пока изменятся данные.
+   *
+   * По таймеру НЕ вызывается: это запрос к платной модели, и опрашивать её
+   * каждые полминуты нельзя. Сервер к тому же держит кэш и на неизменных
+   * данных вернёт прежний разбор.
+   */
+  const loadAi = useCallback(async (force = false) => {
+    setAi((prev) => ({ ...prev, loading: true, problem: "" }));
+    try {
+      const data = await apiFetch(`/api/analysis/ai${force ? "?force=1" : ""}`);
+      if (data?.ok) {
+        setAi({
+          report: data.report ?? null,
+          loading: false,
+          problem: "",
+          generatedAt: data.generatedAt ?? null,
+          stale: data.stale === true,
+        });
+      } else {
+        setAi({
+          report: null,
+          loading: false,
+          problem: data?.detail ?? "Разбор недоступен",
+          generatedAt: null,
+          stale: false,
+        });
+      }
+    } catch (e: any) {
+      setAi({
+        report: null,
+        loading: false,
+        problem: e?.message ?? "Разбор не загрузился",
+        generatedAt: null,
+        stale: false,
+      });
+    }
+  }, []);
 
   /**
    * silent — фоновое обновление по таймеру: без спиннера и без сброса списка,
@@ -149,6 +215,7 @@ export default function AnalysisScreen() {
   }, []);
 
   useEffect(() => { loadData("initial"); }, [loadData]);
+  useEffect(() => { loadAi(false); }, [loadAi]);
   useFocusEffect(useCallback(() => { loadData("silent"); }, [loadData]));
 
   // Автообновление, пока экран открыт: учитель проверяет работы в соседней
@@ -173,6 +240,10 @@ export default function AnalysisScreen() {
   const summary = classSummary(
     students.map((s) => ({ stats: s.stats, signals: { overdue: s.overdue } })),
   );
+
+  /** Совет модели по конкретному ученику. */
+  const aiFor = (id: number): AiAdvice | undefined =>
+    ai.report?.students.find((s) => s.studentId === id);
 
   // Сортировка «кому нужна помощь»: сначала те, у кого есть срочное (работы на
   // проверке, просрочки), затем по возрастанию среднего балла, в конце — те,
@@ -232,6 +303,19 @@ export default function AnalysisScreen() {
     center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 14, paddingBottom: 80, paddingHorizontal: 32 },
     empty: { fontSize: 15, color: colors.mutedForeground, textAlign: "center", lineHeight: 21 },
     divider: { height: 1, backgroundColor: colors.border, marginBottom: 14 },
+    // Разбор модели: отдельная поверхность в цвете бренда. Он должен читаться
+    // как чужой голос, а не как ещё одна наша плашка.
+    aiCard: {
+      backgroundColor: colors.primary + "0d",
+      borderRadius: radii.md, borderWidth: 1, borderColor: colors.primary + "33",
+      padding: 15, marginBottom: 16,
+    },
+    aiHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+    aiTitle: { flex: 1, fontSize: 15, fontWeight: "900", color: colors.foreground },
+    aiText: { fontSize: 13.5, lineHeight: 21, color: colors.foreground },
+    aiBullet: { flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 9 },
+    aiBulletText: { flex: 1, fontSize: 13, lineHeight: 19, color: colors.foreground },
+    aiFoot: { fontSize: 11, color: colors.mutedForeground, marginTop: 12, fontVariant: ["tabular-nums"] },
   });
 
   /** Тон рекомендации → цвет. Красный только для срочного. */
@@ -327,6 +411,116 @@ export default function AnalysisScreen() {
     );
   };
 
+  /** Разбор от модели по классу: сводка и что делать на этой неделе. */
+  const renderAiBlock = () => {
+    if (ai.loading && !ai.report) {
+      return (
+        <View style={styles.aiCard}>
+          <View style={styles.aiHead}>
+            <Glyph name="spark" size={17} color={colors.primary} />
+            <Text style={styles.aiTitle}>Разбор от нейросети</Text>
+            <ActivityIndicator size="small" color={colors.primary} />
+          </View>
+          <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground }}>
+            Читает работы и ошибки учеников. Это занимает несколько секунд.
+          </Text>
+        </View>
+      );
+    }
+
+    if (!ai.report) {
+      // Разбора нет — это не поломка экрана: рекомендации по правилам ниже
+      // работают всегда. Поэтому тихая плашка, а не красная ошибка.
+      return (
+        <View style={styles.aiCard}>
+          <View style={styles.aiHead}>
+            <Glyph name="spark" size={17} color={colors.mutedForeground} />
+            <Text style={[styles.aiTitle, { color: colors.mutedForeground }]}>Разбор от нейросети</Text>
+            <Pressable onPress={() => loadAi(true)} hitSlop={8} accessibilityLabel="Повторить">
+              <Glyph name="repeat" size={16} color={colors.primary} />
+            </Pressable>
+          </View>
+          <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground }}>
+            {ai.problem || "Пока недоступен"}
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.aiCard}>
+        <View style={styles.aiHead}>
+          <Glyph name="spark" size={17} color={colors.primary} />
+          <Text style={styles.aiTitle}>Разбор от нейросети</Text>
+          {ai.loading
+            ? <ActivityIndicator size="small" color={colors.primary} />
+            : (
+              <Pressable onPress={() => loadAi(true)} hitSlop={8} accessibilityLabel="Обновить разбор">
+                <Glyph name="repeat" size={16} color={colors.primary} />
+              </Pressable>
+            )}
+        </View>
+
+        {!!ai.report.summary && <Text style={styles.aiText}>{ai.report.summary}</Text>}
+
+        {ai.report.focus.length > 0 && (
+          <View style={{ marginTop: 10 }}>
+            <Text style={{
+              fontSize: 11, fontWeight: "800", letterSpacing: 1,
+              textTransform: "uppercase", color: colors.mutedForeground,
+            }}>
+              Что делать на этой неделе
+            </Text>
+            {ai.report.focus.map((line, i) => (
+              <View key={`focus-${i}`} style={styles.aiBullet}>
+                <View style={{ marginTop: 2 }}>
+                  <Glyph name="target" size={14} color={colors.primary} />
+                </View>
+                <Text style={styles.aiBulletText}>{line}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        <Text style={styles.aiFoot}>
+          {ai.stale
+            ? "Показан прошлый разбор: свежий собрать не удалось"
+            : "Собран по всем результатам и ошибкам. Обновляется, когда появляются новые работы"}
+        </Text>
+      </View>
+    );
+  };
+
+  /** Совет модели внутри карточки ученика. */
+  const renderAiAdvice = (advice: AiAdvice) => (
+    <View style={{
+      backgroundColor: colors.primary + "0d",
+      borderRadius: radii.sm + 2, borderWidth: 1, borderColor: colors.primary + "33",
+      padding: 12, marginBottom: 8,
+    }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+        <View style={{ marginTop: 1 }}>
+          <Glyph name="spark" size={16} color={colors.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          {!!advice.verdict && (
+            <Text style={{ fontSize: 13.5, fontWeight: "800", color: colors.foreground, lineHeight: 19 }}>
+              {advice.verdict}
+            </Text>
+          )}
+          {advice.advice.map((line, i) => (
+            <Text
+              key={`adv-${i}`}
+              style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginTop: 4 }}
+            >
+              {`• ${line}`}
+            </Text>
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+
   if (isLoading) return (
     <View style={[styles.container, styles.center]}>
       <ActivityIndicator color={colors.primary} size="large" />
@@ -357,7 +551,12 @@ export default function AnalysisScreen() {
         <ScrollView
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadData("refresh")} />}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => { loadData("refresh"); loadAi(false); }}
+            />
+          }
         >
           {/* Состояние класса тремя числами */}
           <View style={styles.strip}>
@@ -383,6 +582,10 @@ export default function AnalysisScreen() {
             </View>
           </View>
 
+          {/* Разбор от модели идёт первым: он объясняет причину, а плашки ниже
+              говорят, что горит прямо сейчас. */}
+          {renderAiBlock()}
+
           {/* Рекомендации по классу целиком */}
           {summary.insights.length > 0 && (
             <>
@@ -400,6 +603,7 @@ export default function AnalysisScreen() {
             const insightsList = student.loading
               ? []
               : studentInsights(student.stats, { overdue: student.overdue });
+            const advice = aiFor(student.id);
             return (
               <View key={student.id} style={styles.card}>
                 {/* Шапка карточки — переход в профиль ученика */}
@@ -432,12 +636,13 @@ export default function AnalysisScreen() {
                   <Glyph name="chevron" size={18} color={colors.mutedForeground} />
                 </TouchableOpacity>
 
-                {/* Рекомендации идут ДО графика: сначала вывод, потом цифры,
-                    на которых он основан. Обратный порядок заставлял учителя
-                    каждый раз делать вывод самому. */}
+                {/* Сначала разбор модели: он про причину ошибок. Ниже правила —
+                    они про срочное: проверить работу, напомнить о просрочке. */}
+                {!!advice && renderAiAdvice(advice)}
+
                 {insightsList.map((ins, i) => renderInsight(ins, `${student.id}-${i}`))}
 
-                {insightsList.length > 0 && <View style={{ height: 4 }} />}
+                {(insightsList.length > 0 || !!advice) && <View style={{ height: 4 }} />}
                 <View style={styles.divider} />
 
                 {student.loading ? (
