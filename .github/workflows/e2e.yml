@@ -1,0 +1,104 @@
+# E2E-прогон по живому деплою: настоящий браузер ходит по приложению под
+# учителем, учеником и родителем; рядом проверки API.
+#
+# Когда запускается:
+#   - каждый вечер в 18:00 по Минску (15:00 UTC);
+#   - вручную: Actions → «E2E-прогон» → Run workflow (можно указать свой стенд);
+#   - при изменении самих тестов.
+#
+# Результат падения уходит в GitHub Issue с меткой e2e-failure — оттуда его
+# читает QA-агент и раскладывает по тикетам.
+name: E2E-прогон
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Адрес стенда"
+        required: false
+        default: "https://v1-app-j975.onrender.com"
+  schedule:
+    - cron: "0 15 * * *"
+  push:
+    paths:
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ github.event.inputs.base_url || 'https://v1-app-j975.onrender.com' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Свой npm-проект: папка e2e вне pnpm-воркспейса, зависимости приложения
+      # не задеваются.
+      - name: Установка Playwright
+        working-directory: e2e
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      # continue-on-error: падение тестов — это ожидаемый исход прогона, отчёт
+      # нужно собрать и опубликовать в любом случае. Статус job выставим в конце.
+      - name: Прогон
+        id: run
+        continue-on-error: true
+        working-directory: e2e
+        run: npm test
+
+      - name: Отчёт
+        if: always()
+        working-directory: e2e
+        run: node summarize.mjs report.json > summary.md && cat summary.md
+
+      - name: Артефакты (скриншоты, видео, трейсы)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/report.json
+            e2e/summary.md
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Один открытый иссью на все падения: повторные прогоны добавляют
+      # комментарий, а не плодят новые тикеты.
+      - name: Отчёт о падениях в Issue
+        if: always() && steps.run.outcome == 'failure'
+        working-directory: e2e
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create e2e-failure --color B60205 --description "Падения E2E-прогона" 2>/dev/null || true
+          existing=$(gh issue list --label e2e-failure --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file summary.md
+          else
+            gh issue create \
+              --title "E2E: падения на стенде $(date -u '+%Y-%m-%d')" \
+              --label e2e-failure \
+              --body-file summary.md
+          fi
+
+      - name: Итог
+        if: always()
+        run: |
+          if [ "${{ steps.run.outcome }}" = "failure" ]; then
+            echo "E2E-прогон нашёл падения — подробности в отчёте и в Issue с меткой e2e-failure"
+            exit 1
+          fi
+          echo "E2E-прогон зелёный"
