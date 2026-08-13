@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Лента уведомлений: сборка событий ученика.
+// Лента уведомлений: сборка событий пользователя.
 //
 // ── Главное решение: события ВЫВОДЯТСЯ ИЗ СОСТОЯНИЯ ─────────────────────────
 // Уведомления не пишутся в момент события. Они собираются при чтении ленты из
@@ -18,6 +18,12 @@
 // Плата: у задач дня время уведомления — момент, когда сервер это заметил, а не
 // когда галочка реально встала. У остальных событий время берётся из исходной
 // строки (unlocked_at, created_at, assigned_at), то есть точное.
+//
+// ── Лента не только ученическая ─────────────────────────────────────────────
+// Почти все источники про ученика, но один — про УЧИТЕЛЯ: пройденный учеником
+// диалог. Отдельной ленты для этого заводить незачем, а роль здесь не
+// спрашивается намеренно: у ученика нет своих ситуаций, и его запрос просто
+// вернёт пустой список.
 //
 // ── Первый заход глушит ПРЕДЫСТОРИЮ, а не первое событие ────────────────────
 // У ученика с сорока медалями и двадцатью заданиями первая же сборка выдала бы
@@ -46,9 +52,10 @@ import {
   assignmentsTable,
   dialogScenariosTable,
   dialogAssignmentsTable,
+  dialogAttemptsTable,
   usersTable,
 } from "@workspace/db";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import { buildServerDailyPlan } from "./dailyPlan";
 import { computeDailyProgress } from "./dailyProgress";
 import { logger } from "./logger";
@@ -293,10 +300,58 @@ async function collectScenarios(userId: number): Promise<Draft[]> {
     detail: [
       row.teacherName ? `Разговор с ролью от учителя ${row.teacherName}.` : "Разговор с ролью от учителя.",
       row.goal ? `Цель: ${row.goal}.` : "",
-      "Открыть можно в «Учёбе»: «Разговор со Снежей», блок «Задания от учителя».",
+      "Открыть можно в «Учёбе»: «Разговор со Снежей», блок «Задания учителя».",
     ].filter(Boolean).join(" "),
     meta: { scenarioId: row.scenarioId, dialogAssignmentId: row.id },
     createdAt: row.createdAt,
+  }));
+}
+
+/**
+ * Пройденные диалоги — событие УЧИТЕЛЯ.
+ *
+ * Ученик заканчивает разговор, и разбор молча ложится в список: учитель узнавал
+ * о нём, только если сам заходил и проверял. Теперь узнаёт сразу.
+ *
+ * Берём и «прошёл», и «вышел на середине»: незаконченный разговор учителю важен
+ * не меньше — это и есть сигнал, что задание не пошло.
+ */
+async function collectScenarioReviews(userId: number): Promise<Draft[]> {
+  const rows = await db
+    .select({
+      id: dialogAttemptsTable.id,
+      status: dialogAttemptsTable.status,
+      turns: dialogAttemptsTable.turns,
+      mistakes: dialogAttemptsTable.mistakes,
+      startedAt: dialogAttemptsTable.startedAt,
+      finishedAt: dialogAttemptsTable.finishedAt,
+      scenarioId: dialogScenariosTable.id,
+      title: dialogScenariosTable.title,
+      studentId: dialogAttemptsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(dialogAttemptsTable)
+    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAttemptsTable.scenarioId))
+    .leftJoin(usersTable, eq(usersTable.id, dialogAttemptsTable.studentId))
+    .where(and(
+      eq(dialogScenariosTable.teacherId, userId),
+      ne(dialogAttemptsTable.status, "active"),
+    ))
+    .orderBy(desc(dialogAttemptsTable.startedAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => ({
+    kind: "assignment" as const,
+    dedupeKey: `scenario_review:${row.id}`,
+    title: row.status === "done" ? "Диалог пройден" : "Диалог прерван",
+    body: `${row.studentName ?? "Ученик"}: ${row.title}`,
+    detail: [
+      `Реплик: ${row.turns}. Ошибок: ${row.mistakes}.`,
+      row.status === "done" ? "" : "Ученик вышел, не закончив задание.",
+      "Весь диалог с разбором — в «Заданиях», вкладка «Ответы учеников».",
+    ].filter(Boolean).join(" "),
+    meta: { attemptId: row.id, scenarioId: row.scenarioId, studentId: row.studentId },
+    createdAt: row.finishedAt ?? row.startedAt,
   }));
 }
 
@@ -377,6 +432,7 @@ export async function syncNotifications(userId: number): Promise<void> {
     collectTeacherRequests(userId),
     collectAssignments(userId),
     collectScenarios(userId),
+    collectScenarioReviews(userId),
   ];
   if (questsAreDue) {
     rememberQuestSync(userId, now);
