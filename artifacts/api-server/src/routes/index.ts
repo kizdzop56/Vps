@@ -6,6 +6,7 @@ import studentProfileRouter from "./studentProfile";
 import interestsRouter from "./interests";
 import assignmentsRouter from "./assignments";
 import submissionsRouter from "./submissions";
+import analysisRouter from "./analysis";
 import voiceChatRouter from "./voiceChat";
 import scenariosRouter from "./scenarios";
 import timeTrackingRouter from "./timeTracking";
@@ -40,6 +41,9 @@ router.use(studentProfileRouter);
 router.use(interestsRouter);
 router.use(assignmentsRouter);
 router.use(submissionsRouter);
+// Разбор успеваемости нейросетью: /analysis/ai. Своё пространство путей.
+// Тяжёлый и платный, поэтому с кэшем внутри — см. шапку файла.
+router.use(analysisRouter);
 router.use(voiceChatRouter);
 // Ситуации от учителя: роль-плей как задание (/scenarios/*,
 // /scenario-attempts/*). Со свободным разговором общего только слой ИИ:
@@ -52,7 +56,7 @@ router.use(storageRouter);
 router.use(connectionsRouter);
 router.use(calendarRouter);
 router.use(gamificationRouter);
-// Лента событий ученика: /notifications. Своё пространство путей, ни с чем не
+// Лента событий: /notifications. Своё пространство путей, ни с чем не
 // пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
 router.use(notificationsRouter);
 // Рейд-босс подключается ДО тренажёров: перехватчик дописывает к ответу поле

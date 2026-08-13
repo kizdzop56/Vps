@@ -37,6 +37,10 @@ export interface NotificationLook {
  * тёплые (это про награду и про срок), медаль — маджента, как у сложных медалей,
  * заявки — фиолетовый градиент наград. Так тип события считывается ещё до
  * чтения текста.
+ *
+ * Три последних вида — учительские: сданная работа, запись в календаре и
+ * принятое приглашение. У них своя гамма, чтобы события «про учеников» не
+ * путались с событиями «про меня».
  */
 const KIND_LOOK: Record<NotificationKind, { icon: GlyphName; gradient: readonly string[]; edge: string }> = {
   quest:           { icon: "check",    gradient: gradients.action,     edge: accents.indigoDeep },
@@ -45,6 +49,9 @@ const KIND_LOOK: Record<NotificationKind, { icon: GlyphName; gradient: readonly 
   friend_request:  { icon: "userPlus", gradient: gradients.reward,     edge: accents.violetDeep },
   teacher_request: { icon: "cap",      gradient: gradients.reward,     edge: accents.violetDeep },
   assignment:      { icon: "book",     gradient: gradients.fire,       edge: "#b45309" },
+  submission:      { icon: "check",    gradient: gradients.progress,   edge: accents.violetDeep },
+  booking:         { icon: "calendar", gradient: gradients.action,     edge: accents.indigoDeep },
+  student_joined:  { icon: "users",    gradient: gradients.reward,     edge: accents.violetDeep },
 };
 
 const FALLBACK_LOOK = { icon: "spark" as GlyphName, gradient: gradients.action, edge: accents.indigoDeep };
@@ -124,6 +131,20 @@ export function describeNotification(n: AppNotification): NotificationLook {
       title: n.title,
       body: n.body,
       detail: due ? `${n.detail}\n${due}` : n.detail,
+    };
+  }
+
+  // Работа ждёт проверки — не рядовая сдача, а дело: тёплая гамма, как у
+  // метки «на проверке» в списке ответов.
+  if (n.kind === "submission" && n.title.includes("ждёт проверки")) {
+    return {
+      ...base,
+      icon: "clock",
+      gradient: gradients.fire,
+      edge: "#b45309",
+      title: n.title,
+      body: n.body,
+      detail: n.detail,
     };
   }
 
