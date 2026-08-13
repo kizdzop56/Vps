@@ -30,6 +30,12 @@
 // только СВОЕМУ ученику: проверяем через canViewStudent — ту же функцию, что
 // охраняет статистику. Ученик видит только выданное ему и только свои попытки.
 //
+// ── Условие завершения не настраивается ─────────────────────────────────────
+// Число реплик НЕОБЯЗАТЕЛЬНО: turnsTarget = 0 означает «учитель не ограничивал».
+// Что закрывает задание, выводится из самого задания (см. isAttemptComplete в
+// lib/scenarioChat.ts), а finishMode остаётся в базе только как подпись для
+// старых записей и списков.
+//
 // ── Очки ────────────────────────────────────────────────────────────────────
 // За закрытую ситуацию ученик получает SCENARIO_POINTS один раз на попытку. В
 // дневной потолок свободных разговоров это НЕ входит: там своя механика и свои
@@ -104,8 +110,23 @@ function readStrictness(value: unknown): Strictness {
   return value === "gentle" || value === "strict" ? value : "normal";
 }
 
-function readFinishMode(value: unknown): string {
-  return value === "goal" || value === "both" ? value : "turns";
+/**
+ * Число реплик. НОЛЬ — учитель не ограничивал.
+ *
+ * Пустое поле, ноль и мусор дают 0, а не подставленные двадцать: подставленное
+ * условие завершения — это условие, о котором учитель не знает, и именно оно
+ * мешало закрывать задание по достигнутой цели.
+ */
+function readTurns(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(MIN_TURNS, Math.min(MAX_TURNS, Math.round(n)));
+}
+
+/** Подпись условия завершения. Выводится из задания, отдельно не настраивается. */
+function finishModeFor(goal: string | null, turnsTarget: number): string {
+  if (goal) return turnsTarget > 0 ? "both" : "goal";
+  return "turns";
 }
 
 function readText(value: unknown, limit: number): string {
@@ -288,7 +309,7 @@ router.post("/scenarios", requireAuth, async (req, res) => {
   const situation = readText(body["situation"], MAX_TEXT);
   const role = readText(body["role"], 200);
   const goal = readText(body["goal"], MAX_TEXT);
-  const finishMode = readFinishMode(body["finishMode"]);
+  const turnsTarget = readTurns(body["turnsTarget"]);
 
   if (!title) {
     res.status(400).json({ error: "Нужно название ситуации" });
@@ -302,17 +323,13 @@ router.post("/scenarios", requireAuth, async (req, res) => {
     res.status(400).json({ error: "Укажите, кем будет Снежа в этом разговоре" });
     return;
   }
-  // Задание «до достижения цели» без самой цели закрыть невозможно: ученик
-  // застрянет в бесконечном диалоге.
-  if ((finishMode === "goal" || finishMode === "both") && !goal) {
-    res.status(400).json({ error: "Для завершения по цели нужно описать саму цель" });
+  // Без цели и без числа реплик задание нечем закрыть: ученик говорил бы
+  // бесконечно и заканчивал разговор кнопкой, а разбор приходил бы с пометкой
+  // «вышел на середине».
+  if (!goal && turnsTarget === 0) {
+    res.status(400).json({ error: "Задайте цель или число реплик: иначе задание нечем закончить" });
     return;
   }
-
-  const turnsRaw = Number(body["turnsTarget"]);
-  const turnsTarget = Number.isFinite(turnsRaw)
-    ? Math.max(MIN_TURNS, Math.min(MAX_TURNS, Math.round(turnsRaw)))
-    : 20;
 
   const [row] = await db
     .insert(dialogScenariosTable)
@@ -322,7 +339,7 @@ router.post("/scenarios", requireAuth, async (req, res) => {
       situation,
       role,
       goal: goal || null,
-      finishMode,
+      finishMode: finishModeFor(goal || null, turnsTarget),
       turnsTarget,
       criteria: readCriteria(body["criteria"]),
       strictness: readStrictness(body["strictness"]),
@@ -434,16 +451,22 @@ router.patch("/scenarios/:id", requireAuth, async (req, res) => {
   if (body["situation"] !== undefined) patch.situation = readText(body["situation"], MAX_TEXT) || scenario.situation;
   if (body["role"] !== undefined) patch.role = readText(body["role"], 200) || scenario.role;
   if (body["goal"] !== undefined) patch.goal = readText(body["goal"], MAX_TEXT) || null;
-  if (body["finishMode"] !== undefined) patch.finishMode = readFinishMode(body["finishMode"]);
   if (body["criteria"] !== undefined) patch.criteria = readCriteria(body["criteria"]);
   if (body["strictness"] !== undefined) patch.strictness = readStrictness(body["strictness"]);
   if (body["level"] !== undefined) patch.level = readText(body["level"], 20) || null;
   if (body["opener"] !== undefined) patch.opener = readText(body["opener"], 300) || null;
   if (body["archived"] !== undefined) patch.archived = body["archived"] === true;
-  if (body["turnsTarget"] !== undefined) {
-    const n = Number(body["turnsTarget"]);
-    if (Number.isFinite(n)) patch.turnsTarget = Math.max(MIN_TURNS, Math.min(MAX_TURNS, Math.round(n)));
+  if (body["turnsTarget"] !== undefined) patch.turnsTarget = readTurns(body["turnsTarget"]);
+
+  // Условие завершения пересчитываем сами: правка цели или числа реплик меняет
+  // и его, а держать это в руках учителя мы больше не хотим.
+  const nextGoal = patch.goal !== undefined ? patch.goal : scenario.goal;
+  const nextTurns = patch.turnsTarget !== undefined ? patch.turnsTarget : scenario.turnsTarget;
+  if (!nextGoal && nextTurns === 0) {
+    res.status(400).json({ error: "Оставьте цель или число реплик: иначе задание нечем закончить" });
+    return;
   }
+  patch.finishMode = finishModeFor(nextGoal ?? null, nextTurns);
 
   const [row] = await db
     .update(dialogScenariosTable)
@@ -944,7 +967,6 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
     .returning();
 
   const complete = isAttemptComplete({
-    finishMode: found.scenario.finishMode,
     turns,
     turnsTarget: found.scenario.turnsTarget,
     goalReached,
