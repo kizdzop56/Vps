@@ -1,10 +1,19 @@
-// Экран заданий: у учителя — созданные задания и колоды, у ученика —
+// Экран заданий: у учителя — созданные задания, колоды и диалоги, у ученика —
 // назначенное и выполненное.
 //
 // Эмодзи в интерфейсе не используются: в пустых состояниях и в строке колоды
 // стоят глифы из своего набора. Значок колоды рисует DeckGlyph — тот же
 // компонент, что в разделе «Слова», поэтому колода узнаётся одинаково везде.
 // Поле deck.emoji из базы при этом не меняется.
+//
+// ── Диалоги живут здесь ──────────────────────────────────────────────────────
+// У ситуаций для разговора была своя вкладка в нижней панели, и это было лишним:
+// для учителя диалог — такая же работа для ученика, как тест или колода.
+// Создание переехало в «Создать задание», сами диалоги — в этот экран
+// (категория «Диалоги» и общий список «Все»), разборы — в «Ответы учеников».
+// Главное следствие: созданный диалог НИКУДА НЕ ДЕВАЕТСЯ и выдаётся повторно
+// кнопкой, а не пересозданием. Всё это лежит в components/TeacherDialogs.tsx —
+// экран и без того велик.
 //
 // ── Оформление ───────────────────────────────────────────────────────────────
 // Экран приведён к общему языку приложения («объёмная» вёрстка, как в разделах
@@ -57,6 +66,11 @@ import { useGamification } from "@/hooks/useGamification";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useQuery } from "@tanstack/react-query";
 import { fc } from "@/hooks/useFlashcards";
+import { scenarios as scenarioApi } from "@/hooks/useScenarios";
+import {
+  DialogRow, TeacherDialogReviews, TeacherDialogs,
+  DIALOGS_KEY, DIALOG_REVIEWS_KEY,
+} from "@/components/TeacherDialogs";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
 import { TypeArt } from "@/components/ui/TypeArt";
@@ -243,8 +257,11 @@ const FILTERS = ["Все", "text_test", "audio", "reading", "video", "free_form"
 // учителя вообще не было входа в свои колоды: вкладка «Слова» скрыта для него,
 // и после создания колоды вернуться к ней было нельзя.
 const DECKS_FILTER = "decks" as const;
-const TEACHER_FILTERS = [...FILTERS, DECKS_FILTER] as const;
-type Filter = typeof FILTERS[number] | typeof DECKS_FILTER;
+// «Диалоги» — ситуации для разговора. Раньше у них была своя вкладка внизу;
+// теперь они здесь, вместе с остальными работами для ученика.
+const DIALOGS_FILTER = "dialogs" as const;
+const TEACHER_FILTERS = [...FILTERS, DECKS_FILTER, DIALOGS_FILTER] as const;
+type Filter = typeof FILTERS[number] | typeof DECKS_FILTER | typeof DIALOGS_FILTER;
 
 type StudentItem = {
   id: number; name: string; surname?: string | null; username: string; avatarEmoji: string | null; avatarColor: string | null;
@@ -535,6 +552,25 @@ export default function AssignmentsScreen() {
   const decksQ = useQuery({ queryKey: ["fc-my-decks"], queryFn: fc.getMyDecks, enabled: isTeacher });
   const decks = asArray(decksQ.data);
 
+  // Диалоги учителя. Здесь нужны только ради счётчиков и общего списка: сами
+  // карточки рисует TeacherDialogs по тому же ключу запроса.
+  const dialogsQ = useQuery({
+    queryKey: DIALOGS_KEY,
+    queryFn: scenarioApi.list,
+    enabled: isTeacher,
+    staleTime: 10_000,
+  });
+  const dialogs = asArray(dialogsQ.data);
+
+  // Разборы диалогов: по ним считается метка «новое» в шапке.
+  const dialogReviewsQ = useQuery({
+    queryKey: DIALOG_REVIEWS_KEY,
+    queryFn: scenarioApi.attempts,
+    enabled: isTeacher,
+    staleTime: 10_000,
+  });
+  const freshReviews = asArray(dialogReviewsQ.data).filter((a) => a?.fresh).length;
+
   // Gamification: daily goal bar
   const { stats: gamStats, loadStats, updateDailyGoal } = useGamification();
 
@@ -584,7 +620,11 @@ export default function AssignmentsScreen() {
     loadMyAssignments();
     loadTeacherSubs();
     loadMyCompleted();
-    if (isTeacher) decksQ.refetch();
+    if (isTeacher) {
+      decksQ.refetch();
+      dialogsQ.refetch();
+      dialogReviewsQ.refetch();
+    }
   }, [loadMyTasks, loadMyAssignments, loadTeacherSubs, loadMyCompleted, isTeacher]));
 
   // Auto-poll every 10 seconds so new assignments appear quickly
@@ -615,9 +655,13 @@ export default function AssignmentsScreen() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadMyTasks(), loadMyAssignments(), loadTeacherSubs(), loadMyCompleted()]);
+    await Promise.all([
+      loadMyTasks(), loadMyAssignments(), loadTeacherSubs(), loadMyCompleted(),
+      isTeacher ? dialogsQ.refetch() : Promise.resolve(),
+      isTeacher ? dialogReviewsQ.refetch() : Promise.resolve(),
+    ]);
     setRefreshing(false);
-  }, [loadMyTasks, loadMyAssignments, loadTeacherSubs, loadMyCompleted]);
+  }, [loadMyTasks, loadMyAssignments, loadTeacherSubs, loadMyCompleted, isTeacher]);
 
   const handleDeleteAssignment = async (id: number) => {
     setDeletingId(id);
@@ -643,6 +687,7 @@ export default function AssignmentsScreen() {
    */
   const filterCount = (f: Filter): number => {
     if (f === DECKS_FILTER) return decks.length;
+    if (f === DIALOGS_FILTER) return dialogs.length;
     const source: any[] = isTeacher ? myAssignments : myTasks;
     if (f === "Все") return source.length;
     return source.filter((a) => a.type === f).length;
@@ -1147,6 +1192,24 @@ export default function AssignmentsScreen() {
           );
         })()}
 
+        {/* Разборы диалогов: раньше о пройденном диалоге учитель узнавал, только
+            если сам заходил в бывшую вкладку «Диалоги». Строка нажимается и
+            уводит прямо в разборы. */}
+        {isTeacher && freshReviews > 0 && (
+          <Pressable
+            onPress={() => setViewMode("results")}
+            accessibilityRole="button"
+            accessibilityLabel="Открыть разборы диалогов"
+            style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}
+          >
+            <Glyph name="chat" size={14} color={colors.destructive} />
+            <Text style={{ fontSize: 13, fontWeight: "800", color: colors.destructive }}>
+              {freshReviews} {pluralRu(freshReviews, "новый разбор", "новых разбора", "новых разборов")} диалога
+            </Text>
+            <Glyph name="chevron" size={14} color={colors.destructive} />
+          </Pressable>
+        )}
+
         {/* Сводка по срокам у ученика: сколько заданий горит прямо сейчас. */}
         {isStudent && (() => {
           const urgent = countUrgent(myTasks, (t: any) => t.dueAt);
@@ -1224,20 +1287,24 @@ export default function AssignmentsScreen() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
               renderItem={({ item: f }) => {
-                const isType = f !== "Все" && f !== DECKS_FILTER;
+                const isType = f !== "Все" && f !== DECKS_FILTER && f !== DIALOGS_FILTER;
                 const active = filter === f;
+                const label = f === "Все" ? "Все"
+                  : f === DECKS_FILTER ? "Колоды"
+                    : f === DIALOGS_FILTER ? "Диалоги"
+                      : TYPE_LABELS[f];
                 return (
                   <ChunkyTap
                     onPress={() => setFilter(f)}
                     radius={radii.pill}
                     lift={EDGE_SM}
                     edge={active ? "#b9a7ee" : "#ded6f5"}
-                    accessibilityLabel={f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
+                    accessibilityLabel={label}
                   >
                     <View style={[styles.filterBtn, !isType && { paddingLeft: 14 }, active && styles.filterBtnActive]}>
                       {isType && <TypeArt type={f} size={22} />}
                       <Text style={[styles.filterText, active && styles.filterTextActive]}>
-                        {f === "Все" ? "Все" : f === DECKS_FILTER ? "Колоды" : TYPE_LABELS[f]}
+                        {label}
                       </Text>
                       <Text style={[styles.filterCount, active && { color: colors.primary }]}>
                         {filterCount(f)}
@@ -1260,6 +1327,10 @@ export default function AssignmentsScreen() {
             contentContainerStyle={[styles.list, { paddingTop: 12 }]}
             showsVerticalScrollIndicator={false}
           >
+            {/* Разборы диалогов идут ПЕРВЫМИ: их учитель ждёт, а ответы на тесты
+                видит и так. Раздел сам себя прячет, когда разборов нет. */}
+            {isTeacher && <TeacherDialogReviews />}
+
             {isTeacher && (() => {
               const withSub = teacherSubs.filter(t => !!t?.submission);
               if (withSub.length === 0) return (
@@ -1267,7 +1338,7 @@ export default function AssignmentsScreen() {
                   <View style={styles.emptyIcon}>
                     <Glyph name="tray" size={32} color={colors.primary} />
                   </View>
-                  <Text style={styles.emptyText}>Ответов ещё нет</Text>
+                  <Text style={styles.emptyText}>Ответов на задания ещё нет</Text>
                 </View>
               );
               return (
@@ -1314,28 +1385,39 @@ export default function AssignmentsScreen() {
               <TeacherDecks colors={colors} styles={styles} search={searchLower} decksQ={decksQ} decks={decks} />
             )}
 
-            {/* Teacher: во «Все» — задания и колоды в общем списке, новые сверху. */}
-            {isTeacher && filter !== DECKS_FILTER && filter === "Все" && (() => {
+            {/* Teacher: диалоги — отдельная категория. Созданный диалог остаётся
+                здесь навсегда и выдаётся повторно, а не создаётся заново. */}
+            {isTeacher && filter === DIALOGS_FILTER && (
+              <TeacherDialogs search={searchLower} />
+            )}
+
+            {/* Teacher: во «Все» — задания, колоды и диалоги в общем списке,
+                новые сверху. */}
+            {isTeacher && filter === "Все" && (() => {
               if (decksQ.isLoading) {
                 return <ActivityIndicator color={colors.primary} size="large" style={{ marginTop: 20 }} />;
               }
               type Row =
                 | { kind: "assignment"; createdAt: number; data: any }
-                | { kind: "deck"; createdAt: number; data: any };
+                | { kind: "deck"; createdAt: number; data: any }
+                | { kind: "dialog"; createdAt: number; data: any };
               const assignmentRows: Row[] = myAssignments
                 .filter((a) => matches(a?.title))
                 .map((a) => ({ kind: "assignment", createdAt: a.createdAt ? new Date(a.createdAt).getTime() : 0, data: a }));
               const deckRows: Row[] = decks
                 .filter((d: any) => matches(d?.title))
                 .map((d: any) => ({ kind: "deck", createdAt: d.createdAt ? new Date(d.createdAt).getTime() : 0, data: d }));
-              const combined = [...assignmentRows, ...deckRows].sort((a, b) => b.createdAt - a.createdAt);
+              const dialogRows: Row[] = dialogs
+                .filter((d: any) => !d?.archived && matches(d?.title))
+                .map((d: any) => ({ kind: "dialog", createdAt: d.createdAt ? new Date(d.createdAt).getTime() : 0, data: d }));
+              const combined = [...assignmentRows, ...deckRows, ...dialogRows].sort((a, b) => b.createdAt - a.createdAt);
 
               if (combined.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
                   <View style={styles.emptyIcon}>
                     <Glyph name="tray" size={32} color={colors.primary} />
                   </View>
-                  <Text style={styles.emptyText}>Заданий и колод пока нет.{"\n"}Создайте первое задание.</Text>
+                  <Text style={styles.emptyText}>Заданий, колод и диалогов пока нет.{"\n"}Создайте первое задание.</Text>
                   <ChunkyButton
                     label="Создать задание"
                     icon="plus"
@@ -1350,29 +1432,40 @@ export default function AssignmentsScreen() {
                       только круглым плюсом в шапке — его легко не заметить. */}
                   <ChunkyButton
                     label="Создать задание"
-                    sublabel="Тест, аудирование, чтение, видео или свободный ответ"
+                    sublabel="Тест, аудирование, чтение, видео, свободный ответ, колода или диалог"
                     icon="plus"
                     chevron
                     onPress={() => router.push("/(main)/create-assignment" as any)}
                     style={{ marginBottom: 16 }}
                   />
-                  <SectionLabel>Мои задания и колоды · {combined.length}</SectionLabel>
-                  {combined.map((row) => row.kind === "assignment"
-                    ? renderMyAssignmentCard(row.data)
-                    : (
-                      <DeckRow
-                        key={`deck-${row.data.id}`}
-                        colors={colors}
-                        deck={row.data}
-                        onPress={() => router.push(`/(main)/flashcards/deck/${row.data.id}` as any)}
+                  <SectionLabel>Мои задания, колоды и диалоги · {combined.length}</SectionLabel>
+                  {combined.map((row) => {
+                    if (row.kind === "assignment") return renderMyAssignmentCard(row.data);
+                    if (row.kind === "deck") {
+                      return (
+                        <DeckRow
+                          key={`deck-${row.data.id}`}
+                          colors={colors}
+                          deck={row.data}
+                          onPress={() => router.push(`/(main)/flashcards/deck/${row.data.id}` as any)}
+                        />
+                      );
+                    }
+                    return (
+                      <DialogRow
+                        key={`dialog-${row.data.id}`}
+                        dialog={row.data}
+                        onPress={() => setFilter(DIALOGS_FILTER)}
                       />
-                    ))}
+                    );
+                  })}
                 </>
               );
             })()}
 
-            {/* Teacher: конкретный тип задания — только задания этого типа, без колод */}
-            {isTeacher && filter !== DECKS_FILTER && filter !== "Все" && (() => {
+            {/* Teacher: конкретный тип задания — только задания этого типа, без
+                колод и диалогов */}
+            {isTeacher && filter !== DECKS_FILTER && filter !== DIALOGS_FILTER && filter !== "Все" && (() => {
               const filtered = myAssignments.filter(a => a?.type === filter && matches(a?.title));
               if (filtered.length === 0) return (
                 <View style={[styles.empty, { paddingTop: 40 }]}>
