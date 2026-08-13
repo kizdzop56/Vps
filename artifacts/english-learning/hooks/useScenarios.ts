@@ -85,6 +85,8 @@ export interface ScenarioReply {
     summary: string | null;
   };
   finished: boolean;
+  /** Итоговый разбор для учителя ещё считается на сервере. */
+  summaryPending?: boolean;
   pointsEarned: number;
 }
 
@@ -175,7 +177,7 @@ export const scenarios = {
       body: JSON.stringify(body),
     }),
   finish: (attemptId: number) =>
-    apiFetch<{ status: string; summary: string | null }>(
+    apiFetch<{ status: string; summary: string | null; summaryPending?: boolean }>(
       `/api/scenario-attempts/${attemptId}/finish`,
       { method: "POST" },
     ),
@@ -197,7 +199,14 @@ export function finishText(s: { goal: string | null; turnsTarget: number }): str
   return "без условия завершения";
 }
 
-/** Есть ли новые ситуации: по этому числу горит метка у разговора со Снежей. */
+/**
+ * Сколько заданий ждёт ученика: по этому числу горит метка у «Разговора со
+ * Снежей».
+ *
+ * Считается только незаконченное: ситуация без единой попытки и попытка в
+ * состоянии active. Пройденное и прерванное («вышел на середине») метку не
+ * зажигают — ученик своё уже сделал, а решать, засчитывать ли, будет учитель.
+ */
 export function freshScenarioCount(list: StudentScenario[]): number {
   return list.filter((s) => !s.attempt || s.attempt.status === "active").length;
 }
