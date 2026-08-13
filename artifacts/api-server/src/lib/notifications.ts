@@ -4,9 +4,9 @@
 // ── Главное решение: события ВЫВОДЯТСЯ ИЗ СОСТОЯНИЯ ─────────────────────────
 // Уведомления не пишутся в момент события. Они собираются при чтении ленты из
 // того, что уже лежит в базе: принятые медали, входящие заявки, назначенные
-// задания, выданные ситуации для разговора, посчитанный план дня. Каждое
-// событие получает ключ (dedupeKey), уникальный в пределах пользователя, и
-// вставка идёт с onConflictDoNothing.
+// задания, сданные работы, заявки на время в календаре. Каждое событие
+// получает ключ (dedupeKey), уникальный в пределах пользователя, и вставка
+// идёт с onConflictDoNothing.
 //
 // Почему так, а не «отправить уведомление там, где событие происходит»:
 //   • эти места живут в разных роутерах, и достаточно забыть про одно, чтобы
@@ -19,11 +19,20 @@
 // когда галочка реально встала. У остальных событий время берётся из исходной
 // строки (unlocked_at, created_at, assigned_at), то есть точное.
 //
-// ── Лента не только ученическая ─────────────────────────────────────────────
-// Почти все источники про ученика, но один — про УЧИТЕЛЯ: пройденный учеником
-// диалог. Отдельной ленты для этого заводить незачем, а роль здесь не
-// спрашивается намеренно: у ученика нет своих ситуаций, и его запрос просто
-// вернёт пустой список.
+// ── ЛЕНТА РАЗНАЯ У РАЗНЫХ РОЛЕЙ ─────────────────────────────────────────────
+// Сначала источники были общими на всех, и это выходило боком: учителю падали
+// «Новая медаль» и «Задача дня выполнена». У него нет ни медалей, ни задач дня
+// — эти строки брались из его собственной ученической статистики, которая
+// когда-то накопилась, и выглядели как чужие уведомления в своей ленте.
+//
+// Теперь набор источников выбирается по роли:
+//   ученик  — медали, задачи и цель дня, заявки в друзья и от учителей,
+//             назначенные задания, выданные диалоги;
+//   учитель — сданные работы, пройденные диалоги, заявки на время в календаре,
+//             принятые учениками приглашения;
+//   родитель — работы своих детей.
+// Пересечения нет намеренно: событие «ученик сдал» интересно учителю, а «я
+// сдал» ученик и так видит на экране сдачи.
 //
 // ── Первый заход глушит ПРЕДЫСТОРИЮ, а не первое событие ────────────────────
 // У ученика с сорока медалями и двадцатью заданиями первая же сборка выдала бы
@@ -48,25 +57,39 @@ import {
   userAchievementsTable,
   friendshipsTable,
   teacherStudentsTable,
+  parentChildrenTable,
   assignedTasksTable,
   assignmentsTable,
+  submissionsTable,
+  calendarSlotsTable,
+  slotBookingsTable,
+  customBookingRequestsTable,
   dialogScenariosTable,
   dialogAssignmentsTable,
   dialogAttemptsTable,
   usersTable,
 } from "@workspace/db";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import { buildServerDailyPlan } from "./dailyPlan";
 import { computeDailyProgress } from "./dailyProgress";
 import { logger } from "./logger";
 
+/**
+ * Вид события. Определяет значок и цвет на клиенте
+ * (english-learning/utils/notificationLook.ts) — новый вид нужно завести и там,
+ * иначе он нарисуется запасной звёздочкой.
+ */
 export type NotificationKind =
   | "quest"
   | "goal"
   | "achievement"
   | "friend_request"
   | "teacher_request"
-  | "assignment";
+  | "assignment"
+  // ── события учителя и родителя ──
+  | "submission"
+  | "booking"
+  | "student_joined";
 
 interface Draft {
   kind: NotificationKind;
@@ -133,7 +156,20 @@ function plural(n: number, forms: [string, string, string]): string {
   return forms[2]!;
 }
 
-// ── Источники событий ───────────────────────────────────────────────────────
+/** Дата человеку: «5 августа, 15:00». Часовой пояс сервера, но день верный. */
+const MONTHS = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
+
+/** «2026-08-15» → «15 августа». Дата в календаре хранится строкой. */
+function humanDate(isoDay: string): string {
+  const [y, m, d] = isoDay.split("-").map(Number);
+  if (!y || !m || !d) return isoDay;
+  return `${d} ${MONTHS[m - 1] ?? ""}`.trim();
+}
+
+// ── Источники: УЧЕНИК ───────────────────────────────────────────────────────
 
 async function collectAchievements(userId: number): Promise<Draft[]> {
   const rows = await db
@@ -264,8 +300,6 @@ async function collectAssignments(userId: number): Promise<Draft[]> {
  *
  * Отдельный источник, но тот же вид уведомления, что у обычного задания
  * (kind: assignment): для ученика это одно и то же — учитель что-то задал.
- * Заводить ради этого новый вид значило бы описывать его во всех местах, где
- * вид определяет значок и цвет, а ленте от этого не легче.
  *
  * Ключ идёт по строке ВЫДАЧИ, а не по ситуации: снял и выдал заново — это новое
  * событие, и ученик должен о нём узнать.
@@ -304,54 +338,6 @@ async function collectScenarios(userId: number): Promise<Draft[]> {
     ].filter(Boolean).join(" "),
     meta: { scenarioId: row.scenarioId, dialogAssignmentId: row.id },
     createdAt: row.createdAt,
-  }));
-}
-
-/**
- * Пройденные диалоги — событие УЧИТЕЛЯ.
- *
- * Ученик заканчивает разговор, и разбор молча ложится в список: учитель узнавал
- * о нём, только если сам заходил и проверял. Теперь узнаёт сразу.
- *
- * Берём и «прошёл», и «вышел на середине»: незаконченный разговор учителю важен
- * не меньше — это и есть сигнал, что задание не пошло.
- */
-async function collectScenarioReviews(userId: number): Promise<Draft[]> {
-  const rows = await db
-    .select({
-      id: dialogAttemptsTable.id,
-      status: dialogAttemptsTable.status,
-      turns: dialogAttemptsTable.turns,
-      mistakes: dialogAttemptsTable.mistakes,
-      startedAt: dialogAttemptsTable.startedAt,
-      finishedAt: dialogAttemptsTable.finishedAt,
-      scenarioId: dialogScenariosTable.id,
-      title: dialogScenariosTable.title,
-      studentId: dialogAttemptsTable.studentId,
-      studentName: usersTable.name,
-    })
-    .from(dialogAttemptsTable)
-    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAttemptsTable.scenarioId))
-    .leftJoin(usersTable, eq(usersTable.id, dialogAttemptsTable.studentId))
-    .where(and(
-      eq(dialogScenariosTable.teacherId, userId),
-      ne(dialogAttemptsTable.status, "active"),
-    ))
-    .orderBy(desc(dialogAttemptsTable.startedAt))
-    .limit(SOURCE_LIMIT);
-
-  return rows.map((row) => ({
-    kind: "assignment" as const,
-    dedupeKey: `scenario_review:${row.id}`,
-    title: row.status === "done" ? "Диалог пройден" : "Диалог прерван",
-    body: `${row.studentName ?? "Ученик"}: ${row.title}`,
-    detail: [
-      `Реплик: ${row.turns}. Ошибок: ${row.mistakes}.`,
-      row.status === "done" ? "" : "Ученик вышел, не закончив задание.",
-      "Весь диалог с разбором — в «Заданиях», вкладка «Ответы учеников».",
-    ].filter(Boolean).join(" "),
-    meta: { attemptId: row.id, scenarioId: row.scenarioId, studentId: row.studentId },
-    createdAt: row.finishedAt ?? row.startedAt,
   }));
 }
 
@@ -404,6 +390,296 @@ async function collectDailyPlan(userId: number): Promise<Draft[]> {
   return drafts;
 }
 
+// ── Источники: УЧИТЕЛЬ ──────────────────────────────────────────────────────
+
+/**
+ * Ученик сдал работу.
+ *
+ * Главное событие учителя: раньше он узнавал о сдаче, только если сам открывал
+ * вкладку и пересчитывал карточки глазами.
+ *
+ * Условие `submittedAt > assignedAt` — то же, что в списке заданий: сдача до
+ * повторной выдачи не считается ответом на текущее назначение.
+ *
+ * Автозакрытые по сроку работы (status = expired) сюда тоже попадают, но с
+ * другим заголовком: «не сдал в срок» — это событие, а не результат.
+ */
+async function collectTeacherSubmissions(teacherId: number): Promise<Draft[]> {
+  const rows = await db
+    .select({
+      id: submissionsTable.id,
+      status: submissionsTable.status,
+      score: submissionsTable.score,
+      submittedAt: submissionsTable.submittedAt,
+      assignmentId: assignmentsTable.id,
+      title: assignmentsTable.title,
+      type: assignmentsTable.type,
+      studentId: submissionsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(submissionsTable)
+    .innerJoin(assignedTasksTable, and(
+      eq(assignedTasksTable.assignmentId, submissionsTable.assignmentId),
+      eq(assignedTasksTable.studentId, submissionsTable.studentId),
+    ))
+    .innerJoin(assignmentsTable, eq(assignmentsTable.id, submissionsTable.assignmentId))
+    .leftJoin(usersTable, eq(usersTable.id, submissionsTable.studentId))
+    .where(and(
+      eq(assignedTasksTable.teacherId, teacherId),
+      gt(submissionsTable.submittedAt, assignedTasksTable.assignedAt),
+      isNull(assignmentsTable.deletedAt),
+    ))
+    .orderBy(desc(submissionsTable.submittedAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => {
+    const who = row.studentName ?? "Ученик";
+    if (row.status === "expired") {
+      return {
+        kind: "submission" as const,
+        dedupeKey: `submission:${row.id}`,
+        title: "Задание не сдано в срок",
+        body: `${who}: ${row.title}`,
+        detail: "Срок вышел, работа закрылась сама. Можно сдвинуть срок в итогах задания и дать ещё попытку.",
+        meta: { submissionId: row.id, assignmentId: row.assignmentId, studentId: row.studentId },
+        createdAt: row.submittedAt,
+      };
+    }
+    if (row.status === "pending") {
+      return {
+        kind: "submission" as const,
+        dedupeKey: `submission:${row.id}`,
+        title: "Работа ждёт проверки",
+        body: `${who}: ${row.title}`,
+        detail: "Свободный ответ проверяется вручную. Открыть и оценить можно в «Заданиях», вкладка «Ответы учеников».",
+        meta: { submissionId: row.id, assignmentId: row.assignmentId, studentId: row.studentId },
+        createdAt: row.submittedAt,
+      };
+    }
+    return {
+      kind: "submission" as const,
+      dedupeKey: `submission:${row.id}`,
+      title: "Ученик выполнил задание",
+      body: `${who}: ${row.title}`,
+      detail: `Результат: ${row.score ?? 0}%. Разбор ответов — в итогах задания.`,
+      meta: {
+        submissionId: row.id,
+        assignmentId: row.assignmentId,
+        studentId: row.studentId,
+        score: row.score ?? 0,
+      },
+      createdAt: row.submittedAt,
+    };
+  });
+}
+
+/**
+ * Пройденные диалоги — тоже событие учителя.
+ *
+ * Берём и «прошёл», и «вышел на середине»: незаконченный разговор учителю важен
+ * не меньше, это и есть сигнал, что задание не пошло.
+ */
+async function collectScenarioReviews(teacherId: number): Promise<Draft[]> {
+  const rows = await db
+    .select({
+      id: dialogAttemptsTable.id,
+      status: dialogAttemptsTable.status,
+      turns: dialogAttemptsTable.turns,
+      mistakes: dialogAttemptsTable.mistakes,
+      startedAt: dialogAttemptsTable.startedAt,
+      finishedAt: dialogAttemptsTable.finishedAt,
+      scenarioId: dialogScenariosTable.id,
+      title: dialogScenariosTable.title,
+      studentId: dialogAttemptsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(dialogAttemptsTable)
+    .innerJoin(dialogScenariosTable, eq(dialogScenariosTable.id, dialogAttemptsTable.scenarioId))
+    .leftJoin(usersTable, eq(usersTable.id, dialogAttemptsTable.studentId))
+    .where(and(
+      eq(dialogScenariosTable.teacherId, teacherId),
+      ne(dialogAttemptsTable.status, "active"),
+    ))
+    .orderBy(desc(dialogAttemptsTable.startedAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => ({
+    kind: "submission" as const,
+    dedupeKey: `scenario_review:${row.id}`,
+    title: row.status === "done" ? "Диалог пройден" : "Диалог прерван",
+    body: `${row.studentName ?? "Ученик"}: ${row.title}`,
+    detail: [
+      `Реплик: ${row.turns}. Ошибок: ${row.mistakes}.`,
+      row.status === "done" ? "" : "Ученик вышел, не закончив задание.",
+      "Весь диалог с разбором — в «Заданиях», вкладка «Ответы учеников».",
+    ].filter(Boolean).join(" "),
+    meta: { attemptId: row.id, scenarioId: row.scenarioId, studentId: row.studentId },
+    createdAt: row.finishedAt ?? row.startedAt,
+  }));
+}
+
+/**
+ * Календарь: ученик записался на занятие или предложил своё время.
+ *
+ * Два источника в одном: запись на выставленный слот и запрос произвольного
+ * времени. Для учителя это одно и то же дело — ответить да или нет, — поэтому
+ * и вид уведомления один.
+ */
+async function collectTeacherBookings(teacherId: number): Promise<Draft[]> {
+  const drafts: Draft[] = [];
+
+  // Запись на слот, который учитель сам выставил.
+  const booked = await db
+    .select({
+      id: slotBookingsTable.id,
+      status: slotBookingsTable.status,
+      note: slotBookingsTable.note,
+      createdAt: slotBookingsTable.createdAt,
+      date: calendarSlotsTable.date,
+      startTime: calendarSlotsTable.startTime,
+      endTime: calendarSlotsTable.endTime,
+      studentId: slotBookingsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(slotBookingsTable)
+    .innerJoin(calendarSlotsTable, eq(calendarSlotsTable.id, slotBookingsTable.slotId))
+    .leftJoin(usersTable, eq(usersTable.id, slotBookingsTable.studentId))
+    .where(eq(calendarSlotsTable.teacherId, teacherId))
+    .orderBy(desc(slotBookingsTable.createdAt))
+    .limit(SOURCE_LIMIT);
+
+  for (const row of booked) {
+    drafts.push({
+      kind: "booking",
+      dedupeKey: `slot_booking:${row.id}`,
+      title: "Запись на занятие",
+      body: `${row.studentName ?? "Ученик"}: ${humanDate(row.date)}, ${row.startTime}`,
+      detail: [
+        `Занятие ${humanDate(row.date)} с ${row.startTime} до ${row.endTime}.`,
+        row.note ? `Комментарий: ${row.note}` : "",
+        row.status === "pending" ? "Подтвердить или отклонить можно в «Календаре»." : "",
+      ].filter(Boolean).join(" "),
+      meta: { bookingId: row.id, studentId: row.studentId, date: row.date, startTime: row.startTime },
+      createdAt: row.createdAt,
+    });
+  }
+
+  // Своё время: ученик предложил час, которого в расписании не было.
+  const proposed = await db
+    .select({
+      id: customBookingRequestsTable.id,
+      status: customBookingRequestsTable.status,
+      note: customBookingRequestsTable.note,
+      createdAt: customBookingRequestsTable.createdAt,
+      date: customBookingRequestsTable.date,
+      startTime: customBookingRequestsTable.startTime,
+      endTime: customBookingRequestsTable.endTime,
+      studentId: customBookingRequestsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(customBookingRequestsTable)
+    .leftJoin(usersTable, eq(usersTable.id, customBookingRequestsTable.studentId))
+    .where(eq(customBookingRequestsTable.teacherId, teacherId))
+    .orderBy(desc(customBookingRequestsTable.createdAt))
+    .limit(SOURCE_LIMIT);
+
+  for (const row of proposed) {
+    drafts.push({
+      kind: "booking",
+      dedupeKey: `custom_booking:${row.id}`,
+      title: "Ученик предложил своё время",
+      body: `${row.studentName ?? "Ученик"}: ${humanDate(row.date)}, ${row.startTime}`,
+      detail: [
+        `Предложено ${humanDate(row.date)} с ${row.startTime} до ${row.endTime}.`,
+        row.note ? `Комментарий: ${row.note}` : "",
+        row.status === "pending" ? "Ответить можно в «Календаре»." : "",
+      ].filter(Boolean).join(" "),
+      meta: { requestId: row.id, studentId: row.studentId, date: row.date, startTime: row.startTime },
+      createdAt: row.createdAt,
+    });
+  }
+
+  return drafts;
+}
+
+/** Ученик принял приглашение учителя: связь стала рабочей. */
+async function collectAcceptedStudents(teacherId: number): Promise<Draft[]> {
+  const rows = await db
+    .select({
+      id: teacherStudentsTable.id,
+      createdAt: teacherStudentsTable.createdAt,
+      studentId: usersTable.id,
+      studentName: usersTable.name,
+      username: usersTable.username,
+    })
+    .from(teacherStudentsTable)
+    .innerJoin(usersTable, eq(usersTable.id, teacherStudentsTable.studentId))
+    .where(and(
+      eq(teacherStudentsTable.teacherId, teacherId),
+      eq(teacherStudentsTable.status, "accepted"),
+    ))
+    .orderBy(desc(teacherStudentsTable.createdAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => ({
+    kind: "student_joined" as const,
+    dedupeKey: `student_joined:${row.id}`,
+    title: "Ученик принял заявку",
+    body: row.studentName ?? row.username,
+    detail: "Теперь ему можно назначать задания, колоды и диалоги, а его успеваемость видна во вкладке «Анализ».",
+    meta: { studentId: row.studentId, username: row.username },
+    createdAt: row.createdAt,
+  }));
+}
+
+// ── Источники: РОДИТЕЛЬ ─────────────────────────────────────────────────────
+
+/** Работы своих детей. Ровно то же событие, что у учителя, но по своим детям. */
+async function collectChildSubmissions(parentId: number): Promise<Draft[]> {
+  const links = await db
+    .select({ studentId: parentChildrenTable.studentId })
+    .from(parentChildrenTable)
+    .where(eq(parentChildrenTable.parentId, parentId));
+
+  const ids = links.map((l) => l.studentId);
+  if (ids.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: submissionsTable.id,
+      status: submissionsTable.status,
+      score: submissionsTable.score,
+      submittedAt: submissionsTable.submittedAt,
+      assignmentId: assignmentsTable.id,
+      title: assignmentsTable.title,
+      studentId: submissionsTable.studentId,
+      studentName: usersTable.name,
+    })
+    .from(submissionsTable)
+    .innerJoin(assignmentsTable, eq(assignmentsTable.id, submissionsTable.assignmentId))
+    .leftJoin(usersTable, eq(usersTable.id, submissionsTable.studentId))
+    .where(and(
+      inArray(submissionsTable.studentId, ids),
+      isNull(assignmentsTable.deletedAt),
+    ))
+    .orderBy(desc(submissionsTable.submittedAt))
+    .limit(SOURCE_LIMIT);
+
+  return rows.map((row) => ({
+    kind: "submission" as const,
+    dedupeKey: `submission:${row.id}`,
+    title: row.status === "expired" ? "Задание не сдано в срок" : "Задание выполнено",
+    body: `${row.studentName ?? "Ребёнок"}: ${row.title}`,
+    detail: row.status === "expired"
+      ? "Срок вышел, работа закрылась сама."
+      : row.status === "pending"
+        ? "Учитель ещё не проверил работу."
+        : `Результат: ${row.score ?? 0}%.`,
+    meta: { submissionId: row.id, assignmentId: row.assignmentId, studentId: row.studentId },
+    createdAt: row.submittedAt,
+  }));
+}
+
 // ── Сборка ──────────────────────────────────────────────────────────────────
 
 /**
@@ -413,30 +689,56 @@ async function collectDailyPlan(userId: number): Promise<Draft[]> {
  * лента не настолько важна, чтобы из-за неё падал экран профиля.
  */
 export async function syncNotifications(userId: number): Promise<void> {
+  const [account] = await db
+    .select({ role: usersTable.role })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId));
+
+  const role = account?.role ?? "student";
+  const isTeacher = role === "teacher" || role === "admin";
+  const isParent = role === "parent";
+  const isStudent = !isTeacher && !isParent;
+
   const existing = await db
     .select({ dedupeKey: notificationsTable.dedupeKey })
     .from(notificationsTable)
     .where(eq(notificationsTable.userId, userId));
 
   const known = new Set(existing.map((r) => r.dedupeKey));
-  // Ни одного уведомления — значит, лента для этого ученика открывается
+  // Ни одного уведомления — значит, лента для этого пользователя открывается
   // впервые. Тихо пишем только предысторию, не всё подряд (см. шапку файла).
   const firstSync = existing.length === 0;
 
   const now = Date.now();
-  const questsAreDue = firstSync || (now - (lastQuestSync.get(userId) ?? 0)) > QUEST_SYNC_TTL_MS;
+  const sources: Promise<Draft[]>[] = [];
 
-  const sources: Promise<Draft[]>[] = [
-    collectAchievements(userId),
-    collectFriendRequests(userId),
-    collectTeacherRequests(userId),
-    collectAssignments(userId),
-    collectScenarios(userId),
-    collectScenarioReviews(userId),
-  ];
-  if (questsAreDue) {
-    rememberQuestSync(userId, now);
-    sources.push(collectDailyPlan(userId));
+  if (isStudent) {
+    sources.push(
+      collectAchievements(userId),
+      collectFriendRequests(userId),
+      collectTeacherRequests(userId),
+      collectAssignments(userId),
+      collectScenarios(userId),
+    );
+    // Задачи дня — самый дорогой источник, и только у ученика.
+    const questsAreDue = firstSync || (now - (lastQuestSync.get(userId) ?? 0)) > QUEST_SYNC_TTL_MS;
+    if (questsAreDue) {
+      rememberQuestSync(userId, now);
+      sources.push(collectDailyPlan(userId));
+    }
+  }
+
+  if (isTeacher) {
+    sources.push(
+      collectTeacherSubmissions(userId),
+      collectScenarioReviews(userId),
+      collectTeacherBookings(userId),
+      collectAcceptedStudents(userId),
+    );
+  }
+
+  if (isParent) {
+    sources.push(collectChildSubmissions(userId));
   }
 
   const collected = await Promise.all(
@@ -486,7 +788,30 @@ export async function syncNotifications(userId: number): Promise<void> {
   await db
     .insert(notificationsTable)
     .values(rows)
-    // Гонка двух одновременных запросов от одного ученика: оба соберут одно и
-    // то же событие, второй просто ничего не вставит.
+    // Гонка двух одновременных запросов от одного пользователя: оба соберут
+    // одно и то же событие, второй просто ничего не вставит.
     .onConflictDoNothing();
+}
+
+/**
+ * Убрать из ленты события, которых этой роли быть не должно.
+ *
+ * Нужно ОДИН раз: у учителей уже накопились медали и задачи дня, записанные
+ * прежней общей сборкой. Новые источники их больше не создают, но старые строки
+ * сами не исчезнут, и учитель продолжал бы видеть «Новая медаль» в истории.
+ *
+ * Дешевле, чем миграция: один DELETE по своему же пользователю, и он ничего не
+ * находит на второй раз.
+ */
+export async function dropForeignKinds(userId: number, role: string): Promise<void> {
+  const studentOnly: NotificationKind[] = ["quest", "goal", "achievement", "friend_request", "teacher_request"];
+  const isStudent = role !== "teacher" && role !== "admin" && role !== "parent";
+  if (isStudent) return;
+
+  await db
+    .delete(notificationsTable)
+    .where(and(
+      eq(notificationsTable.userId, userId),
+      inArray(notificationsTable.kind, studentOnly),
+    ));
 }
