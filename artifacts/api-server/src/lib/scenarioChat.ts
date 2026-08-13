@@ -35,8 +35,9 @@ export interface ScenarioPromptInput {
   level: string | null;
   /** Имя ученика: переспрашивать его в задании незачем. */
   studentName: string | null;
-  /** Сколько реплик ученик уже сказал и сколько нужно. */
+  /** Сколько реплик ученик уже сказал. */
   turns: number;
+  /** Сколько нужно. НОЛЬ — учитель не ограничивал число реплик. */
   turnsTarget: number;
   /** Цель уже засчитана. */
   goalReached: boolean;
@@ -110,8 +111,17 @@ export function scenarioSystemPrompt(input: ScenarioPromptInput): string {
       `Progress: the student has said ${input.turns} of ${input.turnsTarget} lines${left <= 3 ? " — the task is nearly over, start wrapping the scene up naturally." : "."}`,
     );
   }
+
+  // Цель достигнута, но реплики ещё не сказаны — сцена ПРОДОЛЖАЕТСЯ. Учитель
+  // задал число реплик осознанно, и обрывать разговор на середине нельзя: пусть
+  // Снежа держит роль и разговаривает дальше.
   if (input.goalReached) {
-    lines.push(`The goal is already achieved. Keep "goalDone" true and finish the scene politely.`);
+    const left = input.turnsTarget > 0 ? input.turnsTarget - input.turns : 0;
+    lines.push(
+      left > 0
+        ? `The goal is already achieved, but the task is not over: keep "goalDone" true, stay in character and keep the conversation going for ${left} more lines.`
+        : `The goal is already achieved. Keep "goalDone" true and finish the scene politely.`,
+    );
   }
 
   return lines.join("\n");
@@ -194,17 +204,36 @@ export const LEVEL_HINT: Record<string, string> = {
  */
 export const MIN_TURNS_FOR_GOAL = 3;
 
+/**
+ * Условие завершения выводится из САМОГО ЗАДАНИЯ, а не из отдельной настройки.
+ *
+ * Раньше у ситуации было поле finishMode («по репликам», «по цели», «что
+ * раньше»), и по умолчанию стояло «по репликам». Из-за этого достигнутая цель
+ * задание не закрывала: ученик добился своего, а разговор шёл дальше, и
+ * выглядело это как поломка. Настройка, которую нужно не забыть выставить, чтобы
+ * задание работало ожидаемо, — плохая настройка.
+ *
+ * Теперь правило простое и его не надо выбирать:
+ *   • есть только цель — закрывает цель;
+ *   • есть только число реплик — закрывает число реплик;
+ *   • есть и то и другое — нужны ОБА условия. Число реплик учитель задаёт
+ *     осознанно, и «поговори двадцать реплик» не должно закрываться пятой
+ *     фразой только потому, что цель уже достигнута;
+ *   • нет ни цели, ни числа реплик — задание не закрывается само, ученик
+ *     заканчивает его кнопкой.
+ */
 export function isAttemptComplete(input: {
-  finishMode: string;
   turns: number;
+  /** 0 — учитель не ограничивал число реплик. */
   turnsTarget: number;
   goalReached: boolean;
   hasGoal: boolean;
 }): boolean {
-  const byTurns = input.turnsTarget > 0 && input.turns >= input.turnsTarget;
+  const hasTurns = input.turnsTarget > 0;
+  const byTurns = hasTurns && input.turns >= input.turnsTarget;
   const byGoal = input.hasGoal && input.goalReached && input.turns >= MIN_TURNS_FOR_GOAL;
 
-  if (input.finishMode === "goal") return byGoal;
-  if (input.finishMode === "both") return byTurns || byGoal;
-  return byTurns;
+  if (!hasTurns && !input.hasGoal) return false;
+  if (hasTurns && input.hasGoal) return byTurns && byGoal;
+  return hasTurns ? byTurns : byGoal;
 }
