@@ -10,14 +10,25 @@ import { sendVerificationCode, sendPasswordResetEmail } from "../lib/email";
 
 const router = Router();
 
-const TEACHER_CODE = "422668";
+// Код, по которому выдаётся роль учителя.
+//
+// Раньше значение было вписано прямо здесь. Репозиторий публичный, то есть код
+// знал любой, кто открыл этот файл, и роль учителя вместе с доступом к данным
+// учеников получал кто угодно. Теперь значение живёт только в окружении, а
+// прежнее считается скомпрометированным и должно быть заменено.
+//
+// Переменная не задана — регистрация учителя недоступна в принципе. Это
+// осознанный выбор: молча пускать всех желающих хуже, чем не пускать никого.
+const TEACHER_CODE = process.env["TEACHER_CODE"]?.trim() || null;
 
 function makeToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+// Коды подтверждения — через crypto, а не Math.random: это защита доступа к
+// аккаунту, а не выбор случайной картинки.
 function makeCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(100000, 1000000));
 }
 
 function minutesFromNow(m: number) {
@@ -114,26 +125,34 @@ router.post("/auth/register", async (req, res) => {
   }
 
   if (role === "teacher") {
+    if (!TEACHER_CODE) {
+      res.status(403).json({ error: "Регистрация учителя недоступна" });
+      return;
+    }
     if (!teacherCode || teacherCode !== TEACHER_CODE) {
       res.status(403).json({ error: "Неверный код учителя" });
       return;
     }
   }
 
-  // Email check first: if it exists but unverified, delete old account so it can be reused
+  // Email занят — отказываем, независимо от того, подтверждён он или нет.
+  //
+  // Раньше неподтверждённый аккаунт с таким email УДАЛЯЛСЯ вместе с токенами,
+  // чтобы адрес можно было переиспользовать. Владение адресом при этом никто
+  // не проверял: зная чужой email, можно было снести профиль и весь прогресс.
+  // Застрявшему на подтверждении помогает переотправка кода, а не удаление.
   const [existingEmail] = await db.select({ id: usersTable.id, emailVerified: usersTable.emailVerified })
     .from(usersTable).where(eq(usersTable.email, emailTrimmed));
   if (existingEmail) {
-    if (existingEmail.emailVerified === "true") {
-      res.status(400).json({ error: "Этот email уже используется" });
-      return;
-    }
-    // Unverified — clear the old record (and its tokens) to allow fresh registration
-    await db.delete(authTokensTable).where(eq(authTokensTable.userId, existingEmail.id));
-    await db.delete(usersTable).where(eq(usersTable.id, existingEmail.id));
+    res.status(400).json({
+      error: existingEmail.emailVerified === "true"
+        ? "Этот email уже используется"
+        : "Этот email уже зарегистрирован, но не подтверждён. Войдите и запросите новый код.",
+    });
+    return;
   }
 
-  // Username check (after potential deletion of unverified user with same email)
+  // Username check
   const [existingUser] = await db.select().from(usersTable).where(eq(usersTable.username, username));
   if (existingUser) {
     res.status(400).json({ error: "Этот псевдоним уже занят" });
@@ -240,6 +259,15 @@ router.post("/auth/resend-code", requireAuth, async (req, res) => {
     return;
   }
 
+  // Прежние коды гасим: каждый неиспользованный код — ещё одна попытка
+  // угадать шестизначное число, и раньше они копились без ограничений.
+  await db.update(authTokensTable)
+    .set({ usedAt: new Date() })
+    .where(and(
+      eq(authTokensTable.userId, user.id),
+      eq(authTokensTable.type, "email_verification"),
+    ));
+
   const newCode = makeCode();
   await db.insert(authTokensTable).values({
     userId: user.id,
@@ -307,7 +335,15 @@ router.post("/auth/reset-password", async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 12);
   await db.update(usersTable).set({ passwordHash }).where(eq(usersTable.id, row.userId));
-  await db.update(authTokensTable).set({ usedAt: new Date() }).where(eq(authTokensTable.id, row.id));
+
+  // Гасим ВСЕ ссылки сброса этого пользователя, а не только использованную:
+  // остальные иначе работают до истечения часа.
+  await db.update(authTokensTable)
+    .set({ usedAt: new Date() })
+    .where(and(
+      eq(authTokensTable.userId, row.userId),
+      eq(authTokensTable.type, "password_reset"),
+    ));
 
   res.json({ ok: true });
 });
