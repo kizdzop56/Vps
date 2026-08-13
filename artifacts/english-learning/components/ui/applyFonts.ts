@@ -13,18 +13,36 @@
 //     Это заголовки экранов, названия блоков, крупные числа XP и очков.
 //   • всё остальное → Manrope: текст, подписи, метки, таблицы.
 //
-// Важные детали:
+// ── ГРАБЛИ: ПОДМЕНЯТЬ НАДО ВХОД, А НЕ РЕЗУЛЬТАТ ────────────────────────────
+// Первая версия вызывала оригинальный render, а потом делала cloneElement с
+// массивом стилей. На вебе это ломалось, причём двумя разными способами сразу.
+//
+// Обычный <Text> в react-native-web возвращает не сам узел, а обёртку
+// (провайдер контекста направления письма). Клонировать её бессмысленно: стиль
+// уходит в проп, который никто не читает, и шрифт молча не применялся вовсе.
+//
+// А <Text> ВНУТРИ другого <Text> возвращает уже готовый DOM-узел (span) с
+// разобранным стилем. Ему в style прилетал МАССИВ, который React DOM пытался
+// разложить по ключам: у массива это «0», «1», и браузер падал с «Cannot set
+// indexed properties on this object». Экран при этом умирал целиком — так
+// падал список учеников, где под именем стоит «средний <Text>73%</Text>».
+//
+// Теперь стиль дописывается ВО ВХОДЯЩИЕ пропсы, до вызова оригинала: массив
+// разбирает сам react-native-web, как он это делает с любым style, а наружу
+// уходит ровно то, что вернул бы компонент без патча.
+//
+// Остальные детали:
 //   1. Если у стиля УЖЕ задан fontFamily, ничего не трогаем. Так остаются целы
 //      иконочный Feather и любые намеренные исключения.
 //   2. Вместе с fontFamily убираем fontWeight. На Android системный движок
 //      иначе дорисовывает синтетическую жирность поверх и без того жирного
-//      начертания, и буквы «залипают».
+//      начертания, и буквы «залипают». Насыщенность несёт само семейство
+//      (Unbounded_900Black, Manrope_800ExtraBold и так далее).
 //   3. Шрифты грузятся в app/_layout.tsx НЕ блокируя запуск. Пока их нет,
 //      fontFamily указывает на ещё не готовое семейство и платформа рисует
 //      системным шрифтом — это ожидаемое поведение, текст не пропадает.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React from "react";
 import { Text, TextInput, StyleSheet } from "react-native";
 import { fonts } from "@/constants/theme";
 
@@ -77,22 +95,29 @@ export function applyGlobalFonts() {
     // выходим: приложение продолжит работать на системном шрифте.
     if (typeof original !== "function") continue;
 
-    Component.render = function patchedRender(...args: any[]) {
-      const element = original.apply(this, args);
-      if (!element) return element;
+    // Сигнатура forwardRef: (props, ref). Сохраняем её как есть — оригинал
+    // ждёт ровно эти два аргумента.
+    Component.render = function patchedRender(props: any, ref: any) {
+      let family: string | null = null;
+      try {
+        family = pickFamily(StyleSheet.flatten(props?.style) ?? {});
+      } catch {
+        // Разбор стиля не должен ронять отрисовку текста: без шрифта экран
+        // выглядит скучнее, без текста — не выглядит вообще.
+        family = null;
+      }
+      if (!family) return original.call(this, props, ref);
 
-      const incoming = element.props?.style;
-      const flat = StyleSheet.flatten(incoming) ?? {};
-      const family = pickFamily(flat);
-      if (!family) return element;
-
-      return React.cloneElement(element, {
-        style: [
-          incoming,
-          // fontWeight сбрасываем: см. пункт 2 в шапке файла.
-          { fontFamily: family, fontWeight: undefined },
-        ],
-      });
+      return original.call(
+        this,
+        {
+          ...props,
+          // Массив, а не слияние объектов: свой стиль остаётся сверху и
+          // разбирается платформой, как любой другой style.
+          style: [props?.style, { fontFamily: family, fontWeight: undefined }],
+        },
+        ref,
+      );
     };
   }
 }
