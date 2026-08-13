@@ -1,7 +1,56 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Токены доступа и проверка прав.
+//
+// ── СЕКРЕТ НЕ ИМЕЕТ ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ ───────────────────────────────────
+// Раньше здесь стояло `process.env.SESSION_SECRET || "dev-secret-key"`. Это была
+// дыра в полный рост: любой деплой, где переменную забыли задать (VPS, docker,
+// чужая копия репозитория), подписывал токены строкой, которая лежит в открытом
+// коде. Зная её, кто угодно собирает себе токен с любым userId и ролью admin —
+// пароль при этом не нужен вообще.
+//
+// Теперь так:
+//   • production без SESSION_SECRET — сервер НЕ ПОДНИМАЕТСЯ. Приложение, которое
+//     работает, но принимает поддельные токены, хуже, чем приложение, которое
+//     честно не стартует;
+//   • разработка без SESSION_SECRET — секрет генерируется случайным на запуск
+//     процесса. Локально всё работает, подделать нельзя, а перезапуск сервера
+//     разлогинивает: это и есть напоминание задать переменную в .env.
+//
+// Секрет короче MIN_SECRET_LEN отклоняется: «123» ничем не лучше отсутствия.
+// ─────────────────────────────────────────────────────────────────────────────
+import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
+import { logger } from "./logger";
 
-const JWT_SECRET = process.env["SESSION_SECRET"] || "dev-secret-key";
+/** Минимальная длина секрета. Ниже — это не секрет, а видимость. */
+const MIN_SECRET_LEN = 16;
+
+function resolveSecret(): string {
+  const fromEnv = process.env["SESSION_SECRET"]?.trim() ?? "";
+  const production = process.env["NODE_ENV"] === "production";
+
+  if (fromEnv.length >= MIN_SECRET_LEN) return fromEnv;
+
+  if (production) {
+    // Явное сообщение вместо стека: это ошибка настройки, а не кода.
+    logger.fatal(
+      "SESSION_SECRET не задан или короче 16 символов. Токены подписывать нечем — " +
+        "запуск остановлен. Задайте переменную в окружении сервиса: " +
+        "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+    );
+    throw new Error("SESSION_SECRET is required in production (min 16 chars)");
+  }
+
+  const generated = crypto.randomBytes(32).toString("hex");
+  logger.warn(
+    "SESSION_SECRET не задан: сгенерирован временный секрет на время работы процесса. " +
+      "После перезапуска все входы слетят. Для разработки допустимо, для сервера — нет.",
+  );
+  return generated;
+}
+
+const JWT_SECRET = resolveSecret();
 
 export interface AuthPayload {
   userId: number;
