@@ -1,12 +1,27 @@
 // Production startup for single-container deployments (Render, Railway, Fly, VPS).
 //
 // Boot sequence:
-//   1. (optional, RUN_DB_SETUP=true) push DB schema via drizzle-kit
-//   1a. (always) ensure all tables + columns exist via scripts/ensure-columns.mjs
-//   2. (optional, RUN_DB_SETUP=true) run idempotent seed
-//   3. start API server (bundled dist) on API_PORT
-//   4. start static web server (Expo web export) on WEB_PORT
-//   5. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
+//   1. (always) ensure all tables + columns exist via scripts/ensure-columns.mjs
+//   2. (opt-in, RUN_DB_PUSH=true) drizzle-kit push --force — ДЕСТРУКТИВНО, см. ниже
+//   3. (opt-in, RUN_SEED=true) idempotent seed of test accounts
+//   4. start API server (bundled dist) on API_PORT
+//   5. start static web server (Expo web export) on WEB_PORT
+//   6. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
+//
+// ── ПОЧЕМУ PUSH БОЛЬШЕ НЕ ИДЁТ ПО УМОЛЧАНИЮ ─────────────────────────────────
+// Раньше здесь на КАЖДОМ старте выполнялся `drizzle-kit push --force`, причём
+// флаг RUN_DB_SETUP по умолчанию считался включённым. На бесплатном плане Render
+// сервис засыпает после ~15 минут простоя, то есть холодные старты идут
+// постоянно — и принудительный пуш схемы летел в живую базу по кругу. Любое
+// расхождение схемы с кодом (переименование, смена типа, удалённая колонка)
+// drizzle-kit в режиме --force исполняет без вопросов, вместе с потерей данных.
+//
+// Схему при старте приводит в порядок сервер: scripts/ensure-columns.mjs и
+// lib/ensureSchema.ts досоздают недостающие таблицы и колонки, и только их —
+// операций с потерей данных там нет by design.
+//
+// Нужен настоящий push (например, после переименования колонки) — включается
+// осознанно и на один деплой: RUN_DB_PUSH=true, посмотреть логи, выключить.
 //
 // The proxy pattern mirrors scripts/preview-proxy.mjs (and the Replit setup),
 // so the frontend keeps calling the API on the same origin via relative /api.
@@ -27,11 +42,19 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ---------- 1. DB schema + seed (idempotent, safe on every boot) ----------
-const runDbSetup = (process.env.RUN_DB_SETUP ?? "true") !== "false";
+/** Флаг включён, только если он ЯВНО равен "true". Без значения — выключен. */
+const enabled = (name) => (process.env[name] ?? "").trim().toLowerCase() === "true";
 
-if (runDbSetup) {
-  console.log("[prod] DB setup: pushing schema…");
+// ---------- 1. Схема: только аддитивные правки ----------
+// Всегда: досоздаём отсутствующие таблицы и колонки. Идемпотентно и безопасно.
+spawnSync("node", ["scripts/ensure-columns.mjs"], { cwd: root, stdio: "inherit", env: process.env });
+
+// ---------- 2. Полный push схемы: только по явному требованию ----------
+if (enabled("RUN_DB_PUSH")) {
+  console.warn(
+    "[prod] RUN_DB_PUSH=true: выполняется drizzle-kit push --force. " +
+      "Это ДЕСТРУКТИВНАЯ операция. Выключите переменную сразу после деплоя.",
+  );
   const push = spawnSync("pnpm", ["--filter", "@workspace/db", "run", "push-force"], {
     cwd: root,
     stdio: "inherit",
@@ -43,11 +66,10 @@ if (runDbSetup) {
   }
 }
 
-// Всегда проверяем и дополняем схему — после push (если был), до сида
-spawnSync("node", ["scripts/ensure-columns.mjs"], { cwd: root, stdio: "inherit", env: process.env });
-
-if (runDbSetup) {
-  console.log("[prod] DB setup: seeding test accounts…");
+// ---------- 3. Сид тестовых аккаунтов: только по явному требованию ----------
+// На боевой базе он не нужен: аккаунты там уже настоящие.
+if (enabled("RUN_SEED")) {
+  console.log("[prod] RUN_SEED=true: seeding test accounts…");
   const seed = spawnSync("pnpm", ["--filter", "@workspace/scripts", "run", "seed"], {
     cwd: root,
     stdio: "inherit",
@@ -59,7 +81,7 @@ if (runDbSetup) {
   }
 }
 
-// ---------- 2-3. children ----------
+// ---------- 4-5. children ----------
 const children = [];
 let shuttingDown = false;
 
@@ -102,7 +124,7 @@ start("web", "node", ["artifacts/english-learning/server/serve.js"], {
   PORT: String(WEB_PORT),
 });
 
-// ---------- 4. reverse proxy on the public port ----------
+// ---------- 6. reverse proxy on the public port ----------
 function isApiPath(url) {
   const pathname = new URL(url || "/", "http://localhost").pathname;
   return pathname === "/api" || pathname.startsWith("/api/");

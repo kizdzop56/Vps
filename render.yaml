@@ -22,13 +22,35 @@ services:
         fromDatabase:
           name: v1-db
           property: connectionString
+      # Подпись токенов. Значение генерирует Render один раз и держит его
+      # неизменным. Без этой переменной сервер НЕ ЗАПУСТИТСЯ намеренно:
+      # дефолтного секрета в коде больше нет (api-server/src/lib/auth.ts).
       - key: SESSION_SECRET
         generateValue: true
-      # Push schema + seed test accounts (teacher/student) on every boot.
-      # Both are idempotent. Set to "false" after first successful deploy
-      # if you want faster boots.
-      - key: RUN_DB_SETUP
-        value: "true"
+      # Код регистрации учителя. ЗАДАЁТСЯ ВРУЧНУЮ в дашборде Render
+      # (Environment -> Add Environment Variable). Пока переменной нет,
+      # регистрация учителей отвечает 503 — это нормальное состояние по
+      # умолчанию: роль учителя видит персональные данные учеников.
+      #
+      # Раньше код был вписан в открытый исходник и в бандл фронтенда, то есть
+      # учителем мог зарегистрироваться любой желающий.
+      - key: TEACHER_CODE
+        sync: false
+      # Домены, которым разрешены браузерные запросы к API, через запятую.
+      # Само приложение ходит на свой же origin, поэтому переменная нужна
+      # только если API открывается для отдельного сайта.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # Схему при старте приводит в порядок сам сервер (ensure-columns.mjs +
+      # lib/ensureSchema.ts): досоздаются недостающие таблицы и колонки.
+      #
+      # RUN_DB_PUSH и RUN_SEED по умолчанию ВЫКЛЮЧЕНЫ. Раньше на их месте стоял
+      # RUN_DB_SETUP=true, и `drizzle-kit push --force` уходил в живую базу на
+      # каждом холодном старте — на бесплатном плане это десятки раз в сутки.
+      # Включать RUN_DB_PUSH только осознанно и на один деплой:
+      #   RUN_DB_PUSH  полный push схемы (ДЕСТРУКТИВНО)
+      #   RUN_SEED     сид тестовых аккаунтов
+      #
       # Optional integrations — add values in the Render dashboard if needed:
       #   RESEND_API_KEY     email verification / password reset
       #   GOOGLE_AI_API_KEY  AI tutor (chat + speech). Required for that section
