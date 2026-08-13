@@ -7,7 +7,10 @@
 // разбор ошибок и отчёт учителю (см. api-server/src/routes/scenarios.ts).
 import { apiFetch } from "@/hooks/useFlashcards";
 
-/** Как задание заканчивается. */
+/**
+ * Подпись условия завершения. Приходит с сервера и НЕ выбирается учителем:
+ * сервер выводит её из самого задания (см. finishModeFor в routes/scenarios.ts).
+ */
 export type FinishMode = "turns" | "goal" | "both";
 export type Strictness = "gentle" | "normal" | "strict";
 
@@ -18,6 +21,7 @@ export interface Scenario {
   role: string;
   goal: string | null;
   finishMode: FinishMode;
+  /** Сколько реплик нужно сказать. НОЛЬ — учитель не ограничивал. */
   turnsTarget: number;
   criteria: string[];
   strictness: Strictness;
@@ -116,7 +120,7 @@ export interface ScenarioDraft {
   situation: string;
   role: string;
   goal?: string;
-  finishMode: FinishMode;
+  /** 0 — без ограничения по репликам. */
   turnsTarget: number;
   criteria: string[];
   strictness: Strictness;
@@ -180,11 +184,22 @@ export const scenarios = {
   report: (attemptId: number) => apiFetch<ScenarioReport>(`/api/scenario-attempts/${attemptId}`),
 };
 
-/** Условие завершения человеческим языком. */
-export function finishText(s: Scenario): string {
-  if (s.finishMode === "goal") return `Пока не добьёшься цели`;
-  if (s.finishMode === "both") return `${s.turnsTarget} реплик или цель`;
-  return `${s.turnsTarget} реплик`;
+/**
+ * Условие завершения человеческим языком.
+ *
+ * Считается по самому заданию, а не по finishMode: так подпись не разъедется с
+ * поведением сервера, если у старой ситуации в базе осталось прежнее значение.
+ */
+export function finishText(s: { goal: string | null; turnsTarget: number }): string {
+  if (s.goal && s.turnsTarget > 0) return `${s.turnsTarget} реплик и цель`;
+  if (s.goal) return "до достижения цели";
+  if (s.turnsTarget > 0) return `${s.turnsTarget} реплик`;
+  return "без условия завершения";
+}
+
+/** Есть ли новые ситуации: по этому числу горит метка у разговора со Снежей. */
+export function freshScenarioCount(list: StudentScenario[]): number {
+  return list.filter((s) => !s.attempt || s.attempt.status === "active").length;
 }
 
 /** Строгость проверки словами. */
