@@ -1,9 +1,14 @@
-# E2E-прогон по живому деплою: настоящий браузер ходит по приложению под
-# учителем, учеником и родителем; рядом проверки API.
+# E2E-прогоны по живому деплою.
+#
+# Две job:
+#   smoke — быстрый обход: вход под всеми ролями, экраны открываются, API отвечает;
+#   clickall — нажимает каждую кнопку на каждом экране и ищет мёртвые нажатия,
+#              отказы сервера и пустые экраны. Долгий, поэтому отдельно.
 #
 # Когда запускается:
 #   - каждый вечер в 18:00 по Минску (15:00 UTC);
-#   - вручную: Actions → «E2E-прогон» → Run workflow (можно указать свой стенд);
+#   - вручную: Actions → «E2E-прогон» → Run workflow (можно указать свой стенд
+#     и отключить долгий прогон);
 #   - при изменении самих тестов.
 #
 # Результат падения уходит в GitHub Issue с меткой e2e-failure — оттуда его
@@ -17,6 +22,11 @@ on:
         description: "Адрес стенда"
         required: false
         default: "https://v1-app-j975.onrender.com"
+      click_all:
+        description: "Нажимать каждую кнопку (долго, ~20 мин на роль)"
+        type: boolean
+        required: false
+        default: true
   schedule:
     - cron: "0 15 * * *"
   push:
@@ -29,7 +39,8 @@ permissions:
   issues: write
 
 jobs:
-  e2e:
+  smoke:
+    name: Обход экранов и API
     runs-on: ubuntu-latest
     env:
       BASE_URL: ${{ github.event.inputs.base_url || 'https://v1-app-j975.onrender.com' }}
@@ -55,7 +66,7 @@ jobs:
         id: run
         continue-on-error: true
         working-directory: e2e
-        run: npm test
+        run: npx playwright test tests/api.spec.ts tests/ui.spec.ts
 
       - name: Отчёт
         if: always()
@@ -66,7 +77,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts
+          name: e2e-smoke
           path: |
             e2e/playwright-report
             e2e/test-results
@@ -98,7 +109,82 @@ jobs:
         if: always()
         run: |
           if [ "${{ steps.run.outcome }}" = "failure" ]; then
-            echo "E2E-прогон нашёл падения — подробности в отчёте и в Issue с меткой e2e-failure"
+            echo "Обход нашёл падения — подробности в отчёте и в Issue с меткой e2e-failure"
             exit 1
           fi
-          echo "E2E-прогон зелёный"
+          echo "Обход зелёный"
+
+  clickall:
+    name: Нажать каждую кнопку
+    # Не зависит от smoke: даже если обход упал, кнопки проверить полезно.
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.click_all != 'false'
+    timeout-minutes: 90
+    env:
+      BASE_URL: ${{ github.event.inputs.base_url || 'https://v1-app-j975.onrender.com' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Установка Playwright
+        working-directory: e2e
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Нажать каждую кнопку
+        id: run
+        continue-on-error: true
+        working-directory: e2e
+        run: npx playwright test tests/clickAll.spec.ts
+
+      - name: Отчёт
+        if: always()
+        working-directory: e2e
+        run: node summarize.mjs report.json > summary.md && cat summary.md
+
+      - name: Артефакты (скриншоты, видео, трейсы)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-clickall
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/report.json
+            e2e/summary.md
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Отчёт о падениях в Issue
+        if: always() && steps.run.outcome == 'failure'
+        working-directory: e2e
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create e2e-failure --color B60205 --description "Падения E2E-прогона" 2>/dev/null || true
+          # Помечаем источник: в одном иссью соседствуют отчёты обеих job.
+          printf '### Прогон: нажатие всех кнопок\n\n' > clickall.md
+          cat summary.md >> clickall.md
+          existing=$(gh issue list --label e2e-failure --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file clickall.md
+          else
+            gh issue create \
+              --title "E2E: падения на стенде $(date -u '+%Y-%m-%d')" \
+              --label e2e-failure \
+              --body-file clickall.md
+          fi
+
+      - name: Итог
+        if: always()
+        run: |
+          if [ "${{ steps.run.outcome }}" = "failure" ]; then
+            echo "Нашлись проблемные кнопки — подробности в отчёте и в Issue с меткой e2e-failure"
+            exit 1
+          fi
+          echo "Все кнопки отвечают"
