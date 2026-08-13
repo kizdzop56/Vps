@@ -10,6 +10,17 @@
 // происходит, видно и по ней, и по подписи рядом: картинка сообщает быстрее,
 // текст надёжнее.
 //
+// ── ДВЕ ВКЛАДКИ: РАЗГОВОР И ЗАДАНИЯ ОТ УЧИТЕЛЯ ─────────────────────────────
+// Ситуации от учителя раньше были отдельным пунктом в оглавлении «Учёбы», рядом
+// с этим экраном. Два соседних входа в один и тот же разговор ученик читает как
+// «одно и то же дважды»: он открывал то одно, то другое и не понимал, где
+// задание.
+//
+// Теперь они здесь, второй вкладкой, и на кнопке горит счётчик: пришла ситуация
+// — цифра видна, не заходя внутрь. Ленты не смешаны намеренно: свободный
+// разговор ничего не проверяет, а ситуация — задание с целью, концом и отчётом
+// учителю. Одна лента на двоих превратила бы болтовню в экзамен.
+//
 // ── РАЗГОВОР ПРОДОЛЖАЕТСЯ ПОСЛЕ ПЕРЕЗАГРУЗКИ ───────────────────────────────
 // Реплики всегда лежали на сервере, но экран о них не спрашивал: обновил
 // страницу — и лента пустая, как будто ничего не было.
@@ -67,7 +78,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { apiFetch } from "@/hooks/useFlashcards";
 import {
@@ -80,7 +91,11 @@ import {
 } from "@/utils/voiceRecorder";
 import { SnezhaFrames, type SnezhaState } from "@/components/SnezhaFrames";
 import { Glyph } from "@/components/ui/Glyph";
-import { ChunkyButton, Tile } from "@/components/ui/GameKit";
+import { ChunkyButton, Pill, Tile } from "@/components/ui/GameKit";
+import {
+  finishText, freshScenarioCount, scenarios as scenarioApi,
+  type StudentScenario,
+} from "@/hooks/useScenarios";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 
@@ -144,6 +159,9 @@ const MODES: { key: Mode; label: string }[] = [
   { key: "text", label: "Писать" },
 ];
 
+/** Что открыто: свободный разговор или задания от учителя. */
+type Tab = "talk" | "tasks";
+
 /** Заглушка на месте расшифровки, пока запись едет на сервер. */
 const VOICE_PLACEHOLDER = "…";
 
@@ -203,6 +221,13 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
   );
 }
 
+/** Состояние задания одной меткой: по нему понятно, что делать дальше. */
+function taskState(s: StudentScenario): { text: string; color: string } {
+  if (s.attempt?.status === "active") return { text: "идёт", color: accents.amber };
+  if (s.done > 0) return { text: "пройдено", color: accents.violetDeep };
+  return { text: "новое", color: "#e11d48" };
+}
+
 export default function TutorScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -210,6 +235,7 @@ export default function TutorScreen() {
   const qc = useQueryClient();
   const { width: W } = useWindowDimensions();
 
+  const [tab, setTab] = React.useState<Tab>("talk");
   const [lines, setLines] = React.useState<Line[]>([]);
   const [sessionId, setSessionId] = React.useState<number | null>(null);
   const [mode, setMode] = React.useState<Mode>("voice");
@@ -250,6 +276,17 @@ export default function TutorScreen() {
    * а её base64 уже не восстановить из ленты — там только текст-заглушка.
    */
   const lastSend = React.useRef<{ payload: Record<string, unknown>; shown: string } | null>(null);
+
+  // Задания от учителя. Тот же ключ, что в оглавлении «Учёбы»: счётчик на
+  // карточке разговора и эта вкладка обязаны показывать одно и то же.
+  const tasksQ = useQuery({
+    queryKey: ["scenarios-mine"],
+    queryFn: scenarioApi.mine,
+    refetchOnMount: "always",
+    staleTime: 15_000,
+  });
+  const tasks = tasksQ.data ?? [];
+  const waiting = freshScenarioCount(tasks);
 
   // Настроен ли раздел. Спрашиваем один раз при открытии: ответ не меняется без
   // перезапуска сервера.
@@ -553,12 +590,20 @@ export default function TutorScreen() {
     setMode(next);
   }, [recording, sending]);
 
+  /** Уйти в задание. Запись и звук обрываем: там свой микрофон. */
+  const openTask = React.useCallback((id: number) => {
+    stopPlayback.current?.();
+    void recorder.current?.cancel();
+    router.push(`/flashcards/scenario/${id}` as any);
+  }, [router]);
+
   const blocked = ready === false;
   const needsRetry = retry > 0;
   /** Есть недоставленная реплика — покажем кнопку повтора. */
   const canResend = !!lastSend.current && lines.some((l) => l.failed);
   /** Разговор начался — шапку ужимаем, место отдаём ленте. */
   const started = lines.length > 0;
+  const onTasks = tab === "tasks";
 
   // Состояние Снежи. Порядок проверок — это приоритет: пока идёт запись, она
   // слушает, чем бы там ни занимался сервер.
@@ -594,7 +639,7 @@ export default function TutorScreen() {
             numberOfLines={1}
             style={{
               flex: 1,
-              fontSize: started ? 19 : 23,
+              fontSize: started || onTasks ? 19 : 23,
               fontWeight: "900",
               letterSpacing: -0.6,
               color: colors.foreground,
@@ -602,56 +647,16 @@ export default function TutorScreen() {
           >
             {`Разговор со ${NAME}й`}
           </Text>
-          {points > 0 && (
+          {points > 0 && !onTasks && (
             <Text style={{ fontSize: 15, fontWeight: "900", color: accents.magenta, fontVariant: ["tabular-nums"] }}>
               {`+${points}`}
             </Text>
           )}
         </View>
 
-        {/* ── Сама Снежа ──
-            Нажатие на неё переозвучивает последний ответ: по персонажу хочется
-            потыкать, и это самое ожидаемое, что может произойти. */}
-        <Pressable
-          onPress={() => {
-            const last = [...lines].reverse().find((l) => l.role === "ai");
-            if (last) void speakLine(last);
-            else primeAudio();
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={`${NAME}: ${STATUS[snezhaState]}`}
-          style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}
-        >
-          <SnezhaFrames state={snezhaState} width={mascotW} still={blocked} />
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{
-              fontSize: started ? 16 : 18,
-              fontWeight: "900",
-              color: colors.foreground,
-              letterSpacing: -0.3,
-            }}>
-              {NAME}
-            </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3 }}>
-              <View style={{
-                width: 7, height: 7, borderRadius: 4,
-                backgroundColor: snezhaState === "idle" ? colors.mutedForeground : colors.primary,
-              }} />
-              <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground }}>
-                {STATUS[snezhaState]}
-              </Text>
-            </View>
-            {!started && (
-              <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
-                {mode === "voice"
-                  ? "Говори по-английски вслух. Ошибёшься — Снежа поправит и попросит повторить"
-                  : "Пиши по-английски. Ошибёшься — Снежа поправит и попросит повторить"}
-              </Text>
-            )}
-          </View>
-        </Pressable>
-
-        {/* Переключатель режима. */}
+        {/* ── Что открыто: разговор или задания от учителя ──
+            Счётчик на кнопке — единственный способ узнать о задании, не заходя
+            внутрь, поэтому он красный и с цифрой. */}
         <View style={{
           flexDirection: "row",
           backgroundColor: colors.primary + "14",
@@ -659,20 +664,29 @@ export default function TutorScreen() {
           padding: 4,
           marginBottom: 10,
         }}>
-          {MODES.map((m) => {
-            const active = mode === m.key;
+          {(["talk", "tasks"] as Tab[]).map((key) => {
+            const active = tab === key;
+            const label = key === "talk" ? "Свободный разговор" : "Задания учителя";
             return (
               <Pressable
-                key={m.key}
-                onPress={() => switchMode(m.key)}
+                key={key}
+                onPress={() => {
+                  if (recording || sending) return;
+                  setTab(key);
+                }}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
-                accessibilityLabel={m.label}
+                accessibilityLabel={key === "tasks" && waiting > 0
+                  ? `${label}. Новых: ${waiting}`
+                  : label}
                 style={{
                   flex: 1,
-                  paddingVertical: started ? 8 : 10,
-                  borderRadius: radii.pill,
+                  flexDirection: "row",
                   alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 9,
+                  borderRadius: radii.pill,
                   backgroundColor: active ? colors.card : "transparent",
                   shadowColor: accents.violetDeep,
                   shadowOffset: { width: 0, height: active ? 3 : 0 },
@@ -681,351 +695,569 @@ export default function TutorScreen() {
                   elevation: active ? 2 : 0,
                 }}
               >
-                <Text style={{
-                  fontSize: 13.5,
-                  fontWeight: active ? "900" : "700",
-                  color: active ? colors.primary : colors.mutedForeground,
-                }}>
-                  {m.label}
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: active ? "900" : "700",
+                    color: active ? colors.primary : colors.mutedForeground,
+                  }}
+                >
+                  {label}
                 </Text>
+                {key === "tasks" && waiting > 0 && (
+                  <View style={{
+                    backgroundColor: "#e11d48", borderRadius: 9,
+                    minWidth: 18, height: 18, paddingHorizontal: 4,
+                    alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Text style={{ color: "#fff", fontSize: 10.5, fontWeight: "900", lineHeight: 13 }}>
+                      {waiting > 9 ? "9+" : waiting}
+                    </Text>
+                  </View>
+                )}
               </Pressable>
             );
           })}
         </View>
 
-        {blocked && (
-          <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 10 }}>
-            <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
-              {`${NAME} пока не может говорить`}
-            </Text>
-            <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              {notReadyReason ?? "На сервере не задан ключ доступа к языковой модели."}
-            </Text>
-          </Tile>
+        {!onTasks && (
+          <>
+            {/* ── Сама Снежа ──
+                Нажатие на неё переозвучивает последний ответ: по персонажу хочется
+                потыкать, и это самое ожидаемое, что может произойти. */}
+            <Pressable
+              onPress={() => {
+                const last = [...lines].reverse().find((l) => l.role === "ai");
+                if (last) void speakLine(last);
+                else primeAudio();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`${NAME}: ${STATUS[snezhaState]}`}
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}
+            >
+              <SnezhaFrames state={snezhaState} width={mascotW} still={blocked} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{
+                  fontSize: started ? 16 : 18,
+                  fontWeight: "900",
+                  color: colors.foreground,
+                  letterSpacing: -0.3,
+                }}>
+                  {NAME}
+                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3 }}>
+                  <View style={{
+                    width: 7, height: 7, borderRadius: 4,
+                    backgroundColor: snezhaState === "idle" ? colors.mutedForeground : colors.primary,
+                  }} />
+                  <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.mutedForeground }}>
+                    {STATUS[snezhaState]}
+                  </Text>
+                </View>
+                {!started && (
+                  <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 5 }}>
+                    {mode === "voice"
+                      ? "Говори по-английски вслух. Ошибёшься — Снежа поправит и попросит повторить"
+                      : "Пиши по-английски. Ошибёшься — Снежа поправит и попросит повторить"}
+                  </Text>
+                )}
+              </View>
+            </Pressable>
+
+            {/* Переключатель режима ответа. */}
+            <View style={{
+              flexDirection: "row",
+              backgroundColor: colors.primary + "14",
+              borderRadius: radii.pill,
+              padding: 4,
+              marginBottom: 10,
+            }}>
+              {MODES.map((m) => {
+                const active = mode === m.key;
+                return (
+                  <Pressable
+                    key={m.key}
+                    onPress={() => switchMode(m.key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={m.label}
+                    style={{
+                      flex: 1,
+                      paddingVertical: started ? 8 : 10,
+                      borderRadius: radii.pill,
+                      alignItems: "center",
+                      backgroundColor: active ? colors.card : "transparent",
+                      shadowColor: accents.violetDeep,
+                      shadowOffset: { width: 0, height: active ? 3 : 0 },
+                      shadowOpacity: active ? 0.18 : 0,
+                      shadowRadius: active ? 8 : 0,
+                      elevation: active ? 2 : 0,
+                    }}
+                  >
+                    <Text style={{
+                      fontSize: 13.5,
+                      fontWeight: active ? "900" : "700",
+                      color: active ? colors.primary : colors.mutedForeground,
+                    }}>
+                      {m.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {blocked && (
+              <Tile glow={colors.destructive} style={{ padding: 15, marginBottom: 10 }}>
+                <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
+                  {`${NAME} пока не может говорить`}
+                </Text>
+                <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
+                  {notReadyReason ?? "На сервере не задан ключ доступа к языковой модели."}
+                </Text>
+              </Tile>
+            )}
+          </>
         )}
       </View>
 
-      {/* ═══ ЛЕНТА: прокручивается только она ═══ */}
-      <ScrollView
-        ref={(r) => { scroller.current = r; }}
-        onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12 }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Пока разговор грузится — кружок, а не пустота: пустота здесь
-            неотличима от «всё пропало». */}
-        {resuming && lines.length === 0 && (
-          <ActivityIndicator color={colors.primary} style={{ marginTop: 28 }} />
-        )}
-
-        {!resuming && lines.length === 0 && !blocked && (
-          <Text style={{
-            fontSize: 13.5, lineHeight: 20, color: colors.mutedForeground,
-            textAlign: "center", paddingVertical: 22, paddingHorizontal: 12,
-          }}>
-            {mode === "voice"
-              ? `Начни разговор: нажми «Говорить» и скажи что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`
-              : `Начни разговор: напиши что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`}
+      {/* ═══ ЗАДАНИЯ ОТ УЧИТЕЛЯ ═══ */}
+      {onTasks ? (
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, marginBottom: 12 }}>
+            Разговор в заданной обстановке: Снежа играет роль и не подсказывает, о чём спросить. Ошибку
+            назовёт по ходу, но разговор из-за неё не остановится, а после задания весь диалог с разбором
+            уйдёт учителю.
           </Text>
-        )}
 
-        {lines.map((line) => {
-          const mine = line.role === "student";
-          const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
-          const busy = asking === line.id;
-          const ruBusy = translating === line.id;
-          const hasFix = mine && (!!line.fixed || !!line.issue);
+          {tasksQ.isLoading && <ActivityIndicator color={colors.primary} style={{ marginTop: 20 }} />}
 
-          const hint = busy
-            ? "озвучиваю…"
-            : line.voiceFailed
-              ? "озвучить не вышло, попробуй ещё раз"
-              : audioBlocked && line.audio
-                ? "нажми, чтобы включить звук"
-                : line.audio
-                  ? "нажми, чтобы послушать ещё раз"
-                  : "нажми, чтобы послушать";
+          {!tasksQ.isLoading && tasks.length === 0 && (
+            <View style={{
+              backgroundColor: colors.card, borderRadius: radii.md,
+              borderWidth: 1, borderColor: colors.border, padding: 15,
+            }}>
+              <Text style={{ fontSize: 15, fontWeight: "900", color: colors.foreground }}>Заданий пока нет</Text>
+              <Text style={{ fontSize: 13, lineHeight: 20, color: colors.mutedForeground, marginTop: 6 }}>
+                Когда учитель выдаст ситуацию, она появится здесь и рядом с этой вкладкой загорится метка.
+                А поговорить просто так можно на соседней вкладке — там без проверки и отчёта.
+              </Text>
+            </View>
+          )}
 
-          return (
-            <Pressable
-              key={line.id}
-              onPress={() => { if (listenable) void speakLine(line); }}
-              disabled={!listenable}
-              accessibilityRole={listenable ? "button" : undefined}
-              accessibilityLabel={listenable ? `Послушать ответ ${NAME}` : undefined}
-              style={{
-                alignSelf: mine ? "flex-end" : "flex-start",
-                maxWidth: "88%",
-                backgroundColor: mine ? colors.primary + "1f" : colors.card,
-                borderWidth: 1,
-                // Не доставленная реплика обведена красным, ошибочная — жёлтым.
-                // Цвет ошибки НЕ красный намеренно: ошибка в упражнении это не
-                // поломка, а нормальная часть учёбы.
-                borderColor: line.failed
-                  ? colors.destructive + "88"
-                  : hasFix
-                    ? colors.warning + "99"
-                    : mine ? colors.primary + "44" : colors.border,
-                borderRadius: radii.md,
-                paddingVertical: 11,
-                paddingHorizontal: 14,
-                marginTop: 10,
-                opacity: line.pending ? 0.6 : 1,
-              }}
-            >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                <Text style={{
-                  flex: 1,
-                  fontSize: 10, fontWeight: "900", letterSpacing: 1,
-                  textTransform: "uppercase",
-                  color: mine ? colors.primary : colors.mutedForeground,
-                }}>
-                  {mine ? "ты" : NAME}
-                </Text>
-                {listenable && (
-                  <Pressable
-                    onPress={(e: any) => {
-                      // Гасим всплытие: на вебе нажатие иначе дойдёт до пузыря
-                      // и заодно включит озвучку.
-                      e?.stopPropagation?.();
-                      void toggleTranslation(line);
-                    }}
-                    hitSlop={10}
-                    accessibilityRole="button"
-                    accessibilityLabel={line.ruOpen ? "Скрыть перевод" : "Показать перевод"}
-                    accessibilityState={{ expanded: !!line.ruOpen }}
-                    style={{
-                      flexDirection: "row", alignItems: "center", gap: 4,
-                      paddingHorizontal: 7, paddingVertical: 3,
-                      borderRadius: radii.pill,
-                      backgroundColor: line.ruOpen ? colors.primary + "1f" : "transparent",
-                    }}
-                  >
-                    <Text style={{ fontSize: 9.5, fontWeight: "900", letterSpacing: 0.6, color: colors.primary }}>
-                      RU
+          {tasks.map((s) => {
+            const badge = taskState(s);
+            return (
+              <View
+                key={s.id}
+                style={{
+                  backgroundColor: colors.card, borderRadius: radii.md,
+                  borderWidth: 1, borderColor: colors.border, padding: 15,
+                  marginBottom: 12,
+                  shadowColor: accents.violetDeep,
+                  shadowOffset: { width: 0, height: 5 },
+                  shadowOpacity: 0.12,
+                  shadowRadius: 14,
+                  elevation: 3,
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+                  <View style={{
+                    width: 42, height: 42, borderRadius: radii.sm,
+                    alignItems: "center", justifyContent: "center",
+                    backgroundColor: "rgba(236,72,153,0.14)",
+                  }}>
+                    <Glyph name="handshake" size={21} color="#db2777" />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ fontSize: 16, fontWeight: "900", color: colors.foreground }}>{s.title}</Text>
+                    <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                      {s.teacherName ? `от ${s.teacherName} · ` : ""}{finishText(s)}
                     </Text>
-                    {ruBusy
-                      ? <ActivityIndicator size="small" color={colors.primary} />
-                      : (
-                        <View style={{ transform: [{ rotate: line.ruOpen ? "270deg" : "90deg" }] }}>
-                          <Glyph name="chevron" size={13} color={colors.primary} />
-                        </View>
-                      )}
+                  </View>
+                  <Pill text={badge.text} tone="soft" color={badge.color} />
+                </View>
+
+                <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.foreground, marginTop: 11 }}>
+                  {s.situation}
+                </Text>
+                <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
+                  {NAME}: {s.role}
+                </Text>
+                {!!s.goal && (
+                  <View style={{
+                    flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 8,
+                    backgroundColor: "rgba(99,102,241,0.1)", borderRadius: radii.sm, padding: 10,
+                  }}>
+                    <Glyph name="target" size={16} color={colors.primary} />
+                    <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.foreground }}>
+                      Цель: {s.goal}
+                    </Text>
+                  </View>
+                )}
+
+                <ChunkyButton
+                  label={s.attempt?.status === "active"
+                    ? "Продолжить разговор"
+                    : s.done > 0 ? "Пройти ещё раз" : "Начать разговор"}
+                  sublabel={s.attempt?.status === "active"
+                    ? (s.turnsTarget > 0
+                      ? `сказано ${s.attempt.turns} из ${s.turnsTarget}`
+                      : `сказано реплик: ${s.attempt.turns}`)
+                    : undefined}
+                  icon="sound"
+                  chevron
+                  onPress={() => openTask(s.id)}
+                  style={{ marginTop: 12 }}
+                />
+
+                {/* Свой разбор ученику показываем тем же экраном, что и учителю:
+                    данные одни, и прятать от ученика его собственные ошибки
+                    бессмысленно. */}
+                {!!s.attempt && s.attempt.status !== "active" && (
+                  <Pressable
+                    onPress={() => router.push(`/scenario-review/${s.attempt!.id}` as any)}
+                    style={{ paddingVertical: 10, alignItems: "center" }}
+                    accessibilityRole="button"
+                  >
+                    <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.primary }}>
+                      Посмотреть разбор прошлой попытки
+                    </Text>
                   </Pressable>
                 )}
               </View>
+            );
+          })}
+        </ScrollView>
+      ) : (
+        <>
+          {/* ═══ ЛЕНТА: прокручивается только она ═══ */}
+          <ScrollView
+            ref={(r) => { scroller.current = r; }}
+            onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12 }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Пока разговор грузится — кружок, а не пустота: пустота здесь
+                неотличима от «всё пропало». */}
+            {resuming && lines.length === 0 && (
+              <ActivityIndicator color={colors.primary} style={{ marginTop: 28 }} />
+            )}
 
-              <Text style={{ fontSize: 15, lineHeight: 22, color: colors.foreground }}>
-                {line.text}
+            {!resuming && lines.length === 0 && !blocked && (
+              <Text style={{
+                fontSize: 13.5, lineHeight: 20, color: colors.mutedForeground,
+                textAlign: "center", paddingVertical: 22, paddingHorizontal: 12,
+              }}>
+                {mode === "voice"
+                  ? `Начни разговор: нажми «Говорить» и скажи что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`
+                  : `Начни разговор: напиши что-нибудь по-английски. Хоть «Hi!» — ${NAME} ответит.`}
               </Text>
+            )}
 
-              {line.ruOpen && (line.ru || line.ruFailed || ruBusy) && (
-                <View style={{
-                  marginTop: 9, paddingTop: 8,
-                  borderTopWidth: 1, borderTopColor: colors.border,
-                }}>
-                  {line.ru ? (
-                    <Text style={{ fontSize: 14, lineHeight: 20, color: colors.mutedForeground }}>
-                      {line.ru}
+            {lines.map((line) => {
+              const mine = line.role === "student";
+              const listenable = !mine && !line.pending && line.text !== VOICE_PLACEHOLDER;
+              const busy = asking === line.id;
+              const ruBusy = translating === line.id;
+              const hasFix = mine && (!!line.fixed || !!line.issue);
+
+              const hint = busy
+                ? "озвучиваю…"
+                : line.voiceFailed
+                  ? "озвучить не вышло, попробуй ещё раз"
+                  : audioBlocked && line.audio
+                    ? "нажми, чтобы включить звук"
+                    : line.audio
+                      ? "нажми, чтобы послушать ещё раз"
+                      : "нажми, чтобы послушать";
+
+              return (
+                <Pressable
+                  key={line.id}
+                  onPress={() => { if (listenable) void speakLine(line); }}
+                  disabled={!listenable}
+                  accessibilityRole={listenable ? "button" : undefined}
+                  accessibilityLabel={listenable ? `Послушать ответ ${NAME}` : undefined}
+                  style={{
+                    alignSelf: mine ? "flex-end" : "flex-start",
+                    maxWidth: "88%",
+                    backgroundColor: mine ? colors.primary + "1f" : colors.card,
+                    borderWidth: 1,
+                    // Не доставленная реплика обведена красным, ошибочная — жёлтым.
+                    // Цвет ошибки НЕ красный намеренно: ошибка в упражнении это не
+                    // поломка, а нормальная часть учёбы.
+                    borderColor: line.failed
+                      ? colors.destructive + "88"
+                      : hasFix
+                        ? colors.warning + "99"
+                        : mine ? colors.primary + "44" : colors.border,
+                    borderRadius: radii.md,
+                    paddingVertical: 11,
+                    paddingHorizontal: 14,
+                    marginTop: 10,
+                    opacity: line.pending ? 0.6 : 1,
+                  }}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                    <Text style={{
+                      flex: 1,
+                      fontSize: 10, fontWeight: "900", letterSpacing: 1,
+                      textTransform: "uppercase",
+                      color: mine ? colors.primary : colors.mutedForeground,
+                    }}>
+                      {mine ? "ты" : NAME}
                     </Text>
-                  ) : line.ruFailed ? (
-                    <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.destructive }}>
-                      Перевод не пришёл. Нажми стрелку ещё раз.
-                    </Text>
-                  ) : (
-                    <Text style={{ fontSize: 12.5, color: colors.mutedForeground }}>
-                      перевожу…
-                    </Text>
+                    {listenable && (
+                      <Pressable
+                        onPress={(e: any) => {
+                          // Гасим всплытие: на вебе нажатие иначе дойдёт до пузыря
+                          // и заодно включит озвучку.
+                          e?.stopPropagation?.();
+                          void toggleTranslation(line);
+                        }}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel={line.ruOpen ? "Скрыть перевод" : "Показать перевод"}
+                        accessibilityState={{ expanded: !!line.ruOpen }}
+                        style={{
+                          flexDirection: "row", alignItems: "center", gap: 4,
+                          paddingHorizontal: 7, paddingVertical: 3,
+                          borderRadius: radii.pill,
+                          backgroundColor: line.ruOpen ? colors.primary + "1f" : "transparent",
+                        }}
+                      >
+                        <Text style={{ fontSize: 9.5, fontWeight: "900", letterSpacing: 0.6, color: colors.primary }}>
+                          RU
+                        </Text>
+                        {ruBusy
+                          ? <ActivityIndicator size="small" color={colors.primary} />
+                          : (
+                            <View style={{ transform: [{ rotate: line.ruOpen ? "270deg" : "90deg" }] }}>
+                              <Glyph name="chevron" size={13} color={colors.primary} />
+                            </View>
+                          )}
+                      </Pressable>
+                    )}
+                  </View>
+
+                  <Text style={{ fontSize: 15, lineHeight: 22, color: colors.foreground }}>
+                    {line.text}
+                  </Text>
+
+                  {line.ruOpen && (line.ru || line.ruFailed || ruBusy) && (
+                    <View style={{
+                      marginTop: 9, paddingTop: 8,
+                      borderTopWidth: 1, borderTopColor: colors.border,
+                    }}>
+                      {line.ru ? (
+                        <Text style={{ fontSize: 14, lineHeight: 20, color: colors.mutedForeground }}>
+                          {line.ru}
+                        </Text>
+                      ) : line.ruFailed ? (
+                        <Text style={{ fontSize: 12.5, fontWeight: "700", color: colors.destructive }}>
+                          Перевод не пришёл. Нажми стрелку ещё раз.
+                        </Text>
+                      ) : (
+                        <Text style={{ fontSize: 12.5, color: colors.mutedForeground }}>
+                          перевожу…
+                        </Text>
+                      )}
+                    </View>
                   )}
-                </View>
-              )}
 
-              {/* ── Разбор своей реплики ──
-                  Сначала КАК ПРАВИЛЬНО, потом что было не так: повторять ученик
-                  будет верный вариант, и он должен первым попадаться глазу. */}
-              {hasFix && (
-                <View style={{
-                  marginTop: 9, paddingTop: 8,
-                  borderTopWidth: 1, borderTopColor: colors.warning + "55",
-                }}>
-                  {!!line.fixed && (
-                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 7 }}>
-                      <Glyph name="check" size={13} color={colors.warning} />
-                      <Text style={{
-                        flex: 1, fontSize: 14.5, lineHeight: 21,
-                        fontWeight: "800", color: colors.foreground,
-                      }}>
-                        {line.fixed}
+                  {/* ── Разбор своей реплики ──
+                      Сначала КАК ПРАВИЛЬНО, потом что было не так: повторять ученик
+                      будет верный вариант, и он должен первым попадаться глазу. */}
+                  {hasFix && (
+                    <View style={{
+                      marginTop: 9, paddingTop: 8,
+                      borderTopWidth: 1, borderTopColor: colors.warning + "55",
+                    }}>
+                      {!!line.fixed && (
+                        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 7 }}>
+                          <Glyph name="check" size={13} color={colors.warning} />
+                          <Text style={{
+                            flex: 1, fontSize: 14.5, lineHeight: 21,
+                            fontWeight: "800", color: colors.foreground,
+                          }}>
+                            {line.fixed}
+                          </Text>
+                        </View>
+                      )}
+                      {!!line.issue && (
+                        <Text style={{
+                          fontSize: 12.5, lineHeight: 18,
+                          color: colors.mutedForeground, marginTop: line.fixed ? 6 : 0,
+                        }}>
+                          {line.issue}
+                        </Text>
+                      )}
+                    </View>
+                  )}
+
+                  {line.failed && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
+                      <Glyph name="alert" size={13} color={colors.destructive} />
+                      <Text style={{ fontSize: 11, fontWeight: "700", color: colors.destructive }}>
+                        не доставлено
                       </Text>
                     </View>
                   )}
-                  {!!line.issue && (
-                    <Text style={{
-                      fontSize: 12.5, lineHeight: 18,
-                      color: colors.mutedForeground, marginTop: line.fixed ? 6 : 0,
-                    }}>
-                      {line.issue}
+                  {listenable && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
+                      {busy
+                        ? <ActivityIndicator size="small" color={colors.primary} />
+                        : <Glyph name="sound" size={13} color={line.voiceFailed ? colors.destructive : colors.primary} />}
+                      <Text style={{
+                        fontSize: 11,
+                        fontWeight: "700",
+                        color: line.voiceFailed ? colors.destructive : colors.primary,
+                      }}>
+                        {hint}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
+
+            {sending && (
+              <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 12 }} />
+            )}
+
+            {denied && (
+              <Tile glow={colors.warning} style={{ padding: 15, marginTop: 10 }}>
+                <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
+                  Нужен доступ к микрофону
+                </Text>
+                <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
+                  Без него говорить не получится. Разреши доступ в окне браузера и нажми
+                  кнопку записи ещё раз — или переключись на «Писать».
+                </Text>
+              </Tile>
+            )}
+
+            {/* Ошибка отправки. Вместе с ней — кнопка повтора: без неё
+                недоставленная реплика остаётся мёртвым грузом. */}
+            {!!error && (
+              <Tile glow={colors.destructive} style={{ padding: 15, marginTop: 10 }}>
+                <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
+                  Не получилось
+                </Text>
+                <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
+                  {error}
+                </Text>
+                {canResend && (
+                  <ChunkyButton
+                    label="Отправить ещё раз"
+                    icon="repeat"
+                    center
+                    tone="warm"
+                    disabled={sending}
+                    onPress={() => { primeAudio(); void resend(); }}
+                    style={{ marginTop: 12 }}
+                  />
+                )}
+              </Tile>
+            )}
+          </ScrollView>
+
+          {/* ═══ ПАНЕЛЬ ВВОДА: не прокручивается ═══ */}
+          <View style={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}>
+            {needsRetry && !blocked && (
+              <View style={{
+                flexDirection: "row", alignItems: "flex-start", gap: 8,
+                backgroundColor: colors.warning + "1f",
+                borderWidth: 1, borderColor: colors.warning + "66",
+                borderRadius: radii.sm,
+                paddingVertical: 9, paddingHorizontal: 12,
+                marginBottom: 10,
+              }}>
+                <Glyph name="repeat" size={14} color={colors.warning} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.foreground }}>
+                    {mode === "voice" ? "Скажи это ещё раз, правильно" : "Напиши это ещё раз, правильно"}
+                  </Text>
+                  {!!awaited && (
+                    <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 3 }}>
+                      {awaited}
                     </Text>
                   )}
                 </View>
-              )}
-
-              {line.failed && (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
-                  <Glyph name="alert" size={13} color={colors.destructive} />
-                  <Text style={{ fontSize: 11, fontWeight: "700", color: colors.destructive }}>
-                    не доставлено
-                  </Text>
-                </View>
-              )}
-              {listenable && (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 }}>
-                  {busy
-                    ? <ActivityIndicator size="small" color={colors.primary} />
-                    : <Glyph name="sound" size={13} color={line.voiceFailed ? colors.destructive : colors.primary} />}
-                  <Text style={{
-                    fontSize: 11,
-                    fontWeight: "700",
-                    color: line.voiceFailed ? colors.destructive : colors.primary,
-                  }}>
-                    {hint}
-                  </Text>
-                </View>
-              )}
-            </Pressable>
-          );
-        })}
-
-        {sending && (
-          <ActivityIndicator color={colors.primary} style={{ alignSelf: "flex-start", marginTop: 12 }} />
-        )}
-
-        {denied && (
-          <Tile glow={colors.warning} style={{ padding: 15, marginTop: 10 }}>
-            <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
-              Нужен доступ к микрофону
-            </Text>
-            <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              Без него говорить не получится. Разреши доступ в окне браузера и нажми
-              кнопку записи ещё раз — или переключись на «Писать».
-            </Text>
-          </Tile>
-        )}
-
-        {/* Ошибка отправки. Вместе с ней — кнопка повтора: без неё
-            недоставленная реплика остаётся мёртвым грузом. */}
-        {!!error && (
-          <Tile glow={colors.destructive} style={{ padding: 15, marginTop: 10 }}>
-            <Text style={{ fontSize: 14, fontWeight: "900", color: colors.destructive }}>
-              Не получилось
-            </Text>
-            <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 6 }}>
-              {error}
-            </Text>
-            {canResend && (
-              <ChunkyButton
-                label="Отправить ещё раз"
-                icon="repeat"
-                center
-                tone="warm"
-                disabled={sending}
-                onPress={() => { primeAudio(); void resend(); }}
-                style={{ marginTop: 12 }}
-              />
+              </View>
             )}
-          </Tile>
-        )}
-      </ScrollView>
 
-      {/* ═══ ПАНЕЛЬ ВВОДА: не прокручивается ═══ */}
-      <View style={{ paddingHorizontal: 16, paddingBottom: screenBottom(insets) }}>
-        {needsRetry && !blocked && (
-          <View style={{
-            flexDirection: "row", alignItems: "flex-start", gap: 8,
-            backgroundColor: colors.warning + "1f",
-            borderWidth: 1, borderColor: colors.warning + "66",
-            borderRadius: radii.sm,
-            paddingVertical: 9, paddingHorizontal: 12,
-            marginBottom: 10,
-          }}>
-            <Glyph name="repeat" size={14} color={colors.warning} />
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.foreground }}>
-                {mode === "voice" ? "Скажи это ещё раз, правильно" : "Напиши это ещё раз, правильно"}
-              </Text>
-              {!!awaited && (
-                <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 3 }}>
-                  {awaited}
-                </Text>
-              )}
-            </View>
+            {mode === "voice" ? (
+              <ChunkyButton
+                label={recording
+                  ? "Стоп и отправить"
+                  : sending ? "Секунду…" : needsRetry ? "Повторить" : "Говорить"}
+                sublabel={recording
+                  ? `${NAME} слушает`
+                  : needsRetry ? "скажи исправленную фразу" : "нажми, скажи фразу, нажми ещё раз"}
+                icon={recording ? "check" : needsRetry ? "repeat" : "sound"}
+                tone={recording || needsRetry ? "warm" : "primary"}
+                center
+                disabled={sending || blocked}
+                onPress={() => {
+                  // Разблокировка звука — первым делом, синхронно.
+                  primeAudio();
+                  void (recording ? stopAndSend() : startRecording());
+                }}
+              />
+            ) : (
+              <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 10 }}>
+                <TextInput
+                  value={typed}
+                  onChangeText={setTyped}
+                  placeholder={needsRetry ? "Напиши правильно" : "Напиши по-английски"}
+                  placeholderTextColor={colors.mutedForeground}
+                  editable={!sending && !blocked}
+                  multiline
+                  maxLength={500}
+                  onSubmitEditing={() => { primeAudio(); void sendTyped(); }}
+                  returnKeyType="send"
+                  style={{
+                    flex: 1,
+                    minHeight: 52,
+                    maxHeight: 120,
+                    backgroundColor: colors.card,
+                    borderRadius: radii.md,
+                    borderWidth: 2,
+                    borderColor: needsRetry ? colors.warning + "aa" : colors.border,
+                    paddingHorizontal: 14,
+                    paddingVertical: Platform.OS === "web" ? 14 : 12,
+                    fontSize: 16,
+                    fontWeight: "600",
+                    color: colors.foreground,
+                  }}
+                />
+                <Pressable
+                  onPress={() => { primeAudio(); void sendTyped(); }}
+                  disabled={sending || blocked || typed.trim().length === 0}
+                  accessibilityRole="button"
+                  accessibilityLabel="Отправить"
+                  style={{
+                    width: 52, height: 52, borderRadius: radii.md,
+                    alignItems: "center", justifyContent: "center",
+                    backgroundColor: needsRetry ? colors.warning : colors.primary,
+                    opacity: sending || blocked || typed.trim().length === 0 ? 0.45 : 1,
+                  }}
+                >
+                  <Glyph name="arrowRight" size={22} color="#fff" />
+                </Pressable>
+              </View>
+            )}
           </View>
-        )}
-
-        {mode === "voice" ? (
-          <ChunkyButton
-            label={recording
-              ? "Стоп и отправить"
-              : sending ? "Секунду…" : needsRetry ? "Повторить" : "Говорить"}
-            sublabel={recording
-              ? `${NAME} слушает`
-              : needsRetry ? "скажи исправленную фразу" : "нажми, скажи фразу, нажми ещё раз"}
-            icon={recording ? "check" : needsRetry ? "repeat" : "sound"}
-            tone={recording || needsRetry ? "warm" : "primary"}
-            center
-            disabled={sending || blocked}
-            onPress={() => {
-              // Разблокировка звука — первым делом, синхронно.
-              primeAudio();
-              void (recording ? stopAndSend() : startRecording());
-            }}
-          />
-        ) : (
-          <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 10 }}>
-            <TextInput
-              value={typed}
-              onChangeText={setTyped}
-              placeholder={needsRetry ? "Напиши правильно" : "Напиши по-английски"}
-              placeholderTextColor={colors.mutedForeground}
-              editable={!sending && !blocked}
-              multiline
-              maxLength={500}
-              onSubmitEditing={() => { primeAudio(); void sendTyped(); }}
-              returnKeyType="send"
-              style={{
-                flex: 1,
-                minHeight: 52,
-                maxHeight: 120,
-                backgroundColor: colors.card,
-                borderRadius: radii.md,
-                borderWidth: 2,
-                borderColor: needsRetry ? colors.warning + "aa" : colors.border,
-                paddingHorizontal: 14,
-                paddingVertical: Platform.OS === "web" ? 14 : 12,
-                fontSize: 16,
-                fontWeight: "600",
-                color: colors.foreground,
-              }}
-            />
-            <Pressable
-              onPress={() => { primeAudio(); void sendTyped(); }}
-              disabled={sending || blocked || typed.trim().length === 0}
-              accessibilityRole="button"
-              accessibilityLabel="Отправить"
-              style={{
-                width: 52, height: 52, borderRadius: radii.md,
-                alignItems: "center", justifyContent: "center",
-                backgroundColor: needsRetry ? colors.warning : colors.primary,
-                opacity: sending || blocked || typed.trim().length === 0 ? 0.45 : 1,
-              }}
-            >
-              <Glyph name="arrowRight" size={22} color="#fff" />
-            </Pressable>
-          </View>
-        )}
-      </View>
+        </>
+      )}
     </KeyboardAvoidingView>
   );
 }
