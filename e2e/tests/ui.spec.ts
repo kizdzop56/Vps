@@ -5,7 +5,7 @@
 //   1. вход не сработал (форма не пустила или не случился переход);
 //   2. на экране пусто — белая страница вместо интерфейса;
 //   3. ошибка в консоли или необработанное исключение на странице;
-//   4. любой ответ сервера с кодом 5xx во время обхода.
+//   4. запрос к API, отклонённый сервером (4xx/5xx).
 //
 // Экраны берутся из app/(main): группы в скобках в URL не попадают, поэтому
 // путь до экрана — просто "/profile", "/flashcards" и так далее.
@@ -46,6 +46,12 @@ const IGNORED = [
   /\[expo\]/i,
 ];
 
+// Сообщение браузера про неудачный запрос («Failed to load resource: 401»)
+// не содержит адреса, поэтому по одной консоли непонятно, что именно упало.
+// Адрес и код берём из самих ответов сервера — дублирующую строку из консоли
+// после этого отбрасываем.
+const CONSOLE_FAILED_REQUEST = /Failed to load resource/i;
+
 function watchProblems(page: Page): string[] {
   const problems: string[] = [];
   const keep = (text: string) => !IGNORED.some((re) => re.test(text));
@@ -53,13 +59,18 @@ function watchProblems(page: Page): string[] {
   page.on("console", (msg) => {
     if (msg.type() !== "error") return;
     const text = msg.text();
+    if (CONSOLE_FAILED_REQUEST.test(text)) return; // придёт из обработчика ответов, с адресом
     if (keep(text)) problems.push(`консоль: ${text}`);
   });
   page.on("pageerror", (err) => {
     if (keep(err.message)) problems.push(`исключение на странице: ${err.message}`);
   });
+  page.on("requestfailed", (req) => {
+    problems.push(`запрос не дошёл: ${req.method()} ${req.url()} (${req.failure()?.errorText ?? "без причины"})`);
+  });
   page.on("response", (res) => {
-    if (res.status() >= 500) problems.push(`${res.status()} от ${res.url()}`);
+    if (res.status() < 400) return;
+    problems.push(`${res.status()} на ${res.request().method()} ${res.url()}`);
   });
 
   return problems;
@@ -113,6 +124,9 @@ for (const role of Object.keys(ROUTES) as Role[]) {
 
     const broken: string[] = [];
     for (const route of ROUTES[role]) {
+      // Отметка в списке проблем: по ней видно, на каком экране начались
+      // отказы сервера. Без неё в отчёте просто список кодов без привязки.
+      problems.push(`— экран ${route} —`);
       try {
         await screenIsAlive(page, route);
       } catch (err) {
@@ -120,7 +134,11 @@ for (const role of Object.keys(ROUTES) as Role[]) {
       }
     }
 
+    const failures = problems.filter((p) => !p.startsWith("— экран"));
+
     expect(broken, `сломанные экраны под ${role}:\n${broken.join("\n")}`).toHaveLength(0);
-    expect(problems, `ошибки в браузере под ${role}:\n${problems.join("\n")}`).toHaveLength(0);
+    // В сообщение отдаём полный список с отметками экранов: так в отчёте видно,
+    // где именно случился каждый отказ.
+    expect(failures, `ошибки в браузере под ${role}:\n${problems.join("\n")}`).toHaveLength(0);
   });
 }
