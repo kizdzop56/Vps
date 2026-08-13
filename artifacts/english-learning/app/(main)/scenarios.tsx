@@ -7,8 +7,10 @@
 //   2. держит список своих ситуаций с выдачей;
 //   3. позволяет создать новую.
 //
-// Создание — форма на этом же экране, а не отдельный маршрут: полей мало, и
-// переход туда-обратно ради шести строк на телефоне только мешает.
+// Сама форма живёт в components/ScenarioForm.tsx, потому что создавать ситуацию
+// можно и из «Создать задание»: для учителя диалог — такая же работа для
+// ученика, как тест или колода, и искать его в другой вкладке странно. Здесь
+// форма остаётся под рукой, но кода не дублирует.
 //
 // ── Про «Выдать всем» ───────────────────────────────────────────────────────
 // Главная кнопка выдачи — «всем моим ученикам»: на телефоне отмечать галочки по
@@ -17,7 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
-  View, Text, Pressable, ScrollView, TextInput, ActivityIndicator, Alert,
+  View, Text, Pressable, ScrollView, ActivityIndicator, Alert,
   type ViewStyle,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -26,11 +28,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
+import { ScenarioForm } from "@/components/ScenarioForm";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
 import {
-  finishText, scenarios, strictnessText,
-  type FinishMode, type ScenarioDraft, type Strictness, type TeacherScenario,
+  finishText, scenarios, strictnessText, type TeacherScenario,
 } from "@/hooks/useScenarios";
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
@@ -59,95 +61,6 @@ function card(colors: any, extra?: ViewStyle): ViewStyle {
   };
 }
 
-/** Поле формы: подпись сверху, ввод снизу. */
-function Field({
-  label, hint, value, onChange, placeholder, multiline, colors,
-}: {
-  label: string;
-  hint?: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-  multiline?: boolean;
-  colors: any;
-}) {
-  return (
-    <View style={{ marginBottom: 12 }}>
-      <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>{label}</Text>
-      {!!hint && (
-        <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 2 }}>{hint}</Text>
-      )}
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor="#a99fce"
-        multiline={multiline}
-        style={{
-          marginTop: 6,
-          minHeight: multiline ? 78 : 46,
-          backgroundColor: colors.card,
-          borderRadius: radii.sm + 2,
-          borderWidth: 2,
-          borderColor: value.trim() ? colors.primary : colors.border,
-          paddingHorizontal: 12,
-          paddingVertical: 10,
-          fontSize: 14.5,
-          color: colors.foreground,
-          textAlignVertical: multiline ? "top" : "center",
-        }}
-      />
-    </View>
-  );
-}
-
-/** Ряд выбора одного значения. */
-function Choice<T extends string | number>({
-  label, options, value, onChange, colors,
-}: {
-  label: string;
-  options: { key: T; text: string }[];
-  value: T;
-  onChange: (v: T) => void;
-  colors: any;
-}) {
-  return (
-    <View style={{ marginBottom: 12 }}>
-      <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground, marginBottom: 6 }}>{label}</Text>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 7 }}>
-        {options.map((o) => {
-          const on = o.key === value;
-          return (
-            <Pressable
-              key={String(o.key)}
-              onPress={() => onChange(o.key)}
-              style={{
-                paddingHorizontal: 13, paddingVertical: 9, borderRadius: radii.pill,
-                backgroundColor: on ? colors.primary : "rgba(120,110,170,0.12)",
-              }}
-              accessibilityRole="button"
-            >
-              <Text style={{ fontSize: 12.5, fontWeight: "900", color: on ? "#fff" : "#6b5f9c" }}>{o.text}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
-  );
-}
-
-const EMPTY: ScenarioDraft = {
-  title: "",
-  situation: "",
-  role: "",
-  goal: "",
-  finishMode: "turns",
-  turnsTarget: 20,
-  criteria: [],
-  strictness: "normal",
-  opener: "",
-};
-
 export default function TeacherScenarios() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -156,12 +69,9 @@ export default function TeacherScenarios() {
 
   const listQ = useQuery({ queryKey: ["scenarios"], queryFn: scenarios.list, staleTime: 10_000 });
   const attemptsQ = useQuery({ queryKey: ["scenario-attempts"], queryFn: scenarios.attempts, staleTime: 10_000 });
-  const studentsQ = useQuery({ queryKey: ["scenario-students"], queryFn: scenarios.students, staleTime: 60_000 });
 
-  const [form, setForm] = React.useState<ScenarioDraft | null>(null);
-  const [criterion, setCriterion] = React.useState("");
-  const [picked, setPicked] = React.useState<number[]>([]);
-  const [assignAll, setAssignAll] = React.useState(true);
+  /** Форма создания раскрыта. */
+  const [creating, setCreating] = React.useState(false);
   const [problem, setProblem] = React.useState<string | null>(null);
   /** Какая ситуация раскрыта: показываем выдачу и попытки. */
   const [open, setOpen] = React.useState<number | null>(null);
@@ -174,17 +84,6 @@ export default function TeacherScenarios() {
     void qc.invalidateQueries({ queryKey: ["scenarios"] });
     void qc.invalidateQueries({ queryKey: ["scenario-attempts"] });
   };
-
-  const createM = useMutation({
-    mutationFn: (draft: ScenarioDraft) => scenarios.create(draft),
-    onSuccess: () => {
-      setForm(null);
-      setPicked([]);
-      setCriterion("");
-      reload();
-    },
-    onError: complain,
-  });
 
   const assignM = useMutation({
     mutationFn: (v: { id: number; all?: boolean; studentIds?: number[] }) =>
@@ -211,28 +110,8 @@ export default function TeacherScenarios() {
     enabled: open !== null,
   });
 
-  const submit = () => {
-    if (!form) return;
-    if (!form.title.trim() || !form.situation.trim() || !form.role.trim()) {
-      complain(new Error("Заполните название, ситуацию и роль Снежи"));
-      return;
-    }
-    if (form.finishMode !== "turns" && !(form.goal ?? "").trim()) {
-      complain(new Error("Для завершения по цели опишите цель"));
-      return;
-    }
-    createM.mutate({
-      ...form,
-      goal: (form.goal ?? "").trim(),
-      opener: (form.opener ?? "").trim(),
-      assignAll,
-      studentIds: assignAll ? [] : picked,
-    });
-  };
-
   const fresh = (attemptsQ.data ?? []).filter((a) => a.fresh);
   const list = listQ.data ?? [];
-  const students = studentsQ.data ?? [];
 
   return (
     <ScrollView
@@ -245,11 +124,11 @@ export default function TeacherScenarios() {
       keyboardShouldPersistTaps="handled"
     >
       <Text style={{ fontSize: 28, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
-        Ситуации
+        Диалоги
       </Text>
       <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 16 }}>
         Разговор с ролью для ученика: вы задаёте обстановку и условие, а после разговора получаете весь
-        диалог с ошибками.
+        диалог с ошибками. Создать ситуацию можно и здесь, и в «Создать задание».
       </Text>
 
       {/* ── Свежие разборы ────────────────────────────────────────────── */}
@@ -286,231 +165,21 @@ export default function TeacherScenarios() {
         </>
       )}
 
-      {/* ── Форма создания ────────────────────────────────────────────── */}
-      {form ? (
-        <View style={card(colors, { marginBottom: 14 })}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <Text style={{ fontSize: 17, fontWeight: "900", color: colors.foreground }}>Новая ситуация</Text>
-            <Pressable onPress={() => setForm(null)} hitSlop={10} accessibilityLabel="Закрыть форму">
-              <Glyph name="close" size={20} color={colors.mutedForeground} />
-            </Pressable>
-          </View>
-
-          <Field
-            colors={colors}
-            label="Название"
-            value={form.title}
-            onChange={(v) => setForm({ ...form, title: v })}
-            placeholder="Дорога до магазина"
-          />
-          <Field
-            colors={colors}
-            label="Ситуация"
-            hint="Где происходит разговор и что вокруг. Это увидит ученик."
-            value={form.situation}
-            onChange={(v) => setForm({ ...form, situation: v })}
-            placeholder="Ты в незнакомом городе и не знаешь, где магазин."
-            multiline
-          />
-          <Field
-            colors={colors}
-            label="Кем будет Снежа"
-            hint="Роль собеседника: она будет отвечать как этот персонаж."
-            value={form.role}
-            onChange={(v) => setForm({ ...form, role: v })}
-            placeholder="прохожий на улице, местный житель"
-          />
-          <Field
-            colors={colors}
-            label="Цель ученика"
-            hint="Необязательно. Подсказывать путь к цели Снежа не будет."
-            value={form.goal ?? ""}
-            onChange={(v) => setForm({ ...form, goal: v })}
-            placeholder="узнать, как дойти до магазина"
-            multiline
-          />
-
-          <Choice<FinishMode>
-            colors={colors}
-            label="Когда задание закончится"
-            value={form.finishMode}
-            onChange={(v) => setForm({ ...form, finishMode: v })}
-            options={[
-              { key: "turns", text: "по числу реплик" },
-              { key: "goal", text: "по цели" },
-              { key: "both", text: "что раньше" },
-            ]}
-          />
-          <Choice<number>
-            colors={colors}
-            label="Сколько реплик должен сказать ученик"
-            value={form.turnsTarget}
-            onChange={(v) => setForm({ ...form, turnsTarget: v })}
-            options={[
-              { key: 10, text: "10" },
-              { key: 20, text: "20" },
-              { key: 40, text: "40" },
-              { key: 60, text: "60" },
-            ]}
-          />
-          <Choice<Strictness>
-            colors={colors}
-            label="Насколько строго проверять"
-            value={form.strictness}
-            onChange={(v) => setForm({ ...form, strictness: v })}
-            options={[
-              { key: "gentle", text: "мягко" },
-              { key: "normal", text: "обычно" },
-              { key: "strict", text: "строго" },
-            ]}
-          />
-
-          <Field
-            colors={colors}
-            label="Первая реплика Снежи"
-            hint="Необязательно. Без неё разговор начинает ученик."
-            value={form.opener ?? ""}
-            onChange={(v) => setForm({ ...form, opener: v })}
-            placeholder="Hi! You look lost. Can I help you?"
-            multiline
-          />
-
-          {/* Критерии: короткие правила игры для Снежи. */}
-          <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>Критерии</Text>
-          <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.mutedForeground, marginTop: 2 }}>
-            По ним Снежа ведёт разговор: чего требовать, о чём спрашивать, какие слова ждать.
-          </Text>
-          <View style={{ flexDirection: "row", gap: 8, marginTop: 6, alignItems: "center" }}>
-            <TextInput
-              value={criterion}
-              onChangeText={setCriterion}
-              placeholder="Отвечай короткими фразами"
-              placeholderTextColor="#a99fce"
-              style={{
-                flex: 1, minHeight: 44,
-                backgroundColor: colors.card, borderRadius: radii.sm + 2,
-                borderWidth: 2, borderColor: colors.border,
-                paddingHorizontal: 12, fontSize: 14, color: colors.foreground,
-              }}
-            />
-            <Pressable
-              onPress={() => {
-                const v = criterion.trim();
-                if (!v) return;
-                setForm({ ...form, criteria: [...form.criteria, v].slice(0, 10) });
-                setCriterion("");
-              }}
-              style={{
-                width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center",
-                backgroundColor: colors.primary,
-              }}
-              accessibilityLabel="Добавить критерий"
-            >
-              <Glyph name="plus" size={20} color="#fff" />
-            </Pressable>
-          </View>
-          {form.criteria.length > 0 && (
-            <View style={{ gap: 6, marginTop: 8 }}>
-              {form.criteria.map((c, i) => (
-                <Pressable
-                  key={`${c}-${i}`}
-                  onPress={() => setForm({ ...form, criteria: form.criteria.filter((_, j) => j !== i) })}
-                  style={{
-                    flexDirection: "row", alignItems: "center", gap: 8,
-                    backgroundColor: "rgba(99,102,241,0.08)", borderRadius: radii.sm, padding: 9,
-                  }}
-                  accessibilityLabel={`Убрать критерий: ${c}`}
-                >
-                  <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.foreground }}>{c}</Text>
-                  <Glyph name="trash" size={15} color={colors.mutedForeground} />
-                </Pressable>
-              ))}
-            </View>
-          )}
-
-          {/* Кому выдать. Главный путь — всем: см. шапку. */}
-          <View style={{ marginTop: 14 }}>
-            <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground, marginBottom: 6 }}>
-              Кому выдать
-            </Text>
-            <View style={{ flexDirection: "row", gap: 7 }}>
-              <Pressable
-                onPress={() => setAssignAll(true)}
-                style={{
-                  flex: 1, paddingVertical: 10, borderRadius: radii.pill, alignItems: "center",
-                  backgroundColor: assignAll ? colors.primary : "rgba(120,110,170,0.12)",
-                }}
-              >
-                <Text style={{ fontSize: 12.5, fontWeight: "900", color: assignAll ? "#fff" : "#6b5f9c" }}>
-                  Всем ({students.length})
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setAssignAll(false)}
-                style={{
-                  flex: 1, paddingVertical: 10, borderRadius: radii.pill, alignItems: "center",
-                  backgroundColor: !assignAll ? colors.primary : "rgba(120,110,170,0.12)",
-                }}
-              >
-                <Text style={{ fontSize: 12.5, fontWeight: "900", color: !assignAll ? "#fff" : "#6b5f9c" }}>
-                  Выбрать
-                </Text>
-              </Pressable>
-            </View>
-
-            {!assignAll && (
-              <View style={{ gap: 6, marginTop: 8 }}>
-                {students.length === 0 && (
-                  <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
-                    Учеников пока нет: добавьте их в разделе «Ученики».
-                  </Text>
-                )}
-                {students.map((s) => {
-                  const on = picked.includes(s.id);
-                  return (
-                    <Pressable
-                      key={s.id}
-                      onPress={() => setPicked((cur) => on ? cur.filter((x) => x !== s.id) : [...cur, s.id])}
-                      style={{
-                        flexDirection: "row", alignItems: "center", gap: 10,
-                        backgroundColor: on ? "rgba(139,92,246,0.12)" : "rgba(120,110,170,0.07)",
-                        borderRadius: radii.sm, padding: 9,
-                      }}
-                    >
-                      <View style={{
-                        width: 30, height: 30, borderRadius: 15,
-                        alignItems: "center", justifyContent: "center",
-                        backgroundColor: s.avatarColor ?? colors.primary,
-                      }}>
-                        <Text style={{ fontSize: 14 }}>{s.avatarEmoji ?? ""}</Text>
-                      </View>
-                      <Text style={{ flex: 1, fontSize: 13.5, fontWeight: on ? "900" : "700", color: colors.foreground }}>
-                        {s.name}
-                      </Text>
-                      <Glyph name={on ? "check" : "plus"} size={16} color={on ? colors.primary : colors.mutedForeground} />
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-
-          <ChunkyButton
-            label={createM.isPending ? "Создаём…" : "Создать и выдать"}
-            icon="check"
-            center
-            onPress={submit}
-            disabled={createM.isPending}
-            style={{ marginTop: 16 }}
+      {/* ── Создание ──────────────────────────────────────────────────── */}
+      {creating ? (
+        <View style={{ marginBottom: 14 }}>
+          <ScenarioForm
+            onCreated={() => setCreating(false)}
+            onCancel={() => setCreating(false)}
           />
         </View>
       ) : (
         <ChunkyButton
           label="Новая ситуация"
-          sublabel="обстановка, роль Снежи, цель и условие завершения"
+          sublabel="обстановка, роль Снежи, цель и число реплик"
           icon="plus"
           chevron
-          onPress={() => setForm({ ...EMPTY })}
+          onPress={() => setCreating(true)}
           style={{ marginBottom: 14 }}
         />
       )}

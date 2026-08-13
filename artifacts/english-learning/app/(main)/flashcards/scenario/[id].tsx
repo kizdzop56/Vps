@@ -2,19 +2,25 @@
 // Ученик: разговор по ситуации от учителя.
 //
 // Отличий от свободного разговора со Снежей три, и все важные:
-//   • у задания есть КОНЕЦ: полоса сверху показывает, сколько реплик осталось,
-//     и по её заполнении беседа закрывается сама;
+//   • у задания есть КОНЕЦ: цель, число реплик или и то и другое. Когда условие
+//     выполнено, беседа закрывается сама и показывает итог по ошибкам;
 //   • ошибка НЕ останавливает разговор. Снежа играет роль, а не ведёт урок:
 //     поправка приходит подписью под репликой, сцена идёт дальше. В свободном
 //     разговоре наоборот — там фразу просят повторить;
 //   • всё это уезжает учителю: диалог с ошибками и итоговый разбор.
+//
+// ── Перевод по стрелочке ────────────────────────────────────────────────────
+// У реплики Снежи справа кнопка RU — та же механика, что в свободном разговоре и
+// тем же маршрутом (/voice-chat/translate). Свёрнуто по умолчанию: перевод,
+// который висит рядом всегда, убивает смысл упражнения.
 //
 // Говорить можно голосом и текстом. Запись заканчивает сам ученик кнопкой
 // «Стоп»: автоматическая остановка по тишине срезает ребёнка на вдохе (та же
 // причина, что в тренажёре слов).
 //
 // Выход — router.replace, а не back: внутри вкладок back возвращает на первую
-// вкладку, а не на предыдущий экран.
+// вкладку, а не на предыдущий экран. Возвращаемся в разговор со Снежей: задания
+// теперь живут там, второй вкладкой.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -30,12 +36,15 @@ import { ChunkyButton, Pill } from "@/components/ui/GameKit";
 import { VoiceWave } from "@/components/ui/VoiceWave";
 import { accents, gradients, radii } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
-import { speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
+import { apiFetch, speakWord, speechAvailable, stopSpeaking } from "@/hooks/useFlashcards";
 import {
   cancelListening, isSpeechInputAvailable, startListening,
   type SpeechResult, type SpeechSession,
 } from "@/hooks/useSpeechInput";
 import { scenarios, type ScenarioMessage, type ScenarioRun } from "@/hooks/useScenarios";
+
+/** Перевод одной реплики: раскрыт ли и что пришло. */
+type Translation = { open: boolean; ru?: string; failed?: boolean };
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
   return (
@@ -83,6 +92,11 @@ export default function ScenarioRunScreen() {
   const [summary, setSummary] = React.useState<string | null>(null);
   const [attemptId, setAttemptId] = React.useState<number | null>(null);
 
+  /** Переводы реплик Снежи по номеру реплики. */
+  const [ru, setRu] = React.useState<Record<number, Translation>>({});
+  /** Какую реплику переводим прямо сейчас. */
+  const [translating, setTranslating] = React.useState<number | null>(null);
+
   /** Микрофон: idle → listening → checking. */
   const [mic, setMic] = React.useState<"idle" | "listening" | "checking">("idle");
   const [partial, setPartial] = React.useState("");
@@ -123,7 +137,36 @@ export default function ScenarioRunScreen() {
     };
   }, [scenarioId]);
 
-  const leave = () => router.replace("/flashcards/scenarios" as any);
+  const leave = () => router.replace("/flashcards/tutor" as any);
+
+  /**
+   * Развернуть или свернуть перевод реплики.
+   *
+   * Запрашивается один раз: дальше лежит в состоянии, и стрелка работает
+   * мгновенно. Маршрут тот же, что у свободного разговора, — переводчик в
+   * приложении должен быть один.
+   */
+  const toggleRu = React.useCallback(async (m: ScenarioMessage) => {
+    const current = ru[m.id];
+    const open = !current?.open;
+    setRu((prev) => ({ ...prev, [m.id]: { ...(prev[m.id] ?? {}), open, failed: false } }));
+    if (!open || current?.ru || translating !== null) return;
+
+    setTranslating(m.id);
+    try {
+      const data = await apiFetch<{ text?: string | null }>("/api/voice-chat/translate", {
+        method: "POST",
+        body: JSON.stringify({ text: m.text }),
+      });
+      const text = data?.text?.trim();
+      if (!text) throw new Error("Перевод не пришёл");
+      setRu((prev) => ({ ...prev, [m.id]: { open: true, ru: text } }));
+    } catch {
+      setRu((prev) => ({ ...prev, [m.id]: { open: true, failed: true } }));
+    } finally {
+      setTranslating(null);
+    }
+  }, [ru, translating]);
 
   const send = React.useCallback(async (text: string) => {
     const value = text.trim();
@@ -225,8 +268,10 @@ export default function ScenarioRunScreen() {
   }
 
   const target = run.scenario.turnsTarget;
-  const ratio = target > 0 ? Math.min(1, turns / target) : 0;
-  const byGoal = run.scenario.finishMode !== "turns";
+  const ratio = target > 0 ? Math.min(1, turns / target) : goalReached ? 1 : 0;
+  const hasGoal = !!run.scenario.goal;
+  /** Ошибки этого разговора: из них собирается итог. */
+  const slips = messages.filter((m) => m.role === "student" && m.correct === false);
 
   return (
     <View style={{ flex: 1, paddingTop: screenTop(insets) }}>
@@ -241,24 +286,38 @@ export default function ScenarioRunScreen() {
               {run.scenario.title}
             </Text>
             <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 1 }}>
-              {turns} из {target} реплик{mistakes > 0 ? ` · ошибок ${mistakes}` : ""}
+              {target > 0 ? `${turns} из ${target} реплик` : `реплик: ${turns}`}
+              {mistakes > 0 ? ` · ошибок ${mistakes}` : ""}
             </Text>
           </View>
           {goalReached && <Pill text="цель" tone="soft" color={accents.gold} />}
         </View>
-        <View style={{
-          height: 8, borderRadius: 8, marginTop: 8, overflow: "hidden",
-          backgroundColor: "rgba(109,40,217,0.16)",
-        }}>
-          <View style={{ width: `${Math.round(ratio * 100)}%`, height: "100%" }}>
-            <LinearGradient
-              colors={gradients.action as unknown as string[]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={{ flex: 1, borderRadius: 8 }}
-            />
+
+        {/* Полоса нужна только там, где есть чем её мерить: при задании «до
+            цели» шкала до конца разговора всё равно пустая. */}
+        {(target > 0 || goalReached) && (
+          <View style={{
+            height: 8, borderRadius: 8, marginTop: 8, overflow: "hidden",
+            backgroundColor: "rgba(109,40,217,0.16)",
+          }}>
+            <View style={{ width: `${Math.round(ratio * 100)}%`, height: "100%" }}>
+              <LinearGradient
+                colors={gradients.action as unknown as string[]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={{ flex: 1, borderRadius: 8 }}
+              />
+            </View>
           </View>
-        </View>
+        )}
+
+        {/* Цель достигнута, а реплики ещё нужны: без этой строки закрытое условие
+            выглядит как «ничего не произошло». */}
+        {goalReached && !finished && target > turns && (
+          <Text style={{ fontSize: 11.5, lineHeight: 16, color: colors.primary, fontWeight: "800", marginTop: 6 }}>
+            Цель достигнута. Осталось сказать {target - turns} реплик, и задание закроется.
+          </Text>
+        )}
       </View>
 
       {/* ── Лента разговора ───────────────────────────────────────────── */}
@@ -275,66 +334,114 @@ export default function ScenarioRunScreen() {
           <Text style={{ fontSize: 12, lineHeight: 18, color: colors.mutedForeground, marginTop: 5 }}>
             Снежа: {run.scenario.role}
           </Text>
-          {!!run.scenario.goal && (
+          {hasGoal && (
             <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.primary, fontWeight: "800", marginTop: 6 }}>
               Цель: {run.scenario.goal}
             </Text>
           )}
         </View>
 
-        {messages.map((m) => (
-          <View key={`${m.role}-${m.id}`} style={{ alignItems: m.role === "student" ? "flex-end" : "flex-start" }}>
-            <View style={{
-              maxWidth: "88%",
-              backgroundColor: m.role === "student" ? colors.primary : colors.card,
-              borderRadius: radii.md,
-              borderWidth: m.role === "student" ? 0 : 1,
-              borderColor: colors.border,
-              paddingHorizontal: 13, paddingVertical: 10,
-            }}>
-              <Text style={{
-                fontSize: 14.5, lineHeight: 21,
-                color: m.role === "student" ? "#fff" : colors.foreground,
-              }}>
-                {m.text}
-              </Text>
-            </View>
-
-            {/* Реплику роли можно переслушать: разговор, а не переписка. */}
-            {m.role === "ai" && speechAvailable() && (
-              <Pressable
-                onPress={() => speakWord(undefined, m.text)}
-                hitSlop={8}
-                style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 4, marginLeft: 4 }}
-                accessibilityLabel="Прослушать"
-              >
-                <Glyph name="sound" size={14} color={colors.primary} />
-                <Text style={{ fontSize: 11.5, fontWeight: "800", color: colors.primary }}>Прослушать</Text>
-              </Pressable>
-            )}
-
-            {/* Поправка: подписью, а не остановкой сцены. */}
-            {m.role === "student" && m.correct === false && (
+        {messages.map((m) => {
+          const translation = m.role === "ai" ? ru[m.id] : undefined;
+          const ruBusy = translating === m.id;
+          return (
+            <View key={`${m.role}-${m.id}`} style={{ alignItems: m.role === "student" ? "flex-end" : "flex-start" }}>
               <View style={{
-                maxWidth: "88%", marginTop: 5,
-                backgroundColor: "rgba(225,29,72,0.08)",
-                borderRadius: radii.sm, borderWidth: 1, borderColor: "rgba(225,29,72,0.3)",
-                padding: 9,
+                maxWidth: "88%",
+                backgroundColor: m.role === "student" ? colors.primary : colors.card,
+                borderRadius: radii.md,
+                borderWidth: m.role === "student" ? 0 : 1,
+                borderColor: colors.border,
+                paddingHorizontal: 13, paddingVertical: 10,
               }}>
-                {!!m.issue && (
-                  <Text style={{ fontSize: 12, lineHeight: 17, color: "#e11d48", fontWeight: "800" }}>
-                    {m.issue}
-                  </Text>
-                )}
-                {!!m.fixed && (
-                  <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.foreground, marginTop: 3 }}>
-                    Правильно: {m.fixed}
-                  </Text>
+                <Text style={{
+                  fontSize: 14.5, lineHeight: 21,
+                  color: m.role === "student" ? "#fff" : colors.foreground,
+                }}>
+                  {m.text}
+                </Text>
+
+                {/* Перевод: только у реплик Снежи и только по нажатию. */}
+                {m.role === "ai" && translation?.open && (
+                  <View style={{
+                    marginTop: 8, paddingTop: 7,
+                    borderTopWidth: 1, borderTopColor: colors.border,
+                  }}>
+                    {translation.ru ? (
+                      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.mutedForeground }}>
+                        {translation.ru}
+                      </Text>
+                    ) : translation.failed ? (
+                      <Text style={{ fontSize: 12, fontWeight: "700", color: "#e11d48" }}>
+                        Перевод не пришёл. Нажми стрелку ещё раз.
+                      </Text>
+                    ) : (
+                      <Text style={{ fontSize: 12, color: colors.mutedForeground }}>перевожу…</Text>
+                    )}
+                  </View>
                 )}
               </View>
-            )}
-          </View>
-        ))}
+
+              {/* Под репликой роли: послушать и перевод. */}
+              {m.role === "ai" && (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 14, marginTop: 4, marginLeft: 4 }}>
+                  {speechAvailable() && (
+                    <Pressable
+                      onPress={() => speakWord(undefined, m.text)}
+                      hitSlop={8}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
+                      accessibilityLabel="Прослушать"
+                    >
+                      <Glyph name="sound" size={14} color={colors.primary} />
+                      <Text style={{ fontSize: 11.5, fontWeight: "800", color: colors.primary }}>Прослушать</Text>
+                    </Pressable>
+                  )}
+
+                  <Pressable
+                    onPress={() => { void toggleRu(m); }}
+                    hitSlop={8}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={translation?.open ? "Скрыть перевод" : "Показать перевод"}
+                    accessibilityState={{ expanded: !!translation?.open }}
+                  >
+                    <Text style={{ fontSize: 10.5, fontWeight: "900", letterSpacing: 0.6, color: colors.primary }}>
+                      RU
+                    </Text>
+                    {ruBusy
+                      ? <ActivityIndicator size="small" color={colors.primary} />
+                      : (
+                        <View style={{ transform: [{ rotate: translation?.open ? "270deg" : "90deg" }] }}>
+                          <Glyph name="chevron" size={13} color={colors.primary} />
+                        </View>
+                      )}
+                  </Pressable>
+                </View>
+              )}
+
+              {/* Поправка: подписью, а не остановкой сцены. */}
+              {m.role === "student" && m.correct === false && (
+                <View style={{
+                  maxWidth: "88%", marginTop: 5,
+                  backgroundColor: "rgba(225,29,72,0.08)",
+                  borderRadius: radii.sm, borderWidth: 1, borderColor: "rgba(225,29,72,0.3)",
+                  padding: 9,
+                }}>
+                  {!!m.issue && (
+                    <Text style={{ fontSize: 12, lineHeight: 17, color: "#e11d48", fontWeight: "800" }}>
+                      {m.issue}
+                    </Text>
+                  )}
+                  {!!m.fixed && (
+                    <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.foreground, marginTop: 3 }}>
+                      Правильно: {m.fixed}
+                    </Text>
+                  )}
+                </View>
+              )}
+            </View>
+          );
+        })}
 
         {/* ── Итог задания ──────────────────────────────────────────── */}
         {finished && (
@@ -347,8 +454,56 @@ export default function ScenarioRunScreen() {
             <Text style={{ fontSize: 13, lineHeight: 20, color: colors.foreground, marginTop: 6 }}>
               Реплик: {turns}. Ошибок: {mistakes}.{goalReached ? " Цель достигнута." : ""}
             </Text>
+
+            {/* Статистика по ошибкам прямо здесь: за разбором на другой экран
+                ученик не пойдёт, а исправления нужны ему сейчас. */}
+            {slips.length > 0 && (
+              <View style={{ marginTop: 10, gap: 8 }}>
+                <Text style={{ fontSize: 11, fontWeight: "900", letterSpacing: 1, color: colors.mutedForeground }}>
+                  ОШИБКИ · {slips.length}
+                </Text>
+                {slips.slice(0, 6).map((m) => (
+                  <View
+                    key={`slip-${m.id}`}
+                    style={{
+                      backgroundColor: colors.card,
+                      borderRadius: radii.sm,
+                      borderWidth: 1,
+                      borderColor: "rgba(225,29,72,0.28)",
+                      padding: 9,
+                    }}
+                  >
+                    <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground }}>
+                      {m.text}
+                    </Text>
+                    {!!m.fixed && (
+                      <Text style={{ fontSize: 13, lineHeight: 19, fontWeight: "800", color: colors.foreground, marginTop: 3 }}>
+                        {m.fixed}
+                      </Text>
+                    )}
+                    {!!m.issue && (
+                      <Text style={{ fontSize: 11.5, lineHeight: 17, color: "#e11d48", marginTop: 3 }}>
+                        {m.issue}
+                      </Text>
+                    )}
+                  </View>
+                ))}
+                {slips.length > 6 && (
+                  <Text style={{ fontSize: 11.5, color: colors.mutedForeground }}>
+                    И ещё {slips.length - 6}: все они в разборе.
+                  </Text>
+                )}
+              </View>
+            )}
+
+            {slips.length === 0 && (
+              <Text style={{ fontSize: 13, lineHeight: 20, color: colors.primary, fontWeight: "800", marginTop: 8 }}>
+                Ни одной ошибки за весь разговор.
+              </Text>
+            )}
+
             {!!summary && (
-              <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginTop: 8 }}>
+              <Text style={{ fontSize: 12.5, lineHeight: 19, color: colors.mutedForeground, marginTop: 10 }}>
                 {summary}
               </Text>
             )}
