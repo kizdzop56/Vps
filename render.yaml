@@ -7,7 +7,8 @@
 # Free-tier notes:
 # - web service (free): cold-starts after ~15 min idle (first request ~1 min)
 # - postgres (free): expires 30 days after creation (upgrade to keep data)
-# - uploads (avatars) are stored on ephemeral disk: lost on redeploy/restart
+# - uploads (avatars) are stored on ephemeral disk unless S3 vars are set:
+#   lost on redeploy/restart
 
 services:
   - type: web
@@ -24,16 +25,29 @@ services:
           property: connectionString
       - key: SESSION_SECRET
         generateValue: true
-      # Push schema + seed test accounts (teacher/student) on every boot.
-      # Both are idempotent. Set to "false" after first successful deploy
-      # if you want faster boots.
-      - key: RUN_DB_SETUP
+      # Код, по которому выдаётся роль учителя. Задайте значение в панели
+      # Render (Environment). Без переменной регистрация учителя недоступна —
+      # это осознанно: раньше код был вписан в публичный репозиторий, и роль
+      # учителя мог получить любой.
+      - key: TEACHER_CODE
+        sync: false
+      # Схема НЕ применяется на каждом старте: на бесплатном плане сервис
+      # засыпает, и push-force летел бы в живую базу при каждом пробуждении.
+      # Ставьте true разово, когда нужно применить новую схему, и возвращайте
+      # обратно. Недостающие колонки в любом случае добавляет
+      # scripts/ensure-columns.mjs при каждом старте.
+      - key: RUN_DB_PUSH
+        value: "false"
+      # Сид тестовых аккаунтов (teacher/student/parent). Идемпотентен, нужен
+      # E2E-прогону. Выключите значением "false", когда пойдут живые люди.
+      - key: RUN_DB_SEED
         value: "true"
       # Optional integrations — add values in the Render dashboard if needed:
       #   RESEND_API_KEY     email verification / password reset
       #   GOOGLE_AI_API_KEY  AI tutor (chat + speech). Required for that section
       #   DEEPGRAM_API_KEY   word pronunciation + speech recognition fallback
       #   GOOGLE_TRANSLATE_API_KEY  flashcard translations
+      #   S3_*               постоянное хранилище для аватаров и вложений
 
 databases:
   - name: v1-db

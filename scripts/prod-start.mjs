@@ -1,9 +1,9 @@
 // Production startup for single-container deployments (Render, Railway, Fly, VPS).
 //
 // Boot sequence:
-//   1. (optional, RUN_DB_SETUP=true) push DB schema via drizzle-kit
+//   1. (optional, RUN_DB_PUSH=true) push DB schema via drizzle-kit
 //   1a. (always) ensure all tables + columns exist via scripts/ensure-columns.mjs
-//   2. (optional, RUN_DB_SETUP=true) run idempotent seed
+//   2. (optional, RUN_DB_SEED, on by default) run idempotent seed
 //   3. start API server (bundled dist) on API_PORT
 //   4. start static web server (Expo web export) on WEB_PORT
 //   5. start reverse proxy on $PORT:  /api/* -> API, everything else -> web
@@ -27,10 +27,26 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ---------- 1. DB schema + seed (idempotent, safe on every boot) ----------
-const runDbSetup = (process.env.RUN_DB_SETUP ?? "true") !== "false";
+// ---------- 1. DB schema + seed ----------
+//
+// Раньше оба шага включались одной переменной RUN_DB_SETUP, и она по умолчанию
+// была включена. На бесплатном плане Render сервис засыпает после ~15 минут
+// простоя, то есть холодные старты идут постоянно — и вместе с каждым в живую
+// базу летел push-force схемы. Это ровно та операция, которая при расхождении
+// схемы молча теряет данные.
+//
+// Теперь шаги независимы:
+//   RUN_DB_PUSH=true   — применить схему (по умолчанию ВЫКЛЮЧЕНО, это делается
+//                        осознанно, отдельным шагом деплоя);
+//   RUN_DB_SEED=false  — не заводить тестовые аккаунты (по умолчанию включено,
+//                        сид идемпотентен и нужен E2E-прогону).
+// RUN_DB_SETUP=false по-прежнему выключает оба шага — старые окружения не
+// ломаем.
+const setupDisabled = process.env.RUN_DB_SETUP === "false";
+const runDbPush = !setupDisabled && process.env.RUN_DB_PUSH === "true";
+const runDbSeed = !setupDisabled && process.env.RUN_DB_SEED !== "false";
 
-if (runDbSetup) {
+if (runDbPush) {
   console.log("[prod] DB setup: pushing schema…");
   const push = spawnSync("pnpm", ["--filter", "@workspace/db", "run", "push-force"], {
     cwd: root,
@@ -43,10 +59,12 @@ if (runDbSetup) {
   }
 }
 
-// Всегда проверяем и дополняем схему — после push (если был), до сида
+// Всегда проверяем и дополняем схему — после push (если был), до сида.
+// Скрипт добавляет недостающие таблицы и колонки и ничего не удаляет,
+// поэтому безопасен на каждом старте.
 spawnSync("node", ["scripts/ensure-columns.mjs"], { cwd: root, stdio: "inherit", env: process.env });
 
-if (runDbSetup) {
+if (runDbSeed) {
   console.log("[prod] DB setup: seeding test accounts…");
   const seed = spawnSync("pnpm", ["--filter", "@workspace/scripts", "run", "seed"], {
     cwd: root,
