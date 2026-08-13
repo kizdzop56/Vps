@@ -20,10 +20,11 @@ import {
   sessionMinutes,
   startOfLocalDay,
 } from "../lib/timeStats";
-import { isLearned, startOfDay } from "../lib/srs";
+import { LEARNED_LEVEL, startOfDay } from "../lib/srs";
 import { FORM_MASTERY_HITS } from "../lib/grammar/forms";
 import { evaluateDailyPlan } from "../lib/dailyPlan";
 import { EMPTY_RAID_STATS, raidAchievementStats, type RaidAchievementStats } from "../lib/raidStats";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -64,28 +65,34 @@ const USER_FIELDS = {
   mascotName: usersTable.mascotName,
 } as const;
 
-// Один раз узнав, что столбца награды нет, больше не долбим базу заведомо
-// падающим запросом на каждый заход в профиль.
-let claimedColumnMissing = false;
+// ── Отметка о выданной награде за день ──────────────────────────────────────
+//
+// ГРАБЛИ, из-за которых очки можно было фармить бесконечно.
+// Раньше здесь жил флаг `claimedColumnMissing`: первая же ошибка запроса —
+// хоть отсутствующая колонка, хоть оборванное соединение — выставляла его
+// НАВСЕГДА (до перезапуска процесса). После этого чтение отметки всегда
+// возвращало null, то есть «сегодня награду не выдавали», и POST claim выдавал
+// очки на каждый вызов. Один сетевой сбой снимал ограничение «раз в сутки»
+// целиком.
+//
+// Теперь различаются ДВА разных ответа: «прочитали, отметки нет» и «прочитать не
+// смогли». Во втором случае награда НЕ выдаётся вовсе: лучше отложить сорок
+// очков до следующего запроса, чем раздавать их без ограничения.
+//
+// Колонку досоздаёт lib/ensureSchema.ts до того, как сервер начинает принимать
+// запросы, поэтому нормальный путь здесь всегда успешный.
+type ClaimedRead = { ok: true; claimed: string | null } | { ok: false };
 
-/**
- * День последней выданной награды за цель дня.
- *
- * Живёт в отдельном запросе, потому что столбец мог ещё не приехать в базу:
- * до миграции возвращаем null («сегодня не выдавали»), и весь остальной
- * экран продолжает работать.
- */
-async function readClaimedDate(userId: number): Promise<string | null> {
-  if (claimedColumnMissing) return null;
+async function readClaimedDate(userId: number): Promise<ClaimedRead> {
   try {
     const result: any = await db.execute(
       sql`select daily_goal_claimed_date::text as claimed from users where id = ${userId}`,
     );
     const rows = Array.isArray(result) ? result : result?.rows ?? [];
-    return rows[0]?.claimed ?? null;
-  } catch {
-    claimedColumnMissing = true;
-    return null;
+    return { ok: true, claimed: rows[0]?.claimed ?? null };
+  } catch (err) {
+    logger.error({ err, userId }, "Не удалось прочитать отметку награды за цель дня");
+    return { ok: false };
   }
 }
 
@@ -93,6 +100,10 @@ async function readClaimedDate(userId: number): Promise<string | null> {
 // и цифры в профиле не расходились.
 // Важно: у открытой сессии засчитывается только время, подтверждённое heartbeat —
 // иначе брошенная вкладка дарит часы занятий (и вместе с ними награды).
+//
+// Сессии читаются целиком намеренно: из них считаются и серия дней подряд, и
+// утренние занятия за всё время — обе величины по определению смотрят на всю
+// историю, а не на сегодня.
 async function computeTimeStats(userId: number, persistedMinutes: number) {
   const sessions = await db.select().from(timeSessionsTable)
     .where(eq(timeSessionsTable.studentId, userId));
@@ -149,32 +160,45 @@ async function syncLoginStreak(userId: number, stored: number, actual: number) {
  * Слова за сегодня: сколько разных слов повторено и сколько впервые доведено
  * до «выучено». Те же правила, что в GET /flashcards/stats — иначе задача дня
  * «повторить 10 слов» будет закрыта на экране и не закрыта при выдаче награды.
+ *
+ * Считается ДВУМЯ запросами с фильтрами, а не выгрузкой всего журнала в память.
+ * Раньше здесь читались все записи review_log за всё время (у активного ученика
+ * это десятки тысяч строк на каждое открытие профиля), и из них перебором
+ * искались сегодняшние. База умеет это сама и заметно быстрее.
  */
 async function computeWordProgress(userId: number) {
-  const logs = await db.select().from(reviewLogTable)
-    .where(eq(reviewLogTable.userId, userId));
+  const dayStart = startOfDay();
 
-  const dayStart = startOfDay().getTime();
+  const [todayRow] = await db
+    .select({ words: sql<number>`count(distinct ${reviewLogTable.wordId})::int` })
+    .from(reviewLogTable)
+    .where(and(
+      eq(reviewLogTable.userId, userId),
+      gte(reviewLogTable.reviewedAt, dayStart),
+    ));
 
-  const wordsToday = new Set(
-    logs.filter((l) => l.reviewedAt.getTime() >= dayStart).map((l) => l.wordId)
-  ).size;
-
-  // Когда слово ВПЕРВЫЕ дошло до «выучено». Повторное подтверждение уже
-  // выученного слова новой галочки не даёт.
-  const firstLearnedAt = new Map<number, Date>();
-  for (const l of [...logs].sort((a, b) => a.reviewedAt.getTime() - b.reviewedAt.getTime())) {
-    if (isLearned(l.memoryLevelAfter ?? 0) && !firstLearnedAt.has(l.wordId)) {
-      firstLearnedAt.set(l.wordId, l.reviewedAt);
-    }
-  }
-  const learnedToday = [...firstLearnedAt.values()]
-    .filter((at) => at.getTime() >= dayStart).length;
+  // Слово засчитывается один раз — в тот день, когда ВПЕРВЫЕ дошло до «выучено».
+  // Поэтому группировка по слову и отбор тех групп, чей первый успех попал в
+  // сегодняшние сутки: повторное подтверждение уже выученного слова новой
+  // галочки не даёт.
+  const learnedRows = await db
+    .select({ wordId: reviewLogTable.wordId })
+    .from(reviewLogTable)
+    .where(and(
+      eq(reviewLogTable.userId, userId),
+      gte(reviewLogTable.memoryLevelAfter, LEARNED_LEVEL),
+    ))
+    .groupBy(reviewLogTable.wordId)
+    .having(sql`min(${reviewLogTable.reviewedAt}) >= ${dayStart}`);
 
   const [settings] = await db.select({ dailyWordGoal: flashcardSettingsTable.dailyWordGoal })
     .from(flashcardSettingsTable).where(eq(flashcardSettingsTable.userId, userId));
 
-  return { wordsToday, learnedToday, dailyWordGoal: settings?.dailyWordGoal ?? 10 };
+  return {
+    wordsToday: Number(todayRow?.words ?? 0),
+    learnedToday: learnedRows.length,
+    dailyWordGoal: settings?.dailyWordGoal ?? 10,
+  };
 }
 
 // ── Раздел «Учёба»: грамматика ──────────────────────────────────────────────
@@ -581,7 +605,7 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     dailyGoalAppliedDate: userData.dailyGoalAppliedDate ?? null,
   });
 
-  const claimedDate = await readClaimedDate(userId);
+  const claimed = await readClaimedDate(userId);
 
   // Voice chat sessions count — только сессии с реальным разговором
   const voiceSessions = await db.select({ count: sql<number>`count(*)::int` })
@@ -671,8 +695,10 @@ router.get("/gamification/stats", requireAuth, async (req, res) => {
     dailyGoalMinutes: goal.active,
     nextDailyGoalMinutes: goal.next,
     // Награда за сегодняшний день уже получена? Клиент по этому полю показывает
-    // «получено» вместо «+40» и не дёргает claim повторно.
-    dailyGoalClaimedToday: claimedDate === todayKey(),
+    // «получено» вместо «+40» и не дёргает claim повторно. Если отметку не
+    // удалось прочитать, показываем «не получено»: сервер всё равно не выдаст
+    // очки вслепую (см. POST claim).
+    dailyGoalClaimedToday: claimed.ok ? claimed.claimed === todayKey() : false,
     loginStreak,
     lastLoginDate: userData.lastLoginDate,
     todayMinutes,
@@ -733,9 +759,25 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
     dailyGoalAppliedDate: userData.dailyGoalAppliedDate ?? null,
   });
 
+  const claimed = await readClaimedDate(userId);
+
+  // Отметку прочитать не удалось — награду НЕ выдаём. Раньше в этом месте
+  // ограничение «раз в сутки» просто выключалось до перезапуска сервера, и
+  // очки начислялись на каждый вызов.
+  if (!claimed.ok) {
+    res.status(503).json({
+      alreadyClaimed: false,
+      awarded: 0,
+      error: "Не удалось проверить, выдавалась ли награда сегодня. Попробуйте позже.",
+      totalPoints: userData.totalPoints,
+      xpLevel: computeLevel(userData.totalPoints),
+    });
+    return;
+  }
+
   // Уже забрал сегодня — отвечаем спокойно, без ошибки: клиент вызывает claim
   // при каждом обновлении экрана, пока день закрыт.
-  if ((await readClaimedDate(userId)) === today) {
+  if (claimed.claimed === today) {
     res.json({
       alreadyClaimed: true,
       awarded: 0,
@@ -778,25 +820,37 @@ router.post("/gamification/daily-goal/claim", requireAuth, async (req, res) => {
   const newTotal = userData.totalPoints + plan.reward;
   const newLevel = computeLevel(newTotal);
 
-  // Очки и отметка о выдаче пишутся ОДНИМ запросом. Если столбца ещё нет в
-  // базе, падает всё целиком и очки не начисляются: без отметки награду можно
-  // было бы забирать бесконечно.
+  // Очки и отметка о выдаче пишутся ОДНИМ запросом. Если запись не удалась,
+  // очки не начисляются: без отметки награду можно было бы забирать бесконечно.
+  //
+  // Дополнительная страховка от двойного нажатия: условие where требует, чтобы
+  // отметка всё ещё была не сегодняшней. Два одновременных запроса тогда
+  // приведут к одной успешной записи, а не к двойному начислению.
+  let stored = false;
   try {
-    await db.update(usersTable)
-      .set({
-        totalPoints: newTotal,
-        xpLevel: newLevel,
-        dailyGoalClaimedDate: today,
-        updatedAt: new Date(),
-      })
-      .where(eq(usersTable.id, userId));
-  } catch {
-    claimedColumnMissing = true;
-    res.json({
+    const written = await db.execute(
+      sql`update users
+            set total_points = ${newTotal},
+                xp_level = ${newLevel},
+                daily_goal_claimed_date = ${today},
+                updated_at = now()
+          where id = ${userId}
+            and (daily_goal_claimed_date is null or daily_goal_claimed_date <> ${today})
+          returning id`,
+    );
+    const rows = Array.isArray(written) ? written : (written as { rows?: unknown[] })?.rows ?? [];
+    stored = rows.length > 0;
+  } catch (err) {
+    logger.error({ err, userId }, "Не удалось записать награду за цель дня");
+  }
+
+  if (!stored) {
+    res.status(503).json({
       alreadyClaimed: false,
       awarded: 0,
       reward: plan.reward,
       pending: [],
+      error: "Награду не удалось выдать. Попробуйте позже.",
       totalPoints: userData.totalPoints,
       xpLevel: computeLevel(userData.totalPoints),
     });
@@ -874,7 +928,10 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
   const newTotalPoints = userData.totalPoints + pointsAwarded;
   const newXpLevel = computeLevel(newTotalPoints);
 
-  await db.update(usersTable)
+  // Условие на last_login_date в WHERE — защита от двойного начисления при двух
+  // одновременных запросах (клиент вызывает вход при каждом открытии профиля).
+  const written = await db
+    .update(usersTable)
     .set({
       totalPoints: newTotalPoints,
       loginStreak: streak,
@@ -882,7 +939,24 @@ router.post("/gamification/daily-login", requireAuth, async (req, res) => {
       xpLevel: newXpLevel,
       updatedAt: new Date(),
     })
-    .where(eq(usersTable.id, userId));
+    .where(and(
+      eq(usersTable.id, userId),
+      lastLogin === null ? sql`${usersTable.lastLoginDate} is null` : eq(usersTable.lastLoginDate, lastLogin),
+    ))
+    .returning({ id: usersTable.id });
+
+  if (written.length === 0) {
+    // Кто-то успел раньше — считаем, что награда за сегодня уже выдана.
+    res.json({
+      alreadyClaimed: true,
+      loginStreak: streak,
+      totalPoints: userData.totalPoints,
+      xpLevel: computeLevel(userData.totalPoints),
+      pointsAwarded: 0,
+      nextPoints: loginPointsFor(streak + 1),
+    });
+    return;
+  }
 
   res.json({
     alreadyClaimed: false,
