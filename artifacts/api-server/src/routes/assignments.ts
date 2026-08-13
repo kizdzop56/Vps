@@ -99,6 +99,12 @@ router.get("/assignments/my-assignments", requireAuth, async (req, res) => {
   // Сдачи по тем же заданиям. Сопоставляем по паре ученик+задание и по времени:
   // сдача до повторной выдачи не считается выполнением текущего назначения —
   // та же логика, что в GET /assignments/my-tasks.
+  //
+  // ПОРЯДОК ВАЖЕН: свежие сдачи первыми. У ученика их может быть несколько по
+  // одному заданию (сдал, задание выдали снова, сдал ещё раз), и брать первую
+  // попавшуюся значит показать учителю то старую работу, то новую — по
+  // настроению базы. Отсюда же расходились счётчик «ждёт проверки» и сам
+  // список ответов: счёт видел новую сдачу, список — старую.
   const subs = tasks.length > 0
     ? await db.select({
         assignmentId: submissionsTable.assignmentId,
@@ -109,6 +115,7 @@ router.get("/assignments/my-assignments", requireAuth, async (req, res) => {
       })
       .from(submissionsTable)
       .where(inArray(submissionsTable.assignmentId, ids))
+      .orderBy(desc(submissionsTable.submittedAt))
     : [];
 
   type Counters = { assigned: number; submitted: number; pending: number; scoreSum: number; scored: number };
@@ -235,6 +242,13 @@ router.get("/assignments/teacher-results", requireAuth, async (req, res) => {
     .where(eq(assignedTasksTable.teacherId, caller.userId));
 
   const withSubmissions = await Promise.all(tasks.map(async (task) => {
+    // ГРАБЛИ: запрос был без порядка и без ограничения, а брали первую строку.
+    // У ученика по одному заданию сдач может быть несколько (сдал, задание
+    // выдали снова, сдал ещё раз), и «первая» — это как база решит. Учитель
+    // видел то новую работу, то старую: счётчик писал «ждёт проверки», а в
+    // списке лежала прошлая, уже оценённая сдача, и проверять было нечего.
+    //
+    // Берём ПОСЛЕДНЮЮ по времени: это и есть ответ на текущее назначение.
     const [submission] = await db.select({
       id: submissionsTable.id,
       score: submissionsTable.score,
@@ -250,7 +264,9 @@ router.get("/assignments/teacher-results", requireAuth, async (req, res) => {
       .where(and(
         eq(submissionsTable.studentId, task.studentId!),
         eq(submissionsTable.assignmentId, task.assignmentId!),
-      ));
+      ))
+      .orderBy(desc(submissionsTable.submittedAt))
+      .limit(1);
 
     let answers: any[] = [];
     if (submission) {
