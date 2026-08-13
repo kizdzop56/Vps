@@ -17,11 +17,17 @@
 //     разлогинивает: это и есть напоминание задать переменную в .env.
 //
 // Секрет короче MIN_SECRET_LEN отклоняется: «123» ничем не лучше отсутствия.
+//
+// ── Гашение сессий ──────────────────────────────────────────────────────────
+// Помимо подписи проверяется отметка «токены старше этого момента недействительны»
+// (lib/sessionEpoch.ts). Благодаря ей смена пароля через восстановление реально
+// выкидывает чужие устройства, а не оставляет им месяц доступа.
 // ─────────────────────────────────────────────────────────────────────────────
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "./logger";
+import { issuedBeforeRevocation, sessionsValidFrom } from "./sessionEpoch";
 
 /** Минимальная длина секрета. Ниже — это не секрет, а видимость. */
 const MIN_SECRET_LEN = 16;
@@ -55,17 +61,19 @@ const JWT_SECRET = resolveSecret();
 export interface AuthPayload {
   userId: number;
   role: "student" | "parent" | "admin" | "teacher";
+  /** Время выпуска токена (секунды эпохи). Подставляет jsonwebtoken. */
+  iat?: number;
 }
 
 export function generateToken(payload: AuthPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign({ userId: payload.userId, role: payload.role }, JWT_SECRET, { expiresIn: "30d" });
 }
 
 export function verifyToken(token: string): AuthPayload {
   return jwt.verify(token, JWT_SECRET) as AuthPayload;
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers["authorization"];
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
@@ -74,13 +82,23 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
+  let payload: AuthPayload;
   try {
-    const payload = verifyToken(token);
-    (req as any).user = payload;
-    next();
+    payload = verifyToken(token);
   } catch {
     res.status(401).json({ error: "Invalid token" });
+    return;
   }
+
+  // Пароль сменили — прежние токены больше не годятся, даже если подпись верна.
+  const epoch = await sessionsValidFrom(payload.userId);
+  if (issuedBeforeRevocation(payload.iat, epoch)) {
+    res.status(401).json({ error: "Session expired" });
+    return;
+  }
+
+  (req as any).user = payload;
+  next();
 }
 
 export function requireRole(...roles: string[]) {
