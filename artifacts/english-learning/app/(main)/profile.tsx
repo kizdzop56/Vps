@@ -28,6 +28,14 @@
 // экране быть не должно — одна такая сразу читается как недоделанная.
 // Проседает при нажатии только то, что реально открывается: задания и время.
 //
+// ── ВИТРИНА НАГРАД ──────────────────────────────────────────────────────────
+// Витрина здесь ОДНА на все темы, включая рейды. Медали за рейд раньше жили
+// своим блоком во вкладке события; теперь они обычные медали каталога
+// (constants/raidAchievements.ts), и показатели для них передаются вместе с
+// остальными — см. оба объекта AchievementStats ниже. Забыть их там означает
+// «медаль есть в каталоге, но не выдаётся никогда»: выдачу инициирует клиент,
+// сервер только проверяет условие.
+//
 // ── НОВЫЙ УРОВЕНЬ ───────────────────────────────────────────────────────────
 // Повышение показывается окном с крупной полосой опыта и свечением. Здесь же
 // решается, КОГДА его показать, и это сложнее, чем кажется.
@@ -106,7 +114,7 @@ import { FriendsSheet } from "@/components/FriendsSheet";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
-import { useGamification } from "@/hooks/useGamification";
+import { useGamification, type GamificationStats } from "@/hooks/useGamification";
 import { useNotifications } from "@/hooks/useNotifications";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
@@ -114,6 +122,27 @@ import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { buildDailyPlan } from "@/utils/dailyQuests";
 import { accents, radii } from "@/constants/theme";
 import { screenBottom, screenTop } from "@/constants/layout";
+import type { RaidAchievementFields } from "@/constants/raidAchievements";
+
+/**
+ * Показатели рейда для медалей.
+ *
+ * Отдельной функцией, потому что нужны в ДВУХ местах: в проверке «что уже
+ * заслужено» и в витрине, которая рисует полосы прогресса. Пока это был просто
+ * список полей, второе место про них забывали, и полосы стояли на нуле у
+ * медалей, которые уже выданы.
+ */
+function raidFields(stats: GamificationStats | null): RaidAchievementFields {
+  return {
+    raidDamage: stats?.raidDamage ?? 0,
+    raidHits: stats?.raidHits ?? 0,
+    raidCrits: stats?.raidCrits ?? 0,
+    raidBestCombo: stats?.raidBestCombo ?? 0,
+    raidWins: stats?.raidWins ?? 0,
+    raidLastHits: stats?.raidLastHits ?? 0,
+    raidBosses: stats?.raidBosses ?? [],
+  };
+}
 
 /**
  * Возраст из даты рождения.
@@ -646,6 +675,9 @@ export default function ProfileScreen() {
       verbFormsMastered: gamStats.verbFormsMastered,
       tensesMastered: gamStats.tensesMastered,
       sentencesBuilt: gamStats.sentencesBuilt,
+      // Рейды: то же самое для медалей raidhits_*, raiddamage_*, raidcombo_*,
+      // raidlast_*, raidbosses_* и пяти медалей за конкретных боссов.
+      ...raidFields(gamStats),
     };
     const unlcked = getUnlockedAchievements(stats).map(a => a.id);
     const newOnes = unlcked.filter(id => !gamStats.unlockedAchievementIds.includes(id));
@@ -670,6 +702,9 @@ export default function ProfileScreen() {
     verbFormsMastered: gamStats?.verbFormsMastered ?? 0,
     tensesMastered: gamStats?.tensesMastered ?? 0,
     sentencesBuilt: gamStats?.sentencesBuilt ?? 0,
+    // Рейды: по ним витрина рисует полосы «урона нанесено» и «комбо», а медали
+    // за боссов показывает как факт без полосы.
+    ...raidFields(gamStats),
   }), [gamStats, user?.knowledgeLevel]);
 
   const unlocked = React.useMemo(() => getUnlockedAchievements(achievementStats), [achievementStats]);

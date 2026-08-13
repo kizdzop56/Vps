@@ -9,6 +9,10 @@
 //
 // Лиг по уровню профиля больше нет: топ рейда один на всех (см. шапку
 // api-server/src/lib/raid.ts).
+//
+// Медалей в снимке тоже нет: награды за рейды стали обычными медалями витрины
+// в профиле (constants/raidAchievements.ts), а показатели для них приходят с
+// остальной статистикой в /gamification/stats.
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
@@ -81,30 +85,6 @@ export interface RaidRow {
   me: boolean;
 }
 
-/** Медаль рейда. Выводится сервером из итогов за всё время. */
-export interface RaidMedal {
-  id: string;
-  title: string;
-  about: string;
-  /** Имя глифа из набора приложения. */
-  icon: string;
-  tier: "easy" | "medium" | "hard";
-  got: boolean;
-  current: number;
-  target: number;
-  percent: number;
-}
-
-export interface RaidLifetime {
-  damage: number;
-  hits: number;
-  crits: number;
-  bestCombo: number;
-  raids: number;
-  wins: number;
-  lastHits: number;
-}
-
 export interface RaidSnapshot {
   event: RaidEventInfo;
   me: RaidMe;
@@ -117,9 +97,6 @@ export interface RaidSnapshot {
   };
   /** Общий топ по урону. */
   top: RaidRow[];
-  medals: RaidMedal[];
-  medalCount: { got: number; total: number };
-  lifetime: RaidLifetime;
   chest: {
     eventId: number;
     bossName: string;

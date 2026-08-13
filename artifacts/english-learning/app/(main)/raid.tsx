@@ -5,7 +5,7 @@
 //   1. что я должен сделать сегодня (цель дня стоит ПЕРВОЙ, над боссом);
 //   2. кого бьём и сколько у него осталось, тут же кнопка боя;
 //   3. что могу я (мой урон, энергия, монеты, атаки);
-//   4. что я собрал (медали события) и кто впереди (топ, история).
+//   4. кто впереди (топ) и что было раньше (история).
 //
 // Цель дня подняли наверх намеренно: это единственная строка экрана, которая
 // говорит «сделай столько и получишь награду». Под боссом она читалась как
@@ -18,6 +18,13 @@
 //
 // Цифры урона вылетают поверх ЛЮБОГО экрана (components/raid/RaidHitOverlay),
 // поэтому здесь их дублировать не нужно: сюда приходят смотреть итог.
+//
+// ── Медалей здесь больше НЕТ ────────────────────────────────────────────────
+// Медали за рейды переехали в витрину наград профиля и стали частью общего
+// каталога (constants/raidAchievements.ts). Раньше у события был свой блок со
+// своим оформлением: коллекция ученика делилась надвое, общий счётчик наград
+// перестал быть общим, а вторая вёрстка медалей разъезжалась с первой на каждой
+// правке. Здесь осталась только строка-указатель на профиль.
 //
 // ── Один топ, без лиг ───────────────────────────────────────────────────────
 // Лиги по уровню профиля убраны: три таблицы по одной строке и переключатель
@@ -52,7 +59,7 @@ import { BossArt } from "@/components/raid/BossArt";
 import { onRaidHit } from "@/utils/raidBus";
 import {
   phaseAbout, phaseTitle, raid, tagTitle,
-  type RaidBuff, type RaidMedal, type RaidSnapshot,
+  type RaidBuff, type RaidSnapshot,
 } from "@/hooks/useRaid";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
@@ -191,10 +198,6 @@ export default function RaidScreen() {
 
   const [chestText, setChestText] = React.useState<string | null>(null);
   const [problem, setProblem] = React.useState<string | null>(null);
-  /** Открытая медаль: по тапу показываем, за что она даётся. */
-  const [medal, setMedal] = React.useState<RaidMedal | null>(null);
-  /** Все медали или только полученные с ближайшими. */
-  const [allMedals, setAllMedals] = React.useState(false);
 
   const refresh = (snapshot: RaidSnapshot) => {
     qc.setQueryData(["raid"], snapshot);
@@ -239,10 +242,6 @@ export default function RaidScreen() {
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
   const questDone = quest.done >= quest.need;
-  const medals = data.medals ?? [];
-  const medalCount = data.medalCount ?? { got: 0, total: medals.length };
-  // Свёрнутый вид: полученные и ближайшие. Полный список — по кнопке.
-  const shownMedals = allMedals ? medals : medals.slice(0, 4);
   const top = data.top ?? [];
   const meInTop = top.some((r) => r.me);
 
@@ -492,76 +491,33 @@ export default function RaidScreen() {
         />
       </View>
 
-      {/* ── Медали рейдов ──────────────────────────────────────────────── */}
-      {medals.length > 0 && (
-        <>
-          <SectionLabel>Медали рейдов · {medalCount.got} из {medalCount.total}</SectionLabel>
-          <View style={card(colors, { marginBottom: 12, gap: 10 })}>
-            {shownMedals.map((m) => (
-              <Pressable
-                key={m.id}
-                onPress={() => setMedal(m)}
-                style={{ flexDirection: "row", alignItems: "center", gap: 11 }}
-                accessibilityRole="button"
-                accessibilityLabel={`${m.title}. ${m.got ? "получена" : "ещё не получена"}`}
-              >
-                {/* Полученная — золотая заливка, закрытая — пунктир с замком.
-                    Цвет по краям, текст всегда тёмный: см. витрину наград. */}
-                <View style={{
-                  width: 40, height: 40, borderRadius: 20,
-                  alignItems: "center", justifyContent: "center",
-                  backgroundColor: m.got ? "rgba(251,191,36,0.18)" : "rgba(160,140,220,0.12)",
-                  borderWidth: 2,
-                  borderColor: m.got ? accents.gold : "rgba(139,92,246,0.35)",
-                  borderStyle: m.got ? "solid" : "dashed",
-                }}>
-                  <Glyph
-                    name={(m.got ? m.icon : "lock") as GlyphName}
-                    size={19}
-                    color={m.got ? accents.amber : "rgba(91,79,142,0.5)"}
-                  />
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text
-                    numberOfLines={1}
-                    style={{
-                      fontSize: 14, fontWeight: m.got ? "900" : "800",
-                      color: m.got ? colors.foreground : colors.mutedForeground,
-                    }}
-                  >
-                    {m.title}
-                  </Text>
-                  {m.got ? (
-                    <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 2 }}>
-                      Получена
-                    </Text>
-                  ) : (
-                    <View style={{ marginTop: 5 }}>
-                      <Bar ratio={m.percent / 100} height={5} colors={["#a855f7", "#6366f1"]} />
-                      <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 3 }}>
-                        {m.current.toLocaleString("ru-RU")} из {m.target.toLocaleString("ru-RU")}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                {m.got && <Glyph name="check" size={17} color={accents.gold} />}
-              </Pressable>
-            ))}
-
-            {medals.length > 4 && (
-              <Pressable
-                onPress={() => setAllMedals((v) => !v)}
-                style={{ alignSelf: "flex-start", paddingVertical: 4 }}
-                accessibilityRole="button"
-              >
-                <Text style={{ fontSize: 12.5, fontWeight: "800", color: colors.primary }}>
-                  {allMedals ? "Свернуть" : `Показать все ${medals.length}`}
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        </>
-      )}
+      {/* ── Медали: указатель на витрину наград ────────────────────────── */}
+      <Pressable
+        onPress={() => router.push("/(main)/profile" as any)}
+        accessibilityRole="button"
+        accessibilityLabel="Медали за рейды находятся в витрине наград профиля"
+        style={card(colors, {
+          marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 11,
+        })}
+      >
+        <View style={{
+          width: 40, height: 40, borderRadius: 20,
+          alignItems: "center", justifyContent: "center",
+          backgroundColor: "rgba(251,191,36,0.18)",
+          borderWidth: 2, borderColor: accents.gold,
+        }}>
+          <Glyph name="medal" size={19} color={accents.amber} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 14, fontWeight: "900", color: colors.foreground }}>
+            Медали за рейды — в профиле
+          </Text>
+          <Text style={{ fontSize: 11.5, lineHeight: 17, color: colors.mutedForeground, marginTop: 2 }}>
+            Пять за боссов и пять за само событие. Лежат в витрине наград вместе с остальными.
+          </Text>
+        </View>
+        <Glyph name="chevron" size={17} color={colors.mutedForeground} />
+      </Pressable>
 
       {/* ── Единый топ ─────────────────────────────────────────────────── */}
       <SectionLabel>Топ по урону</SectionLabel>
@@ -646,17 +602,7 @@ export default function RaidScreen() {
         </>
       )}
 
-      {/* ── Окна: медаль, сундук, ошибка ──────────────────────────────── */}
-      {!!medal && (
-        <Modal
-          title={medal.title}
-          body={medal.got
-            ? `${medal.about}\n\nМедаль получена.`
-            : `${medal.about}\n\nПрогресс: ${medal.current.toLocaleString("ru-RU")} из ${medal.target.toLocaleString("ru-RU")}.`}
-          action="Понятно"
-          onAction={() => setMedal(null)}
-        />
-      )}
+      {/* ── Окна: сундук, ошибка ───────────────────────────────────────── */}
       {!!data.chest && (
         <Modal
           title={data.chest.status === "won" ? "Босс повержен" : "Рейд закончился"}
@@ -752,7 +698,7 @@ function Buff({
   );
 }
 
-/** Простое окно события: медаль, сундук. */
+/** Простое окно события: сундук, ошибка. */
 function Modal({
   title, body, action, onAction,
 }: { title: string; body: string; action: string; onAction: () => void }) {

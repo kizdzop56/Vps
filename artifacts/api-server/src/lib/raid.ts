@@ -33,6 +33,13 @@
 // событие ОБЩЕЕ, у него один босс и один пул здоровья, значит и таблица одна.
 // Место считается по всем участникам рейда.
 //
+// ── Медалей рейд не считает ─────────────────────────────────────────────────
+// Награды за рейды стали обычными медалями витрины в профиле. Их условия живут
+// в routes/gamification.ts (ACHIEVEMENT_CONDITIONS), а показатели за всё время
+// собирает lib/raidStats.ts и отдаёт GET /gamification/stats. Здесь этого больше
+// нет намеренно: пока рейд вёл свою собственную коллекцию, у ученика было две
+// витрины наград с разным оформлением и разными счётчиками.
+//
 // ── Валюта одна: монеты ─────────────────────────────────────────────────────
 // Монеты капают за попадания, дневное задание и сундуки. Тратятся на бафы
 // (мощный удар, удвоение, щит) и на энергию. Маны в механике нет: два счётчика
@@ -57,7 +64,6 @@ import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { startOfDay } from "./srs";
 import { localDayKey } from "./timeStats";
-import { EMPTY_LIFETIME, raidMedalCount, raidMedals, type RaidLifetime } from "./raidMedals";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -861,49 +867,6 @@ async function topRows(eventId: number, meId: number): Promise<RaidRow[]> {
   }));
 }
 
-/**
- * Итоги ученика по ВСЕМ рейдам: из них выводятся медали события.
- *
- * Одним запросом с join к событиям: победы считаются только там, где ученик
- * реально ударил (damage > 0) — «был в базе, но не бил» победой не считается.
- * При ошибке возвращаются нули: медали украшение, из-за них экран падать не
- * должен.
- */
-async function raidLifetime(userId: number): Promise<RaidLifetime> {
-  try {
-    const [row] = await db
-      .select({
-        damage: sql<number>`coalesce(sum(${raidParticipantsTable.damage}), 0)::int`,
-        hits: sql<number>`coalesce(sum(${raidParticipantsTable.hits}), 0)::int`,
-        crits: sql<number>`coalesce(sum(${raidParticipantsTable.crits}), 0)::int`,
-        bestCombo: sql<number>`coalesce(max(${raidParticipantsTable.bestCombo}), 0)::int`,
-        raids: sql<number>`count(*)::int`,
-        wins: sql<number>`count(*) filter (where ${raidEventsTable.status} = 'won' and ${raidParticipantsTable.damage} > 0)::int`,
-      })
-      .from(raidParticipantsTable)
-      .innerJoin(raidEventsTable, eq(raidEventsTable.id, raidParticipantsTable.eventId))
-      .where(eq(raidParticipantsTable.userId, userId));
-
-    const [kills] = await db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(raidEventsTable)
-      .where(eq(raidEventsTable.killerUserId, userId));
-
-    return {
-      damage: Number(row?.damage ?? 0),
-      hits: Number(row?.hits ?? 0),
-      crits: Number(row?.crits ?? 0),
-      bestCombo: Number(row?.bestCombo ?? 0),
-      raids: Number(row?.raids ?? 0),
-      wins: Number(row?.wins ?? 0),
-      lastHits: Number(kills?.n ?? 0),
-    };
-  } catch (err) {
-    logger.error({ err, userId }, "Рейд: итоги за всё время не посчитались");
-    return { ...EMPTY_LIFETIME };
-  }
-}
-
 /** Полная картина рейда для одного ученика. */
 export async function raidSnapshot(userId: number, now: Date = new Date()): Promise<Record<string, unknown>> {
   const event = await ensureRaidEvent(now);
@@ -1000,9 +963,6 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
   const shielded = !!state.shieldUntil && state.shieldUntil.getTime() > now.getTime();
   const weapon = !!state.weaponSkin && state.weaponEventId !== event.id;
 
-  const lifetime = await raidLifetime(userId);
-  const medals = raidMedals(lifetime);
-
   return {
     event: {
       id: event.id,
@@ -1075,10 +1035,6 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     },
     /** Один общий топ по урону. Лиг больше нет. */
     top: await topRows(event.id, userId),
-    /** Медали события: выводятся из итогов за всё время, нигде не хранятся. */
-    medals,
-    medalCount: raidMedalCount(medals),
-    lifetime,
     chest: pending
       ? {
         eventId: pending.eventId,

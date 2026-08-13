@@ -60,6 +60,25 @@ export interface GamificationStats {
   grammarToday: number;
   /** Разных глаголов, чьи формы трогали сегодня. */
   verbFormsToday: number;
+
+  // ── Рейды ──
+  // Итоги всех рейдов за всё время. Раньше по ним рисовался отдельный блок
+  // медалей во вкладке «Рейд»; теперь это обычные медали витрины наград, и
+  // считаются они здесь же, вместе с остальными.
+  /** Суммарный урон по боссам. */
+  raidDamage: number;
+  /** Сколько ударов нанесено. */
+  raidHits: number;
+  /** Из них критических. */
+  raidCrits: number;
+  /** Самая длинная серия верных ответов в бою. */
+  raidBestCombo: number;
+  /** В скольких побеждённых рейдах реально участвовал. */
+  raidWins: number;
+  /** Сколько раз добил босса последним ударом. */
+  raidLastHits: number;
+  /** Ключи побеждённых боссов: golem, dragon, phantom, elemental, titan. */
+  raidBosses: string[];
 }
 
 /**
@@ -122,6 +141,15 @@ export function useGamification() {
         sentencesBuilt: raw.sentencesBuilt ?? 0,
         grammarToday: raw.grammarToday ?? 0,
         verbFormsToday: raw.verbFormsToday ?? 0,
+        // Рейдовые итоги — та же история: пока сервер не обновлён, их нет, а
+        // медали должны считаться по нулям, а не по undefined.
+        raidDamage: raw.raidDamage ?? 0,
+        raidHits: raw.raidHits ?? 0,
+        raidCrits: raw.raidCrits ?? 0,
+        raidBestCombo: raw.raidBestCombo ?? 0,
+        raidWins: raw.raidWins ?? 0,
+        raidLastHits: raw.raidLastHits ?? 0,
+        raidBosses: Array.isArray(raw.raidBosses) ? raw.raidBosses : [],
         mascotName: (raw.mascotName === "Оливер" || raw.mascotName === "Oliver" || !raw.mascotName)
           ? "Снежа"
           : raw.mascotName,
