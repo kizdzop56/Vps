@@ -1,4 +1,4 @@
-// Создание задания или колоды слов (учитель).
+// Создание задания, колоды слов или ситуации для разговора (учитель).
 //
 // Эмодзи в интерфейсе не используются: значки — глифы из своего набора.
 // ВАЖНО про иконку колоды: пользователь выбирает глиф, но в базу уходит
@@ -11,6 +11,12 @@
 // список заданий: учитель выбирает ровно ту картинку, которую потом увидит на
 // карточке и увидит ученик. Раньше здесь были мелкие линейные глифы в чипах —
 // пять почти одинаковых кнопок, различимых только по подписи.
+//
+// ── Третий режим: СИТУАЦИЯ ──────────────────────────────────────────────────
+// Разговор с ролью для ученика раньше создавался только во вкладке «Диалоги», и
+// найти его там было неоткуда: учитель заводит работу для ученика ЗДЕСЬ. Форма
+// одна и та же (components/ScenarioForm.tsx), поэтому дублирования нет: вкладка
+// «Диалоги» остаётся местом, где лежат сами ситуации и приходят разборы.
 //
 // Наклоны убраны по всему экрану — как на остальных вкладках.
 import React, { useState, useRef, useCallback } from "react";
@@ -28,6 +34,7 @@ import { fc } from "@/hooks/useFlashcards";
 import { Glyph, type GlyphName } from "@/components/ui/Glyph";
 import { TypeArt } from "@/components/ui/TypeArt";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
+import { ScenarioForm } from "@/components/ScenarioForm";
 import { accents, radii } from "@/constants/theme";
 import { DUE_PRESETS, type DuePresetKey } from "@/utils/dueDate";
 
@@ -62,9 +69,16 @@ const TYPES = [
 ] as const;
 type AssignmentType = typeof TYPES[number]["key"];
 
-// Что создаёт учитель: обычное задание или колоду слов. Колода после создания
-// доступна ученикам в разделе «Слова» (у ученика — только там, не в заданиях).
-type CreateMode = "assignment" | "deck";
+// Что создаёт учитель: обычное задание, колоду слов или ситуацию для разговора.
+// Колода после создания доступна ученикам в разделе «Слова» (у ученика — только
+// там, не в заданиях), ситуация — в «Разговоре со Снежей».
+type CreateMode = "assignment" | "deck" | "scenario";
+
+const CREATE_MODES: { key: CreateMode; label: string; glyph: GlyphName }[] = [
+  { key: "assignment", label: "Задание", glyph: "book" },
+  { key: "deck", label: "Колода", glyph: "cards" },
+  { key: "scenario", label: "Диалог", glyph: "handshake" },
+];
 
 /**
  * Варианты иконки колоды: что показываем (glyph) и что при этом храним (value).
@@ -379,11 +393,11 @@ export default function CreateAssignmentScreen() {
     },
     typeName: { fontSize: 15, fontWeight: "800", color: colors.foreground },
     typeHint: { fontSize: 12, color: colors.mutedForeground, marginTop: 2 },
-    // Переключатель «Задание / Колода» — крупные вкладки вверху экрана.
+    // Переключатель «Задание / Колода / Диалог» — крупные вкладки вверху экрана.
     modeRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
     modeBtn: {
       flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
-      gap: 8, paddingVertical: 13, borderRadius: radii.sm + 2,
+      gap: 6, paddingVertical: 13, borderRadius: radii.sm + 2,
       borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
     },
     modeBtnActive: {
@@ -391,7 +405,7 @@ export default function CreateAssignmentScreen() {
       shadowColor: colors.primary, shadowOffset: { width: 0, height: 3 },
       shadowOpacity: 0.25, shadowRadius: 9, elevation: 4,
     },
-    modeBtnText: { fontSize: 15, fontWeight: "800", color: colors.mutedForeground },
+    modeBtnText: { fontSize: 14, fontWeight: "800", color: colors.mutedForeground },
     modeBtnTextActive: { color: colors.primary },
     iconGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 20 },
     iconBtn: {
@@ -638,32 +652,49 @@ export default function CreateAssignmentScreen() {
             <Glyph name="chevron" size={22} color={colors.foreground} />
           </View>
         </Pressable>
-        <Text style={s.headerTitle}>{mode === "deck" ? "Создать колоду" : "Создать задание"}</Text>
+        <Text style={s.headerTitle}>
+          {mode === "deck" ? "Создать колоду" : mode === "scenario" ? "Создать диалог" : "Создать задание"}
+        </Text>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
 
-        {/* Что создаём: задание или колода слов */}
+        {/* Что создаём: задание, колода слов или диалог с ролью */}
         <View style={s.modeRow}>
-          {([
-            { key: "assignment" as CreateMode, label: "Задание", glyph: "book" as GlyphName },
-            { key: "deck" as CreateMode, label: "Колода", glyph: "cards" as GlyphName },
-          ]).map((m) => {
+          {CREATE_MODES.map((m) => {
             const active = mode === m.key;
             return (
               <TouchableOpacity key={m.key}
                 activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
                 style={[s.modeBtn, active && s.modeBtnActive]}
                 onPress={() => setMode(m.key)}
               >
-                <Glyph name={m.glyph} size={18} color={active ? colors.primary : colors.mutedForeground} />
+                <Glyph name={m.glyph} size={17} color={active ? colors.primary : colors.mutedForeground} />
                 <Text style={[s.modeBtnText, active && s.modeBtnTextActive]}>{m.label}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        {mode === "deck" ? (
+        {mode === "scenario" ? (
+          // ── Форма ситуации ────────────────────────────────────────────
+          // Та же самая, что во вкладке «Диалоги»: один компонент, чтобы поля и
+          // правила не разъезжались между двумя экранами.
+          <>
+            <View style={s.hintBox}>
+              <View style={{ marginTop: 1 }}>
+                <Glyph name="handshake" size={18} color={colors.primary} />
+              </View>
+              <Text style={{ fontSize: 13, color: colors.foreground, flex: 1, lineHeight: 19 }}>
+                Разговор с ролью: вы задаёте обстановку, кем будет Снежа и цель. Ученик найдёт его в
+                «Разговоре со Снежей», а вы получите весь диалог с ошибками. Разборы приходят во вкладку «Диалоги».
+              </Text>
+            </View>
+            <ScenarioForm onCreated={() => router.back()} />
+          </>
+        ) : mode === "deck" ? (
           // ── Форма колоды ──────────────────────────────────────────────
           <>
             <View style={s.hintBox}>
