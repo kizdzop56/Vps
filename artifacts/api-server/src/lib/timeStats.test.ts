@@ -1,9 +1,20 @@
 /**
  * Тесты чистой логики подсчёта времени.
- * Запуск: pnpm exec tsx --test artifacts/api-server/src/lib/timeStats.test.ts
+ * Запуск: pnpm --filter @workspace/api-server test
  *
  * Зависимостей нет — только node:test и node:assert, поэтому тест не тянет
  * за собой ни БД, ни express.
+ *
+ * ── Про запас поверх heartbeat ──────────────────────────────────────────────
+ * Первая версия этих тестов ждала, что брошенная сессия получит
+ * HEARTBEAT_GRACE_MINUTES сверху подтверждённого времени. Потом по тому же багу
+ * прошли второй раз: запас начислялся ЛЮБОЙ брошенной сессии, даже той, где
+ * heartbeat не подтвердил ни одной минуты, и на свежем входе «Сегодня»
+ * показывало полторы минуты занятий вместо нуля.
+ *
+ * Сейчас правило простое: пропал клиент — засчитываем ровно то, что подтвердил
+ * heartbeat, без надбавок. Запас остался только потолком для УЖЕ ЗАКРЫТЫХ
+ * сессий (страховка от старых раздутых строк), и это проверяется отдельно.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -35,8 +46,9 @@ const abandoned = session("2026-07-26T05:03:00Z", null, 2);
 test("брошенная сессия распознаётся и не получает время отсутствия", () => {
   assert.equal(Math.round(wallMinutes(abandoned, NOW)), 89);
   assert.equal(isSessionStale(abandoned, NOW), true);
-  assert.equal(orphanSessionMinutes(abandoned, NOW), 4);
-  assert.equal(orphanSessionEnd(abandoned, NOW).toISOString(), "2026-07-26T05:07:00.000Z");
+  // Ровно то, что подтвердил heartbeat: две минуты, без надбавки.
+  assert.equal(orphanSessionMinutes(abandoned, NOW), 2);
+  assert.equal(orphanSessionEnd(abandoned, NOW).toISOString(), "2026-07-26T05:05:00.000Z");
 });
 
 test("живая сессия считается полностью", () => {
@@ -45,9 +57,20 @@ test("живая сессия считается полностью", () => {
   assert.equal(Math.round(liveSessionMinutes(live, NOW)), 30);
 });
 
-test("сессия без единого heartbeat не даёт больше запаса", () => {
+test("сессия без единого heartbeat не даёт ни минуты", () => {
+  // Ровно тот случай, из-за которого «Сегодня» подрастало само: клиент открыл
+  // приложение, ни разу не отчитался и пропал. Подтверждённого времени нет —
+  // значит и занятия нет.
   const ghost = session("2026-07-26T03:12:00Z", null, null);
-  assert.equal(liveSessionMinutes(ghost, NOW), 2);
+  assert.equal(liveSessionMinutes(ghost, NOW), 0);
+  assert.equal(orphanSessionMinutes(ghost, NOW), 0);
+});
+
+test("закрытой сессии запас остаётся потолком: старые раздутые строки срезаются", () => {
+  // Древняя запись: календарно час, heartbeat подтвердил 3 минуты. Берём
+  // подтверждённое плюс запас, а не весь час.
+  const legacy = session("2026-07-26T05:00:00Z", "2026-07-26T06:00:00Z", 3);
+  assert.equal(closedSessionMinutes(legacy), 5);
 });
 
 test("короткая сессия не схлопывается в ноль", () => {
