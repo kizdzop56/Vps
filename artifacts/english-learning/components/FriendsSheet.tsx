@@ -50,11 +50,18 @@
 // подсвеченную кнопку переключателя под заголовком: одно и то же слово в двух
 // строках подряд, причём в позиции, где ждёшь количество.
 //
+// ── Кнопка чата на каждой строке ─────────────────────────────────────────────
+// Раньше нажатие на строку открывало только профиль человека — написать ему
+// можно было лишь зайдя в профиль и разыскивая там кнопку сообщения. Теперь
+// рядом с учителем, родителем и каждым принятым другом стоит своя кнопка чата,
+// а точка на ней загорается, если этот человек написал что-то ещё не открытое
+// (MessagesBadgeContext — тот же источник, что у вкладки «Друзья» и списка
+// учеников на стороне учителя). У входящих и исходящих заявок кнопки нет:
+// переписываться пока не с кем, дружба ещё не подтверждена.
+//
 // ── Удаление ────────────────────────────────────────────────────────────────
 // Кнопка удаления — красный кружок в строке друга, а не серый значок рядом с
 // шевроном: серый терялся, и было непонятно, чем вообще убирают из друзей.
-// Шеврона в таких строках нет: два значка подряд читались как один составной
-// элемент, а вся строка и так открывает профиль по нажатию.
 // Подтверждение раскрывается прямо под строкой: отдельное окно поверх окна —
 // лишний слой ради одного вопроса, а удаление без вопроса слишком легко задеть
 // пальцем при прокрутке.
@@ -71,7 +78,7 @@
 // последнюю строку списка.
 //
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
-// 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран
+// 1. НЕ вкладывать <Text> в <Text>: в Safari это роняет весь экран целиком
 //    («Cannot set indexed properties on this object»). Имя и плашка роли —
 //    два соседних Text во View с flexDirection: "row".
 // 2. useNativeDriver только не в вебе: там нативного драйвера нет, и
@@ -95,6 +102,7 @@ import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton } from "@/components/ui/GameKit";
 import authStorage from "@/utils/authStorage";
 import { accents, radii, timing } from "@/constants/theme";
+import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
 
@@ -237,6 +245,41 @@ function GrowBar({ ratio, color, delay }: { ratio: number; color: string; delay:
   );
 }
 
+// ── Кнопка чата ─────────────────────────────────────────────────────────────
+//
+// Отдельная от шеврона/удаления: тап по ней открывает переписку, тап по
+// остальной строке — профиль. Точка непрочитанного — тот же приём, что на
+// кнопке «Чат» вкладки «Друзья» учителя (app/(main)/friends.tsx).
+function ChatButton({ onPress, unread }: { onPress: () => void; unread?: boolean }) {
+  const colors = useColors();
+  return (
+    <View style={{ position: "relative" }}>
+      <Pressable
+        onPress={onPress}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Открыть чат"
+        style={({ pressed }) => ({
+          width: 34, height: 34, borderRadius: 12,
+          alignItems: "center", justifyContent: "center",
+          backgroundColor: colors.primary + "14",
+          opacity: pressed ? 0.7 : 1,
+        })}
+      >
+        <Glyph name="chat" size={16} color={colors.primary} />
+      </Pressable>
+      {unread && (
+        <View style={{
+          position: "absolute", top: -3, right: -3,
+          width: 11, height: 11, borderRadius: 6,
+          backgroundColor: "#e11d48",
+          borderWidth: 2, borderColor: colors.card,
+        }} />
+      )}
+    </View>
+  );
+}
+
 // ── Строка человека ─────────────────────────────────────────────────────────
 
 type PillTone = "friend" | "tutor" | "parent";
@@ -244,6 +287,7 @@ type PillTone = "friend" | "tutor" | "parent";
 function PersonRow({
   name, emoji, color, avatarUrl, online, note, points, ratio,
   pill, pillTone = "friend", index, onPress, onRemove, removeOpen, leader,
+  onChat, chatUnread,
 }: {
   name: string;
   emoji: string | null;
@@ -264,6 +308,11 @@ function PersonRow({
   removeOpen?: boolean;
   /** Первое место: шкала золотая. */
   leader?: boolean;
+  /** Открыть чат с этим человеком. Нет — кнопки чата на строке не будет
+      (входящие/исходящие заявки: переписываться пока не с кем). */
+  onChat?: () => void;
+  /** Есть непрочитанное от этого человека — точка на кнопке чата. */
+  chatUnread?: boolean;
 }) {
   const colors = useColors();
   const rise = useRef(new Animated.Value(0)).current;
@@ -379,6 +428,11 @@ function PersonRow({
                 />
               )}
             </View>
+
+            {/* Кнопка чата — своё касание, независимое от строки целиком. */}
+            {onChat && (
+              <ChatButton onPress={onChat} unread={chatUnread} />
+            )}
 
             {/* Шеврон только там, где нет удаления: два значка подряд
                 читались как один составной элемент. */}
@@ -720,12 +774,15 @@ export interface FriendsSheetProps {
   visible: boolean;
   onClose: () => void;
   onOpenFriend: (id: number) => void;
+  /** Открыть переписку с этим человеком — отдельно от профиля, см. ChatButton. */
+  onOpenChat: (id: number) => void;
   inviteCode?: string | null;
 }
 
-export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: FriendsSheetProps) {
+export function FriendsSheet({ visible, onClose, onOpenFriend, onOpenChat, inviteCode }: FriendsSheetProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const { unreadByUser } = useMessagesBadge();
 
   const [tab, setTab] = useState<"list" | "add">("list");
   const [friends, setFriends] = useState<FriendRow[]>([]);
@@ -889,6 +946,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
   let rowIndex = -1;
   const nextIndex = () => ++rowIndex;
 
+  const openChat = (id: number) => { onClose(); onOpenChat(id); };
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
@@ -1006,6 +1065,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                             pill="Учитель"
                             pillTone="tutor"
                             onPress={() => { onClose(); onOpenFriend(t.id); }}
+                            onChat={() => openChat(t.id)}
+                            chatUnread={(unreadByUser[t.id] ?? 0) > 0}
                           />
                         ))}
                       </>
@@ -1030,6 +1091,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                             pill="Родитель"
                             pillTone="parent"
                             onPress={() => { onClose(); onOpenFriend(p.id); }}
+                            onChat={() => openChat(p.id)}
+                            chatUnread={(unreadByUser[p.id] ?? 0) > 0}
                           />
                         ))}
                       </>
@@ -1058,6 +1121,8 @@ export function FriendsSheet({ visible, onClose, onOpenFriend, inviteCode }: Fri
                                 leader={i === 0 && pts > 0}
                                 pill={i === 0 && pts > 0 ? "1 место" : undefined}
                                 onPress={() => { onClose(); onOpenFriend(f.user.id); }}
+                                onChat={() => openChat(f.user.id)}
+                                chatUnread={(unreadByUser[f.user.id] ?? 0) > 0}
                                 removeOpen={removing === f.friendshipId}
                                 onRemove={() => setRemoving(
                                   removing === f.friendshipId ? null : f.friendshipId,
