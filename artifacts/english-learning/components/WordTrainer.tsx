@@ -31,8 +31,8 @@
 //
 // ── Слово звучит ОДИН раз за карточку ───────────────────────────────────────
 // Автоматическая озвучка запускается ровно в одном месте — при появлении
-// карточки. После ответа звук сам не играет: для этого в блоке итога есть
-// кнопка «Прослушать».
+// карточки. После ответа звук сам не играет: для этого на обратной стороне
+// карточки есть кнопка «Прослушать».
 //
 // Так было не всегда. Раньше ответ озвучивал слово повторно, и получалось два
 // источника звука на одну карточку. Хуже того, через NEXT_DELAY_OK карточка
@@ -48,11 +48,25 @@
 // до этого момента виден английский текст, после — перевод, и между ними нет
 // доли секунды, где видно и то, и другое сразу.
 //
-// ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
-// «Верно!» и «Неверно» показываются внутри карточки задания, под самим
-// заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
-// ответа, и рядом с ним стояла ещё кнопка «Дальше» — три несвязанных блока
-// подряд. Ученик смотрит на карточку, ответ должен появляться там же.
+// ── Карточка переворачивается и при ответе ──────────────────────────────────
+// Тот же приём — не только в знакомстве. Как только ученик отвечает
+// ОКОНЧАТЕЛЬНО (выбрал вариант, собрал слово, написал перевод, произнёс,
+// дослушал аудирование, или проверка не удалась из-за сети), карточка
+// разворачивается на 180°, и на обратной стороне (FlipAnswerFace) сразу вся
+// информация о слове: эмодзи, английское слово, транскрипция, перевод, часть
+// речи, пример предложения — и тут же итог ответа (верно/неверно, что было
+// правильно, кнопка «Прослушать»). Раньше итог просто дорисовывался блоком
+// под заданием на лицевой стороне; теперь ответ и разбор слова — это ОДНО
+// движение карточки, а не появление нового текста.
+//
+// Исключение — первая ошибка в сборке слова (retryBuild): это приглашение
+// собрать заново, а не окончательный ответ, и карточка за него не
+// переворачивается — короткая надпись остаётся на лицевой стороне рядом со
+// собранными буквами.
+//
+// Варианты ответа, буквы, поле ввода и кнопки под карточкой (микрофон,
+// «Дальше», «Не знаю») не переворачиваются вместе с ней: они и раньше жили
+// под белой карточкой, а не на ней, и флип их не касается.
 //
 // ── Верное листается само, ошибка — нет ─────────────────────────────────────
 // Верный ответ не требует разбора: карточка уходит сама через NEXT_DELAY_OK, и
@@ -225,6 +239,10 @@ export function WordTrainer({
   // момент, когда карточка развёрнута к ученику ребром (середина поворота,
   // см. эффект-слушатель flip ниже и FlipIntroFace).
   const [showTranslation, setShowTranslation] = React.useState(false);
+  // Та же логика для карточки С ОТВЕТОМ: что сейчас показано — вопрос (буквы,
+  // варианты, кнопка звука) или обратная сторона с итогом и полной
+  // информацией о слове. См. эффект-слушатель answerFlip и FlipAnswerFace.
+  const [showBack, setShowBack] = React.useState(false);
   // выбор варианта / сборка слова
   const [feedback, setFeedback] = React.useState<Feedback>(null);
   const [built, setBuilt] = React.useState<number[]>([]);
@@ -277,6 +295,10 @@ export function WordTrainer({
   // (слово), 1 — тоже лицом (уже перевод), между ними карточка развёрнута
   // ребром. См. FlipIntroFace ниже.
   const flip = React.useRef(new Animated.Value(0)).current;
+  // Тот же переворот, но для итога ответа во всех остальных упражнениях: 0 —
+  // лицом к ученику (вопрос), 1 — тоже лицом (уже итог и полная информация о
+  // слове). См. FlipAnswerFace.
+  const answerFlip = React.useRef(new Animated.Value(0)).current;
 
   const item = items[pos];
   const card = item?.card;
@@ -313,6 +335,24 @@ export function WordTrainer({
     }).start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealed]);
+
+  /**
+   * Запустить переворот карточки к обратной стороне — итогу ответа и полной
+   * информации о слове. Вызывается ТОЛЬКО при окончательном ответе:
+   * промежуточная реакция на первую ошибку в сборке слова (retryBuild)
+   * карточку не переворачивает — это ещё не ответ, а приглашение попробовать
+   * заново, и собранные буквы должны остаться на виду.
+   */
+  const triggerAnswerFlip = React.useCallback(() => {
+    answerFlip.setValue(0);
+    Animated.timing(answerFlip, {
+      toValue: 1,
+      duration: 480,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: NATIVE_DRIVER,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** Обновить очередь сразу и в ref, и в состоянии. */
   const applyItems = React.useCallback((next: QueueItem[]) => {
@@ -367,6 +407,16 @@ export function WordTrainer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Тот же приём для итога ответа: обратная сторона появляется ровно в
+  // середине поворота, не раньше.
+  React.useEffect(() => {
+    const id = answerFlip.addListener(({ value }) => {
+      if (value >= 0.5) setShowBack(true);
+    });
+    return () => answerFlip.removeListener(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ЕДИНСТВЕННАЯ автоматическая озвучка: показ карточки. Слово ребёнок должен
   // услышать, а в аудировании это вообще единственная подсказка.
   //
@@ -395,6 +445,8 @@ export function WordTrainer({
     setRevealed(false);
     setShowTranslation(false);
     flip.setValue(0);
+    setShowBack(false);
+    answerFlip.setValue(0);
     setFeedback(null);
     setBuilt([]);
     setHintUsed(false);
@@ -524,14 +576,19 @@ export function WordTrainer({
   //
   // Ни один из них НЕ озвучивает слово: автоматический звук в приложении
   // ровно один — при появлении карточки. Услышать верное слово после ответа
-  // можно кнопкой «Прослушать» в блоке итога.
+  // можно кнопкой «Прослушать» на обратной стороне карточки.
+  //
+  // Каждый обработчик, который завершает ответ ОКОНЧАТЕЛЬНО (не промежуточная
+  // реакция вроде retryBuild), сразу после setFeedback запускает
+  // triggerAnswerFlip() — карточка переворачивается к итогу.
   const pickOption = React.useCallback((index: number) => {
     if (feedback || !card) return;
     const correct = index === exercise.answerIndex;
     setFeedback({ correct, picked: index });
+    triggerAnswerFlip();
     // Ошибка ждёт ученика: карточку не листаем.
     submit({ correct }, exercise.type, correct ? NEXT_DELAY_OK : null);
-  }, [feedback, card, exercise, submit]);
+  }, [feedback, card, exercise, submit, triggerAnswerFlip]);
 
   const answerLetters = React.useMemo(() => (exercise.answer ?? "").toLowerCase().split(""), [exercise.answer]);
   const builtWord = built.map((i) => exercise.letters?.[i] ?? "").join("");
@@ -546,7 +603,9 @@ export function WordTrainer({
     const word = next.map((i) => letters[i] ?? "").join("");
     const correct = word === answerLetters.join("");
     if (!correct && attempts < 2) {
-      // первая ошибка в сборке — даём собрать заново, оценка станет «трудно»
+      // первая ошибка в сборке — даём собрать заново, оценка станет «трудно».
+      // Это НЕ окончательный ответ: карточка не переворачивается, короткая
+      // надпись остаётся на лицевой стороне рядом со собранными буквами.
       setAttempts(2);
       setBuilt([]);
       setFeedback({ correct: false, retryBuild: true });
@@ -555,8 +614,9 @@ export function WordTrainer({
       return;
     }
     setFeedback({ correct });
+    triggerAnswerFlip();
     submit({ correct }, "build", correct ? NEXT_DELAY_OK : null);
-  }, [feedback, exercise.letters, built, answerLetters, attempts, submit]);
+  }, [feedback, exercise.letters, built, answerLetters, attempts, submit, triggerAnswerFlip]);
 
   const undoLetter = React.useCallback(() => {
     if (feedback) return;
@@ -574,7 +634,7 @@ export function WordTrainer({
    * Показываем верный ответ и засчитываем полный промах — попыток отдаём
    * максимум, чтобы система повторений вернула слово скоро. Карточку не
    * листаем: ученик впервые видит ответ, ему нужно время. Звук не запускаем —
-   * рядом с ответом стоит кнопка «Прослушать».
+   * на обратной стороне рядом с ответом стоит кнопка «Прослушать».
    */
   const giveUp = React.useCallback((mode: ExerciseType) => {
     if (!card || feedback) return;
@@ -582,8 +642,9 @@ export function WordTrainer({
     speechRef.current = null;
     const expected = exercise.answer ?? exercise.options?.[exercise.answerIndex ?? 0] ?? "";
     setFeedback({ correct: false, gaveUp: true, note: `Правильный ответ: ${expected}` });
+    triggerAnswerFlip();
     submit({ correct: false }, mode, null, 3);
-  }, [card, feedback, exercise.answer, exercise.options, exercise.answerIndex, submit]);
+  }, [card, feedback, exercise.answer, exercise.options, exercise.answerIndex, submit, triggerAnswerFlip]);
 
   /** Показать вердикт сервера по свободному ответу. */
   const applyVerdict = React.useCallback(
@@ -598,6 +659,7 @@ export function WordTrainer({
           ? (verdict.typo ? `Правильно пишется: ${expected}` : undefined)
           : wrongNote ?? `Правильный ответ: ${expected}`,
       });
+      triggerAnswerFlip();
       submit(
         { correct: verdict.correct },
         mode,
@@ -605,15 +667,16 @@ export function WordTrainer({
         usedAttempts,
       );
     },
-    [exercise.answer, submit],
+    [exercise.answer, submit, triggerAnswerFlip],
   );
 
   /** Ответ не проверен: сеть мигнула. В оценку не идёт, листается сам. */
   const skipUnchecked = React.useCallback(() => {
     setFeedback({ correct: true, info: true, note: `Правильный ответ: ${exercise.answer ?? ""}` });
+    triggerAnswerFlip();
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(goNext, NEXT_DELAY_INFO);
-  }, [exercise.answer, goNext]);
+  }, [exercise.answer, goNext, triggerAnswerFlip]);
 
   /**
    * Письменный ответ: отправляем на проверку серверу.
@@ -734,8 +797,9 @@ export function WordTrainer({
       gaveUp: true,
       note: `Верное произношение: ${exercise.answer ?? ""}`,
     });
+    triggerAnswerFlip();
     submit({ correct: false }, "speak", null, exercise.maxAttempts ?? 3);
-  }, [card, feedback, exercise.answer, exercise.maxAttempts, submit]);
+  }, [card, feedback, exercise.answer, exercise.maxAttempts, submit, triggerAnswerFlip]);
 
   // ── экраны состояний ──
   if (error) {
@@ -784,6 +848,10 @@ export function WordTrainer({
    * Как показать итог ответа. Пять состояний, и каждое должно звучать по-своему:
    * «неверно» и «ты не знал» — разные вещи, а несостоявшаяся проверка вообще не
    * оценка.
+   *
+   * Для retryBuild этот вариант вычисляется, но не используется в разметке
+   * ниже: за него карточка не переворачивается (см. triggerAnswerFlip), а
+   * короткая надпись на лицевой стороне рисуется отдельно, без иконки.
    */
   const verdict = !feedback ? null
     : feedback.retryBuild
@@ -811,11 +879,11 @@ export function WordTrainer({
   const needsNextButton = Boolean(feedback && !feedback.retryBuild && !feedback.info && !feedback.correct);
 
   /**
-   * Кнопка «Прослушать» в блоке итога.
+   * Кнопка «Прослушать» на обратной стороне карточки.
    *
    * Заменяет автоматическую озвучку после ответа: слово звучит, только когда
    * ученик сам этого захотел. У промежуточной подсказки в сборке её нет — там
-   * верный ответ ещё не показан, и подсказывать его звуком нельзя.
+   * карточка вообще не переворачивается (см. triggerAnswerFlip).
    */
   const canReplayAnswer = Boolean(feedback && !feedback.retryBuild) && speechAvailable();
 
@@ -865,6 +933,206 @@ export function WordTrainer({
       </View>
     </>
   );
+
+  /** Лицевая сторона белой карточки для всех упражнений, кроме знакомства. */
+  const answerFront = (
+    <>
+      {isListen ? (
+        // Кнопка звука — главный объект в аудировании, поэтому градиент
+        // бренда и свечение, а не плоская плашка. Само слово теперь не
+        // подглядеть здесь после ответа — оно на обратной стороне, вместе
+        // со всей остальной информацией.
+        <TouchableOpacity
+          onPress={playWord}
+          activeOpacity={0.85}
+          accessibilityLabel="Прослушать слово"
+        >
+          <LinearGradient
+            colors={gradients.action as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{
+              alignItems: "center", justifyContent: "center",
+              width: 116, height: 116, borderRadius: 58,
+              shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
+            }}
+          >
+            <Glyph name="sound" size={44} color="#ffffff" />
+          </LinearGradient>
+        </TouchableOpacity>
+      ) : (
+        <>
+          <Text
+            style={{
+              fontSize: exercise.prompt.length > 18 ? 26 : 34, lineHeight: exercise.prompt.length > 18 ? 34 : 42,
+              fontWeight: "900", letterSpacing: -0.5,
+              color: colors.foreground, textAlign: "center",
+            }}
+          >
+            {exercise.prompt}
+          </Text>
+          {(exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
+            <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
+          )}
+          {exercise.type === "choiceRu" && speechAvailable() && (
+            <TouchableOpacity
+              onPress={playWord}
+              activeOpacity={0.8}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 7,
+                backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+                paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+              }}
+            >
+              <Glyph name="sound" size={18} color={colors.primary} />
+              <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
+            </TouchableOpacity>
+          )}
+        </>
+      )}
+
+      {/* сборка слова: что уже собрано */}
+      {isBuild && (
+        <View style={{ width: "100%", marginTop: 18, alignItems: "center" }}>
+          <View
+            style={{
+              minHeight: 54, width: "100%", borderRadius: radii.sm + 2, borderWidth: 2, borderStyle: "dashed",
+              borderColor: verdict?.color ?? "rgba(99,102,241,0.35)",
+              alignItems: "center", justifyContent: "center", paddingHorizontal: 10,
+            }}
+          >
+            <Text style={{
+              fontSize: 26, fontWeight: "900", letterSpacing: 2,
+              color: colors.foreground,
+            }}>
+              {builtWord || "…"}
+            </Text>
+          </View>
+          {hintUsed && !feedback && (
+            <Text style={{ marginTop: 8, fontSize: 15, color: colors.mutedForeground, letterSpacing: 2 }}>
+              {answerLetters.map((l, i) => (i === 0 ? l : "•")).join(" ")}
+            </Text>
+          )}
+          {/* Первая ошибка в сборке — карточка НЕ переворачивается (это ещё не
+              окончательный ответ), поэтому короткая реакция остаётся здесь же,
+              на лицевой стороне, рядом со собранными буквами. */}
+          {feedback?.retryBuild && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 14 }}>
+              <Glyph name="repeat" size={16} color={colors.warning} />
+              <Text style={{ fontSize: 14, fontWeight: "800", color: colors.warning }}>
+                Почти! Собери ещё раз
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+    </>
+  );
+
+  /**
+   * Обратная сторона белой карточки: полная информация о слове + итог ответа.
+   * Появляется для любого ОКОНЧАТЕЛЬНОГО ответа (verdict есть и это не
+   * промежуточная реакция retryBuild — за неё карточка не переворачивается).
+   */
+  const answerBack = verdict && !feedback?.retryBuild ? (
+    <>
+      {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
+      <Text
+        style={{
+          fontSize: 26, fontWeight: "900", letterSpacing: -0.5,
+          color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+        }}
+      >
+        {card?.english}
+      </Text>
+      {!!card?.ipa && (
+        <Text style={{ fontSize: 15, color: colors.mutedForeground, marginTop: 4 }}>{card.ipa}</Text>
+      )}
+      {!!card?.translationsRu?.length && (
+        <Text style={{ fontSize: 20, fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 8 }}>
+          {card.translationsRu.join(", ")}
+        </Text>
+      )}
+      {!!card?.partOfSpeech && (
+        <Text style={{ fontSize: 12.5, color: colors.mutedForeground, textAlign: "center", marginTop: 3, textTransform: "capitalize" }}>
+          {card.partOfSpeech}
+        </Text>
+      )}
+      {!!card?.exampleEn && (
+        <View style={{ marginTop: 12, width: "100%", backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+            <Text style={{ flex: 1, fontSize: 14, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
+            {speechAvailable() && (
+              // У примера-предложения нет своего wordId — озвучиваем текст
+              // напрямую через /api/tts?text=... (см. speakWord).
+              <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
+                <Glyph name="sound" size={17} color={colors.primary} />
+              </Pressable>
+            )}
+          </View>
+          {!!card.exampleRu && <Text style={{ marginTop: 5, fontSize: 13, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
+        </View>
+      )}
+
+      {/* ИТОГ ОТВЕТА — теперь на обратной стороне карточки, вместе с полной
+          информацией о слове: перевернул — и сразу видно и что ответил, и что
+          было правильно. Раньше это был отдельный блок под заданием на
+          лицевой стороне. */}
+      <View style={{
+        width: "100%", marginTop: 16, paddingTop: 14,
+        borderTopWidth: 1, borderTopColor: colors.border,
+        alignItems: "center",
+      }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
+          {/* Цвет состояния — в круглом значке, а не заливкой под текстом:
+              контраст заголовка не должен зависеть от исхода ответа. */}
+          <View style={{
+            width: 28, height: 28, borderRadius: 14,
+            alignItems: "center", justifyContent: "center",
+            backgroundColor: verdict.color,
+          }}>
+            <Glyph name={verdict.icon} size={17} color="#ffffff" />
+          </View>
+          <Text style={{ fontSize: 18, fontWeight: "900", color: verdict.color, flexShrink: 1 }}>
+            {verdict.title}
+          </Text>
+        </View>
+        {!!verdict.detail && (
+          <Text style={{
+            marginTop: 9, fontSize: 15, fontWeight: "800", lineHeight: 22,
+            color: colors.foreground, textAlign: "center",
+          }}>
+            {verdict.detail}
+          </Text>
+        )}
+        {/* Обещание вернуть слово: ребёнок должен знать, что промах не
+            «списан», а отработается прямо сейчас. */}
+        {!feedback?.correct && !feedback?.info && !isRetryCard && (
+          <Text style={{ marginTop: 8, fontSize: 12.5, color: colors.mutedForeground, textAlign: "center" }}>
+            Это слово вернётся через пару карточек
+          </Text>
+        )}
+        {/* Звук после ответа — только по нажатию. Автоматически слово
+            больше не проигрывается: см. шапку файла. */}
+        {canReplayAnswer && (
+          <TouchableOpacity
+            onPress={playWord}
+            activeOpacity={0.8}
+            accessibilityLabel="Прослушать слово"
+            style={{
+              flexDirection: "row", alignItems: "center", gap: 7,
+              backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+              paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+            }}
+          >
+            <Glyph name="sound" size={17} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 13.5 }}>Прослушать</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </>
+  ) : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: background, paddingTop: insets.top + 8 }}>
@@ -945,155 +1213,13 @@ export function WordTrainer({
               colors={colors}
               onPlay={playWord}
             />
-          ) : isListen ? (
-            <>
-              {/* Кнопка звука — главный объект в аудировании, поэтому градиент
-                  бренда и свечение, а не плоская плашка. */}
-              <TouchableOpacity
-                onPress={playWord}
-                activeOpacity={0.85}
-                accessibilityLabel="Прослушать слово"
-              >
-                <LinearGradient
-                  colors={gradients.action as unknown as string[]}
-                  start={{ x: 0.1, y: 0 }}
-                  end={{ x: 0.9, y: 1 }}
-                  style={{
-                    alignItems: "center", justifyContent: "center",
-                    width: 116, height: 116, borderRadius: 58,
-                    shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
-                    shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
-                  }}
-                >
-                  <Glyph name="sound" size={44} color="#ffffff" />
-                </LinearGradient>
-              </TouchableOpacity>
-              {/* слово показываем только после ответа — иначе аудирования нет */}
-              {!!feedback && (
-                <Text style={{ fontSize: 22, fontWeight: "900", color: colors.foreground, marginTop: 14 }}>
-                  {card?.emoji ? `${card.emoji} ` : ""}{card?.english}
-                </Text>
-              )}
-            </>
           ) : (
-            <>
-              {/* Картинка — только после ответа. В упражнении «выбери перевод»
-                  показывать её заранее нельзя: ребёнок угадает смысл по
-                  картинке, не вспоминая само слово.
-                  card.emoji — это иллюстрация к слову из данных, а не иконка
-                  интерфейса, поэтому здесь эмодзи остаётся намеренно. */}
-              {!!card?.emoji && !!feedback && (
-                <Text style={{ fontSize: 44 }}>{card.emoji}</Text>
-              )}
-              <Text
-                style={{
-                  fontSize: exercise.prompt.length > 18 ? 26 : 34, lineHeight: exercise.prompt.length > 18 ? 34 : 42,
-                  fontWeight: "900", letterSpacing: -0.5,
-                  color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
-                }}
-              >
-                {exercise.prompt}
-              </Text>
-              {(exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
-                <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
-              )}
-              {exercise.type === "choiceRu" && speechAvailable() && (
-                <TouchableOpacity
-                  onPress={playWord}
-                  activeOpacity={0.8}
-                  style={{
-                    flexDirection: "row", alignItems: "center", gap: 7,
-                    backgroundColor: colors.primary + "18", borderRadius: radii.pill,
-                    paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
-                  }}
-                >
-                  <Glyph name="sound" size={18} color={colors.primary} />
-                  <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
-                </TouchableOpacity>
-              )}
-            </>
-          )}
-
-          {/* сборка слова: что уже собрано */}
-          {isBuild && (
-            <View style={{ width: "100%", marginTop: 18, alignItems: "center" }}>
-              <View
-                style={{
-                  minHeight: 54, width: "100%", borderRadius: radii.sm + 2, borderWidth: 2, borderStyle: "dashed",
-                  borderColor: verdict?.color ?? "rgba(99,102,241,0.35)",
-                  alignItems: "center", justifyContent: "center", paddingHorizontal: 10,
-                }}
-              >
-                <Text style={{
-                  fontSize: 26, fontWeight: "900", letterSpacing: 2,
-                  color: colors.foreground,
-                }}>
-                  {builtWord || "…"}
-                </Text>
-              </View>
-              {hintUsed && !feedback && (
-                <Text style={{ marginTop: 8, fontSize: 15, color: colors.mutedForeground, letterSpacing: 2 }}>
-                  {answerLetters.map((l, i) => (i === 0 ? l : "•")).join(" ")}
-                </Text>
-              )}
-            </View>
-          )}
-
-          {/* ИТОГ ОТВЕТА — на самой карточке, под заданием. Ученик смотрит сюда,
-              и ответ должен появляться здесь же, а не отдельной строкой ниже. */}
-          {verdict && (
-            <View style={{
-              width: "100%", marginTop: 18, paddingTop: 15,
-              borderTopWidth: 1, borderTopColor: colors.border,
-              alignItems: "center",
-            }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
-                {/* Цвет состояния — в круглом значке, а не заливкой под текстом:
-                    контраст заголовка не должен зависеть от исхода ответа. */}
-                <View style={{
-                  width: 28, height: 28, borderRadius: 14,
-                  alignItems: "center", justifyContent: "center",
-                  backgroundColor: verdict.color,
-                }}>
-                  <Glyph name={verdict.icon} size={17} color="#ffffff" />
-                </View>
-                <Text style={{ fontSize: 18, fontWeight: "900", color: verdict.color, flexShrink: 1 }}>
-                  {verdict.title}
-                </Text>
-              </View>
-              {!!verdict.detail && (
-                <Text style={{
-                  marginTop: 9, fontSize: 16, fontWeight: "800", lineHeight: 23,
-                  color: colors.foreground, textAlign: "center",
-                }}>
-                  {verdict.detail}
-                </Text>
-              )}
-              {/* Обещание вернуть слово: ребёнок должен знать, что промах не
-                  «списан», а отработается прямо сейчас. */}
-              {!feedback?.correct && !feedback?.retryBuild && !feedback?.info && !isRetryCard && (
-                <Text style={{ marginTop: 8, fontSize: 12.5, color: colors.mutedForeground, textAlign: "center" }}>
-                  Это слово вернётся через пару карточек
-                </Text>
-              )}
-              {/* Звук после ответа — только по нажатию. Автоматически слово
-                  больше не проигрывается: см. шапку файла. */}
-              {canReplayAnswer && (
-                <TouchableOpacity
-                  onPress={playWord}
-                  activeOpacity={0.8}
-                  accessibilityLabel="Прослушать слово"
-                  style={{
-                    flexDirection: "row", alignItems: "center", gap: 7,
-                    backgroundColor: colors.primary + "18", borderRadius: radii.pill,
-                    paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
-                  }}
-                >
-                  <Glyph name="sound" size={17} color={colors.primary} />
-                  <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 13.5 }}>Прослушать</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+            <FlipAnswerFace
+              showBack={showBack}
+              flip={answerFlip}
+              front={answerFront}
+              back={answerBack}
+            />
           )}
         </Animated.View>
 
@@ -1437,6 +1563,47 @@ function FlipIntroFace({
           )}
         </View>
       )}
+    </Animated.View>
+  );
+}
+
+/**
+ * Обратная сторона карточки при ответе — тот же приём, что у FlipIntroFace
+ * (см. её комментарий), только вместо перевода на обороте лежит полная
+ * информация о слове ВМЕСТЕ с итогом ответа: сюда переехал блок «ИТОГ
+ * ОТВЕТА», который раньше дорисовывался на лицевой стороне под заданием.
+ *
+ * front и back передаются готовыми узлами (а не рендер-функциями): состав
+ * лицевой стороны сильно разный между упражнениями (кнопка звука, буквы,
+ * просто текст), и городить внутри этого компонента ветвление по типу
+ * упражнения смысла нет — WordTrainer уже решает, что показать, до вызова.
+ */
+function FlipAnswerFace({
+  showBack, flip, front, back,
+}: {
+  showBack: boolean;
+  flip: Animated.Value;
+  front: React.ReactNode;
+  back: React.ReactNode;
+}) {
+  const rotateY = flip.interpolate({
+    inputRange: [0, 0.5, 0.5001, 1],
+    outputRange: ["0deg", "90deg", "-90deg", "0deg"],
+  });
+  const scaleY = flip.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 0.94, 1],
+  });
+
+  return (
+    <Animated.View
+      style={{
+        width: "100%",
+        alignItems: "center",
+        transform: [{ perspective: 900 }, { rotateY }, { scaleY }],
+      }}
+    >
+      {!showBack ? front : back}
     </Animated.View>
   );
 }
