@@ -68,11 +68,22 @@
 // под белой карточкой, а не на ней, и флип их не касается.
 //
 // ── Шрифт слова подстраивается под его длину ────────────────────────────────
-// fitFontSize(text, base) считает длину не всей строки, а САМОГО ДЛИННОГО
-// СЛОВА в ней: у составной фразы («have breakfast») есть пробел, по которому
-// она сама перенесётся на вторую строку, а у однословных длинных ответов
-// («выздоравливать») переносить нечем — единственный способ вписать их в
-// карточку — уменьшить сам шрифт.
+// fitFontSize(text, base) сравнивает с порогами БОЛЬШЕЕ из двух чисел: длину
+// самого длинного слова фразы и длину всей фразы целиком (слова + пробелы).
+//
+// Раньше учитывалось только самое длинное слово: «have breakfast» и «make
+// yourself at home» с этой меркой выглядели одинаково безобидно — оба слова
+// в них короче порога, — но вторая фраза из ЧЕТЫРЁХ слов на двух строках
+// физически не помещается, а первая из ДВУХ вполне. adjustsFontSizeToFit,
+// который должен был досжать шрифт дальше сам, на вебе (react-native-web)
+// ненадёжен именно для многострочного текста — и фраза обрезалась
+// многоточием вместо уменьшения кегля.
+//
+// Для ОДНОГО слова оба числа совпадают, поэтому подбор размера для
+// одиночных слов и переводов не изменился ни на пиксель — правило добавляет
+// шринк только многословным фразам. У однословных длинных ответов
+// («выздоравливать») по-прежнему переносить нечем — единственный способ
+// вписать их в карточку — уменьшить сам шрифт.
 //
 // ── Пустая очередь объясняет ПРИЧИНУ, а не просто «нечего повторять» ────────
 // «Пока нечего повторять» — одна и та же фраза раньше пряталась за тремя
@@ -142,6 +153,16 @@
 // время сессии нигде не показываются: они по-прежнему копятся молча (state
 // points не убран — он нужен для итогового экрана), а видно их становится
 // РОВНО ОДИН РАЗ — на SessionSummary, когда колода или марафон закончены.
+//
+// ── Варианты ответа делят ОДИН размер шрифта на вопрос ──────────────────────
+// Раньше каждый вариант считал fitFontSize сам по себе: у «window / address /
+// furniture / table» «furniture» — самое длинное — мельчало, а три соседних
+// коротких слова рисовались полным кеглем. По отдельности каждое решение верно,
+// но внутри ОДНОГО вопроса это выглядит как случайный разнобой шрифта, а не
+// как аккуратная подгонка под длину. Теперь один размер считается на весь
+// набор вариантов вопроса — по самому длинному среди них — и передаётся в
+// каждый OptionKey явным пропом; кегль внутри вопроса больше не прыгает от
+// строки к строке.
 import React from "react";
 import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -238,25 +259,36 @@ type EmptyInfo = { reason?: "capped" | "waiting" | "done"; nextDueAt?: string } 
 /**
  * Размер шрифта под длину текста на карточке.
  *
- * Считает длину не всей строки, а САМОГО ДЛИННОГО СЛОВА в ней: у составной
- * фразы вроде «have breakfast» есть пробел, по которому она сама перенесётся
- * на вторую строку — сжимать шрифт под её ОБЩУЮ длину незачем и только
- * уменьшило бы карточку зря. А вот у однословных длинных ответов («выздоравливать»)
- * переносить нечем — единственный способ вписать их в карточку — уменьшить сам
- * шрифт. Пороги подобраны с запасом под кириллицу в начертании 900 (она
- * заметно шире латиницы того же кегля) и под самую узкую карточку на маленьком
- * экране.
+ * Сравнивает с порогами БОЛЬШЕЕ из двух чисел: длину самого длинного слова и
+ * длину всей фразы целиком (слова + по одному пробелу между ними).
+ *
+ * Для ОДНОГО слова оба числа равны — поведение для одиночных слов и коротких
+ * переводов не меняется. Для ФРАЗЫ длина всей строки часто больше длины
+ * любого отдельного слова: «make yourself at home» состоит из слов короче
+ * порога (max 8 букв), но на карточку целиком не влезает — переносится по
+ * границам слов на две строки, и большая часть каждой строки простаивает
+ * впустую, потому что следующее слово в неё уже не помещается целиком.
+ * Раньше это оставалось незамеченным: сравнивался только «выздоравливать»
+ * -подобный случай (одно длинное слово), а «фраза из нескольких коротких
+ * слов, которая всё равно не влезает» проходила проверку и рисовалась полным
+ * кеглем — a то, что не досжал JS, должен был доужать adjustsFontSizeToFit,
+ * но на react-native-web (веб-сборка) это многострочное сжатие ненадёжно, и
+ * лишний текст просто обрезался многоточием.
  */
 function fitFontSize(text: string, base: number): number {
-  const longestWord = text
-    .split(/\s+/)
-    .reduce((max, token) => Math.max(max, token.length), 0);
+  const words = text.split(/\s+/).filter(Boolean);
+  const longestWord = words.reduce((max, token) => Math.max(max, token.length), 0);
+  // Слова плюс по одному пробелу между ними — оценка того, сколько места
+  // реально просит фраза, если её вообще ничем не переносить.
+  const wholePhrase = words.join(" ").length;
+  const effective = Math.max(longestWord, wholePhrase);
+
   let scale = 1;
-  if (longestWord > 26) scale = 0.38;
-  else if (longestWord > 20) scale = 0.44;
-  else if (longestWord > 15) scale = 0.56;
-  else if (longestWord > 11) scale = 0.7;
-  else if (longestWord > 8) scale = 0.85;
+  if (effective > 26) scale = 0.38;
+  else if (effective > 20) scale = 0.44;
+  else if (effective > 15) scale = 0.56;
+  else if (effective > 11) scale = 0.7;
+  else if (effective > 8) scale = 0.85;
   return Math.round(base * scale);
 }
 
@@ -1019,7 +1051,7 @@ export function WordTrainer({
           color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
           width: "100%", flexShrink: 1,
         }}
-        numberOfLines={2}
+        numberOfLines={3}
         adjustsFontSizeToFit
         minimumFontScale={0.5}
       >
@@ -1058,7 +1090,7 @@ export function WordTrainer({
           color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
           width: "100%", flexShrink: 1,
         }}
-        numberOfLines={2}
+        numberOfLines={3}
         adjustsFontSizeToFit
         minimumFontScale={0.5}
       >
@@ -1072,7 +1104,7 @@ export function WordTrainer({
             fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12,
             width: "100%", flexShrink: 1,
           }}
-          numberOfLines={2}
+          numberOfLines={3}
           adjustsFontSizeToFit
           minimumFontScale={0.5}
         >
@@ -1139,7 +1171,7 @@ export function WordTrainer({
               color: colors.foreground, textAlign: "center",
               width: "100%", flexShrink: 1,
             }}
-            numberOfLines={2}
+            numberOfLines={3}
             adjustsFontSizeToFit
             minimumFontScale={0.5}
           >
@@ -1225,7 +1257,7 @@ export function WordTrainer({
           color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
           width: "100%", flexShrink: 1,
         }}
-        numberOfLines={2}
+        numberOfLines={3}
         adjustsFontSizeToFit
         minimumFontScale={0.5}
       >
@@ -1242,7 +1274,7 @@ export function WordTrainer({
             fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 8,
             width: "100%", flexShrink: 1,
           }}
-          numberOfLines={2}
+          numberOfLines={3}
           adjustsFontSizeToFit
           minimumFontScale={0.5}
         >
@@ -1440,27 +1472,35 @@ export function WordTrainer({
           />
         )}
 
-        {/* варианты ответа */}
+        {/* варианты ответа: один общий кегль на весь набор — см. шапку файла */}
         {isChoice && (
           <View style={{ marginTop: 18, gap: 12 }}>
-            {(exercise.options ?? []).map((option, index) => {
-              const isAnswer = index === exercise.answerIndex;
-              const picked = feedback?.picked === index;
-              const showCorrect = Boolean(feedback) && isAnswer;
-              const showWrong = Boolean(feedback) && picked && !isAnswer;
-              return (
-                <OptionKey
-                  key={`${option}-${index}`}
-                  label={option}
-                  colors={colors}
-                  okColor={okColor}
-                  state={showCorrect ? "correct" : showWrong ? "wrong" : "idle"}
-                  dimmed={Boolean(feedback) && !showCorrect && !showWrong}
-                  disabled={Boolean(feedback)}
-                  onPress={() => pickOption(index)}
-                />
+            {(() => {
+              const options = exercise.options ?? [];
+              const optionFontSize = options.reduce(
+                (min, o) => Math.min(min, fitFontSize(o, 17)),
+                17,
               );
-            })}
+              return options.map((option, index) => {
+                const isAnswer = index === exercise.answerIndex;
+                const picked = feedback?.picked === index;
+                const showCorrect = Boolean(feedback) && isAnswer;
+                const showWrong = Boolean(feedback) && picked && !isAnswer;
+                return (
+                  <OptionKey
+                    key={`${option}-${index}`}
+                    label={option}
+                    fontSize={optionFontSize}
+                    colors={colors}
+                    okColor={okColor}
+                    state={showCorrect ? "correct" : showWrong ? "wrong" : "idle"}
+                    dimmed={Boolean(feedback) && !showCorrect && !showWrong}
+                    disabled={Boolean(feedback)}
+                    onPress={() => pickOption(index)}
+                  />
+                );
+              });
+            })()}
           </View>
         )}
 
@@ -1671,11 +1711,18 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
  *
  * Остальные варианты после ответа притушены (dimmed): внимание должно уйти на
  * верный ответ, а не делиться поровну между четырьмя строками.
+ *
+ * fontSize — ОБЯЗАТЕЛЬНЫЙ проп, а не собственный fitFontSize(label): один и тот
+ * же размер шрифта должен применяться КО ВСЕМ вариантам ОДНОГО вопроса разом,
+ * иначе внутри одного набора длинное слово мельчает рядом с тремя короткими,
+ * которые остаются полного размера, — выглядит как разъехавшаяся вёрстка.
+ * Общий размер на весь набор считает вызывающий код (см. блок isChoice выше).
  */
 function OptionKey({
-  label, colors, okColor, state, dimmed, disabled, onPress,
+  label, fontSize, colors, okColor, state, dimmed, disabled, onPress,
 }: {
   label: string;
+  fontSize: number;
   colors: any;
   okColor: string;
   state: "idle" | "correct" | "wrong";
@@ -1716,7 +1763,7 @@ function OptionKey({
           }}
         >
           <Text
-            style={{ flex: 1, fontSize: fitFontSize(label, 17), fontWeight: "800", color: colors.foreground }}
+            style={{ flex: 1, fontSize, fontWeight: "800", color: colors.foreground }}
             numberOfLines={2}
             adjustsFontSizeToFit
             minimumFontScale={0.6}
