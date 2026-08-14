@@ -24,7 +24,6 @@ import grammarRouter from "./grammar";
 import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
 import raidRouter from "./raid";
-import raidHook from "./raidHook";
 import maintenanceRouter from "./maintenance";
 
 const router: IRouter = Router();
@@ -59,10 +58,11 @@ router.use(gamificationRouter);
 // Лента событий: /notifications. Своё пространство путей, ни с чем не
 // пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
 router.use(notificationsRouter);
-// Рейд-босс подключается ДО тренажёров: перехватчик дописывает к ответу поле
-// raid с уроном, а для этого он должен стоять раньше того, чей ответ правит.
-// Снимите эту строку — событие выключится целиком, тренажёры не заметят.
-router.use(raidHook);
+// Перехватчик routes/raidHook.ts, который раньше стоял здесь, снят: урон по
+// боссу теперь наносится ТОЛЬКО из заданий самого рейда (POST /raid/answer,
+// см. routes/raid.ts — он сам вызывает recordRaidHit). Раньше любой верный
+// ответ в «Учёбе» (слова, формы глаголов, времена) тоже бил босса, даже если
+// ученик вкладку «Рейд» не открывал — см. историю routes/raidHook.ts.
 // Раздел «Слова» разделён надвое: колоды, каталог, импорт и назначения — в
 // flashcards, сам тренажёр (очередь, ответы, статистика, марафон) — в
 // flashcardsLearn. Пути не пересекаются, поэтому порядок значения не имеет.
