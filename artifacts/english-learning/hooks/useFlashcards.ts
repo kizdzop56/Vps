@@ -87,6 +87,17 @@ export type TrainerQueue = Partial<DailyWordProgress> & {
   newCount: number;
   reviewCount: number;
   cards: TrainerCard[];
+  /**
+   * Почему очередь пуста, если cards.length === 0:
+   *   capped  — дневной лимит новых слов на сегодня исчерпан;
+   *   waiting — новых слов ждать некому, но одно из уже введённых вернётся по
+   *             расписанию совсем скоро (см. nextDueAt);
+   *   done    — реально нечего показать: колода/сессия пройдена до конца.
+   * См. api-server routes/flashcardsLearn.ts и lib/flashcardsCore.ts.
+   */
+  emptyReason?: "capped" | "waiting" | "done";
+  /** Когда освободится ближайшее слово — только при emptyReason === "waiting". */
+  nextDueAt?: string;
 };
 
 export type ReviewOutcome = DailyWordProgress & {
