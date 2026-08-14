@@ -996,6 +996,7 @@ export default function ProfileScreen() {
           visible={friendsOpen}
           onClose={() => setFriendsOpen(false)}
           onOpenFriend={(id) => router.push(`/(main)/friend/${id}` as any)}
+          onOpenChat={(id) => router.push(`/(main)/chat/${id}` as any)}
           inviteCode={user.inviteCode}
         />
       )}
