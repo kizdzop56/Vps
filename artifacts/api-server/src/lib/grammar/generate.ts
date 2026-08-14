@@ -22,6 +22,22 @@
 //   assemble ×3         собрать утверждение, отрицание и вопрос из слов
 // Плюс задание на форму неправильного глагола, если глагол неправильный.
 //
+// ── А потом ещё раз по каждому лицу ─────────────────────────────────────────
+// Семи заданий с заготовки мало: 120 заготовок давали 58 заходов на времена и 30
+// на сборку, то есть две недели при пяти заходах в день. Дальше раздел начинал
+// повторяться, и ученик справедливо считал его пройденным.
+//
+// Поэтому заготовка с меткой swap разворачивается по шести лицам (expandUnits):
+// «He goes to bed at ten» даёт ещё «I go», «You go», «She goes», «We go», «They
+// go». Английская часть — та же механика, что и так считается; русская берётся
+// из таблицы форм (ruForms.ts). Банк вырастает больше чем вчетверо, и ни одного
+// придуманного машиной предложения при этом не появляется: меняется лицо, а
+// смысл остаётся ровно тем, который написали руками.
+//
+// Кому размножение НЕ ставится и почему — в шапке sentenceUnits.ts. Короткая
+// версия: «I will call you» с подстановкой you даёт «You will call you», и одна
+// такая фраза обесценивает сотню правильных.
+//
 // ── Длина ───────────────────────────────────────────────────────────────────
 // Задание, не влезшее в лимит своего уровня, НЕ выпускается. Молча, и это
 // осознанно: отрицание длиннее утверждения на два слова, и на A1 часть заготовок
@@ -35,6 +51,13 @@
 // Поэтому у заготовки есть необязательный хвост для отрицания и вопроса
 // (restNeg) и свой русский перевод к нему (ruNeg). Генератор не умеет менять
 // already на yet сам и не должен: это работа со смыслом, а не с формой.
+//
+// ── ГРАБЛИ: {poss} обязан быть подставлен ───────────────────────────────────
+// Притяжательное в хвосте хранится меткой ({poss} homework), потому что при
+// смене лица оно меняется вместе с подлежащим. Подстановка идёт в expandUnits, и
+// проходят через неё ВСЕ заготовки, включая неразмножаемые: иначе метка уехала
+// бы прямо в текст задания. Тест на это есть, и он единственная защита —
+// смотреть глазами на четыре тысячи заданий никто не станет.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -49,6 +72,13 @@ import {
 } from "./core";
 import { verbByBase } from "./verbs";
 import { SENTENCE_UNITS, type Person, type SentenceUnit } from "./sentenceUnits";
+import {
+  POSSESSIVE,
+  SWAP_SUBJECTS,
+  ruVerbForm,
+  type RuTense,
+  type SwapSubject,
+} from "./ruForms";
 
 /** Третье лицо единственного числа: только с ним появляется -s и does/has/is. */
 const THIRD_SINGULAR: ReadonlySet<Person> = new Set<Person>(["he", "she", "it"]);
@@ -184,12 +214,106 @@ function ruSentence(unit: SentenceUnit, kind: "affirmative" | "negative" | "ques
   const text = template.replace("{}", verb);
   // В русском общий вопрос отличается от утверждения только интонацией, поэтому
   // весь перевод вопроса — та же фраза со знаком вопроса.
-  return `${text}${kind === "question" ? "?" : "."}`;
+  return `${text}${kind === "question" ? "?" : ""}`.replace(/$/, kind === "question" ? "" : ".");
+}
+
+// ── Размножение по лицам ────────────────────────────────────────────────────
+
+/** Метка притяжательного в хвосте. */
+const POSS_MARK = "{poss}";
+
+/** Русское время перевода, если заготовка не сказала иначе. */
+function ruTenseOf(unit: SentenceUnit): RuTense {
+  if (unit.ruTense) return unit.ruTense;
+  switch (unit.tense) {
+    case "present_simple":
+    case "present_continuous":
+      return "present";
+    case "future_simple":
+      return "future";
+    default:
+      // Past Simple, Past Continuous и Present Perfect переводятся прошедшим.
+      return "past";
+  }
+}
+
+/** Подставить притяжательное во все хвосты заготовки. */
+function withPossessive(unit: SentenceUnit, poss: string): SentenceUnit {
+  if (!unit.rest.includes(POSS_MARK) && !unit.restNeg?.includes(POSS_MARK)) return unit;
+  const put = (value: string) => value.split(POSS_MARK).join(poss);
+  return {
+    ...unit,
+    rest: put(unit.rest),
+    ...(unit.restNeg ? { restNeg: put(unit.restNeg) } : {}),
+  };
+}
+
+/**
+ * Заменить русское подлежащее в начале перевода.
+ *
+ * null, если шаблон не начинается с заявленного подлежащего: тогда вариант не
+ * выпускается вовсе. Молча подставить в середину нельзя — «Осенью идёт дождь»
+ * превратилось бы в «ОсеньюОни идёт дождь», и это увидел бы ученик.
+ */
+function swapRuSubject(template: string, from: string, to: string): string | null {
+  if (!template.startsWith(from)) return null;
+  return `${to}${template.slice(from.length)}`;
+}
+
+/**
+ * Развернуть заготовки по лицам.
+ *
+ * Базовый вариант идёт первым и сохраняет свой номер: на него ссылаются тесты, и
+ * он же остаётся тем самым вычитанным предложением. Варианты получают номер
+ * вида «u-ps-1-they», из которого дальше строятся номера заданий.
+ *
+ * Вариант молча не выпускается, если в таблице нет нужной русской формы или
+ * перевод не начинается с заявленного подлежащего. Так же ведёт себя отсев по
+ * длине: генератор не имеет права ронять сборку из-за одной строки данных, но и
+ * выдумывать за автора не должен.
+ */
+export function expandUnits(units: SentenceUnit[] = SENTENCE_UNITS): SentenceUnit[] {
+  const out: SentenceUnit[] = [];
+
+  for (const unit of units) {
+    out.push(withPossessive(unit, POSSESSIVE[unit.person]));
+
+    if (!unit.swap || !unit.ruVerbKey || !unit.ruSubject) continue;
+    const tense = ruTenseOf(unit);
+
+    for (const subject of SWAP_SUBJECTS) {
+      // Родное лицо уже есть — вторым экземпляром оно не нужно.
+      if (subject.en.toLowerCase() === unit.subject.toLowerCase()) continue;
+
+      const ruVerb = ruVerbForm(unit.ruVerbKey, tense, subject);
+      if (!ruVerb) continue;
+
+      const ru = swapRuSubject(unit.ru, unit.ruSubject, subject.ru);
+      if (!ru) continue;
+
+      const ruNeg = unit.ruNeg
+        ? swapRuSubject(unit.ruNeg, unit.ruSubject, subject.ru)
+        : null;
+      if (unit.ruNeg && !ruNeg) continue;
+
+      out.push(withPossessive({
+        ...unit,
+        id: `${unit.id}-${subject.key}`,
+        person: subject.person,
+        subject: subject.en,
+        ru,
+        ruVerb,
+        ...(ruNeg ? { ruNeg } : {}),
+      }, subject.poss));
+    }
+  }
+
+  return out;
 }
 
 // ── Задания на время ────────────────────────────────────────────────────────
 
-export function generateTenseTasks(units: SentenceUnit[] = SENTENCE_UNITS): TenseGapTask[] {
+export function generateTenseTasks(units: SentenceUnit[] = expandUnits()): TenseGapTask[] {
   const out: TenseGapTask[] = [];
 
   for (const unit of units) {
@@ -307,7 +431,7 @@ function trapsFor(sentence: string, base: string): string[] {
   return out;
 }
 
-export function generateAssembleTasks(units: SentenceUnit[] = SENTENCE_UNITS): AssembleTask[] {
+export function generateAssembleTasks(units: SentenceUnit[] = expandUnits()): AssembleTask[] {
   const out: AssembleTask[] = [];
 
   for (const unit of units) {
@@ -359,7 +483,7 @@ export function generateAssembleTasks(units: SentenceUnit[] = SENTENCE_UNITS): A
  * написано в самом задании. Привязка к уровню времени держала бы третью форму
  * взаперти до B1, а её учат сразу вместе с первыми двумя.
  */
-export function generateVerbGapTasks(units: SentenceUnit[] = SENTENCE_UNITS): VerbGapTask[] {
+export function generateVerbGapTasks(units: SentenceUnit[] = expandUnits()): VerbGapTask[] {
   const out: VerbGapTask[] = [];
 
   for (const unit of units) {
