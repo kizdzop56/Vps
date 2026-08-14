@@ -1,7 +1,37 @@
+// Экран переписки 1:1.
+//
+// ── Точка «не прочитано получателем» на СВОИХ сообщениях ────────────────────
+// Сервер уже проставляет messagesTable.readAt, когда собеседник открывает эту
+// же переписку у себя (см. api-server/src/routes/messaging.ts,
+// GET /messages/with/:id помечает читанными сообщения ДРУГОГО участника) и
+// уже возвращает readAt в ответе — просто клиентский тип его не объявлял, и
+// поле никуда не шло. Теперь на СВОИХ (mine) сообщениях, пока readAt пустой,
+// в углу пузыря горит маленькая точка; как только собеседник откроет чат у
+// себя, ближайший опрос (раз в 4 секунды, см. load ниже) вернёт readAt — и
+// точка сама пропадёт. Чужие сообщения точку никогда не показывают: это не
+// «прочитано мной», а «прочитано ТЕМ, кому мы писали» — обратная связь имеет
+// смысл только на исходящих.
+//
+// ── Онлайн / был в сети — над именем в шапке ─────────────────────────────────
+// Раньше офлайн-собеседник показывал просто «@username» — это не отвечает на
+// вопрос «стоит ли ждать ответа прямо сейчас». lastSeenText ниже — тот же
+// текст и те же пороги, что уже показывает список учеников (см.
+// app/(main)/students.tsx), продублирован по тому же принципу, что и другие
+// мелкие утилиты в этом кодовой базе: одна и та же пятистрочная функция не
+// стоит того, чтобы тянуть её через общий модуль.
+//
+// ── Кнопки объёмные, сообщения — нет ────────────────────────────────────────
+// Фото/микрофон/отправка были плоскими Feather-иконками без всякого веса —
+// на фоне остального приложения, где почти каждая нажимаемая поверхность
+// имеет нижнюю грань и проседает при нажатии (см. constants/theme.ts →
+// chunky), это смотрелось недоделанным. Новый ChunkyCircleButton оборачивает
+// именно эти три кнопки. Пузыри сообщений трогать не просили — они остаются
+// плоскими, как и были.
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   ActivityIndicator, Platform, Image, Alert, KeyboardAvoidingView,
+  Animated, Easing,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -12,6 +42,8 @@ import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
+import { accents, chunky } from "@/constants/theme";
+import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -56,6 +88,7 @@ type ChatUser = {
   id: number; name: string; username: string; role: string;
   avatarEmoji: string | null; avatarColor: string | null; avatarUrl?: string | null;
   isOnline?: boolean;
+  lastSeenAt?: string | null;
 };
 
 type ChatMessage = {
@@ -66,7 +99,28 @@ type ChatMessage = {
   attachmentUrl: string | null;
   attachmentType: "image" | "audio" | null;
   createdAt: string;
+  /** Когда получатель прочитал сообщение. null — ещё не прочитано; тогда на
+      СВОЁМ (mine) сообщении в углу горит точка, см. renderItem ниже. */
+  readAt: string | null;
 };
+
+/**
+ * «Был в сети» словами — тот же текст и пороги, что на карточке ученика
+ * (см. app/(main)/students.tsx), продублирован здесь по тому же принципу, что
+ * и другие мелкие утилиты в этом кодовой базе.
+ */
+function lastSeenText(lastSeenAt: string | null | undefined, isOnline: boolean | undefined): string {
+  if (isOnline) return "в сети";
+  if (!lastSeenAt) return "ещё не заходил";
+  const seen = new Date(lastSeenAt);
+  if (Number.isNaN(seen.getTime())) return "ещё не заходил";
+  const days = Math.floor((Date.now() - seen.getTime()) / 86400000);
+  if (days <= 0) return "был сегодня";
+  if (days === 1) return "был вчера";
+  if (days < 7) return `был ${days} дня назад`;
+  if (days < 30) return `не заходил ${days} дней`;
+  return "не заходил больше месяца";
+}
 
 function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
   const colors = useColors();
@@ -103,6 +157,61 @@ function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
   );
 }
 
+/**
+ * Круглая кнопка входной панели (фото, микрофон/отправить) с нижней гранью и
+ * просадкой при нажатии — тем же приёмом, что у ChunkyButton в остальном
+ * приложении (см. constants/theme.ts → chunky). Просили сделать объёмными
+ * именно кнопки, а не переписку — поэтому пузыри сообщений эту обёртку не
+ * используют и остаются плоскими.
+ */
+function ChunkyCircleButton({
+  onPress, disabled, background, edgeColor, size = 44, children, accessibilityLabel,
+}: {
+  onPress?: () => void;
+  disabled?: boolean;
+  background: string;
+  /** Цвет нижней грани — обычно тёмная версия background. */
+  edgeColor: string;
+  size?: number;
+  children: React.ReactNode;
+  accessibilityLabel?: string;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration,
+      easing: Easing.out(Easing.quad), useNativeDriver: Platform.OS !== "web",
+    }).start();
+
+  return (
+    <View style={{ opacity: disabled ? 0.5 : 1 }}>
+      <View style={{
+        position: "absolute", top: chunky.pressDepth,
+        width: size, height: size, borderRadius: size / 2, backgroundColor: edgeColor,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <TouchableOpacity
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(chunky.pressDepth)}
+          onPressOut={() => set(0)}
+          disabled={disabled}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          style={{
+            width: size, height: size, borderRadius: size / 2,
+            backgroundColor: background,
+            alignItems: "center", justifyContent: "center",
+          }}
+        >
+          {children}
+        </TouchableOpacity>
+      </Animated.View>
+      <View style={{ height: chunky.pressDepth }} />
+    </View>
+  );
+}
+
 export default function ChatScreen() {
   const { userId } = useLocalSearchParams<{ userId: string }>();
   const otherId = Number(userId);
@@ -110,6 +219,7 @@ export default function ChatScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { refresh: refreshUnreadBadge } = useMessagesBadge();
 
   const [other, setOther] = useState<ChatUser | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -129,16 +239,22 @@ export default function ChatScreen() {
       setOther(data.otherUser);
       setMessages(data.messages);
       setError(null);
+      // Открытие чата отмечает входящие сообщения прочитанными на сервере —
+      // просим общий счётчик (иконка вкладки «Друзья», точка на карточке
+      // собеседника) обновиться сразу, а не ждать своего опроса до 15 секунд.
+      if (initial) refreshUnreadBadge();
     } catch (e: any) {
       if (initial) setError(e.message ?? "Не удалось открыть чат");
     } finally {
       if (initial) setLoading(false);
     }
-  }, [otherId]);
+  }, [otherId, refreshUnreadBadge]);
 
   useEffect(() => { load(true); }, [load]);
 
-  // Лёгкий поллинг, чтобы входящие сообщения появлялись почти сразу.
+  // Лёгкий поллинг, чтобы входящие сообщения появлялись почти сразу — и заодно
+  // чтобы точка «не прочитано получателем» на своих сообщениях сама погасла,
+  // как только собеседник откроет этот же чат у себя.
   useEffect(() => {
     const t = setInterval(() => load(false), 4000);
     return () => clearInterval(t);
@@ -250,34 +366,45 @@ export default function ChatScreen() {
     const mine = item.senderId === user?.id;
     return (
       <View style={{ flexDirection: "row", justifyContent: mine ? "flex-end" : "flex-start", marginBottom: 8, paddingHorizontal: 12 }}>
-        <View style={{
-          maxWidth: "78%",
-          backgroundColor: mine ? colors.primary : colors.card,
-          borderRadius: 16,
-          borderBottomRightRadius: mine ? 4 : 16,
-          borderBottomLeftRadius: mine ? 16 : 4,
-          borderWidth: mine ? 0 : 1,
-          borderColor: colors.border,
-          padding: item.attachmentType === "image" ? 4 : 10,
-        }}>
-          {item.attachmentType === "image" && item.attachmentUrl && (
-            <Image
-              source={{ uri: `${BASE}${item.attachmentUrl}` }}
-              style={{ width: 200, height: 200, borderRadius: 12 }}
-              resizeMode="cover"
-            />
-          )}
-          {item.attachmentType === "audio" && item.attachmentUrl && (
-            <AudioBubble url={item.attachmentUrl} mine={mine} />
-          )}
-          {!!item.text && (
-            <Text style={{ fontSize: 15, color: mine ? "#fff" : colors.foreground, marginTop: item.attachmentUrl ? 6 : 0 }}>
-              {item.text}
+        <View style={{ position: "relative", maxWidth: "78%" }}>
+          <View style={{
+            backgroundColor: mine ? colors.primary : colors.card,
+            borderRadius: 16,
+            borderBottomRightRadius: mine ? 4 : 16,
+            borderBottomLeftRadius: mine ? 16 : 4,
+            borderWidth: mine ? 0 : 1,
+            borderColor: colors.border,
+            padding: item.attachmentType === "image" ? 4 : 10,
+          }}>
+            {item.attachmentType === "image" && item.attachmentUrl && (
+              <Image
+                source={{ uri: `${BASE}${item.attachmentUrl}` }}
+                style={{ width: 200, height: 200, borderRadius: 12 }}
+                resizeMode="cover"
+              />
+            )}
+            {item.attachmentType === "audio" && item.attachmentUrl && (
+              <AudioBubble url={item.attachmentUrl} mine={mine} />
+            )}
+            {!!item.text && (
+              <Text style={{ fontSize: 15, color: mine ? "#fff" : colors.foreground, marginTop: item.attachmentUrl ? 6 : 0 }}>
+                {item.text}
+              </Text>
+            )}
+            <Text style={{ fontSize: 10, color: mine ? "rgba(255,255,255,0.75)" : colors.mutedForeground, marginTop: 4, textAlign: "right" }}>
+              {new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </Text>
+          </View>
+          {/* Точка «не прочитано получателем» — только на своих сообщениях, пока
+              readAt пустой. Пропадает сама на ближайшем опросе, см. шапку файла. */}
+          {mine && !item.readAt && (
+            <View style={{
+              position: "absolute", top: -3, right: -3,
+              width: 9, height: 9, borderRadius: 5,
+              backgroundColor: accents.magenta,
+              borderWidth: 1.5, borderColor: colors.background,
+            }} />
           )}
-          <Text style={{ fontSize: 10, color: mine ? "rgba(255,255,255,0.75)" : colors.mutedForeground, marginTop: 4, textAlign: "right" }}>
-            {new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </Text>
         </View>
       </View>
     );
@@ -319,13 +446,14 @@ export default function ChatScreen() {
             <View style={{ position: "relative" }}>
               <AnimatedAvatar size={38} avatarColor={other.avatarColor ?? "#6366f1"} avatarEmoji={other.avatarEmoji} avatarUrl={other.avatarUrl} />
               {other.isOnline && (
-                <View style={{ position: "absolute", bottom: 0, right: 0, width: 11, height: 11, borderRadius: 6, backgroundColor: "#22c55e", borderWidth: 2, borderColor: colors.card }} />
+                <View style={{ position: "absolute", bottom: 0, right: 0, width: 11, height: 11, borderRadius: 6, backgroundColor: colors.success, borderWidth: 2, borderColor: colors.card }} />
               )}
             </View>
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>{other.name}</Text>
-              <Text style={{ fontSize: 12, color: other.isOnline ? "#16a34a" : colors.mutedForeground }}>
-                {other.isOnline ? "В сети" : `@${other.username}`}
+              {/* Онлайн или когда был в сети последний раз — см. шапку файла. */}
+              <Text style={{ fontSize: 12, fontWeight: other.isOnline ? "700" : "400", color: other.isOnline ? colors.success : colors.mutedForeground }}>
+                {lastSeenText(other.lastSeenAt, other.isOnline)}
               </Text>
             </View>
           </>
@@ -352,9 +480,15 @@ export default function ChatScreen() {
           paddingBottom: Math.max(insets.bottom, 8),
           backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.border,
         }}>
-          <TouchableOpacity onPress={pickPhoto} disabled={sending || recording} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Feather name="image" size={24} color={recording ? colors.mutedForeground : colors.primary} />
-          </TouchableOpacity>
+          <ChunkyCircleButton
+            onPress={pickPhoto}
+            disabled={sending || recording}
+            background={colors.card}
+            edgeColor="rgba(160,140,220,0.35)"
+            accessibilityLabel="Прикрепить фото"
+          >
+            <Feather name="image" size={20} color={recording ? colors.mutedForeground : colors.primary} />
+          </ChunkyCircleButton>
 
           {recording ? (
             <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12 }}>
@@ -378,17 +512,25 @@ export default function ChatScreen() {
           )}
 
           {text.trim().length > 0 && !recording ? (
-            <TouchableOpacity onPress={sendText} disabled={sending} style={{ backgroundColor: colors.primary, borderRadius: 22, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+            <ChunkyCircleButton
+              onPress={sendText}
+              disabled={sending}
+              background={colors.primary}
+              edgeColor={accents.indigoDeep}
+              accessibilityLabel="Отправить сообщение"
+            >
               <Feather name="send" size={20} color="#fff" />
-            </TouchableOpacity>
+            </ChunkyCircleButton>
           ) : (
-            <TouchableOpacity
+            <ChunkyCircleButton
               onPress={recording ? stopRecording : startRecording}
               disabled={sending}
-              style={{ backgroundColor: recording ? "#e11d48" : colors.primary, borderRadius: 22, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
+              background={recording ? "#e11d48" : colors.primary}
+              edgeColor={recording ? "#9f1239" : accents.indigoDeep}
+              accessibilityLabel={recording ? "Остановить запись" : "Записать голосовое сообщение"}
             >
               <Feather name={recording ? "check" : "mic"} size={20} color="#fff" />
-            </TouchableOpacity>
+            </ChunkyCircleButton>
           )}
         </View>
       </KeyboardAvoidingView>
