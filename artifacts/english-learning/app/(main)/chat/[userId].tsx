@@ -37,15 +37,25 @@
 // эти три кнопки. Пузыри сообщений трогать не просили — они остаются
 // плоскими, как и были.
 //
-// ── Голосовые сообщения не проигрывались (ГРАБЛИ) ────────────────────────────
-// AudioBubble раньше грузил и проигрывал звук ЧЕРЕЗ expo-av (Audio.Sound)
-// БЕЗУСЛОВНО, включая веб. У этого приложения уже есть работающий приём для
-// звука в вебе — components/InlineMediaPlayer.tsx использует обычный HTML
-// <audio>, а к expo-av обращается только на нативе. AudioBubble этот приём не
-// повторял: на вебе Audio.Sound.createAsync либо не грузил звук, либо не мог
-// его воспроизвести, ошибка гасилась try/catch — по нажатию «play» ничего не
-// происходило, без единого сообщения об ошибке. Теперь AudioBubble ветвится по
-// Platform.OS ровно так же, как InlineMediaPlayer.
+// ── ГРАБЛИ: голосовые сообщения были подписаны неверным форматом ────────────
+// startRecording создавал `new MediaRecorder(stream)` БЕЗ mimeType — браузер
+// сам выбирал то, что реально умеет писать (это зависит от браузера: Safari,
+// например, вообще не умеет webm и пишет во что-то своё). А stopRecording
+// это игнорировал: Blob получал ЖЁСТКО прописанный `type: "audio/webm"` и имя
+// файла всегда заканчивалось на `.webm`, независимо от того, что браузер
+// РЕАЛЬНО записал. Расширение/заявленный тип файла не совпадали с настоящими
+// байтами — и <audio> на приёме совершенно справедливо отказывался играть
+// контейнер, который не может опознать: это и есть NotSupportedError
+// («The operation is not supported»).
+//
+// Теперь: при старте записи явно выбирается ПОДДЕРЖИВАЕМЫЙ браузером mimeType
+// через MediaRecorder.isTypeSupported (сначала webm/opus, потом ogg, потом
+// mp4 — родной формат Safari), а при остановке берётся СОБСТВЕННЫЙ отчёт
+// рекордера о том, что он реально записал (mr.mimeType), и по нему уже
+// подбираются правильные тип Blob и расширение файла — вместо того чтобы
+// подписывать что угодно как webm. Голосовые, отправленные ДО этого фикса,
+// могут остаться неисправимо подписанными неверно — чинится только запись
+// вперёд.
 //
 // ── Фото и видео нельзя было открыть на весь экран (ГРАБЛИ) ─────────────────
 // Картинка рисовалась фиксированным квадратом 200×200 без единого обработчика
@@ -62,6 +72,18 @@
 // сервере (message_attachment_type) и в схеме БД — см. соответствующие коммиты
 // в lib/db/src/schema/messaging.ts, api-server/src/lib/ensureSchema.ts и
 // api-server/src/routes/messaging.ts.
+//
+// ── ГРАБЛИ: возврат из чата ───────────────────────────────────────────────────
+// Этот экран и все, кто его открывает (friends.tsx, students.tsx, Профиль
+// через FriendsSheet), лежат как плоские скрытые «вкладки-соседи» ОДНОГО и
+// того же Tabs-навигатора (см. _layout.tsx), а не как вложенный стек. У
+// router.back() между такими соседями нет настоящей истории — он надёжно
+// приземляется на первый объявленный таб панели («Задания»), а не туда, откуда
+// реально пришли. Поэтому все места, что открывают чат, передают явный адрес
+// возврата параметром `back`, а кнопка «назад» здесь делает router.replace на
+// него, а не router.back(). Нет параметра (например, старая ссылка) —
+// откатываемся в «Профиль»: это единственное место, куда попадает вообще
+// каждая роль.
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, Pressable, FlatList,
@@ -85,6 +107,9 @@ import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
+
+/** Куда возвращаться, если вызывающий экран не передал явный адрес. */
+const DEFAULT_BACK = "/(main)/profile";
 
 async function apiFetch(path: string, opts?: RequestInit) {
   const token = await authStorage.getItem("auth_token");
@@ -120,6 +145,36 @@ async function uploadFile(blob: Blob, filename: string, kind: "image" | "audio" 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки файла");
   return data.url as string;
+}
+
+/**
+ * Первый реально поддерживаемый браузером формат записи звука. Порядок
+ * значим: webm/opus почти везде на десктопе и Android, ogg — редкий, но
+ * дешёвый запасной, mp4 — родной формат Safari (там webm не поддерживается
+ * вовсе). Возвращает undefined, если браузер вообще не даёт проверить (тогда
+ * MediaRecorder создаётся без явного mimeType, а его СОБСТВЕННЫЙ выбор потом
+ * читается через mr.mimeType в stopRecording).
+ */
+const AUDIO_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/mp4",
+];
+
+function pickSupportedAudioMime(): string | undefined {
+  const MR = (typeof window !== "undefined" ? (window as any).MediaRecorder : undefined);
+  if (!MR?.isTypeSupported) return undefined;
+  return AUDIO_MIME_CANDIDATES.find((t) => {
+    try { return MR.isTypeSupported(t); } catch { return false; }
+  });
+}
+
+/** Расширение файла по реальному mimeType записи — должно совпадать с содержимым. */
+function extensionForAudioMime(mime: string): string {
+  if (mime.includes("mp4") || mime.includes("aac") || mime.includes("m4a")) return "m4a";
+  if (mime.includes("ogg")) return "ogg";
+  return "webm";
 }
 
 type ChatUser = {
@@ -185,9 +240,11 @@ function lastSeenText(lastSeenAt: string | null | undefined, isOnline: boolean |
 }
 
 /**
- * Голосовое сообщение. См. «Голосовые сообщения не проигрывались» в шапке
- * файла: на вебе звук проигрывается обычным HTML <audio>, на нативе — тем же
- * expo-av, что и раньше.
+ * Голосовое сообщение. Звук на вебе — обычный HTML <audio> (тот же приём, что
+ * в components/InlineMediaPlayer.tsx), на нативе — expo-av. Игра play()
+ * обёрнута в try/catch: если файл всё же не воспроизведётся (например,
+ * старое голосовое, записанное до фикса формата — см. шапку файла), кнопка
+ * просто не переключится в «playing», без падения экрана.
  */
 function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
   const colors = useColors();
@@ -201,8 +258,12 @@ function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
       const el = webAudioRef.current;
       if (!el) return;
       if (el.paused) {
-        void el.play();
-        setPlaying(true);
+        try {
+          await el.play();
+          setPlaying(true);
+        } catch {
+          setPlaying(false);
+        }
       } else {
         el.pause();
         setPlaying(false);
@@ -345,13 +406,19 @@ function ChunkyCircleButton({
 }
 
 export default function ChatScreen() {
-  const { userId } = useLocalSearchParams<{ userId: string }>();
+  const { userId, back: backParam } = useLocalSearchParams<{ userId: string; back?: string }>();
   const otherId = Number(userId);
   const router = useRouter();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { refresh: refreshUnreadBadge } = useMessagesBadge();
+
+  // Явный адрес возврата — см. «ГРАБЛИ: возврат из чата» в шапке файла.
+  const goBack = useCallback(() => {
+    const dest = typeof backParam === "string" && backParam ? decodeURIComponent(backParam) : DEFAULT_BACK;
+    router.replace(dest as any);
+  }, [backParam, router]);
 
   const [other, setOther] = useState<ChatUser | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -455,11 +522,18 @@ export default function ChatScreen() {
   }, [doSend]);
 
   // ── Запись голосового сообщения ─────────────────────────────────────
+  //
+  // См. «ГРАБЛИ: голосовые сообщения были подписаны неверным форматом» в
+  // шапке файла — mimeType выбирается ЯВНО и заранее проверенным браузером
+  // (pickSupportedAudioMime), а не угадывается постфактум.
   const startRecording = useCallback(async () => {
     try {
       if (Platform.OS === "web") {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mr = new (window as any).MediaRecorder(stream);
+        const preferred = pickSupportedAudioMime();
+        const mr = preferred
+          ? new (window as any).MediaRecorder(stream, { mimeType: preferred })
+          : new (window as any).MediaRecorder(stream);
         webChunksRef.current = [];
         mr.ondataavailable = (e: any) => { if (e.data.size > 0) webChunksRef.current.push(e.data); };
         mr.start();
@@ -490,12 +564,16 @@ export default function ChatScreen() {
       if (Platform.OS === "web") {
         const mr = mediaRecorderRef.current;
         if (!mr) return;
+        // mr.mimeType — то, что браузер РЕАЛЬНО записал (даже если mimeType не
+        // задавался явно при создании). Раньше здесь стоял жёстко прописанный
+        // "audio/webm" вне зависимости от факта — см. шапку файла.
+        const actualMime: string = mr.mimeType || "audio/webm";
         blob = await new Promise<Blob>((resolve) => {
-          mr.onstop = () => resolve(new Blob(webChunksRef.current, { type: "audio/webm" }));
+          mr.onstop = () => resolve(new Blob(webChunksRef.current, { type: actualMime }));
           mr.stop();
           mr.stream.getTracks().forEach((tr: any) => tr.stop());
         });
-        filename = "voice.webm";
+        filename = `voice.${extensionForAudioMime(actualMime)}`;
       } else {
         const rec = recordingRef.current;
         if (!rec) return;
@@ -587,7 +665,7 @@ export default function ChatScreen() {
       <View style={{ flex: 1, backgroundColor: colors.background, justifyContent: "center", alignItems: "center", padding: 24 }}>
         <Feather name="lock" size={40} color={colors.mutedForeground} />
         <Text style={{ fontSize: 15, color: colors.foreground, marginTop: 12, textAlign: "center" }}>{error}</Text>
-        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 20, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 }}>
+        <TouchableOpacity onPress={goBack} style={{ marginTop: 20, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 }}>
           <Text style={{ color: "#fff", fontWeight: "700" }}>Назад</Text>
         </TouchableOpacity>
       </View>
@@ -602,7 +680,7 @@ export default function ChatScreen() {
         flexDirection: "row", alignItems: "center", gap: 10,
         backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.border,
       }}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+        <TouchableOpacity onPress={goBack} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Feather name="chevron-left" size={26} color={colors.foreground} />
         </TouchableOpacity>
         {other && (
