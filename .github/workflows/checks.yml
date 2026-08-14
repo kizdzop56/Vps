@@ -1,0 +1,154 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Проверки, которые обязаны быть зелёными до слияния.
+#
+# Раньше их было два файла: tests.yml и validate-words.yml. Модульные тесты
+# сервера в них дублировались — один и тот же прогон шёл дважды на каждый PR, а
+# в списке проверок висели два одинаковых «test», по которым нельзя было понять,
+# что именно упало. Теперь один файл и два разных job.
+#
+# ── Почему отчёт публикуется в pull request ─────────────────────────────────
+# Разработка этого проекта идёт с ТЕЛЕФОНА. Логи Actions там открываются в три
+# нажатия и читаются по десять символов в строку, поэтому «посмотри в логах» на
+# практике означает «никто не посмотрит». Падение приезжает комментарием в сам
+# PR, а на main — в Issue с меткой ci-failure (см. .github/ci-report.sh).
+#
+# ── Почему шаги не роняют job сразу ─────────────────────────────────────────
+# continue-on-error на каждой проверке. Иначе первая упавшая скрывает все
+# остальные, и на каждую причину уходит отдельный круг «правка — прогон —
+# ожидание». Статус job выставляет шаг «Итог» в самом конце.
+#
+# ── pipefail ────────────────────────────────────────────────────────────────
+# Вывод каждой проверки уходит в файл через tee, а по умолчанию GitHub запускает
+# bash без pipefail: код возврата брался бы у tee, то есть всегда нулевой, и
+# падение проверки прошло бы незамеченным. Поэтому в каждом шаге стоит
+# `set -o pipefail`.
+#
+# ── ГРАБЛИ: скрипт вызывается через bash ────────────────────────────────────
+# Файлы, добавленные в репозиторий через GitHub API, приходят с режимом 100644 —
+# без бита исполнения. Прямой вызов `.github/ci-report.sh` упал бы с Permission
+# denied, и упал бы ИМЕННО в шаге, который сообщает о падении. Поэтому явное
+# `bash .github/ci-report.sh`: так вызов не зависит от прав файла вовсе.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Проверки
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+# Нужны для публикации отчёта: комментарий в PR и Issue на main.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# Новый пуш в ту же ветку отменяет предыдущий прогон: смысла проверять
+# устаревший коммит нет, а очередь на бесплатных раннерах не бесконечная.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+
+jobs:
+  # ── Датасет слов ──────────────────────────────────────────────────────────
+  # Читает файлы как текст: ни pnpm install, ни tsc не нужны, прогон занимает
+  # секунды.
+  dataset:
+    name: Датасет
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Примеры употребления
+        id: examples
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node scripts/validate-examples.mjs 2>&1 | tee examples.log
+
+      - name: Датасет карточек
+        id: flashcards
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node scripts/validate-flashcards.mjs 2>&1 | tee flashcards.log
+
+      - name: Отчёт о падении
+        if: always() && (steps.examples.outcome == 'failure' || steps.flashcards.outcome == 'failure')
+        run: bash .github/ci-report.sh "Датасет" examples.log flashcards.log
+
+      - name: Итог
+        if: always()
+        run: |
+          if [ "${{ steps.examples.outcome }}" = "failure" ] || [ "${{ steps.flashcards.outcome }}" = "failure" ]; then
+            echo "Датасет не прошёл проверку — отчёт опубликован"
+            exit 1
+          fi
+          echo "Датасет в порядке"
+
+  # ── Модульные тесты сервера ───────────────────────────────────────────────
+  # Интервальные повторения, проверка ответов, подбор упражнений, банк
+  # грамматики и его ротация, расписание повторения ошибок, учёт времени.
+  server:
+    name: Тесты сервера
+    runs-on: ubuntu-latest
+    # Часовой пояс приложения: границы суток в тестах считаются по нему же.
+    env:
+      APP_TIMEZONE: Europe/Minsk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # --no-frozen-lockfile — как в Dockerfile: лок в репозитории разошёлся с
+      # catalog из pnpm-workspace.yaml, и строгий режим падает на
+      # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH ещё до установки.
+      - name: Установка зависимостей
+        id: install
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm install --no-frozen-lockfile 2>&1 | tee install.log
+
+      # Без зависимостей тесты дадут невнятную ошибку импорта вместо настоящей
+      # причины, поэтому при упавшей установке шаг пропускается целиком.
+      - name: Модульные тесты
+        id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @workspace/api-server run test 2>&1 | tee tests.log
+
+      - name: Отчёт о падении
+        if: always() && (steps.install.outcome == 'failure' || steps.tests.outcome == 'failure')
+        run: bash .github/ci-report.sh "Тесты сервера" install.log tests.log
+
+      - name: Итог
+        if: always()
+        run: |
+          if [ "${{ steps.install.outcome }}" = "failure" ]; then
+            echo "Зависимости не установились — тесты не запускались"
+            exit 1
+          fi
+          if [ "${{ steps.tests.outcome }}" = "failure" ]; then
+            echo "Тесты сервера не прошли — отчёт опубликован"
+            exit 1
+          fi
+          echo "Тесты сервера зелёные"
