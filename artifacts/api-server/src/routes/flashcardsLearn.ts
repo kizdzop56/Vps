@@ -51,6 +51,7 @@ import {
   buildTrainerQueue,
   canViewStudent,
   clean,
+  computeEmptyInfo,
   dailyWordProgress,
   ensureSettings,
   loadViewableDeck,
@@ -124,9 +125,21 @@ router.get("/flashcards/study/:deckId", requireAuth, async (req, res) => {
   const cards = interleaveQueue(dueCards, limitedNew);
   const progress = await dailyWordProgress(user.userId, settings.dailyWordGoal, nowDate);
 
+  // Пустая колода: отличаем «упёрлись в дневной лимит новых слов» от
+  // «всё введённое ждёт своего срока» от «тут правда больше нечего показывать».
+  // Без этого разделения уведомление всегда звучало как одно и то же «повторять
+  // пока нечего», даже когда через минуту слово из режима «ещё раз» возвращалось.
+  let emptyInfo: { emptyReason?: "capped" | "waiting" | "done"; nextDueAt?: string } = {};
+  if (cards.length === 0) {
+    const cappedByLimit = newCards.length > 0 && limitedNew.length === 0;
+    const candidateStates = states.filter((s) => deckWordIds.has(s.wordId));
+    emptyInfo = computeEmptyInfo(nowDate, cappedByLimit, candidateStates);
+  }
+
   res.json(clean({
     deckId, deckTitle: deck.title, isSystem: deck.isSystem, needsIntro,
-    newCount: limitedNew.length, reviewCount: dueCards.length, ...progress, cards,
+    newCount: limitedNew.length, reviewCount: dueCards.length, ...progress,
+    ...emptyInfo, cards,
   }));
 });
 
