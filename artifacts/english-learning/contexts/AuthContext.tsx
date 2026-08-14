@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import authStorage from "@/utils/authStorage";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import { queryClient } from "@/app/_layout";
@@ -47,6 +47,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // ── Токен для API-клиента ────────────────────────────────────────────
+  //
+  // ПОЧЕМУ РЕФ, А НЕ "useEffect(() => setAuthTokenGetter(() => token), [token])".
+  //
+  // Раньше геттер обновлялся именно так. Проблема: React выполняет эффекты
+  // дочерних компонентов РАНЬШЕ эффекта родителя в одном и том же коммите.
+  // Когда сессия восстанавливается из хранилища, setToken(...) и setUser(...)
+  // вызываются в одном тике — и в этом же ре-рендере экран профиля переводит
+  // свои react-query хуки (useGetStudentSubmissions, useGetStudentTimeStats)
+  // из enabled=false в enabled=true. Эффект самого запроса (дочерний)
+  // срабатывает раньше эффекта AuthProvider (родительского), поэтому фетч
+  // уходил с ЕЩЁ СТАРЫМ геттером (до его обновления) — без Authorization
+  // заголовка. Результат — гарантированный 401 на первом запросе после
+  // восстановления сессии (см. E2E: /profile и /history).
+  //
+  // Ref обновляется СИНХРОННО, в момент вызова applyToken — до всякого
+  // рендера и до всяких эффектов. Геттер регистрируется один раз и просто
+  // читает текущее значение рефа, поэтому от порядка эффектов больше не
+  // зависит вообще.
+  const tokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setAuthTokenGetter(() => tokenRef.current);
+  }, []);
+
+  const applyToken = useCallback((next: string | null) => {
+    tokenRef.current = next;
+    setToken(next);
+  }, []);
+
   useEffect(() => {
     const loadAuth = async () => {
       try {
@@ -68,7 +98,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               // was logging every user out on each app restart when emailVerified
               // was false (which was the case for all teacher-created accounts).
               await authStorage.setItem("auth_user", JSON.stringify(freshUser));
-              setToken(storedToken);
+              applyToken(storedToken);
               setUser(freshUser);
             } else if (res.status === 401) {
               // Token invalid or expired — clear session
@@ -76,12 +106,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               await authStorage.removeItem("auth_user");
             } else {
               // Server error (502/503/etc) — keep cached session
-              setToken(storedToken);
+              applyToken(storedToken);
               setUser(JSON.parse(storedUser));
             }
           } catch {
             // Network error — keep cached session
-            setToken(storedToken);
+            applyToken(storedToken);
             setUser(JSON.parse(storedUser));
           }
         }
@@ -92,20 +122,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
     loadAuth();
-  }, []);
-
-  useEffect(() => {
-    setAuthTokenGetter(() => token);
-  }, [token]);
+  }, [applyToken]);
 
   const login = useCallback(async (newToken: string, newUser: AuthUser) => {
     await authStorage.setItem("auth_token", newToken);
     await authStorage.setItem("auth_user", JSON.stringify(newUser));
     // Invalidate stale cache so data is refetched after login (keeps old values visible while loading)
     queryClient.invalidateQueries();
-    setToken(newToken);
+    applyToken(newToken);
     setUser(newUser);
-  }, []);
+  }, [applyToken]);
 
   const updateUser = useCallback(async (patch: Partial<AuthUser>) => {
     setUser((prev) => {
@@ -118,11 +144,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     // End session and mark offline BEFORE clearing token (token must be valid for these requests)
-    if (token) {
+    if (tokenRef.current) {
       const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
         ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
         : "";
-      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${tokenRef.current}` };
       try {
         await Promise.all([
           fetch(`${BASE_URL}/api/time-tracking/end`, { method: "POST", headers }),
@@ -132,9 +158,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     await authStorage.removeItem("auth_token");
     await authStorage.removeItem("auth_user");
-    setToken(null);
+    applyToken(null);
     setUser(null);
-  }, [token]);
+  }, [applyToken]);
 
   return (
     <AuthContext.Provider value={{ user, token, isLoading, login, logout, updateUser }}>
