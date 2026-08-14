@@ -33,12 +33,38 @@
 // Фото/микрофон/отправка были плоскими Feather-иконками без всякого веса —
 // на фоне остального приложения, где почти каждая нажимаемая поверхность
 // имеет нижнюю грань и проседает при нажатии (см. constants/theme.ts →
-// chunky), это смотрелось недоделанным. Новый ChunkyCircleButton оборачивает
-// именно эти три кнопки. Пузыри сообщений трогать не просили — они остаются
+// chunky), это смотрелось недоделанным. ChunkyCircleButton оборачивает именно
+// эти три кнопки. Пузыри сообщений трогать не просили — они остаются
 // плоскими, как и были.
+//
+// ── Голосовые сообщения не проигрывались (ГРАБЛИ) ────────────────────────────
+// AudioBubble раньше грузил и проигрывал звук ЧЕРЕЗ expo-av (Audio.Sound)
+// БЕЗУСЛОВНО, включая веб. У этого приложения уже есть работающий приём для
+// звука в вебе — components/InlineMediaPlayer.tsx использует обычный HTML
+// <audio>, а к expo-av обращается только на нативе. AudioBubble этот приём не
+// повторял: на вебе Audio.Sound.createAsync либо не грузил звук, либо не мог
+// его воспроизвести, ошибка гасилась try/catch — по нажатию «play» ничего не
+// происходило, без единого сообщения об ошибке. Теперь AudioBubble ветвится по
+// Platform.OS ровно так же, как InlineMediaPlayer.
+//
+// ── Фото и видео нельзя было открыть на весь экран (ГРАБЛИ) ─────────────────
+// Картинка рисовалась фиксированным квадратом 200×200 без единого обработчика
+// нажатия — увеличить её было решительно нечем. Видео в чате не поддерживалось
+// вовсе: приложение уже умеет показывать медиа на весь экран (ImageZoomModal —
+// пинч-зум фото, MediaViewerModal — плеер видео/аудио с обычными контролами),
+// просто чат никогда не был к ним подключён. Теперь подключён: тап по фото
+// открывает ImageZoomModal, тап по видео — MediaViewerModal в режиме video.
+//
+// ── Видео теперь можно отправлять ────────────────────────────────────────────
+// pickPhoto переименован в pickMedia: выбор идёт из галереи с mediaTypes
+// ['images', 'videos'], видео загружается через уже существующий
+// /api/upload/video, а тип вложения 'video' добавлен в перечисление на
+// сервере (message_attachment_type) и в схеме БД — см. соответствующие коммиты
+// в lib/db/src/schema/messaging.ts, api-server/src/lib/ensureSchema.ts и
+// api-server/src/routes/messaging.ts.
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
-  View, Text, TextInput, TouchableOpacity, FlatList,
+  View, Text, TextInput, TouchableOpacity, Pressable, FlatList,
   ActivityIndicator, Platform, Image, Alert, KeyboardAvoidingView,
   Animated, Easing,
 } from "react-native";
@@ -48,6 +74,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { Audio } from "expo-av";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
+import { ImageZoomModal } from "@/components/ImageZoomModal";
+import { MediaViewerModal } from "@/components/MediaViewerModal";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
@@ -76,10 +104,11 @@ async function apiFetch(path: string, opts?: RequestInit) {
   return data;
 }
 
-// Загрузка файла (фото/аудио) через тот же multipart-роут, что и остальные
-// вложения приложения. Имя файла с правильным расширением обязательно — сервер
-// определяет Content-Type по нему при отдаче через res.sendFile.
-async function uploadFile(blob: Blob, filename: string, kind: "image" | "audio"): Promise<string> {
+// Загрузка файла (фото/аудио/видео) через тот же multipart-роут, что и
+// остальные вложения приложения. Имя файла с правильным расширением
+// обязательно — сервер определяет Content-Type по нему при отдаче через
+// res.sendFile.
+async function uploadFile(blob: Blob, filename: string, kind: "image" | "audio" | "video"): Promise<string> {
   const token = await authStorage.getItem("auth_token");
   const form = new FormData();
   form.append("file", blob, filename);
@@ -106,14 +135,14 @@ type ChatMessage = {
   senderId: number;
   text: string | null;
   attachmentUrl: string | null;
-  attachmentType: "image" | "audio" | null;
+  attachmentType: "image" | "audio" | "video" | null;
   createdAt: string;
   /** Когда получатель прочитал сообщение. null — ещё не прочитано; тогда на
       СВОЁМ (mine) сообщении в углу горит точка, см. renderItem ниже. */
   readAt: string | null;
 };
 
-/** Два argument-а одной календарной даты (без времени), для сравнения дней. */
+/** Два аргумента одной календарной даты (без времени), для сравнения дней. */
 function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
@@ -155,19 +184,38 @@ function lastSeenText(lastSeenAt: string | null | undefined, isOnline: boolean |
   return `был в сети ${dateLabel} в ${time}`;
 }
 
+/**
+ * Голосовое сообщение. См. «Голосовые сообщения не проигрывались» в шапке
+ * файла: на вебе звук проигрывается обычным HTML <audio>, на нативе — тем же
+ * expo-av, что и раньше.
+ */
 function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
   const colors = useColors();
   const [playing, setPlaying] = useState(false);
   const soundRef = useRef<Audio.Sound | null>(null);
+  const webAudioRef = useRef<HTMLAudioElement | null>(null);
+  const fullUrl = `${BASE}${url}`;
 
   const toggle = useCallback(async () => {
+    if (Platform.OS === "web") {
+      const el = webAudioRef.current;
+      if (!el) return;
+      if (el.paused) {
+        void el.play();
+        setPlaying(true);
+      } else {
+        el.pause();
+        setPlaying(false);
+      }
+      return;
+    }
     try {
       if (playing && soundRef.current) {
         await soundRef.current.stopAsync();
         setPlaying(false);
         return;
       }
-      const { sound } = await Audio.Sound.createAsync({ uri: `${BASE}${url}` });
+      const { sound } = await Audio.Sound.createAsync({ uri: fullUrl });
       soundRef.current = sound;
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.isLoaded && status.didJustFinish) setPlaying(false);
@@ -177,12 +225,24 @@ function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
     } catch {
       setPlaying(false);
     }
-  }, [playing, url]);
+  }, [playing, fullUrl]);
 
-  useEffect(() => () => { soundRef.current?.unloadAsync().catch(() => {}); }, []);
+  useEffect(() => () => {
+    if (Platform.OS !== "web") soundRef.current?.unloadAsync().catch(() => {});
+  }, []);
 
   return (
     <TouchableOpacity onPress={toggle} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 2 }}>
+      {Platform.OS === "web" && (
+        // @ts-ignore web-only audio element: скрытый, управляем им сами через
+        // кнопку play/pause выше — тот же приём, что в InlineMediaPlayer.tsx.
+        <audio
+          ref={webAudioRef}
+          src={fullUrl}
+          style={{ display: "none" }}
+          onEnded={() => setPlaying(false)}
+        />
+      )}
       <Feather name={playing ? "pause" : "play"} size={20} color={mine ? "#fff" : colors.primary} />
       <View style={{ height: 4, width: 90, borderRadius: 2, backgroundColor: mine ? "rgba(255,255,255,0.6)" : colors.border }} />
       <Feather name="mic" size={16} color={mine ? "#fff" : colors.mutedForeground} />
@@ -191,11 +251,50 @@ function AudioBubble({ url, mine }: { url: string; mine: boolean }) {
 }
 
 /**
- * Круглая кнопка входной панели (фото, микрофон/отправить) с нижней гранью и
- * просадкой при нажатии — тем же приёмом, что у ChunkyButton в остальном
- * приложении (см. constants/theme.ts → chunky). Просили сделать объёмными
- * именно кнопки, а не переписку — поэтому пузыри сообщений эту обёртку не
- * используют и остаются плоскими.
+ * Превью видео внутри пузыря. На вебе — беззвучный <video> с preload="metadata"
+ * (браузер сам покажет первый кадр как постер), поверх него значок play. На
+ * нативе полноценного превью без доп. библиотеки нет — тёмный квадрат с тем же
+ * значком, сам плеер открывается по тапу через MediaViewerModal.
+ */
+function VideoBubble({ url, onOpen }: { url: string; onOpen: () => void }) {
+  const fullUrl = `${BASE}${url}`;
+  return (
+    <Pressable
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel="Открыть видео"
+      style={{
+        width: 200, height: 200, borderRadius: 12, overflow: "hidden",
+        backgroundColor: "#000", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      {Platform.OS === "web" && (
+        // @ts-ignore web-only video element — только беззвучное превью, тап
+        // открывает настоящий плеер в MediaViewerModal.
+        <video
+          src={fullUrl}
+          muted
+          playsInline
+          preload="metadata"
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      )}
+      <View style={{
+        position: "absolute", width: 46, height: 46, borderRadius: 23,
+        backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center",
+      }}>
+        <Feather name="play" size={20} color="#fff" />
+      </View>
+    </Pressable>
+  );
+}
+
+/**
+ * Круглая кнопка входной панели (фото/видео, микрофон/отправить) с нижней
+ * гранью и просадкой при нажатии — тем же приёмом, что у ChunkyButton в
+ * остальном приложении (см. constants/theme.ts → chunky). Просили сделать
+ * объёмными именно кнопки, а не переписку — поэтому пузыри сообщений эту
+ * обёртку не используют и остаются плоскими.
  */
 function ChunkyCircleButton({
   onPress, disabled, background, edgeColor, size = 44, children, accessibilityLabel,
@@ -262,6 +361,12 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
 
+  // Полноэкранный просмотр: фото — через ImageZoomModal (пинч-зум), видео —
+  // через MediaViewerModal (нормальный плеер с перемоткой). См. «Фото и видео
+  // нельзя было открыть на весь экран» в шапке файла.
+  const [zoomImage, setZoomImage] = useState<string | null>(null);
+  const [openVideo, setOpenVideo] = useState<string | null>(null);
+
   const recordingRef = useRef<Audio.Recording | null>(null);
   const mediaRecorderRef = useRef<any>(null);
   const webChunksRef = useRef<BlobPart[]>([]);
@@ -293,7 +398,7 @@ export default function ChatScreen() {
     return () => clearInterval(t);
   }, [load]);
 
-  const doSend = useCallback(async (payload: { text?: string; attachmentUrl?: string; attachmentType?: "image" | "audio" }) => {
+  const doSend = useCallback(async (payload: { text?: string; attachmentUrl?: string; attachmentType?: "image" | "audio" | "video" }) => {
     setSending(true);
     try {
       const msg = await apiFetch(`/api/messages/with/${otherId}`, {
@@ -315,19 +420,35 @@ export default function ChatScreen() {
     await doSend({ text: t });
   }, [text, doSend]);
 
-  const pickPhoto = useCallback(async () => {
+  /**
+   * Выбор фото ИЛИ видео из галереи. Раньше пикер принимал только
+   * mediaTypes: Images — видео нельзя было выбрать физически. См. «Видео
+   * теперь можно отправлять» в шапке файла.
+   */
+  const pickMedia = useCallback(async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images", "videos"],
       quality: 0.6,
     });
     if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    const isVideo = asset.type === "video";
     try {
       setSending(true);
-      const blob = await (await fetch(result.assets[0].uri)).blob();
-      const url = await uploadFile(blob, "photo.jpg", "image");
-      await doSend({ attachmentUrl: url, attachmentType: "image" });
+      const blob = await (await fetch(asset.uri)).blob();
+      if (isVideo) {
+        const ext = asset.uri.split(".").pop()?.split("?")[0]?.toLowerCase() || "mp4";
+        const url = await uploadFile(blob, `video.${ext}`, "video");
+        await doSend({ attachmentUrl: url, attachmentType: "video" });
+      } else {
+        const url = await uploadFile(blob, "photo.jpg", "image");
+        await doSend({ attachmentUrl: url, attachmentType: "image" });
+      }
     } catch (e: any) {
-      Alert.alert("Не удалось отправить фото", e.message ?? "Попробуйте ещё раз");
+      Alert.alert(
+        isVideo ? "Не удалось отправить видео" : "Не удалось отправить фото",
+        e.message ?? "Попробуйте ещё раз",
+      );
     } finally {
       setSending(false);
     }
@@ -407,13 +528,21 @@ export default function ChatScreen() {
             borderBottomLeftRadius: mine ? 16 : 4,
             borderWidth: mine ? 0 : 1,
             borderColor: colors.border,
-            padding: item.attachmentType === "image" ? 4 : 10,
+            padding: item.attachmentType === "image" || item.attachmentType === "video" ? 4 : 10,
           }}>
             {item.attachmentType === "image" && item.attachmentUrl && (
-              <Image
-                source={{ uri: `${BASE}${item.attachmentUrl}` }}
-                style={{ width: 200, height: 200, borderRadius: 12 }}
-                resizeMode="cover"
+              <Pressable onPress={() => setZoomImage(`${BASE}${item.attachmentUrl}`)}>
+                <Image
+                  source={{ uri: `${BASE}${item.attachmentUrl}` }}
+                  style={{ width: 200, height: 200, borderRadius: 12 }}
+                  resizeMode="cover"
+                />
+              </Pressable>
+            )}
+            {item.attachmentType === "video" && item.attachmentUrl && (
+              <VideoBubble
+                url={item.attachmentUrl}
+                onOpen={() => setOpenVideo(`${BASE}${item.attachmentUrl}`)}
               />
             )}
             {item.attachmentType === "audio" && item.attachmentUrl && (
@@ -516,11 +645,11 @@ export default function ChatScreen() {
           backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.border,
         }}>
           <ChunkyCircleButton
-            onPress={pickPhoto}
+            onPress={pickMedia}
             disabled={sending || recording}
             background={colors.card}
             edgeColor="rgba(160,140,220,0.35)"
-            accessibilityLabel="Прикрепить фото"
+            accessibilityLabel="Прикрепить фото или видео"
           >
             <Feather name="image" size={20} color={recording ? colors.mutedForeground : colors.primary} />
           </ChunkyCircleButton>
@@ -569,6 +698,9 @@ export default function ChatScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
+
+      <ImageZoomModal uri={zoomImage} onClose={() => setZoomImage(null)} />
+      <MediaViewerModal url={openVideo} kind="video" onClose={() => setOpenVideo(null)} />
     </View>
   );
 }
