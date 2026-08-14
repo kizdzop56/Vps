@@ -627,6 +627,15 @@ export default function ProgressScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
+  // Вкладка только для родителей. Флаг вычисляется здесь и используется как
+  // условие для ВСЕХ сетевых эффектов ниже — раньше проверка роли была только
+  // в JSX (см. "if (user && user.role !== 'parent') return ..." в конце
+  // компонента), а хуки/эффекты успевали отработать до неё. loadChildren()
+  // дёргала /api/connections/parent/children для любого залогиненного
+  // пользователя, и студент на этой вкладке гарантированно ловил 403 —
+  // именно это увидел E2E-прогон на экране /progress.
+  const isParent = user?.role === "parent";
+
   const [children, setChildren] = useState<Child[]>([]);
   const [activeChildId, setActiveChildId] = useState<number | null>(null);
   const [report, setReport] = useState<ChildReport | null>(null);
@@ -644,6 +653,7 @@ export default function ProgressScreen() {
   const chartWidth = Math.max(220, windowWidth - 40 - 36);
 
   const loadChildren = useCallback(async () => {
+    if (!isParent) { setLoadingChildren(false); return; }
     try {
       const list: Child[] = await apiFetch("/api/connections/parent/children");
       setChildren(list ?? []);
@@ -657,9 +667,10 @@ export default function ProgressScreen() {
     } finally {
       setLoadingChildren(false);
     }
-  }, []);
+  }, [isParent]);
 
   const loadReport = useCallback(async (childId: number, silent = false) => {
+    if (!isParent) return;
     if (!silent) setLoadingReport(true);
     try {
       const [profile, submissions, categoryStats, time, flashcards, lessons] = await Promise.all([
@@ -681,30 +692,30 @@ export default function ProgressScreen() {
     } finally {
       setLoadingReport(false);
     }
-  }, []);
+  }, [isParent]);
 
   useEffect(() => { loadChildren(); }, [loadChildren]);
 
   useEffect(() => {
     setShowAllHistory(false);
     setShowAllLessons(false);
-    if (activeChildId !== null) loadReport(activeChildId);
+    if (isParent && activeChildId !== null) loadReport(activeChildId);
     else setReport(null);
-  }, [activeChildId, loadReport]);
+  }, [isParent, activeChildId, loadReport]);
 
   // Возврат на вкладку — обновляем цифры (время в приложении меняется постоянно).
   useFocusEffect(
     useCallback(() => {
-      if (activeChildId !== null) loadReport(activeChildId, true);
-    }, [activeChildId, loadReport])
+      if (isParent && activeChildId !== null) loadReport(activeChildId, true);
+    }, [isParent, activeChildId, loadReport])
   );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await loadChildren();
-    if (activeChildId !== null) await loadReport(activeChildId, true);
+    if (isParent && activeChildId !== null) await loadReport(activeChildId, true);
     setRefreshing(false);
-  }, [loadChildren, loadReport, activeChildId]);
+  }, [loadChildren, loadReport, isParent, activeChildId]);
 
   // ── Производные метрики ────────────────────────────────────────────
   const derived = useMemo(() => {
@@ -904,7 +915,7 @@ export default function ProgressScreen() {
   });
 
   // Вкладка только для родителей — на всякий случай мягкая заглушка.
-  if (user && user.role !== "parent") {
+  if (user && !isParent) {
     return (
       <View style={[styles.container, styles.center]}>
         <Glyph name="lock" size={38} color={colors.mutedForeground} />
