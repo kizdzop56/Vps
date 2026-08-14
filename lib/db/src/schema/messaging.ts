@@ -4,7 +4,7 @@ import { z } from "zod/v4";
 import { usersTable } from "./users";
 
 // Kind of media a chat message can carry in addition to (or instead of) text.
-export const messageAttachmentEnum = pgEnum("message_attachment_type", ["image", "audio"]);
+export const messageAttachmentEnum = pgEnum("message_attachment_type", ["image", "audio", "video"]);
 
 // One row per unique pair of users. userAId is always the SMALLER user id so a
 // pair is stored canonically and the unique constraint prevents duplicate
@@ -20,8 +20,8 @@ export const conversationsTable = pgTable("conversations", {
 }, (t) => [unique("conversation_pair_unique").on(t.userAId, t.userBId)]);
 
 // A single chat message. A message has text, an attachment, or both. Voice
-// messages and photos are uploaded via the existing /api/upload/* routes and
-// referenced here by their relative url + attachmentType.
+// messages, photos and videos are uploaded via the existing /api/upload/*
+// routes and referenced here by their relative url + attachmentType.
 export const messagesTable = pgTable("messages", {
   id: serial("id").primaryKey(),
   conversationId: integer("conversation_id").notNull().references(() => conversationsTable.id, { onDelete: "cascade" }),
