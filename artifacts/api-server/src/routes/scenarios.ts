@@ -52,6 +52,15 @@
 // Учитель увидит его через несколько секунд, а ученик не ждёт вовсе: итог по
 // ошибкам он и так видит из своих реплик.
 //
+// ── Уровень для модели: тест важнее возраста ────────────────────────────────
+// Если учитель не задал уровень ситуации явно, раньше подстановкой служил
+// usersTable.knowledgeLevel — грубая прикидка по возрасту, выставленная один
+// раз при регистрации и никогда не обновляемая. Настоящий, проверенный
+// уровень (CEFR, из последнего placement-теста) лежит в
+// flashcardSettingsTable.placementLevel и обновляется при каждом новом тесте —
+// именно на него теперь опирается уровень сложности реплик Снежи здесь же, тем
+// же путём, что и в свободном разговоре (routes/voiceChat.ts).
+//
 // ── Очки ────────────────────────────────────────────────────────────────────
 // За закрытую ситуацию ученик получает SCENARIO_POINTS один раз на попытку. В
 // дневной потолок свободных разговоров это НЕ входит: там своя механика и свои
@@ -67,6 +76,7 @@ import {
   dialogAssignmentsTable,
   dialogAttemptsTable,
   dialogTurnsTable,
+  flashcardSettingsTable,
 } from "@workspace/db";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { requireAuth, getUser, isTeacher } from "../lib/auth";
@@ -951,7 +961,17 @@ router.post("/scenario-attempts/:id/reply", requireAuth, async (req, res) => {
     .from(usersTable)
     .where(eq(usersTable.id, user.userId));
 
-  const levelKey = found.scenario.level ?? profile?.knowledgeLevel ?? null;
+  // Уровень модели: явный выбор учителя на ситуации важнее всего (он мог
+  // специально занизить/завысить сложность для конкретного задания). Если
+  // учитель его не задавал — берём НАСТОЯЩИЙ уровень ученика из последнего
+  // placement-теста, а не устаревшую возрастную прикидку knowledgeLevel (та
+  // ставится один раз при регистрации и не отражает реальный прогресс).
+  const [settings] = await db
+    .select({ placementLevel: flashcardSettingsTable.placementLevel })
+    .from(flashcardSettingsTable)
+    .where(eq(flashcardSettingsTable.userId, user.userId));
+
+  const levelKey = found.scenario.level || settings?.placementLevel || profile?.knowledgeLevel || null;
 
   const outcome = await chat({
     system: scenarioSystemPrompt({
