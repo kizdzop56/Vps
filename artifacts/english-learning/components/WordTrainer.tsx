@@ -219,6 +219,24 @@
 // (22 символа общей длины — уже за порогом «>20») утащила размер ВСЕХ четырёх
 // вариантов вопроса до нечитаемых ~7px, хотя переносить эту фразу было незачем.
 //
+// ── Варианты ответа держат ОДИН размер шрифта МЕЖДУ ВОПРОСАМИ — НЕ ТОЛЬКО
+//    внутри одного вопроса ─────────────────────────────────────────────────
+// Мало было выровнять 4 варианта ОДНОГО вопроса между собой (см. выше) —
+// пороги самой fitOptionFontSize были не тронуты с самого начала и остались
+// такими же агрессивными, какими были у fitFontSize ДО того, как её пороги
+// подняли (см. блок про шрифт на карточке выше). Из-за этого вопрос, где
+// самое длинное слово — обычное 9–11-буквенное английское слово вроде
+// «furniture» или «apartment», мельчал целиком, а соседний вопрос с короткими
+// словами оставался полного размера: разница была не видна ВНУТРИ одного
+// вопроса (там все 4 варианта мельчали одинаково), но бросалась в глаза при
+// переходе от вопроса к вопросу — ровно то, на что жаловались.
+//
+// Пороги подняты в том же духе, что и у fitFontSize: обычное слово длиной
+// примерно до 12 букв больше не ужимается вовсе. Отличие от fitFontSize в
+// том, что варианты переносятся на 2 строки (numberOfLines={2}), поэтому у
+// них чуть больше запаса даже для длинных слов — шкала чуть мягче на верхней
+// границе.
+//
 // ── Аудирование выглядит как дорожка плеера, а не кружок-кнопка ─────────────
 // Раньше упражнение «Послушай и выбери перевод» показывало на карточке одну
 // круглую кнопку со значком динамика посреди пустого пространства — по форме
@@ -420,17 +438,29 @@ function fitFontSize(text: string, base: number): number {
  * только портит читаемость. Единый размер на весь набор вариантов вопроса
  * считает вызывающий код (см. блок isChoice) — эта функция вызывается для
  * каждого варианта отдельно, а наименьший результат берётся общим.
+ *
+ * ПОРОГИ ПОДНЯТЫ (та же правка, что раньше сделали для fitFontSize, и по той
+ * же причине). До этой правки шрифт начинал ужиматься уже с 8 букв в самом
+ * длинном слове — а это почти любое обычное английское слово вроде
+ * «furniture» (9) или «apartment» (9). Из-за этого шрифт МЕЖДУ РАЗНЫМИ
+ * вопросами визуально прыгал: вопрос с «furniture» в списке вариантов
+ * получал ощутимо мельче текст, чем соседний вопрос с одними короткими
+ * словами, — хотя внутри каждого отдельного вопроса все 4 варианта были
+ * согласованы между собой (единый размер на вопрос уже считался раньше).
+ * Теперь порог начинается с 12 букв — обычные слова остаются на базовом
+ * размере 17 в любом вопросе, и ужимается по-настоящему только то, что
+ * реально рискует не поместиться даже на 2 строки: длинные фразы-идиомы и
+ * редкие длинные одиночные слова.
  */
 function fitOptionFontSize(text: string, base: number): number {
   const longestWord = text
     .split(/\s+/)
     .reduce((max, token) => Math.max(max, token.length), 0);
   let scale = 1;
-  if (longestWord > 26) scale = 0.38;
-  else if (longestWord > 20) scale = 0.44;
-  else if (longestWord > 15) scale = 0.56;
-  else if (longestWord > 11) scale = 0.7;
-  else if (longestWord > 8) scale = 0.85;
+  if (longestWord > 30) scale = 0.5;
+  else if (longestWord > 22) scale = 0.65;
+  else if (longestWord > 16) scale = 0.8;
+  else if (longestWord > 12) scale = 0.92;
   return Math.round(base * scale);
 }
 
@@ -2314,103 +2344,66 @@ function SummaryCard({
 }) {
   return (
     <View style={{ flex: 1 }}>
-      {/* Нижняя грань. */}
       <View style={{
         position: "absolute", left: 0, right: 0, top: EDGE, bottom: 0,
-        borderRadius: radii.md, backgroundColor: edge, opacity: 0.5,
+        borderRadius: radii.md, backgroundColor: edge, opacity: 0.35,
       }} />
       <View style={{
         flex: 1,
-        backgroundColor: colors.card, borderRadius: radii.md,
-        borderWidth: 1.5, borderColor: "rgba(99,102,241,0.18)",
-        padding: 15,
-        shadowColor: tint, shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.22, shadowRadius: 16, elevation: 4,
+        backgroundColor: colors.card,
+        borderRadius: radii.md,
+        borderWidth: 1.5, borderColor: "rgba(99,102,241,0.14)",
+        padding: 14, alignItems: "center",
+        shadowColor: tint, shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.14, shadowRadius: 10, elevation: 3,
       }}>
-        <LinearGradient
-          colors={[tint, edge]}
-          start={{ x: 0.1, y: 0 }}
-          end={{ x: 0.9, y: 1 }}
-          style={{
-            width: 36, height: 36, borderRadius: radii.sm,
-            alignItems: "center", justifyContent: "center",
-            borderWidth: 1.5, borderColor: "rgba(255,255,255,0.6)",
-            shadowColor: tint, shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.35, shadowRadius: 8, elevation: 3,
-          }}
-        >
-          <Glyph name={icon} size={19} color="#ffffff" />
-        </LinearGradient>
-        <Text style={{
-          fontSize: 28, fontWeight: "900", letterSpacing: -1,
-          color: colors.foreground, marginTop: 10, fontVariant: ["tabular-nums"],
+        <View style={{
+          width: 40, height: 40, borderRadius: 20,
+          alignItems: "center", justifyContent: "center",
+          backgroundColor: tint + "1a", marginBottom: 8,
         }}>
-          {value}
-        </Text>
-        <Text style={{ fontSize: 12, fontWeight: "600", color: colors.mutedForeground, marginTop: 1 }}>{label}</Text>
+          <Glyph name={icon} size={19} color={tint} />
+        </View>
+        <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{value}</Text>
+        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.mutedForeground, tint }} />
       </View>
-      <View style={{ height: EDGE }} />
     </View>
   );
 }
 
-function Centered({ children, background }: { children: React.ReactNode; background: string }) {
-  return (
-    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 28, backgroundColor: background }}>
-      {children}
-    </View>
-  );
-}
-
-/**
- * Мелкая кнопка действия: «Стереть», «Подсказка», «Послушать», «Не знаю».
- *
- * Раньше это была плоская пилюля с тонкой рамкой — единственное место в
- * тренажёре, где кнопка не ощущалась кнопкой. Теперь у неё та же физика, что у
- * клавиш ответа и ChunkyButton: нижняя грань отдельным слоем, корпус проседает
- * при нажатии и грань схлопывается.
- *
- * Грань светло-фиолетовая, а не в цвет текста: этих кнопок на экране до трёх, и
- * цветными они перетянули бы внимание с самого задания.
- */
+/** Small button used across exercise screens. */
 function SmallButton({
   icon, label, onPress, colors, disabled,
-}: { icon: GlyphName; label: string; onPress: () => void; colors: any; disabled?: boolean }) {
-  const press = React.useRef(new Animated.Value(0)).current;
-  const set = (to: number) =>
-    Animated.timing(press, {
-      toValue: to, duration: chunky.duration, easing: Easing.out(Easing.quad), useNativeDriver: true,
-    }).start();
-
+}: {
+  icon: GlyphName;
+  label: string;
+  onPress: () => void;
+  colors: any;
+  disabled?: boolean;
+}) {
   return (
-    <View style={{ opacity: disabled ? 0.45 : 1 }}>
-      {/* Нижняя грань: отдельный слой под корпусом — у View в RN не может быть
-          двух теней, поэтому толщину рисуем настоящим прямоугольником. */}
-      <View style={{
-        position: "absolute", left: 0, right: 0, top: 4, bottom: 0,
-        borderRadius: radii.pill, backgroundColor: "rgba(160,140,220,0.45)",
-      }} />
-      <Animated.View style={{ transform: [{ translateY: press }] }}>
-        <Pressable
-          onPress={disabled ? undefined : onPress}
-          onPressIn={() => !disabled && set(4)}
-          onPressOut={() => set(0)}
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          accessibilityState={{ disabled: !!disabled }}
-          style={{
-            flexDirection: "row", alignItems: "center", gap: 7,
-            borderRadius: radii.pill, paddingHorizontal: 16, paddingVertical: 11,
-            backgroundColor: colors.card,
-            borderWidth: 1.5, borderColor: "rgba(99,102,241,0.2)",
-          }}
-        >
-          <Glyph name={icon} size={16} color={colors.mutedForeground} />
-          <Text style={{ color: colors.mutedForeground, fontWeight: "800", fontSize: 13 }}>{label}</Text>
-        </Pressable>
-      </Animated.View>
-      {/* Резерв под грань, чтобы соседний ряд на неё не наезжал. */}
-      <View style={{ height: 4 }} />
+    <TouchableOpacity
+      onPress={disabled ? undefined : onPress}
+      activeOpacity={0.8}
+      disabled={disabled}
+      style={{
+        flexDirection: "row", alignItems: "center", gap: 6,
+        backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+        borderRadius: radii.pill, paddingHorizontal: 14, paddingVertical: 9,
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <Glyph name={icon} size={15} color={colors.mutedForeground} />
+      <Text style={{ fontSize: 13, fontWeight: "800", color: colors.foreground }}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+/** Centered loading/error state, matching the trainer's background. */
+function Centered({ background, children }: { background: string; children: React.ReactNode }) {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", }}>
+      {children}
     </View>
   );
 }
