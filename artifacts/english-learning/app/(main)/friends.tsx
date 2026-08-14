@@ -4,14 +4,26 @@
 // своего набора. Аватар пользователя — отдельная история, там avatarEmoji
 // приходит из профиля и рисуется AnimatedAvatar как есть.
 //
+// ── Больше не вкладка панели ─────────────────────────────────────────────────
+// Раньше это была нижняя вкладка (только у учителя). Теперь сюда попадают
+// нажатием на «Друзья» в Профиле — доступно и учителю, и родителю (у ученика
+// свой аналог — FriendsSheet прямо в Профиле, без отдельного экрана). Раз это
+// теперь обычный экран, а не вкладка, ему нужна собственная кнопка назад —
+// у вкладки её никогда не было, потому что был не нужен.
+//
+// Кнопка назад ведёт явным router.replace, а не router.back(). Причина —
+// в шапке app/(main)/chat/[userId].tsx: этот экран и чат лежат внутри ОДНОГО
+// плоского Tabs-навигатора как скрытые от панели «вкладки-соседи», а не как
+// вложенный стек, поэтому у router.back() между ними нет настоящей истории —
+// он надёжно приземляется на первый объявленный таб навигатора, а не туда,
+// откуда реально пришли. Тот же приём (явный replace на известный адрес) уже
+// используется в кодовой базе — см. EXITS в flashcards/grammar/[mode].tsx.
+//
 // ── Точка непрочитанного на кнопке «Чат» ────────────────────────────────────
-// Раньше здесь не было вообще никакого признака новых сообщений: чтобы
-// узнать, написал ли друг что-то новое, надо было открыть каждую переписку
-// по очереди. Теперь у каждого друга с непрочитанными сообщениями на кнопке
-// «Чат» горит маленькая точка — не число, потому что здесь и так один
-// конкретный собеседник, важно только «есть новое или нет». Общее число по
-// всем беседам сразу показывается на самой вкладке «Друзья» в панели
-// (см. FriendsTabIcon в app/(main)/_layout.tsx) — тот же источник данных,
+// У каждого друга с непрочитанными сообщениями на кнопке «Чат» горит маленькая
+// точка — не число, потому что здесь и так один конкретный собеседник, важно
+// только «есть новое или нет». Общее число по всем беседам сразу показывается
+// на кнопке «Друзья» в Профиле (см. profile.tsx) — тот же источник данных,
 // MessagesBadgeContext.
 import React, { useState, useCallback } from "react";
 import {
@@ -32,6 +44,9 @@ import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
+
+/** Куда возвращаемся из этого экрана — сюда же попадает кнопка «Друзья». */
+const PROFILE_PATH = "/(main)/profile";
 
 async function apiFetch(path: string, options?: RequestInit) {
   const token = await authStorage.getItem("auth_token");
@@ -215,7 +230,11 @@ export default function FriendsScreen() {
     }
   };
 
-  const openChat = (id: number) => router.push(`/(main)/chat/${id}` as any);
+  // Явный адрес возврата у чата — см. шапку файла про плоский Tabs-навигатор.
+  const openChat = (id: number) =>
+    router.push(`/(main)/chat/${id}?back=${encodeURIComponent("/(main)/friends")}` as any);
+
+  const back = () => router.replace(PROFILE_PATH as any);
 
   const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
@@ -240,7 +259,18 @@ export default function FriendsScreen() {
   return (
     <View style={s.container}>
       <View style={s.header}>
-        <Text style={s.titleText}>Друзья</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Pressable
+            onPress={back}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Назад"
+            style={{ transform: [{ rotate: "180deg" }], padding: 2 }}
+          >
+            <Glyph name="chevron" size={24} color={colors.foreground} />
+          </Pressable>
+          <Text style={s.titleText}>Друзья</Text>
+        </View>
         <Text style={s.subtitleText}>
           {accepted.length > 0 ? `${accepted.length} чел. · нажмите «Чат», чтобы написать` : "Список пуст"}
         </Text>
