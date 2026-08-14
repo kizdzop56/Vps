@@ -68,6 +68,29 @@
 // «Дальше», «Не знаю») не переворачиваются вместе с ней: они и раньше жили
 // под белой карточкой, а не на ней, и флип их не касается.
 //
+// ── Шрифт слова подстраивается под его длину ────────────────────────────────
+// Слово или перевод на карточке — это одна строка без переноса, если внутри
+// неё нет пробела: перенести «выздоравливать» на вторую строку нечем, весь
+// текст либо помещается, либо вылезает за края. Раньше шрифт переключался по
+// одному порогу длины ВСЕЙ строки (26px после 18 символов, иначе 34px) — для
+// однословных русских глаголов вроде «выздоравливать» (14 символов, но
+// кириллица в начертании 900 заметно шире латиницы) порог не срабатывал
+// вовсе, и слово рисовалось полным 34px, вылезая за оба края карточки.
+//
+// fitFontSize(text, base) считает длину не всей строки, а САМОГО ДЛИННОГО
+// СЛОВА в ней (разбивает по пробелам) — поэтому короткая фраза из длинных
+// слов сжимается сильнее, а длинная фраза из коротких слов («have
+// breakfast») остаётся крупной и просто переносится по пробелу на вторую
+// строку, как и раньше. adjustsFontSizeToFit + numberOfLines={2} на самих
+// Text — дополнительная подстраховка на native (web их игнорирует, поэтому
+// основную работу делает именно fitFontSize).
+//
+// ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
+// «Верно!» и «Неверно» показываются внутри карточки задания, под самим
+// заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
+// ответа, и рядом с ним стояла ещё кнопка «Дальше» — три несвязанных блока
+// подряд. Ученик смотрит на карточку, ответ должен появляться там же.
+//
 // ── Верное листается само, ошибка — нет ─────────────────────────────────────
 // Верный ответ не требует разбора: карточка уходит сама через NEXT_DELAY_OK, и
 // кнопка «Дальше» для этого не нужна.
@@ -204,6 +227,36 @@ type Feedback = {
 
 /** Что сейчас делает микрофон. */
 type SpeakState = "idle" | "listening" | "checking";
+
+/**
+ * Размер шрифта под длину текста на карточке.
+ *
+ * Считает длину не всей строки, а САМОГО ДЛИННОГО СЛОВА в ней: у составной
+ * фразы вроде «have breakfast» есть пробел, по которому она сама перенесётся
+ * на вторую строку — сжимать шрифт под её ОБЩУЮ длину незачем и только
+ * уменьшило бы карточку зря. А вот у однословных длинных ответов («выздоравливать»)
+ * переносить нечем — единственный способ вписать их в карточку — уменьшить сам
+ * шрифт. Пороги подобраны с запасом под кириллицу в начертании 900 (она
+ * заметно шире латиницы того же кегля) и под самую узкую карточку на маленьком
+ * экране.
+ */
+function fitFontSize(text: string, base: number): number {
+  const longestWord = text
+    .split(/\s+/)
+    .reduce((max, token) => Math.max(max, token.length), 0);
+  let scale = 1;
+  if (longestWord > 26) scale = 0.38;
+  else if (longestWord > 20) scale = 0.44;
+  else if (longestWord > 15) scale = 0.56;
+  else if (longestWord > 11) scale = 0.7;
+  else if (longestWord > 8) scale = 0.85;
+  return Math.round(base * scale);
+}
+
+/** Межстрочный интервал, согласованный с fitFontSize. */
+function fitLineHeight(fontSize: number): number {
+  return Math.round(fontSize * 1.22);
+}
 
 export function WordTrainer({
   loader,
@@ -965,10 +1018,15 @@ export function WordTrainer({
         <>
           <Text
             style={{
-              fontSize: exercise.prompt.length > 18 ? 26 : 34, lineHeight: exercise.prompt.length > 18 ? 34 : 42,
+              fontSize: fitFontSize(exercise.prompt, 34),
+              lineHeight: fitLineHeight(fitFontSize(exercise.prompt, 34)),
               fontWeight: "900", letterSpacing: -0.5,
               color: colors.foreground, textAlign: "center",
+              width: "100%", flexShrink: 1,
             }}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.5}
           >
             {exercise.prompt}
           </Text>
@@ -1002,10 +1060,16 @@ export function WordTrainer({
               alignItems: "center", justifyContent: "center", paddingHorizontal: 10,
             }}
           >
-            <Text style={{
-              fontSize: 26, fontWeight: "900", letterSpacing: 2,
-              color: colors.foreground,
-            }}>
+            <Text
+              style={{
+                fontSize: fitFontSize(builtWord || answerLetters.join(""), 26),
+                fontWeight: "900", letterSpacing: 2,
+                color: colors.foreground,
+              }}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.5}
+            >
               {builtWord || "…"}
             </Text>
           </View>
@@ -1040,9 +1104,15 @@ export function WordTrainer({
       {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
       <Text
         style={{
-          fontSize: 26, fontWeight: "900", letterSpacing: -0.5,
+          fontSize: fitFontSize(card?.english ?? "", 26),
+          lineHeight: fitLineHeight(fitFontSize(card?.english ?? "", 26)),
+          fontWeight: "900", letterSpacing: -0.5,
           color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+          width: "100%", flexShrink: 1,
         }}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.5}
       >
         {card?.english}
       </Text>
@@ -1050,7 +1120,17 @@ export function WordTrainer({
         <Text style={{ fontSize: 15, color: colors.mutedForeground, marginTop: 4 }}>{card.ipa}</Text>
       )}
       {!!card?.translationsRu?.length && (
-        <Text style={{ fontSize: 20, fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 8 }}>
+        <Text
+          style={{
+            fontSize: fitFontSize(card.translationsRu.join(", "), 20),
+            lineHeight: fitLineHeight(fitFontSize(card.translationsRu.join(", "), 20)),
+            fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 8,
+            width: "100%", flexShrink: 1,
+          }}
+          numberOfLines={2}
+          adjustsFontSizeToFit
+          minimumFontScale={0.5}
+        >
           {card.translationsRu.join(", ")}
         </Text>
       )}
@@ -1488,6 +1568,10 @@ function FlipIntroFace({
     outputRange: [1, 0.94, 1],
   });
 
+  const promptSize = fitFontSize(exercise.prompt, 34);
+  const translationText = card?.translationsRu?.join(", ") ?? "";
+  const translationSize = fitFontSize(translationText, 24);
+
   return (
     <Animated.View
       style={{
@@ -1501,11 +1585,15 @@ function FlipIntroFace({
           {!!card?.emoji && <Text style={{ fontSize: 64 }}>{card.emoji}</Text>}
           <Text
             style={{
-              fontSize: exercise.prompt.length > 18 ? 26 : 34,
-              lineHeight: exercise.prompt.length > 18 ? 34 : 42,
+              fontSize: promptSize,
+              lineHeight: fitLineHeight(promptSize),
               fontWeight: "900", letterSpacing: -0.5,
               color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+              width: "100%", flexShrink: 1,
             }}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.5}
           >
             {exercise.prompt}
           </Text>
@@ -1532,15 +1620,33 @@ function FlipIntroFace({
           {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
           <Text
             style={{
-              fontSize: 26, fontWeight: "900", letterSpacing: -0.5,
+              fontSize: promptSize,
+              lineHeight: fitLineHeight(promptSize),
+              fontWeight: "900", letterSpacing: -0.5,
               color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+              width: "100%", flexShrink: 1,
             }}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.5}
           >
             {exercise.prompt}
           </Text>
-          <Text style={{ fontSize: 24, fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12 }}>
-            {card?.translationsRu?.join(", ")}
-          </Text>
+          {!!translationText && (
+            <Text
+              style={{
+                fontSize: translationSize,
+                lineHeight: fitLineHeight(translationSize),
+                fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12,
+                width: "100%", flexShrink: 1,
+              }}
+              numberOfLines={2}
+              adjustsFontSizeToFit
+              minimumFontScale={0.5}
+            >
+              {translationText}
+            </Text>
+          )}
           {!!card?.partOfSpeech && (
             <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 4, textTransform: "capitalize" }}>
               {card.partOfSpeech}
@@ -1667,7 +1773,14 @@ function OptionKey({
             flexDirection: "row", alignItems: "center", gap: 10, minHeight: 56,
           }}
         >
-          <Text style={{ flex: 1, fontSize: 17, fontWeight: "800", color: colors.foreground }}>{label}</Text>
+          <Text
+            style={{ flex: 1, fontSize: fitFontSize(label, 17), fontWeight: "800", color: colors.foreground }}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.6}
+          >
+            {label}
+          </Text>
           {/* Значок состояния — единственное цветное пятно, и оно стоит рядом с
               текстом, а не под ним. */}
           {!!accent && (
