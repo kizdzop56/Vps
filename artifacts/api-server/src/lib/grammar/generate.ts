@@ -77,7 +77,6 @@ import {
   SWAP_SUBJECTS,
   ruVerbForm,
   type RuTense,
-  type SwapSubject,
 } from "./ruForms";
 
 /** Третье лицо единственного числа: только с ним появляется -s и does/has/is. */
@@ -214,7 +213,7 @@ function ruSentence(unit: SentenceUnit, kind: "affirmative" | "negative" | "ques
   const text = template.replace("{}", verb);
   // В русском общий вопрос отличается от утверждения только интонацией, поэтому
   // весь перевод вопроса — та же фраза со знаком вопроса.
-  return `${text}${kind === "question" ? "?" : ""}`.replace(/$/, kind === "question" ? "" : ".");
+  return `${text}${kind === "question" ? "?" : "."}`;
 }
 
 // ── Размножение по лицам ────────────────────────────────────────────────────
