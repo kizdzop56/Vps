@@ -16,12 +16,21 @@
 //                      (components/AssignmentsCard.tsx);
 //   StudyTimeCard    — плитка времени с живыми часами и разбором по дням
 //                      (components/StudyTimeCard.tsx);
-//   FriendsSheet     — лист связей: учитель, друзья, добавление по коду
-//                      (components/FriendsSheet.tsx);
+//   FriendsSheet     — лист связей ученика: учитель, друзья, добавление по
+//                      коду (components/FriendsSheet.tsx);
 //   NotificationCenter — история уведомлений за колокольчиком в шапке
 //                      (components/NotificationCenter.tsx);
 //   LevelUpCelebration — окно нового уровня
 //                      (components/LevelUpCelebration.tsx).
+//
+// ── «Друзья» больше не вкладка панели ────────────────────────────────────────
+// Раньше у учителя был отдельный нижний таб «Друзья» (app/(main)/friends.tsx),
+// а у родителя не было вообще никакого входа в друзей. Теперь и учитель, и
+// родитель попадают туда кнопкой прямо здесь, в «Действиях» — тот же приём,
+// что уже был у ученика (кнопка «Мои друзья» ниже, только у ученика это лист
+// FriendsSheet поверх этого же экрана, а не отдельный маршрут). Точка
+// непрочитанных сообщений на кнопке берётся из того же MessagesBadgeContext,
+// который раньше питал иконку вкладки в панели.
 //
 // Все карточки статистики устроены одинаково: нижняя грань и графики, которые
 // вырастают от нуля при появлении. Плоских карточек рядом с объёмными на этом
@@ -116,6 +125,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification, type GamificationStats } from "@/hooks/useGamification";
 import { useNotifications } from "@/hooks/useNotifications";
+import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 import { Glyph } from "@/components/ui/Glyph";
 import { ProfileHero } from "@/components/ui/ProfileHero";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
@@ -377,6 +387,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const sessionSeconds = useLiveTimer();
+  const { unreadTotal } = useMessagesBadge();
 
   const [avatarEmoji, setAvatarEmoji] = useState(user?.avatarEmoji ?? "🦁");
   const [avatarColor, setAvatarColor] = useState(user?.avatarColor ?? "#6366f1");
@@ -981,6 +992,7 @@ export default function ProfileScreen() {
   // учителя, старые аккаунты), метка возраста просто не появлялась.
   const age = user.age ?? calcAge(user.dateOfBirth);
   const streak = gamStats?.loginStreak ?? 0;
+  const isParent = user.role === "parent";
 
   return (
     <View style={s.container}>
@@ -996,7 +1008,7 @@ export default function ProfileScreen() {
           visible={friendsOpen}
           onClose={() => setFriendsOpen(false)}
           onOpenFriend={(id) => router.push(`/(main)/friend/${id}` as any)}
-          onOpenChat={(id) => router.push(`/(main)/chat/${id}` as any)}
+          onOpenChat={(id) => router.push(`/(main)/chat/${id}?back=${encodeURIComponent("/(main)/profile")}` as any)}
           inviteCode={user.inviteCode}
         />
       )}
@@ -1228,7 +1240,7 @@ export default function ProfileScreen() {
           </>
         )}
 
-        {(isTeacher || user.role === "parent") && (
+        {(isTeacher || isParent) && (
           <View style={s.section}>
             <SectionLabel>Действия</SectionLabel>
 
@@ -1243,6 +1255,21 @@ export default function ProfileScreen() {
               />
             )}
 
+            {/* «Друзья» больше не вкладка панели — см. шапку файла. Точка
+                непрочитанного берётся из того же MessagesBadgeContext, который
+                раньше кормил счётчик на иконке вкладки. */}
+            <ChunkyButton
+              label="Друзья"
+              sublabel={unreadTotal > 0
+                ? `${unreadTotal} ${unreadTotal === 1 ? "новое сообщение" : "новых сообщений"}`
+                : "Переписка с учениками, родителями и друзьями"}
+              icon="chat"
+              chevron
+              tone={unreadTotal > 0 ? "warm" : "primary"}
+              onPress={() => router.push("/(main)/friends" as any)}
+              style={{ marginBottom: 10 }}
+            />
+
             <TouchableOpacity activeOpacity={0.85} style={s.row} onPress={() => router.push("/(main)/students" as any)}>
               <View style={{
                 width: 42, height: 42, borderRadius: radii.sm,
@@ -1251,7 +1278,7 @@ export default function ProfileScreen() {
               }}>
                 <Glyph name="users" size={20} color={colors.primary} />
               </View>
-              <Text style={s.rowText}>{user.role === "parent" ? "Мои дети" : "Все ученики"}</Text>
+              <Text style={s.rowText}>{isParent ? "Мои дети" : "Все ученики"}</Text>
               <Glyph name="chevron" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
           </View>
