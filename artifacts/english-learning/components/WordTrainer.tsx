@@ -40,6 +40,14 @@
 // полуслове: на длинных картах вроде «take care of» 1,2 секунды не хватает, и
 // это слышалось как «сказал полфразы и переключился на что-то другое».
 //
+// ── Карточка знакомства переворачивается ────────────────────────────────────
+// Нажатие «Показать перевод» не дорисовывает перевод под словом — карточка
+// разворачивается по вертикальной оси на 180°, и на обратной стороне уже
+// стоит перевод (см. FlipIntroFace внизу файла). Слово меняется на перевод
+// ровно в середине поворота, когда карточка развёрнута к ученику ребром:
+// до этого момента виден английский текст, после — перевод, и между ними нет
+// доли секунды, где видно и то, и другое сразу.
+//
 // ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
 // «Верно!» и «Неверно» показываются внутри карточки задания, под самим
 // заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
@@ -94,7 +102,7 @@
 // Эмодзи в интерфейсе не используются; card.emoji приходит из данных слова
 // и остаётся как иллюстрация к слову, это не иконка интерфейса.
 import React from "react";
-import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
@@ -145,6 +153,10 @@ const BOTTOM_SAFE_SPACE = 40;
 
 /** Толщина нижней грани у поверхностей итогового экрана. */
 const EDGE = 6;
+
+// В вебе трансформации через нативный драйвер не проходят — анимация просто
+// не запускается. Правило по всему проекту одно и то же.
+const NATIVE_DRIVER = Platform.OS !== "web";
 
 type Phase = "loading" | "run" | "done";
 
@@ -208,6 +220,11 @@ export function WordTrainer({
 
   // знакомство: перевод скрыт до нажатия
   const [revealed, setRevealed] = React.useState(false);
+  // Что сейчас нарисовано на карточке знакомства: слово или перевод.
+  // Отдельно от revealed — иначе перевод появлялся бы мгновенно, а не в
+  // момент, когда карточка развёрнута к ученику ребром (середина поворота,
+  // см. эффект-слушатель flip ниже и FlipIntroFace).
+  const [showTranslation, setShowTranslation] = React.useState(false);
   // выбор варианта / сборка слова
   const [feedback, setFeedback] = React.useState<Feedback>(null);
   const [built, setBuilt] = React.useState<number[]>([]);
@@ -256,6 +273,10 @@ export function WordTrainer({
   // Лёгкий «вдох» карточки при появлении: только opacity и scale, чтобы
   // анимация ушла в нативный драйвер и не грузила JS-поток.
   const cardIn = React.useRef(new Animated.Value(0)).current;
+  // Переворот карточки знакомства при показе перевода: 0 — лицом к ученику
+  // (слово), 1 — тоже лицом (уже перевод), между ними карточка развёрнута
+  // ребром. См. FlipIntroFace ниже.
+  const flip = React.useRef(new Animated.Value(0)).current;
 
   const item = items[pos];
   const card = item?.card;
@@ -272,6 +293,26 @@ export function WordTrainer({
     if (!card) return;
     speakWord(card.id, card.english);
   }, [card]);
+
+  /**
+   * Показать перевод — карточка знакомства переворачивается, а не просто
+   * дорисовывает блок снизу. Слово меняется на перевод в FlipIntroFace ровно
+   * в момент, когда анимация доходит до середины (см. эффект-слушатель flip
+   * ниже): до этого момента ученик видит слово, после — перевод, и одно не
+   * должно на миг наложиться на другое.
+   */
+  const revealTranslation = React.useCallback(() => {
+    if (revealed) return;
+    setRevealed(true);
+    flip.setValue(0);
+    Animated.timing(flip, {
+      toValue: 1,
+      duration: 480,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: NATIVE_DRIVER,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealed]);
 
   /** Обновить очередь сразу и в ref, и в состоянии. */
   const applyItems = React.useCallback((next: QueueItem[]) => {
@@ -315,6 +356,17 @@ export function WordTrainer({
     }).start();
   }, [pos, phase]);
 
+  // Слово меняется на перевод в тот момент, когда карточка знакомства
+  // развёрнута к ученику ребром (середина поворота) — не раньше, иначе
+  // перевод было бы видно ДО того, как карточка перевернулась.
+  React.useEffect(() => {
+    const id = flip.addListener(({ value }) => {
+      if (value >= 0.5) setShowTranslation(true);
+    });
+    return () => flip.removeListener(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ЕДИНСТВЕННАЯ автоматическая озвучка: показ карточки. Слово ребёнок должен
   // услышать, а в аудировании это вообще единственная подсказка.
   //
@@ -341,6 +393,8 @@ export function WordTrainer({
 
   const resetCardState = React.useCallback(() => {
     setRevealed(false);
+    setShowTranslation(false);
+    flip.setValue(0);
     setFeedback(null);
     setBuilt([]);
     setHintUsed(false);
@@ -353,6 +407,7 @@ export function WordTrainer({
     setMicHint(null);
     setMicBlocked(false);
     speechRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const goNext = React.useCallback(() => {
@@ -881,7 +936,16 @@ export function WordTrainer({
             transform: [{ scale: cardIn.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
           }}
         >
-          {isListen ? (
+          {isIntro ? (
+            <FlipIntroFace
+              card={card}
+              exercise={exercise}
+              showTranslation={showTranslation}
+              flip={flip}
+              colors={colors}
+              onPlay={playWord}
+            />
+          ) : isListen ? (
             <>
               {/* Кнопка звука — главный объект в аудировании, поэтому градиент
                   бренда и свечение, а не плоская плашка. */}
@@ -913,13 +977,13 @@ export function WordTrainer({
             </>
           ) : (
             <>
-              {/* Картинка — на знакомстве и после ответа. В упражнении «выбери
-                  перевод» показывать её заранее нельзя: ребёнок угадает смысл по
+              {/* Картинка — только после ответа. В упражнении «выбери перевод»
+                  показывать её заранее нельзя: ребёнок угадает смысл по
                   картинке, не вспоминая само слово.
                   card.emoji — это иллюстрация к слову из данных, а не иконка
                   интерфейса, поэтому здесь эмодзи остаётся намеренно. */}
-              {!!card?.emoji && (isIntro || !!feedback) && (
-                <Text style={{ fontSize: isIntro ? 64 : 44 }}>{card.emoji}</Text>
+              {!!card?.emoji && !!feedback && (
+                <Text style={{ fontSize: 44 }}>{card.emoji}</Text>
               )}
               <Text
                 style={{
@@ -930,10 +994,10 @@ export function WordTrainer({
               >
                 {exercise.prompt}
               </Text>
-              {(isIntro || exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
+              {(exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
                 <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
               )}
-              {(isIntro || exercise.type === "choiceRu") && speechAvailable() && (
+              {exercise.type === "choiceRu" && speechAvailable() && (
                 <TouchableOpacity
                   onPress={playWord}
                   activeOpacity={0.8}
@@ -948,38 +1012,6 @@ export function WordTrainer({
                 </TouchableOpacity>
               )}
             </>
-          )}
-
-          {/* знакомство: перевод, пример */}
-          {isIntro && revealed && card && (
-            <View style={{ width: "100%", marginTop: 18 }}>
-              <Text style={{ fontSize: 24, fontWeight: "900", color: colors.primary, textAlign: "center" }}>
-                {card.translationsRu.join(", ")}
-              </Text>
-              {!!card.partOfSpeech && (
-                <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 4, textTransform: "capitalize" }}>
-                  {card.partOfSpeech}
-                </Text>
-              )}
-              {!!card.exampleEn && (
-                <View style={{ marginTop: 14, backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 14 }}>
-                  <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                    <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
-                    {speechAvailable() && (
-                      // У примера-предложения нет своего wordId — озвучиваем текст
-                      // напрямую через /api/tts?text=... (см. speakWord). Раньше
-                      // здесь стоял speak() — он всегда идёт мимо сервера, сразу
-                      // в Web Speech API/expo-speech, поэтому пример звучал
-                      // старым синтезом даже когда сервер уже умеет живые голоса.
-                      <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
-                        <Glyph name="sound" size={18} color={colors.primary} />
-                      </Pressable>
-                    )}
-                  </View>
-                  {!!card.exampleRu && <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
-                </View>
-              )}
-            </View>
           )}
 
           {/* сборка слова: что уже собрано */}
@@ -1259,7 +1291,7 @@ export function WordTrainer({
         {isIntro && (
           <View style={{ marginTop: 20 }}>
             {!revealed ? (
-              <ChunkyButton label="Показать перевод" icon="face" onPress={() => setRevealed(true)} />
+              <ChunkyButton label="Показать перевод" icon="face" onPress={revealTranslation} />
             ) : (
               <>
                 <ChunkyButton label="Понятно, запомнил" icon="check" onPress={() => submit({ grade: "good" }, "intro", 250)} />
@@ -1292,6 +1324,122 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
   typeEn: "Напиши слово по-английски",
   speak: "Произнеси слово вслух",
 };
+
+/**
+ * Лицевая сторона карточки знакомства: слово или перевод, в зависимости от
+ * showTranslation. Между ними — переворот по Y на 180°, а не мгновенная
+ * подмена: раньше перевод просто дорисовывался блоком снизу, и было неясно,
+ * что это та же самая карточка, а не новый экран.
+ *
+ * Один слой, а не два стянутых лица с backfaceVisibility: контент между
+ * словом и переводом разной высоты (у перевода есть ещё пример-предложение),
+ * и подгонять высоту под фиксированный размер ради стека из двух граней не
+ * стоило. Вместо этого поворот идёт как «0° → 90° → снова 0°, но уже с другим
+ * содержимым»: rotateY прыгает с 90° на −90° ровно в момент, когда карточка
+ * повёрнута к экрану ребром (проекция по ширине ~0, скачок незаметен), и
+ * контент внутри меняется тем же скачком (см. эффект-слушатель flip в
+ * WordTrainer). Так карточка ни разу не проходит через 180° и никогда не
+ * оказывается зеркальной.
+ */
+function FlipIntroFace({
+  card, exercise, showTranslation, flip, colors, onPlay,
+}: {
+  card?: TrainerCard;
+  exercise: Exercise;
+  showTranslation: boolean;
+  flip: Animated.Value;
+  colors: any;
+  onPlay: () => void;
+}) {
+  const rotateY = flip.interpolate({
+    inputRange: [0, 0.5, 0.5001, 1],
+    outputRange: ["0deg", "90deg", "-90deg", "0deg"],
+  });
+  // Небольшое сжатие по вертикали на пике поворота — без него в вебе (там нет
+  // настоящей перспективы камеры) переворот на миг выглядит плоским.
+  const scaleY = flip.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 0.94, 1],
+  });
+
+  return (
+    <Animated.View
+      style={{
+        width: "100%",
+        alignItems: "center",
+        transform: [{ perspective: 900 }, { rotateY }, { scaleY }],
+      }}
+    >
+      {!showTranslation ? (
+        <>
+          {!!card?.emoji && <Text style={{ fontSize: 64 }}>{card.emoji}</Text>}
+          <Text
+            style={{
+              fontSize: exercise.prompt.length > 18 ? 26 : 34,
+              lineHeight: exercise.prompt.length > 18 ? 34 : 42,
+              fontWeight: "900", letterSpacing: -0.5,
+              color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+            }}
+          >
+            {exercise.prompt}
+          </Text>
+          {!!card?.ipa && (
+            <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
+          )}
+          {speechAvailable() && (
+            <TouchableOpacity
+              onPress={onPlay}
+              activeOpacity={0.8}
+              style={{
+                flexDirection: "row", alignItems: "center", gap: 7,
+                backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+                paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+              }}
+            >
+              <Glyph name="sound" size={18} color={colors.primary} />
+              <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
+            </TouchableOpacity>
+          )}
+        </>
+      ) : (
+        <View style={{ width: "100%", alignItems: "center" }}>
+          {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
+          <Text
+            style={{
+              fontSize: 26, fontWeight: "900", letterSpacing: -0.5,
+              color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+            }}
+          >
+            {exercise.prompt}
+          </Text>
+          <Text style={{ fontSize: 24, fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12 }}>
+            {card?.translationsRu?.join(", ")}
+          </Text>
+          {!!card?.partOfSpeech && (
+            <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 4, textTransform: "capitalize" }}>
+              {card.partOfSpeech}
+            </Text>
+          )}
+          {!!card?.exampleEn && (
+            <View style={{ marginTop: 14, width: "100%", backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 14 }}>
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+                <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
+                {speechAvailable() && (
+                  // У примера-предложения нет своего wordId — озвучиваем текст
+                  // напрямую через /api/tts?text=... (см. speakWord).
+                  <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
+                    <Glyph name="sound" size={18} color={colors.primary} />
+                  </Pressable>
+                )}
+              </View>
+              {!!card.exampleRu && <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
+            </View>
+          )}
+        </View>
+      )}
+    </Animated.View>
+  );
+}
 
 // ── физические клавиши ──────────────────────────────────────────────────────
 
