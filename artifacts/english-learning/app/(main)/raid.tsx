@@ -36,6 +36,15 @@
 // Валюте нужен заливной двухцветный знак, а весь Glyph — контурный и
 // однотонный, поэтому монета живёт отдельным компонентом (components/ui/Coin).
 //
+// ── До следующей энергии — шкала, а не статичный текст ──────────────────────
+// Раньше под полосой энергии стояла одна и та же подпись «Восстановление: +1
+// каждые 30 минут» — она объясняет ПРАВИЛО, но не отвечает на вопрос, который
+// у ученика в голове именно сейчас: сколько ждать. Теперь вместо неё тонкая
+// шкала (StaminaRefillBar) и обратный отсчёт мм:сс до следующей единицы,
+// который тикает раз в секунду. Источник — me.staminaNextAt с сервера
+// (см. api-server/src/lib/raid.ts, syncState). Когда энергия уже полная, шкалы
+// нет вовсе: считать «время до следующей» не от чего.
+//
 // ── Чего здесь нет ──────────────────────────────────────────────────────────
 // Шкала вех личного вклада скрыта до отдельного разговора о наградах. Сервер её
 // по-прежнему считает, вернуть блок — правка разметки, а не механики.
@@ -64,6 +73,17 @@ import {
 
 const NATIVE_DRIVER = Platform.OS !== "web";
 const EDGE_LIGHT = "#c9bdf0";
+
+/**
+ * Сколько времени сервер копит одну единицу энергии.
+ *
+ * Держим её здесь же, рядом с UI, а не тянем из lib/raid.ts (сервер): значение
+ * нужно только для доли шкалы (сколько уже прошло из тридцати минут), сама
+ * длительность окна сюда не приходит — только момент, когда истечёт текущее.
+ * Если серверная константа когда-нибудь изменится, это единственное место на
+ * клиенте, которое придётся поправить вместе с ней.
+ */
+const STAMINA_REGEN_MS = 30 * 60 * 1000;
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
   return (
@@ -173,6 +193,73 @@ function useCountdown(endsAt: string | undefined): string {
   if (days > 0) return `${days} д ${hours} ч`;
   if (hours > 0) return `${hours} ч ${minutes} мин`;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/**
+ * Доля прошедшего времени и обратный отсчёт до следующей единицы энергии.
+ *
+ * Тикает раз в секунду, только пока есть что считать: если энергия уже
+ * полная или сервер не прислал staminaNextAt (тот же признак «полного
+ * бака» — см. me.staminaNextAt в api-server/src/lib/raid.ts), таймер не
+ * запускается вовсе — незачем дёргать интервал ради значения, которое не
+ * изменится.
+ *
+ * ratio — от 0 (только что потратили энергию, ждать полные 30 минут) до 1
+ * (вот-вот прибавится) — так шкала растёт слева направо по мере ожидания,
+ * а не наоборот.
+ */
+function useStaminaRefill(nextAt: string | null): { ratio: number; label: string } | null {
+  const [now, setNow] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    if (!nextAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [nextAt]);
+
+  if (!nextAt) return null;
+
+  const target = new Date(nextAt).getTime();
+  const remaining = Math.max(0, target - now);
+  if (remaining <= 0) return { ratio: 1, label: "0:00" };
+
+  const ratio = 1 - remaining / STAMINA_REGEN_MS;
+  const minutes = Math.floor(remaining / 60000);
+  const seconds = Math.floor((remaining % 60000) / 1000);
+  return {
+    ratio: Math.max(0, Math.min(1, ratio)),
+    label: `${minutes}:${String(seconds).padStart(2, "0")}`,
+  };
+}
+
+/**
+ * Шкала до следующей единицы энергии + обратный отсчёт.
+ *
+ * Заменяет прежнюю статичную подпись «+1 каждые 30 минут»: та объясняла
+ * правило один раз и больше ничего не говорила, а этот блок отвечает на
+ * вопрос «сколько ждать ИМЕННО СЕЙЧАС» и меняется у ученика на глазах.
+ * Когда энергия уже полная, компонент ничего не рисует — заполнять шкалу
+ * до конца ради надписи «готово» здесь незачем, полосу энергии сверху и так
+ * видно.
+ */
+function StaminaRefillBar({ nextAt }: { nextAt: string | null }) {
+  const colors = useColors();
+  const refill = useStaminaRefill(nextAt);
+  if (!refill) return null;
+
+  return (
+    <View style={{ marginTop: 10 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+        <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground }}>
+          До следующей энергии
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: "900", color: accents.amber, fontVariant: ["tabular-nums"] }}>
+          {refill.label}
+        </Text>
+      </View>
+      <Bar ratio={refill.ratio} height={5} colors={["#fde68a", "#fbbf24"]} />
+    </View>
+  );
 }
 
 export default function RaidScreen() {
@@ -429,10 +516,17 @@ export default function RaidScreen() {
           <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
         <Bar ratio={me.stamina / me.staminaMax} colors={["#fbbf24", "#f59e0b"]} />
-        <Text style={{ fontSize: 11.5, color: colors.mutedForeground, marginTop: 6 }}>
-          Одно задание — одна энергия. Восстановление: +1 каждые 30 минут.
-          {me.stamina >= me.staminaMax ? " Запас полный." : ""}
-        </Text>
+
+        {/* До следующей энергии: шкала + обратный отсчёт, тикает раз в секунду.
+            Ничего не рисует, если энергия уже полная — staminaNextAt тогда
+            приходит null (см. api-server/src/lib/raid.ts, raidSnapshot). */}
+        <StaminaRefillBar nextAt={me.staminaNextAt} />
+        {me.stamina >= me.staminaMax && (
+          <Text style={{ fontSize: 11.5, fontWeight: "800", color: colors.primary, marginTop: 10 }}>
+            Энергия — максимум
+          </Text>
+        )}
+
         {(me.title || me.merciless || me.lastHero) && (
           <View style={{ flexDirection: "row", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
             {!!me.title && <Pill text={me.title} tone="soft" color={accents.gold} />}
