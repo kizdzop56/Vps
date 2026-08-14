@@ -34,30 +34,29 @@
 // карточки. После ответа звук сам не играет: для этого на обратной стороне
 // карточки есть кнопка «Прослушать».
 //
-// Так было не всегда. Раньше ответ озвучивал слово повторно, и получалось два
-// источника звука на одну карточку. Хуже того, через NEXT_DELAY_OK карточка
-// сменялась и следующая начинала говорить, обрывая предыдущую запись на
-// полуслове: на длинных картах вроде «take care of» 1,2 секунды не хватает, и
-// это слышалось как «сказал полфразы и переключился на что-то другое».
+// ── Карточка переворачивается ЦЕЛИКОМ ───────────────────────────────────────
+// И в знакомстве (показ перевода), и при любом окончательном ответе крутится
+// САМА карточка — весь белый прямоугольник с фоном, рамкой и тенью, — а не
+// текст где-то внутри неё. Технически это значит, что rotateY/scaleY/
+// perspective висят на самом внешнем Animated.View карточки; то, что видно на
+// экране (слово или перевод, вопрос или итог ответа), — это просто РАЗНОЕ
+// СОДЕРЖИМОЕ одного и того же вращающегося контейнера, подставляемое ровно в
+// момент, когда карточка повёрнута к экрану ребром (см. эффекты-слушатели flip
+// и answerFlip ниже). Раньше вращался только внутренний блок с текстом, а сам
+// белый прямоугольник карточки стоял неподвижно — выглядело так, будто
+// переворачивается не карточка, а буквы внутри неё.
 //
-// ── Карточка знакомства переворачивается ────────────────────────────────────
-// Нажатие «Показать перевод» не дорисовывает перевод под словом — карточка
-// разворачивается по вертикальной оси на 180°, и на обратной стороне уже
-// стоит перевод (см. FlipIntroFace внизу файла). Слово меняется на перевод
-// ровно в середине поворота, когда карточка развёрнута к ученику ребром:
-// до этого момента виден английский текст, после — перевод, и между ними нет
-// доли секунды, где видно и то, и другое сразу.
+// rotateY прыгает с 90° на −90° ровно в момент разворота ребром (проекция по
+// ширине ~0, скачок незаметен) — поворот ни разу не проходит через 180° и не
+// выглядит зеркальным.
 //
-// ── Карточка переворачивается и при ответе ──────────────────────────────────
-// Тот же приём — не только в знакомстве. Как только ученик отвечает
-// ОКОНЧАТЕЛЬНО (выбрал вариант, собрал слово, написал перевод, произнёс,
-// дослушал аудирование, или проверка не удалась из-за сети), карточка
-// разворачивается на 180°, и на обратной стороне (FlipAnswerFace) сразу вся
-// информация о слове: эмодзи, английское слово, транскрипция, перевод, часть
-// речи, пример предложения — и тут же итог ответа (верно/неверно, что было
-// правильно, кнопка «Прослушать»). Раньше итог просто дорисовывался блоком
-// под заданием на лицевой стороне; теперь ответ и разбор слова — это ОДНО
-// движение карточки, а не появление нового текста.
+// ── Итог ответа живёт НА ОБРАТНОЙ СТОРОНЕ карточки ──────────────────────────
+// Как только ученик отвечает ОКОНЧАТЕЛЬНО (выбрал вариант, собрал слово,
+// написал перевод, произнёс, дослушал аудирование, или проверка не удалась из
+// -за сети), карточка разворачивается, и на обратной стороне сразу вся
+// информация о слове (эмодзи, слово, транскрипция, перевод, часть речи,
+// пример) вместе с итогом ответа (верно/неверно, что было правильно, кнопка
+// «Прослушать»).
 //
 // Исключение — первая ошибка в сборке слова (retryBuild): это приглашение
 // собрать заново, а не окончательный ответ, и карточка за него не
@@ -69,27 +68,25 @@
 // под белой карточкой, а не на ней, и флип их не касается.
 //
 // ── Шрифт слова подстраивается под его длину ────────────────────────────────
-// Слово или перевод на карточке — это одна строка без переноса, если внутри
-// неё нет пробела: перенести «выздоравливать» на вторую строку нечем, весь
-// текст либо помещается, либо вылезает за края. Раньше шрифт переключался по
-// одному порогу длины ВСЕЙ строки (26px после 18 символов, иначе 34px) — для
-// однословных русских глаголов вроде «выздоравливать» (14 символов, но
-// кириллица в начертании 900 заметно шире латиницы) порог не срабатывал
-// вовсе, и слово рисовалось полным 34px, вылезая за оба края карточки.
-//
 // fitFontSize(text, base) считает длину не всей строки, а САМОГО ДЛИННОГО
-// СЛОВА в ней (разбивает по пробелам) — поэтому короткая фраза из длинных
-// слов сжимается сильнее, а длинная фраза из коротких слов («have
-// breakfast») остаётся крупной и просто переносится по пробелу на вторую
-// строку, как и раньше. adjustsFontSizeToFit + numberOfLines={2} на самих
-// Text — дополнительная подстраховка на native (web их игнорирует, поэтому
-// основную работу делает именно fitFontSize).
+// СЛОВА в ней: у составной фразы («have breakfast») есть пробел, по которому
+// она сама перенесётся на вторую строку, а у однословных длинных ответов
+// («выздоравливать») переносить нечем — единственный способ вписать их в
+// карточку — уменьшить сам шрифт.
 //
-// ── Итог ответа живёт НА КАРТОЧКЕ ───────────────────────────────────────────
-// «Верно!» и «Неверно» показываются внутри карточки задания, под самим
-// заданием. Раньше вердикт был отдельной строкой между карточкой и вариантами
-// ответа, и рядом с ним стояла ещё кнопка «Дальше» — три несвязанных блока
-// подряд. Ученик смотрит на карточку, ответ должен появляться там же.
+// ── Пустая очередь объясняет ПРИЧИНУ, а не просто «нечего повторять» ────────
+// «Пока нечего повторять» — одна и та же фраза раньше пряталась за тремя
+// разными причинами:
+//   capped — дневной лимит новых слов на сегодня исчерпан;
+//   waiting — новых слов ждать некому, но одно из уже введённых вернётся по
+//             расписанию совсем скоро (у только что провального или только
+//             что введённого слова интервал — 1–10 минут, см. INTERVAL_MIN в
+//             lib/srs.ts);
+//   done — в колоде/сессии действительно нечего показать прямо сейчас.
+// Раньше это было неразличимо, и «waiting» выглядело как баг: ушёл с экрана
+// «нечего повторять», вернулся через пару минут — а слово тут как тут.
+// Сервер (routes/flashcardsLearn.ts) присылает emptyReason и, для waiting,
+// nextDueAt — SessionSummary показывает разное сообщение под каждую причину.
 //
 // ── Верное листается само, ошибка — нет ─────────────────────────────────────
 // Верный ответ не требует разбора: карточка уходит сама через NEXT_DELAY_OK, и
@@ -228,6 +225,9 @@ type Feedback = {
 /** Что сейчас делает микрофон. */
 type SpeakState = "idle" | "listening" | "checking";
 
+/** Почему очередь оказалась пустой — см. api-server routes/flashcardsLearn.ts. */
+type EmptyInfo = { reason?: "capped" | "waiting" | "done"; nextDueAt?: string } | null;
+
 /**
  * Размер шрифта под длину текста на карточке.
  *
@@ -258,6 +258,13 @@ function fitLineHeight(fontSize: number): number {
   return Math.round(fontSize * 1.22);
 }
 
+/** Момент из ISO-строки как «в 14:32» — местное время устройства. */
+function formatClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
 export function WordTrainer({
   loader,
   title,
@@ -284,17 +291,19 @@ export function WordTrainer({
   const [phase, setPhase] = React.useState<Phase>("loading");
   const [items, setItems] = React.useState<QueueItem[]>([]);
   const [pos, setPos] = React.useState(0);
+  /** Почему очередь пуста, если пуста — см. заголовок файла. */
+  const [emptyInfo, setEmptyInfo] = React.useState<EmptyInfo>(null);
 
   // знакомство: перевод скрыт до нажатия
   const [revealed, setRevealed] = React.useState(false);
   // Что сейчас нарисовано на карточке знакомства: слово или перевод.
   // Отдельно от revealed — иначе перевод появлялся бы мгновенно, а не в
   // момент, когда карточка развёрнута к ученику ребром (середина поворота,
-  // см. эффект-слушатель flip ниже и FlipIntroFace).
+  // см. эффект-слушатель flip ниже).
   const [showTranslation, setShowTranslation] = React.useState(false);
   // Та же логика для карточки С ОТВЕТОМ: что сейчас показано — вопрос (буквы,
   // варианты, кнопка звука) или обратная сторона с итогом и полной
-  // информацией о слове. См. эффект-слушатель answerFlip и FlipAnswerFace.
+  // информацией о слове. См. эффект-слушатель answerFlip.
   const [showBack, setShowBack] = React.useState(false);
   // выбор варианта / сборка слова
   const [feedback, setFeedback] = React.useState<Feedback>(null);
@@ -346,11 +355,11 @@ export function WordTrainer({
   const cardIn = React.useRef(new Animated.Value(0)).current;
   // Переворот карточки знакомства при показе перевода: 0 — лицом к ученику
   // (слово), 1 — тоже лицом (уже перевод), между ними карточка развёрнута
-  // ребром. См. FlipIntroFace ниже.
+  // ребром.
   const flip = React.useRef(new Animated.Value(0)).current;
   // Тот же переворот, но для итога ответа во всех остальных упражнениях: 0 —
   // лицом к ученику (вопрос), 1 — тоже лицом (уже итог и полная информация о
-  // слове). См. FlipAnswerFace.
+  // слове).
   const answerFlip = React.useRef(new Animated.Value(0)).current;
 
   const item = items[pos];
@@ -370,11 +379,11 @@ export function WordTrainer({
   }, [card]);
 
   /**
-   * Показать перевод — карточка знакомства переворачивается, а не просто
-   * дорисовывает блок снизу. Слово меняется на перевод в FlipIntroFace ровно
-   * в момент, когда анимация доходит до середины (см. эффект-слушатель flip
-   * ниже): до этого момента ученик видит слово, после — перевод, и одно не
-   * должно на миг наложиться на другое.
+   * Показать перевод — карточка знакомства переворачивается ЦЕЛИКОМ, а не
+   * просто дорисовывает блок снизу. Слово меняется на перевод ровно в момент,
+   * когда анимация доходит до середины (см. эффект-слушатель flip ниже): до
+   * этого момента ученик видит слово, после — перевод, и одно не должно на
+   * миг наложиться на другое.
    */
   const revealTranslation = React.useCallback(() => {
     if (revealed) return;
@@ -427,6 +436,7 @@ export function WordTrainer({
         if (q.wordsToday !== undefined && q.dailyWordGoal !== undefined) {
           setProgress({ wordsToday: q.wordsToday, dailyWordGoal: q.dailyWordGoal });
         }
+        setEmptyInfo(next.length === 0 ? { reason: q.emptyReason, nextDueAt: q.nextDueAt } : null);
         setPhase(next.length === 0 ? "done" : "run");
       })
       .catch(() => alive && setError("Не удалось загрузить слова."));
@@ -881,6 +891,7 @@ export function WordTrainer({
         learned={learned}
         progress={progress}
         emptyQueue={total === 0}
+        emptyInfo={emptyInfo}
         onExit={onExit}
       />
     );
@@ -985,6 +996,101 @@ export function WordTrainer({
         />
       </View>
     </>
+  );
+
+  /** Лицевая сторона карточки знакомства: слово, транскрипция, звук. */
+  const introFront = (
+    <>
+      {!!card?.emoji && <Text style={{ fontSize: 64 }}>{card.emoji}</Text>}
+      <Text
+        style={{
+          fontSize: fitFontSize(exercise.prompt, 34),
+          lineHeight: fitLineHeight(fitFontSize(exercise.prompt, 34)),
+          fontWeight: "900", letterSpacing: -0.5,
+          color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+          width: "100%", flexShrink: 1,
+        }}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.5}
+      >
+        {exercise.prompt}
+      </Text>
+      {!!card?.ipa && (
+        <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
+      )}
+      {speechAvailable() && (
+        <TouchableOpacity
+          onPress={playWord}
+          activeOpacity={0.8}
+          style={{
+            flexDirection: "row", alignItems: "center", gap: 7,
+            backgroundColor: colors.primary + "18", borderRadius: radii.pill,
+            paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
+          }}
+        >
+          <Glyph name="sound" size={18} color={colors.primary} />
+          <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
+        </TouchableOpacity>
+      )}
+    </>
+  );
+
+  /** Обратная сторона карточки знакомства: перевод, часть речи, пример. */
+  const introTranslationText = card?.translationsRu?.join(", ") ?? "";
+  const introBack = (
+    <View style={{ width: "100%", alignItems: "center" }}>
+      {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
+      <Text
+        style={{
+          fontSize: fitFontSize(exercise.prompt, 34),
+          lineHeight: fitLineHeight(fitFontSize(exercise.prompt, 34)),
+          fontWeight: "900", letterSpacing: -0.5,
+          color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
+          width: "100%", flexShrink: 1,
+        }}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.5}
+      >
+        {exercise.prompt}
+      </Text>
+      {!!introTranslationText && (
+        <Text
+          style={{
+            fontSize: fitFontSize(introTranslationText, 24),
+            lineHeight: fitLineHeight(fitFontSize(introTranslationText, 24)),
+            fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12,
+            width: "100%", flexShrink: 1,
+          }}
+          numberOfLines={2}
+          adjustsFontSizeToFit
+          minimumFontScale={0.5}
+        >
+          {introTranslationText}
+        </Text>
+      )}
+      {!!card?.partOfSpeech && (
+        <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 4, textTransform: "capitalize" }}>
+          {card.partOfSpeech}
+        </Text>
+      )}
+      {!!card?.exampleEn && (
+        <View style={{ marginTop: 14, width: "100%", backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 14 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+            <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
+            {speechAvailable() && (
+              // У примера-предложения нет своего wordId — озвучиваем текст
+              // напрямую через /api/tts?text=... (см. speakWord).
+              <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
+                <Glyph name="sound" size={18} color={colors.primary} />
+              </Pressable>
+            )}
+          </View>
+          {!!card.exampleRu && <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
+        </View>
+      )}
+    </View>
   );
 
   /** Лицевая сторона белой карточки для всех упражнений, кроме знакомства. */
@@ -1157,8 +1263,7 @@ export function WordTrainer({
 
       {/* ИТОГ ОТВЕТА — теперь на обратной стороне карточки, вместе с полной
           информацией о слове: перевернул — и сразу видно и что ответил, и что
-          было правильно. Раньше это был отдельный блок под заданием на
-          лицевой стороне. */}
+          было правильно. */}
       <View style={{
         width: "100%", marginTop: 16, paddingTop: 14,
         borderTopWidth: 1, borderTopColor: colors.border,
@@ -1213,6 +1318,23 @@ export function WordTrainer({
       </View>
     </>
   ) : null;
+
+  // Какое анимированное значение крутит карточку в этом кадре: у знакомства —
+  // свой flip (слово ↔ перевод), у всех остальных упражнений — answerFlip
+  // (вопрос ↔ итог ответа). Ровно ОДНО из двух активно в любой момент — второе
+  // всегда стоит на 0 (см. resetCardState), поэтому подставлять именно нужное
+  // значение безопасно.
+  const activeFlip = isIntro ? flip : answerFlip;
+  const cardRotateY = activeFlip.interpolate({
+    inputRange: [0, 0.5, 0.5001, 1],
+    outputRange: ["0deg", "90deg", "-90deg", "0deg"],
+  });
+  // Небольшое сжатие по вертикали на пике поворота — без него в вебе (там нет
+  // настоящей перспективы камеры) переворот на миг выглядит плоским.
+  const cardFlipScaleY = activeFlip.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 0.94, 1],
+  });
 
   return (
     <View style={{ flex: 1, backgroundColor: background, paddingTop: insets.top + 8 }}>
@@ -1271,7 +1393,11 @@ export function WordTrainer({
           {promptLabel}
         </Text>
 
-        {/* задание */}
+        {/* задание: КАРТОЧКА ЦЕЛИКОМ — фон, рамка и тень — крутится по Y. То, что
+            внутри (введение/вопрос против перевода/итога), просто подставляется
+            в момент, когда карточка развёрнута ребром — см. cardRotateY выше и
+            эффекты-слушатели flip/answerFlip. Раньше вращался только текст
+            внутри неподвижной белой плашки. */}
         <Animated.View
           style={{
             backgroundColor: colors.card, borderRadius: radii.lg,
@@ -1281,25 +1407,18 @@ export function WordTrainer({
             shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 8 },
             shadowOpacity: 0.16, shadowRadius: 22, elevation: 6,
             opacity: cardIn,
-            transform: [{ scale: cardIn.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
+            transform: [
+              { perspective: 900 },
+              { rotateY: cardRotateY },
+              { scaleY: cardFlipScaleY },
+              { scale: cardIn.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) },
+            ],
           }}
         >
           {isIntro ? (
-            <FlipIntroFace
-              card={card}
-              exercise={exercise}
-              showTranslation={showTranslation}
-              flip={flip}
-              colors={colors}
-              onPlay={playWord}
-            />
+            !showTranslation ? introFront : introBack
           ) : (
-            <FlipAnswerFace
-              showBack={showBack}
-              flip={answerFlip}
-              front={answerFront}
-              back={answerBack}
-            />
+            !showBack ? answerFront : answerBack
           )}
         </Animated.View>
 
@@ -1531,189 +1650,6 @@ const PROMPT_LABEL: Record<ExerciseType, string> = {
   speak: "Произнеси слово вслух",
 };
 
-/**
- * Лицевая сторона карточки знакомства: слово или перевод, в зависимости от
- * showTranslation. Между ними — переворот по Y на 180°, а не мгновенная
- * подмена: раньше перевод просто дорисовывался блоком снизу, и было неясно,
- * что это та же самая карточка, а не новый экран.
- *
- * Один слой, а не два стянутых лица с backfaceVisibility: контент между
- * словом и переводом разной высоты (у перевода есть ещё пример-предложение),
- * и подгонять высоту под фиксированный размер ради стека из двух граней не
- * стоило. Вместо этого поворот идёт как «0° → 90° → снова 0°, но уже с другим
- * содержимым»: rotateY прыгает с 90° на −90° ровно в момент, когда карточка
- * повёрнута к экрану ребром (проекция по ширине ~0, скачок незаметен), и
- * контент внутри меняется тем же скачком (см. эффект-слушатель flip в
- * WordTrainer). Так карточка ни разу не проходит через 180° и никогда не
- * оказывается зеркальной.
- */
-function FlipIntroFace({
-  card, exercise, showTranslation, flip, colors, onPlay,
-}: {
-  card?: TrainerCard;
-  exercise: Exercise;
-  showTranslation: boolean;
-  flip: Animated.Value;
-  colors: any;
-  onPlay: () => void;
-}) {
-  const rotateY = flip.interpolate({
-    inputRange: [0, 0.5, 0.5001, 1],
-    outputRange: ["0deg", "90deg", "-90deg", "0deg"],
-  });
-  // Небольшое сжатие по вертикали на пике поворота — без него в вебе (там нет
-  // настоящей перспективы камеры) переворот на миг выглядит плоским.
-  const scaleY = flip.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [1, 0.94, 1],
-  });
-
-  const promptSize = fitFontSize(exercise.prompt, 34);
-  const translationText = card?.translationsRu?.join(", ") ?? "";
-  const translationSize = fitFontSize(translationText, 24);
-
-  return (
-    <Animated.View
-      style={{
-        width: "100%",
-        alignItems: "center",
-        transform: [{ perspective: 900 }, { rotateY }, { scaleY }],
-      }}
-    >
-      {!showTranslation ? (
-        <>
-          {!!card?.emoji && <Text style={{ fontSize: 64 }}>{card.emoji}</Text>}
-          <Text
-            style={{
-              fontSize: promptSize,
-              lineHeight: fitLineHeight(promptSize),
-              fontWeight: "900", letterSpacing: -0.5,
-              color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
-              width: "100%", flexShrink: 1,
-            }}
-            numberOfLines={2}
-            adjustsFontSizeToFit
-            minimumFontScale={0.5}
-          >
-            {exercise.prompt}
-          </Text>
-          {!!card?.ipa && (
-            <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
-          )}
-          {speechAvailable() && (
-            <TouchableOpacity
-              onPress={onPlay}
-              activeOpacity={0.8}
-              style={{
-                flexDirection: "row", alignItems: "center", gap: 7,
-                backgroundColor: colors.primary + "18", borderRadius: radii.pill,
-                paddingHorizontal: 15, paddingVertical: 9, marginTop: 12,
-              }}
-            >
-              <Glyph name="sound" size={18} color={colors.primary} />
-              <Text style={{ color: colors.primary, fontWeight: "800" }}>Прослушать</Text>
-            </TouchableOpacity>
-          )}
-        </>
-      ) : (
-        <View style={{ width: "100%", alignItems: "center" }}>
-          {!!card?.emoji && <Text style={{ fontSize: 44 }}>{card.emoji}</Text>}
-          <Text
-            style={{
-              fontSize: promptSize,
-              lineHeight: fitLineHeight(promptSize),
-              fontWeight: "900", letterSpacing: -0.5,
-              color: colors.foreground, textAlign: "center", marginTop: card?.emoji ? 6 : 0,
-              width: "100%", flexShrink: 1,
-            }}
-            numberOfLines={2}
-            adjustsFontSizeToFit
-            minimumFontScale={0.5}
-          >
-            {exercise.prompt}
-          </Text>
-          {!!translationText && (
-            <Text
-              style={{
-                fontSize: translationSize,
-                lineHeight: fitLineHeight(translationSize),
-                fontWeight: "900", color: colors.primary, textAlign: "center", marginTop: 12,
-                width: "100%", flexShrink: 1,
-              }}
-              numberOfLines={2}
-              adjustsFontSizeToFit
-              minimumFontScale={0.5}
-            >
-              {translationText}
-            </Text>
-          )}
-          {!!card?.partOfSpeech && (
-            <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 4, textTransform: "capitalize" }}>
-              {card.partOfSpeech}
-            </Text>
-          )}
-          {!!card?.exampleEn && (
-            <View style={{ marginTop: 14, width: "100%", backgroundColor: colors.accent, borderRadius: radii.sm + 2, padding: 14 }}>
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                <Text style={{ flex: 1, fontSize: 15, color: colors.foreground, fontStyle: "italic" }}>{card.exampleEn}</Text>
-                {speechAvailable() && (
-                  // У примера-предложения нет своего wordId — озвучиваем текст
-                  // напрямую через /api/tts?text=... (см. speakWord).
-                  <Pressable onPress={() => speakWord(undefined, card.exampleEn!)} hitSlop={8} accessibilityLabel="Прослушать пример">
-                    <Glyph name="sound" size={18} color={colors.primary} />
-                  </Pressable>
-                )}
-              </View>
-              {!!card.exampleRu && <Text style={{ marginTop: 6, fontSize: 14, color: colors.mutedForeground }}>{card.exampleRu}</Text>}
-            </View>
-          )}
-        </View>
-      )}
-    </Animated.View>
-  );
-}
-
-/**
- * Обратная сторона карточки при ответе — тот же приём, что у FlipIntroFace
- * (см. её комментарий), только вместо перевода на обороте лежит полная
- * информация о слове ВМЕСТЕ с итогом ответа: сюда переехал блок «ИТОГ
- * ОТВЕТА», который раньше дорисовывался на лицевой стороне под заданием.
- *
- * front и back передаются готовыми узлами (а не рендер-функциями): состав
- * лицевой стороны сильно разный между упражнениями (кнопка звука, буквы,
- * просто текст), и городить внутри этого компонента ветвление по типу
- * упражнения смысла нет — WordTrainer уже решает, что показать, до вызова.
- */
-function FlipAnswerFace({
-  showBack, flip, front, back,
-}: {
-  showBack: boolean;
-  flip: Animated.Value;
-  front: React.ReactNode;
-  back: React.ReactNode;
-}) {
-  const rotateY = flip.interpolate({
-    inputRange: [0, 0.5, 0.5001, 1],
-    outputRange: ["0deg", "90deg", "-90deg", "0deg"],
-  });
-  const scaleY = flip.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [1, 0.94, 1],
-  });
-
-  return (
-    <Animated.View
-      style={{
-        width: "100%",
-        alignItems: "center",
-        transform: [{ perspective: 900 }, { rotateY }, { scaleY }],
-      }}
-    >
-      {!showBack ? front : back}
-    </Animated.View>
-  );
-}
-
 // ── физические клавиши ──────────────────────────────────────────────────────
 
 /**
@@ -1871,8 +1807,28 @@ function LetterKey({
 // ── Плитка «очков» показывается не всегда ───────────────────────────────────
 // «+0 очков» — не награда, а напоминание, что наградой тут и не пахло. Если за
 // сессию очков не начислено, плитки просто нет.
+//
+// ── Пустая очередь объясняет причину ────────────────────────────────────────
+// См. заголовок файла: capped (дневной лимит новых слов исчерпан), waiting
+// (следующее слово освободится по расписанию, и когда именно — известно) или
+// done (реально нечего показать). Раньше все три причины звучали одинаково
+// туманно, и «waiting» — самая частая после короткой сессии — читалась как
+// баг: слово возвращалось через пару минут после честного «нечего повторять».
+function emptyQueueMessage(info: EmptyInfo): string {
+  if (info?.reason === "capped") {
+    return "На сегодня открыто максимум новых слов — новые появятся завтра. Можно повторить сложные слова или взять другую колоду.";
+  }
+  if (info?.reason === "waiting" && info.nextDueAt) {
+    const clock = formatClock(info.nextDueAt);
+    return clock
+      ? `Следующее слово освободится примерно в ${clock} — обычный интервал повторения, а не ошибка.`
+      : "Следующее слово освободится совсем скоро — обычный интервал повторения, а не ошибка.";
+  }
+  return "Все слова повторены — новые появятся, когда придёт время следующего показа. Можно взять новую колоду или потренировать сложные слова.";
+}
+
 function SessionSummary({
-  colors, insets, background, answered, correctCount, points, learned, progress, emptyQueue, onExit,
+  colors, insets, background, answered, correctCount, points, learned, progress, emptyQueue, emptyInfo, onExit,
 }: {
   colors: any;
   insets: { top: number; bottom: number };
@@ -1883,6 +1839,7 @@ function SessionSummary({
   learned: number;
   progress: { wordsToday: number; dailyWordGoal: number } | null;
   emptyQueue: boolean;
+  emptyInfo: EmptyInfo;
   onExit: () => void;
 }) {
   const accuracy = answered > 0 ? Math.round((correctCount / answered) * 100) : 0;
@@ -1963,7 +1920,7 @@ function SessionSummary({
         </Text>
         {emptyQueue && (
           <Text style={{ fontSize: 14, color: colors.mutedForeground, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
-            Все слова повторены — новые появятся, когда придёт время следующего показа. Можно взять новую колоду или потренировать сложные слова.
+            {emptyQueueMessage(emptyInfo)}
           </Text>
         )}
       </View>
