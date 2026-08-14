@@ -5,6 +5,7 @@ import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { useEffect, useRef, useCallback, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CalendarBadgeProvider, useCalendarBadge } from "@/contexts/CalendarBadgeContext";
+import { MessagesBadgeProvider, useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import authStorage from "@/utils/authStorage";
@@ -117,6 +118,37 @@ function CalendarTabIcon({ color }: { color: string }) {
         }}>
           <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 13 }}>
             {unreadCount > 9 ? "9+" : unreadCount}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Значок вкладки «Друзья» — она же и есть «кнопка чата»: у неё чат-иконка, и
+ * через неё же (или через «Написать» у ученика) открывается вся переписка.
+ * Раньше учитель узнавал о новом сообщении, только зайдя в конкретный диалог
+ * — сигнала снаружи не было вообще, и приходилось «тыкать и искать», кто
+ * написал. Число непрочитанных сразу по ВСЕМ беседам (и с друзьями, и с
+ * учениками — это одна и та же таблица на сервере, см. MessagesBadgeContext)
+ * теперь светится тем же приёмом, что уже работает у CalendarTabIcon выше.
+ */
+function FriendsTabIcon({ color }: { color: string }) {
+  const { unreadTotal } = useMessagesBadge();
+  return (
+    <View style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center" }}>
+      <Glyph name="chat" size={22} color={color} />
+      {unreadTotal > 0 && (
+        <View style={{
+          position: "absolute", top: -6, right: -8,
+          backgroundColor: "#e11d48", borderRadius: 9,
+          minWidth: 18, height: 18, paddingHorizontal: 4,
+          alignItems: "center", justifyContent: "center",
+          borderWidth: 2, borderColor: "#ffffff",
+        }}>
+          <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 13 }}>
+            {unreadTotal > 9 ? "9+" : unreadTotal}
           </Text>
         </View>
       )}
@@ -528,7 +560,7 @@ function MainLayoutInner() {
           options={isTeacher
             ? {
                 title: "Друзья",
-                tabBarIcon: ({ color }) => <Glyph name="chat" size={22} color={color} />,
+                tabBarIcon: ({ color }) => <FriendsTabIcon color={color} />,
               }
             : { href: null }
           }
@@ -630,7 +662,9 @@ function MainLayoutInner() {
 export default function MainLayout() {
   return (
     <CalendarBadgeProvider>
-      <MainLayoutInner />
+      <MessagesBadgeProvider>
+        <MainLayoutInner />
+      </MessagesBadgeProvider>
     </CalendarBadgeProvider>
   );
 }

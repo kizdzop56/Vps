@@ -14,6 +14,14 @@
 // Оформление собрано из GameKit и сдержаннее ученических экранов: экран
 // рабочий, здесь важнее скорость чтения списка, а не игровые эффекты.
 // Наклоны убраны — как на «Заданиях» и «Анализе».
+//
+// ── Точка непрочитанного на кнопке «Написать» ───────────────────────────────
+// «Написать» — самый частый вход в чат с учеником (чаще, чем «Чат» на
+// вкладке «Друзья», где ученики вообще не показываются — там только принятые
+// друзья). Раньше здесь не было никакого признака нового сообщения; теперь на
+// кнопке загорается точка, если этот ученик написал что-то, чего учитель ещё
+// не открывал — тот же MessagesBadgeContext, что и на вкладке «Друзья» и на
+// самой иконке вкладки в панели (см. app/(main)/_layout.tsx).
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView, Platform,
@@ -31,6 +39,7 @@ import { ChunkyButton, Pill, SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
 import { formatDue } from "@/utils/dueDate";
 import { overallScore, type CategoryStat } from "@/utils/insights";
+import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -102,7 +111,7 @@ function daysSinceSeen(lastSeenAt: string | null | undefined): number | null {
 }
 
 function UserCard({
-  item, extras, onRemove, onPress, onAssign, onMessage, colors, showActions,
+  item, extras, onRemove, onPress, onAssign, onMessage, colors, showActions, unread,
 }: {
   item: PersonItem;
   extras: PersonExtras | undefined;
@@ -113,6 +122,8 @@ function UserCard({
   colors: any;
   /** У родителя действий учителя нет — только просмотр. */
   showActions: boolean;
+  /** Есть непрочитанные от этого ученика — точка на кнопке «Написать». */
+  unread: boolean;
 }) {
   const score = extras?.score ?? null;
   const quiet = (daysSinceSeen(item.lastSeenAt) ?? 0) >= 7 && !item.isOnline;
@@ -211,18 +222,29 @@ function UserCard({
             <Glyph name="send" size={14} color="#fff" />
             <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>Задание</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={onMessage}
-            style={{
-              flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
-              paddingVertical: 10, borderRadius: 12,
-              borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
-            }}
-          >
-            <Glyph name="chat" size={14} color={colors.mutedForeground} />
-            <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground }}>Написать</Text>
-          </TouchableOpacity>
+          <View style={{ flex: 1 }}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={onMessage}
+              style={{
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+                paddingVertical: 10, borderRadius: 12,
+                borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
+              }}
+            >
+              <Glyph name="chat" size={14} color={colors.mutedForeground} />
+              <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground }}>Написать</Text>
+            </TouchableOpacity>
+            {/* Точка непрочитанного — см. заголовок файла. */}
+            {unread && (
+              <View style={{
+                position: "absolute", top: -3, right: -3,
+                width: 12, height: 12, borderRadius: 6,
+                backgroundColor: "#e11d48",
+                borderWidth: 2, borderColor: colors.card,
+              }} />
+            )}
+          </View>
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={onRemove}
@@ -506,6 +528,7 @@ export default function StudentsScreen() {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { unreadByUser, refresh: refreshUnread } = useMessagesBadge();
 
   const isTeacher = isTeacherOrAdmin(user?.role ?? "");
   const isParent = user?.role === "parent";
@@ -591,8 +614,9 @@ export default function StudentsScreen() {
 
   React.useEffect(() => { load(); }, [load]);
   // Возврат на вкладку обновляет цифры молча: список уже на экране, мигать им
-  // спиннером незачем.
-  useFocusEffect(React.useCallback(() => { load(true); }, [load]));
+  // спиннером незачем. Заодно просим значок непрочитанных обновиться сразу —
+  // полезно, если учитель только что вышел из чата с одним из учеников.
+  useFocusEffect(React.useCallback(() => { load(true); refreshUnread(); }, [load, refreshUnread]));
 
   const doRemove = async (item: PersonItem) => {
     try {
@@ -908,6 +932,7 @@ export default function StudentsScreen() {
                   extras={extras[item.id]}
                   colors={colors}
                   showActions={isTeacher}
+                  unread={(unreadByUser[item.id] ?? 0) > 0}
                   onRemove={() => handleRemove(item)}
                   onPress={() => router.push(`/(main)/${isParent ? "student" : "friend"}/${item.id}` as any)}
                   onAssign={() => router.push("/(main)/assignments" as any)}

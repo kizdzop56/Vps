@@ -3,6 +3,16 @@
 // Эмодзи в интерфейсе не используются: в пустых состояниях стоят глифы из
 // своего набора. Аватар пользователя — отдельная история, там avatarEmoji
 // приходит из профиля и рисуется AnimatedAvatar как есть.
+//
+// ── Точка непрочитанного на кнопке «Чат» ────────────────────────────────────
+// Раньше здесь не было вообще никакого признака новых сообщений: чтобы
+// узнать, написал ли друг что-то новое, надо было открыть каждую переписку
+// по очереди. Теперь у каждого друга с непрочитанными сообщениями на кнопке
+// «Чат» горит маленькая точка — не число, потому что здесь и так один
+// конкретный собеседник, важно только «есть новое или нет». Общее число по
+// всем беседам сразу показывается на самой вкладке «Друзья» в панели
+// (см. FriendsTabIcon в app/(main)/_layout.tsx) — тот же источник данных,
+// MessagesBadgeContext.
 import React, { useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, ScrollView, Platform,
@@ -17,6 +27,7 @@ import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { Glyph } from "@/components/ui/Glyph";
 import { SectionLabel } from "@/components/ui/GameKit";
 import { accents, radii } from "@/constants/theme";
+import { useMessagesBadge } from "@/contexts/MessagesBadgeContext";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -67,11 +78,13 @@ type Friend = {
 
 // Одна строка друга с «панелью чата» напротив — кнопкой, открывающей переписку.
 function FriendRow({
-  friend, colors, onOpenChat,
+  friend, colors, onOpenChat, unread,
 }: {
   friend: Friend;
   colors: any;
   onOpenChat: () => void;
+  /** Есть непрочитанные от этого собеседника — точка на кнопке «Чат». */
+  unread: boolean;
 }) {
   const u = friend.user;
   const roleLabel = u.role ? ROLE_LABELS[u.role] ?? null : null;
@@ -117,20 +130,34 @@ function FriendRow({
       </View>
 
       {/* Панель чата напротив собеседника */}
-      <TouchableOpacity
-        onPress={onOpenChat}
-        activeOpacity={0.85}
-        style={{
-          backgroundColor: colors.primary, borderRadius: radii.sm,
-          paddingHorizontal: 14, paddingVertical: 11,
-          flexDirection: "row", alignItems: "center", gap: 7,
-          shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.3, shadowRadius: 9, elevation: 4,
-        }}
-      >
-        <Glyph name="chat" size={16} color="#fff" />
-        <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>Чат</Text>
-      </TouchableOpacity>
+      <View>
+        <TouchableOpacity
+          onPress={onOpenChat}
+          activeOpacity={0.85}
+          style={{
+            backgroundColor: colors.primary, borderRadius: radii.sm,
+            paddingHorizontal: 14, paddingVertical: 11,
+            flexDirection: "row", alignItems: "center", gap: 7,
+            shadowColor: colors.primary, shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3, shadowRadius: 9, elevation: 4,
+          }}
+        >
+          <Glyph name="chat" size={16} color="#fff" />
+          <Text style={{ fontSize: 13, fontWeight: "800", color: "#fff" }}>Чат</Text>
+        </TouchableOpacity>
+        {/* Точка непрочитанного — см. заголовок файла. Пропадает сама в течение
+            ~15 секунд после открытия переписки (сервер отмечает сообщения
+            прочитанными сразу при входе, а экран чата ещё и просит контекст
+            обновиться немедленно). */}
+        {unread && (
+          <View style={{
+            position: "absolute", top: -3, right: -3,
+            width: 12, height: 12, borderRadius: 6,
+            backgroundColor: "#e11d48",
+            borderWidth: 2, borderColor: colors.card,
+          }} />
+        )}
+      </View>
     </View>
   );
 }
@@ -140,6 +167,7 @@ export default function FriendsScreen() {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { unreadByUser, refresh: refreshUnread } = useMessagesBadge();
 
   const [friends, setFriends] = useState<Friend[]>([]);
   const [loading, setLoading] = useState(true);
@@ -159,8 +187,10 @@ export default function FriendsScreen() {
     }
   }, []);
 
-  // Перезагружаем при каждом возврате на вкладку — статусы онлайн/новые друзья.
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Перезагружаем при каждом возврате на вкладку — статусы онлайн/новые
+  // друзья, и заодно просим значок непрочитанных обновиться без ожидания
+  // очередного опроса (полезно сразу после выхода из чата).
+  useFocusEffect(useCallback(() => { load(); refreshUnread(); }, [load, refreshUnread]));
 
   const accepted = friends.filter((f) => f.status === "accepted");
   const incoming = friends.filter((f) => f.status === "pending" && f.direction === "received");
@@ -303,6 +333,7 @@ export default function FriendsScreen() {
                   key={f.friendshipId}
                   friend={f}
                   colors={colors}
+                  unread={(unreadByUser[f.user.id] ?? 0) > 0}
                   onOpenChat={() => openChat(f.user.id)}
                 />
               ))}
