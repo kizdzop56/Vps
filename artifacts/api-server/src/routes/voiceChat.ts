@@ -27,6 +27,16 @@
 // «О себе». Отдельного хранилища «памяти» не появилось намеренно: держать
 // второй набор тех же фактов означало бы, что они разойдутся.
 //
+// ── УРОВЕНЬ — ИЗ PLACEMENT-ТЕСТА, А НЕ ИЗ ВОЗРАСТА ──────────────────────────
+// usersTable.knowledgeLevel выставляется ОДИН РАЗ при регистрации по возрасту
+// ребёнка (lib/knowledgeLevel.ts) и никогда не обновляется — это грубая
+// прикидка, а не измеренный уровень. Реальный, проверенный уровень (CEFR:
+// A1..C1) живёт в flashcardSettingsTable.placementLevel и обновляется каждым
+// прохождением теста на уровень. Именно на него ориентируются разделы «Слова»
+// и «Грамматика» — и разговор со Снежей должен видеть тот же уровень, а не
+// какой-то свой. loadProfile() ниже предпочитает placementLevel, а к
+// knowledgeLevel обращается только если тест ещё ни разу не пройден.
+//
 // Интересы важнее, чем кажется: имея «футбол» и «игры», Снежа спрашивает о том,
 // о чём ребёнку есть что сказать. Разговор на чужом языке и без того трудный,
 // чтобы вести его о погоде.
@@ -59,12 +69,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { voiceChatSessionsTable, voiceChatMessagesTable, usersTable } from "@workspace/db";
+import { voiceChatSessionsTable, voiceChatMessagesTable, usersTable, flashcardSettingsTable } from "@workspace/db";
 import { eq, and, gte, sql, desc } from "drizzle-orm";
 import { googleTranslate } from "@workspace/translate";
 import { requireAuth, getUser } from "../lib/auth";
 import { startOfLocalDay } from "../lib/timeStats";
 import { aiProviders, chat, geminiModelReport, hasAnyAi, speak, transcribe } from "../lib/ai";
+// Тот же словарь уровней, что у ситуаций от учителя (routes/scenarios.ts).
+// Раньше тут была своя копия, понимавшая только старую возрастную шкалу
+// (starter/beginner/...) и вообще не знавшая букв CEFR (A1-C1) — реальный
+// уровень из placement-теста тихо терялся при попытке найти его в словаре.
+import { LEVEL_HINT } from "../lib/scenarioChat";
 
 const router = Router();
 
@@ -96,15 +111,6 @@ const router = Router();
 
 /** Столько раз просим повторить одну и ту же фразу. Дальше принимаем как есть. */
 const MAX_RETRIES = 2;
-
-/** Уровень словами: модели нужна подсказка, насколько простыми быть. */
-const LEVEL_HINT: Record<string, string> = {
-  starter: "absolute beginner, knows only a few words",
-  beginner: "beginner",
-  elementary: "elementary (A1-A2)",
-  intermediate: "intermediate (B1)",
-  upper_intermediate: "upper-intermediate (B2)",
-};
 
 type StudentProfile = {
   name: string;
@@ -182,10 +188,21 @@ async function loadProfile(userId: number): Promise<StudentProfile | null> {
       .from(usersTable)
       .where(eq(usersTable.id, userId));
     if (!row) return null;
+
+    // Реальный уровень (CEFR, из последнего placement-теста) важнее возрастной
+    // прикидки knowledgeLevel: та выставляется один раз при регистрации и
+    // никогда не меняется, а тест как раз для того и существует, чтобы знать
+    // настоящий уровень ученика. Нет результата теста — используем прикидку,
+    // это лучше, чем совсем ничего не сказать модели про уровень.
+    const [settings] = await db
+      .select({ placementLevel: flashcardSettingsTable.placementLevel })
+      .from(flashcardSettingsTable)
+      .where(eq(flashcardSettingsTable.userId, userId));
+
     return {
       name: row.name,
       age: row.age ?? null,
-      level: row.knowledgeLevel ?? null,
+      level: settings?.placementLevel || row.knowledgeLevel || null,
       bio: row.bio ?? null,
       interests: Array.isArray(row.interests) ? row.interests.filter((i) => typeof i === "string") : [],
     };
