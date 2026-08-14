@@ -185,6 +185,19 @@
 // размер вариантов посчитали через fitFontSize, и «делать резервную копию»
 // (22 символа общей длины — уже за порогом «>20») утащила размер ВСЕХ четырёх
 // вариантов вопроса до нечитаемых ~7px, хотя переносить эту фразу было незачем.
+//
+// ── Аудирование выглядит как дорожка плеера, а не кружок-кнопка ─────────────
+// Раньше упражнение «Послушай и выбери перевод» показывало на карточке одну
+// круглую кнопку со значком динамика посреди пустого пространства — по форме
+// это ничем не напоминало проигрыватель звука, и не сразу читалось, что вообще
+// здесь можно послушать. Теперь это AudioTrackCard: та же порода, что у
+// components/InlineMediaPlayer — слева круглая кнопка play/pause в градиенте
+// бренда, справа столбики дорожки. Нажимать можно по всей карточке, а не
+// только по кнопке — под капотом всё тот же playWord(). Состояние «playing»
+// на кнопке и дорожке — короткий таймер, а не точное событие конца звука
+// (speakWord ничего не сообщает об этом наружу, см. hooks/useFlashcards.ts):
+// секунды с небольшим хватает дать понятную обратную связь «сейчас звучит»,
+// не обещая точности настоящего плеера.
 import React from "react";
 import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView, Platform, Dimensions } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -372,6 +385,83 @@ function formatClock(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Карточка аудирования — визуально дорожка аудиоплеера (та же порода, что у
+ * components/InlineMediaPlayer): круглая кнопка воспроизведения слева и
+ * столбики дорожки справа, а не одинокая кнопка-кружок посреди пустой
+ * карточки. Нажать можно в любом месте карточки, а не только по кнопке —
+ * тап по дорожке так же логично воспринимается как «включить звук».
+ *
+ * Настоящего события «озвучка началась/закончилась» наружу не прокинуто —
+ * speakWord() «выстрелил и забыл» (см. hooks/useFlashcards.ts), поэтому
+ * состояние playing — не более чем оценка по времени: сбрасывается коротким
+ * таймером после тапа, чтобы кнопка на секунду показала «пауза», а дорожка —
+ * «ожила», вместо статичной картинки без обратной связи.
+ */
+function AudioTrackCard({ colors, onPress }: { colors: any; onPress: () => void }) {
+  const [playing, setPlaying] = React.useState(false);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handlePress = React.useCallback(() => {
+    onPress();
+    setPlaying(true);
+    if (timer.current) clearTimeout(timer.current);
+    // Слово короткое — секунды с небольшим достаточно, чтобы дорожка успела
+    // «отыграть» визуально, не превращая это в точный таймер плеера.
+    timer.current = setTimeout(() => setPlaying(false), 1300);
+  }, [onPress]);
+
+  React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  // Высоты столбиков считаются один раз при монтировании: дорожка одного
+  // слова не должна «перестраиваться» на каждый ре-рендер карточки.
+  const bars = React.useMemo(
+    () => Array.from({ length: 24 }, (_, i) => 5 + Math.abs(Math.sin(i * 0.85 + 1)) * 24),
+    [],
+  );
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      accessibilityRole="button"
+      accessibilityLabel="Прослушать слово"
+      style={{
+        width: "100%", flexDirection: "row", alignItems: "center", gap: 14,
+        backgroundColor: colors.accent, borderRadius: radii.lg,
+        borderWidth: 1, borderColor: colors.primary + "33",
+        paddingVertical: 16, paddingHorizontal: 16,
+      }}
+    >
+      <LinearGradient
+        colors={gradients.action as unknown as string[]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={{
+          width: 54, height: 54, borderRadius: 27,
+          alignItems: "center", justifyContent: "center",
+          shadowColor: colors.primary, shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.35, shadowRadius: 14, elevation: 6,
+        }}
+      >
+        <Glyph name={playing ? "pause" : "play"} size={22} color="#ffffff" />
+      </LinearGradient>
+      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 3, height: 34 }}>
+        {bars.map((h, i) => (
+          <View
+            key={i}
+            style={{
+              flex: 1,
+              height: playing ? h : Math.max(5, h * 0.55),
+              borderRadius: radii.pill,
+              backgroundColor: playing ? colors.primary : colors.primary + "55",
+            }}
+          />
+        ))}
+      </View>
+    </Pressable>
+  );
 }
 
 export function WordTrainer({
@@ -1208,29 +1298,10 @@ export function WordTrainer({
   const answerFront = (
     <>
       {isListen ? (
-        // Кнопка звука — главный объект в аудировании, поэтому градиент
-        // бренда и свечение, а не плоская плашка. Само слово теперь не
-        // подглядеть здесь после ответа — оно на обратной стороне, вместе
-        // со всей остальной информацией.
-        <TouchableOpacity
-          onPress={playWord}
-          activeOpacity={0.85}
-          accessibilityLabel="Прослушать слово"
-        >
-          <LinearGradient
-            colors={gradients.action as unknown as string[]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={{
-              alignItems: "center", justifyContent: "center",
-              width: 116, height: 116, borderRadius: 58,
-              shadowColor: colors.primary, shadowOffset: { width: 0, height: 8 },
-              shadowOpacity: 0.4, shadowRadius: 20, elevation: 9,
-            }}
-          >
-            <Glyph name="sound" size={44} color="#ffffff" />
-          </LinearGradient>
-        </TouchableOpacity>
+        // Карточка выглядит как дорожка аудиоплеера (AudioTrackCard выше), а не
+        // одинокая кнопка-кружок. Тап работает по всей карточке, не только по
+        // кнопке слева — под капотом всё тот же playWord().
+        <AudioTrackCard colors={colors} onPress={playWord} />
       ) : (
         <>
           <Text
