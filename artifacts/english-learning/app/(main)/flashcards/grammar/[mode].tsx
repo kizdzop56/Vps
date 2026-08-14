@@ -91,10 +91,24 @@
 // — панель плавает ПОВЕРХ содержимого, и без запаса она накрыла бы поле ответа и
 // кнопку «Проверить». Ровно так на итогах тренировки слов пропадала «Готово».
 //
+// ── Пропуск заполняется вживую тем, что печатает ученик ─────────────────────
+// У письменного ответа (input === "type") предложение раньше всегда рисовалось
+// со статичным прочерком (см. BLANK ниже), а то, что ученик набирал, было видно
+// только в поле под карточкой. Теперь, пока ответ ещё не проверен, пропуск в
+// самом предложении заполняется живым вводом фиолетовым цветом — тот же приём,
+// что в тренажёре слов (components/WordTrainer.tsx). После ответа (verdict уже
+// есть) рендер снова падает на прежнее статичное поведение (verdict.full или
+// прочерк) — живой ввод важен, только пока идёт набор.
+//
 // ── ГРАБЛИ ──────────────────────────────────────────────────────────────────
 // Предложение рисуется ОДНИМ Text с подставленным прочерком, а не строкой из
-// кусков. Причины две: вложенный Text роняет Safari (см. шапку flashcards.tsx),
-// а перенос длинной фразы по словам пришлось бы верстать вручную.
+// кусков. Причины две: собирать «строку» из отдельных СОСЕДНИХ Text/View
+// значило бы верстать перенос по словам вручную (одна широкая строка вместо
+// абзаца из нескольких), а перенос длинной фразы по словам пришлось бы верстать
+// вручную. Живой ввод подставляется не отдельным соседним элементом, а ВЛОЖЕННЫМ
+// Text-ребёнком внутри того же самого Text — это тот же самый один логический
+// текстовый узел, просто с другим цветом одной его части, и переносится он как
+// единое целое ровно так же, как обычная строка.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -115,6 +129,21 @@ const NEXT_DELAY_OK = 1200;
 
 /** Прочерк на месте пропуска: длиннее, чем «___», иначе его не видно. */
 const BLANK = "______";
+
+/**
+ * Ищет пропуск в исходном тексте карточки (card.text, ДО подстановки BLANK) —
+ * РЯД из 3+ подчёркиваний, а не точная длина: сервер использует «___», но
+ * завязываться на точное число значит однажды разъехаться с реальным
+ * форматом. Тот же приём, что в components/WordTrainer.tsx.
+ *
+ * null — пропуска нет (не должно случаться для card.input === "type", но на
+ * всякий случай не роняем рендер, а просто не подставляем живой ввод).
+ */
+function findGap(text: string): { before: string; after: string } | null {
+  const m = text.match(/_{3,}/);
+  if (!m || m.index === undefined) return null;
+  return { before: text.slice(0, m.index), after: text.slice(m.index + m[0].length) };
+}
 
 /** Режим экрана. review — не банк заданий, а расписание повторений. */
 type TrainerMode = GrammarMode | "review";
@@ -579,6 +608,11 @@ function GrammarTrainer({
     ? verdict.full
     : card.text.replace("___", BLANK);
 
+  // Пока ответ не проверен — пропуск заполняется ЖИВЫМ вводом (см. ГРАБЛИ выше
+  // и шапку файла), а не статичным прочерком. Ищем пропуск в СЫРОМ card.text
+  // (до подстановки BLANK), потому что подставлять нужно ровно на его место.
+  const liveGap = !verdict && card.input === "type" ? findGap(card.text) : null;
+
   const canSubmit =
     card.input === "type" ? typed.trim().length > 0
       : card.input === "choice" ? picked !== null
@@ -646,9 +680,17 @@ function GrammarTrainer({
           </Text>
         ) : (
           <>
-            <Text style={{ fontSize: 20, fontWeight: "800", color: colors.foreground, textAlign: "center", marginTop: 12, lineHeight: 30 }}>
-              {shown}
-            </Text>
+            {liveGap ? (
+              <Text style={{ fontSize: 20, fontWeight: "800", color: colors.foreground, textAlign: "center", marginTop: 12, lineHeight: 30 }}>
+                {liveGap.before}
+                <Text style={{ color: colors.primary }}>{typed || BLANK}</Text>
+                {liveGap.after}
+              </Text>
+            ) : (
+              <Text style={{ fontSize: 20, fontWeight: "800", color: colors.foreground, textAlign: "center", marginTop: 12, lineHeight: 30 }}>
+                {shown}
+              </Text>
+            )}
             <Text style={{ fontSize: 13, color: colors.mutedForeground, textAlign: "center", marginTop: 8, lineHeight: 19 }}>
               {card.ru}
             </Text>

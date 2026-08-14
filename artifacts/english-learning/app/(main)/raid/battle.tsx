@@ -25,6 +25,15 @@
 //
 // Выход — router.replace("/raid"), а не router.back(): внутри вкладок back
 // возвращает на ПЕРВУЮ вкладку, а не на предыдущий экран.
+//
+// ── Пропуск в тексте задания заполняется вживую ─────────────────────────────
+// Рейд берёт часть заданий из того же банка грамматики (см. шапку файла выше),
+// и у письменных заданий («type») текст может нести тот же пропуск-подчёркивание,
+// что и в grammar/[mode].tsx и WordTrainer.tsx. Пока ответ не проверен, пропуск
+// подставляет живой ввод фиолетовым — тот же приём и тот же findGap, что и в
+// двух других тренажёрах (см. их шапки за подробным обоснованием). У выбора
+// вариантов и сборки из плиток своего непрерывно набираемого текста нет, так
+// что живая подстановка есть только у «type».
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -48,6 +57,20 @@ import { damageTitle, raid, type RaidAnswer } from "@/hooks/useRaid";
 const BOSS_HEIGHT_SHARE = 0.44;
 /** Шире этого фигура не растёт: на планшете иначе распухает до нелепого. */
 const BOSS_WIDTH_SHARE = 0.92;
+
+/**
+ * Ищет пропуск в тексте задания — РЯД из 3+ подчёркиваний, а не точная длина.
+ * Тот же приём и по той же причине, что в components/WordTrainer.tsx и
+ * app/(main)/flashcards/grammar/[mode].tsx: банк заданий общий, и разные его
+ * генераторы не согласованы на точное число подчёркиваний.
+ *
+ * null — пропуска нет (обычный вопрос без пропуска, например перевод слова).
+ */
+function findGap(text: string): { before: string; after: string } | null {
+  const m = text.match(/_{3,}/);
+  if (!m || m.index === undefined) return null;
+  return { before: text.slice(0, m.index), after: text.slice(m.index + m[0].length) };
+}
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
   return (
@@ -234,6 +257,10 @@ export default function RaidBattle() {
   const assembled = picked.join(task.kind === "word" ? "" : " ");
   const bossSize = Math.round(Math.min(width * BOSS_WIDTH_SHARE, height * BOSS_HEIGHT_SHARE));
 
+  // Живая подстановка ответа в пропуск: только для письменных заданий, пока
+  // ответ ещё не проверен. См. шапку файла.
+  const liveGap = task.input === "type" && !verdict ? findGap(task.prompt) : null;
+
   return (
     <View style={{ flex: 1, paddingTop: screenTop(insets) }}>
       {/* ── Шапка: выход, шкала здоровья, энергия ─────────────────────── */}
@@ -324,6 +351,18 @@ export default function RaidBattle() {
                 Нажми, чтобы прослушать снова
               </Text>
             </Pressable>
+          ) : liveGap ? (
+            <Text style={{
+              fontSize: task.prompt.length > 40 ? 18 : 24,
+              fontWeight: "900",
+              letterSpacing: -0.6,
+              color: colors.foreground,
+              textAlign: "center",
+            }}>
+              {liveGap.before}
+              <Text style={{ color: colors.primary }}>{given || "____"}</Text>
+              {liveGap.after}
+            </Text>
           ) : (
             <Text style={{
               fontSize: task.prompt.length > 40 ? 18 : 24,

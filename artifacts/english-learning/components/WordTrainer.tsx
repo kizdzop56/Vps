@@ -237,6 +237,25 @@
 // них чуть больше запаса даже для длинных слов — шкала чуть мягче на верхней
 // границе.
 //
+// ── Пропуск во фразе заполняется ВЖИВУЮ тем, что печатает ученик ────────────
+// У письменного упражнения (typeEn/typeRu, generateExercise → gapExercise в
+// api-server/src/lib/wordExercise.ts) prompt — это предложение-пример с
+// пропуском (ряд подчёркиваний) плюс перевод фразы второй строкой. Раньше на
+// месте пропуска всегда стоял статичный прочерк, а то, что ученик печатает в
+// поле ниже, было видно только в самом поле — предложение сверху не менялось
+// вообще. Теперь пропуск подставляет ЖИВОЙ ввод: то же самое слово одновременно
+// растёт и в поле, и в самом предложении, фиолетовым — сразу видно, что это
+// именно ЕГО ответ, а не часть фразы. Пока поле пустое, на месте пропуска
+// остаётся обычный прочерк, иначе предложение выглядит оборванным.
+//
+// Пропуск ищется по РЯДУ из 3+ подчёркиваний (см. findGap ниже), а не по
+// точной длине: GAP в wordExercise.ts — 4 символа, но полагаться на точное
+// число значит однажды разъехаться с форматом, если он изменится.
+//
+// Живая подстановка нужна ТОЛЬКО письму (isTyping): у выбора вариантов,
+// сборки из букв, аудирования и произношения нет параллельно набираемого
+// текста, который стоило бы показывать в предложении.
+//
 // ── Аудирование выглядит как дорожка плеера, а не кружок-кнопка ─────────────
 // Раньше упражнение «Послушай и выбери перевод» показывало на карточке одну
 // круглую кнопку со значком динамика посреди пустого пространства — по форме
@@ -467,6 +486,21 @@ function fitOptionFontSize(text: string, base: number): number {
 /** Межстрочный интервал, согласованный с fitFontSize. */
 function fitLineHeight(fontSize: number): number {
   return Math.round(fontSize * 1.22);
+}
+
+/**
+ * Ищет пропуск во фразе-задании письменного упражнения (см. блок «Пропуск во
+ * фразе...» в шапке файла) — РЯД из 3+ подчёркиваний, а не точная длина: GAP в
+ * api-server/src/lib/wordExercise.ts равен 4 символам, но завязываться на
+ * точное число значит однажды разъехаться с реальным форматом сервера.
+ *
+ * null — пропуска в тексте нет (обычный перевод без примера-предложения, или
+ * упражнение вообще не письменное).
+ */
+function findGap(text: string): { before: string; after: string } | null {
+  const m = text.match(/_{3,}/);
+  if (!m || m.index === undefined) return null;
+  return { before: text.slice(0, m.index), after: text.slice(m.index + m[0].length) };
 }
 
 /** Момент из ISO-строки как «в 14:32» — местное время устройства. */
@@ -1395,20 +1429,34 @@ export function WordTrainer({
         <AudioTrackCard colors={colors} onPress={playWord} />
       ) : (
         <>
-          <Text
-            style={{
+          {(() => {
+            const promptStyle = {
               fontSize: fitFontSize(exercise.prompt, 34),
               lineHeight: fitLineHeight(fitFontSize(exercise.prompt, 34)),
-              fontWeight: "900", letterSpacing: -0.5,
-              color: colors.foreground, textAlign: "center",
+              fontWeight: "900" as const, letterSpacing: -0.5,
+              color: colors.foreground, textAlign: "center" as const,
               width: "100%", flexShrink: 1,
-            }}
-            numberOfLines={PROMPT_MAX_LINES}
-            adjustsFontSizeToFit
-            minimumFontScale={0.5}
-          >
-            {exercise.prompt}
-          </Text>
+            };
+            // Пропуск заполняется тем, что ученик печатает внизу — фиолетовым,
+            // см. блок «Пропуск во фразе...» в шапке файла. Только для письма
+            // (isTyping): у остальных упражнений нет своего живого текста,
+            // который стоило бы подставлять сюда.
+            const gap = isTyping ? findGap(exercise.prompt) : null;
+            if (!gap) {
+              return (
+                <Text style={promptStyle} numberOfLines={PROMPT_MAX_LINES} adjustsFontSizeToFit minimumFontScale={0.5}>
+                  {exercise.prompt}
+                </Text>
+              );
+            }
+            return (
+              <Text style={promptStyle} numberOfLines={PROMPT_MAX_LINES} adjustsFontSizeToFit minimumFontScale={0.5}>
+                {gap.before}
+                <Text style={{ color: colors.primary }}>{typed || "____"}</Text>
+                {gap.after}
+              </Text>
+            );
+          })()}
           {(exercise.type === "choiceRu" || isSpeak) && !!card?.ipa && (
             <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 6 }}>{card.ipa}</Text>
           )}
