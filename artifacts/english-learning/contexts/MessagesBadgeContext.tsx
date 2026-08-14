@@ -15,6 +15,15 @@
 // связанными пользователями), поэтому один и тот же счётчик покрывает оба
 // списка сразу: сообщение от ученика так же засветит значок, как и от друга.
 //
+// ── Кто опрашивает ───────────────────────────────────────────────────────
+// Раньше опрос был включён только для учителя/админа: единственными точками
+// входа были вкладка «Друзья» (только у учителя, см. app/(main)/_layout.tsx)
+// и список учеников. Теперь свою кнопку чата с точкой непрочитанного получил
+// и лист «Мои друзья» ученика (components/FriendsSheet.tsx — учитель,
+// родители, друзья), поэтому опрос включён для ЛЮБОГО вошедшего пользователя:
+// сам эндпоинт (/api/messages/conversations) и так работает для каждого, кто
+// связан с кем-то перепиской, ограничение было только здесь.
+//
 // Своего «прочитано/непрочитано» состояния контекст не хранит и не обязан:
 // как только собеседника открывают (GET /messages/with/:id помечает его
 // сообщения readAt), следующий опрос сам вернёт ноль. refresh() существует
@@ -23,7 +32,7 @@
 import React, {
   createContext, useCallback, useContext, useEffect, useRef, useState,
 } from "react";
-import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import authStorage from "@/utils/authStorage";
 
 const POLL_MS = 15_000;
@@ -68,10 +77,10 @@ const MessagesBadgeContext = createContext<MessagesBadgeContextValue>({
 
 export function MessagesBadgeProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  // Вкладка «Друзья» — единственная точка входа с этим значком — видна
-  // только учителю/админу (см. app/(main)/_layout.tsx); опрашивать сервер
-  // для остальных ролей незачем, у них нет экрана, который бы это показал.
-  const enabled = isTeacherOrAdmin(user?.role ?? "");
+  // Любой вошедший пользователь: и учитель (вкладка «Друзья», список учеников),
+  // и ученик (лист «Мои друзья» — см. заголовок файла). Эндпоинт сам по себе
+  // ограничений по роли не имеет, поэтому опрос здесь тоже не должен их иметь.
+  const enabled = !!user?.id;
 
   const [unreadByUser, setUnreadByUser] = useState<Record<number, number>>({});
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
