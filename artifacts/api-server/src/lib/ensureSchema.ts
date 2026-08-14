@@ -3,9 +3,9 @@
 //
 // ЗАЧЕМ. drizzle перечисляет в SELECT все колонки схемы, поэтому одна колонка,
 // добавленная в код, но не доехавшая до базы, роняет КАЖДЫЙ запрос к таблице.
-// Так `daily_goal_claimed_date` уронила чужой профиль, цель дня и всю
-// статистику разом: «Failed query: select "id", "username", …». С таблицей то же
-// самое, только хуже: раздел целиком отвечает пятисоткой.
+// Так daily_goal_claimed_date уронила чужой профиль, цель дня и всю
+// статистику разом. С таблицей то же самое, только хуже: раздел целиком
+// отвечает пятисоткой.
 //
 // Продакшен на Render деплоится обычным пушем, миграции руками почти никогда не
 // гоняются, а падение выглядит как сломанное приложение, хотя код правильный.
@@ -17,9 +17,7 @@
 // нельзя выполнять вслепую на живой базе.
 //
 // Оставшиеся не нужными колонки здесь НЕ удаляются: удаление необратимо, а
-// лишняя колонка с DEFAULT никому не мешает. Так осталась mana в raid_state —
-// механика маны убрана, но колонка в уже развёрнутой базе живёт с default 0 и
-// вставкам не мешает.
+// лишняя колонка с DEFAULT никому не мешает.
 //
 // Определения написаны дословно, а не выведены из схемы drizzle: генерация DDL
 // из кода — это свой мини-drizzle-kit, а настоящий в проекте уже есть. Здесь
@@ -33,25 +31,65 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger";
 
-/** Таблица, без которой раздел не работает вовсе. */
 interface TablePatch {
   table: string;
-  /** Полный DDL, включая create table if not exists и индексы. */
   ddl: string[];
   reason: string;
 }
 
-/** Колонка, без которой падают запросы. Порядок значения не имеет. */
 interface ColumnPatch {
   table: string;
   column: string;
-  /** Тип и модификаторы: «date», «integer not null default 0». */
   definition: string;
-  /** Зачем она нужна — чтобы список не превратился в свалку. */
   reason: string;
 }
 
+const CONVERSATIONS_ENUM_DDL = [
+  "do $$ begin",
+  "  create type \"message_attachment_type\" as enum ('image', 'audio');",
+  "exception when duplicate_object then null;",
+  "end $$",
+].join("\n");
+
+const CONVERSATIONS_TABLE_DDL = [
+  "create table if not exists \"conversations\" (",
+  "  \"id\" serial primary key,",
+  "  \"user_a_id\" integer not null references \"users\"(\"id\") on delete cascade,",
+  "  \"user_b_id\" integer not null references \"users\"(\"id\") on delete cascade,",
+  "  \"last_message_at\" timestamp not null default now(),",
+  "  \"created_at\" timestamp not null default now(),",
+  "  constraint \"conversation_pair_unique\" unique (\"user_a_id\", \"user_b_id\")",
+  ")",
+].join("\n");
+
+const MESSAGES_TABLE_DDL = [
+  "create table if not exists \"messages\" (",
+  "  \"id\" serial primary key,",
+  "  \"conversation_id\" integer not null references \"conversations\"(\"id\") on delete cascade,",
+  "  \"sender_id\" integer not null references \"users\"(\"id\") on delete cascade,",
+  "  \"text\" text,",
+  "  \"attachment_url\" text,",
+  "  \"attachment_type\" \"message_attachment_type\",",
+  "  \"read_at\" timestamp,",
+  "  \"created_at\" timestamp not null default now()",
+  ")",
+].join("\n");
+
+const MESSAGES_INDEX_DDL =
+  "create index if not exists \"messages_conversation_time_idx\" on \"messages\" (\"conversation_id\", \"created_at\")";
+
 const TABLES: TablePatch[] = [
+  {
+    table: "conversations",
+    reason:
+      "личные сообщения (ученик/учитель/родитель): без таблиц раздел «Чат» отвечает 500 на КАЖДЫЙ запрос, вне зависимости от собеседника",
+    ddl: [
+      CONVERSATIONS_ENUM_DDL,
+      CONVERSATIONS_TABLE_DDL,
+      MESSAGES_TABLE_DDL,
+      MESSAGES_INDEX_DDL,
+    ],
+  },
   {
     table: "grammar_log",
     reason: "журнал ответов раздела «Составлять»: потолок очков и статистика",
@@ -320,8 +358,6 @@ const PATCHES: ColumnPatch[] = [
  * подняться и сообщить об этом в лог, а не молча не стартовать.
  */
 export async function ensureSchema(): Promise<void> {
-  // Таблицы — первыми: патч колонки для только что заведённой таблицы иначе не
-  // нашёл бы саму таблицу.
   for (const patch of TABLES) {
     for (const statement of patch.ddl) {
       try {
