@@ -134,20 +134,59 @@ export function thirdPerson(base: string): string {
   return `${base}s`;
 }
 
-/** Причастие на -ing: make → making, run → running, be → being. */
+// ── Удвоение последней согласной ────────────────────────────────────────────
+//
+// ГРАБЛИ, из-за которых ученик видел неверный ответ.
+//
+// Проверка удвоения была написана так: /^[^aeiou]?[aeiou][^aeiouwxy]$/. Шаблон
+// привязан к НАЧАЛУ слова и допускает перед гласной максимум одну согласную,
+// то есть срабатывал только на трёхбуквенных: run, sit, get. А «stop» — четыре
+// буквы, и он под шаблон не подходил: получалось «stoped» и «stoping».
+//
+// Тест на -ed это ловил (он и падал), но починить было некому: сборка в
+// репозитории была красной, и её никто не читал. Заготовка «The rain has stopped
+// already» при этом жила в банке и показывала ученику «stoped» как эталон.
+//
+// Теперь два условия, и оба обязательны:
+//   1. слово кончается на согласная + гласная + согласная (последняя не w, x, y):
+//      это и есть та позиция, где согласная удваивается;
+//   2. слово ОДНОСЛОЖНОЕ — в нём одна группа гласных.
+//
+// Второе условие держит на месте «visit» → visited и «open» → opened: у них
+// нужное окончание есть, но ударение падает не на последний слог, и удвоения
+// не происходит. Считать слоги честно (по ударению) нельзя без словаря, а
+// «одна группа гласных» покрывает весь школьный набор: stop, plan, swim, sit,
+// drop, shop.
+//
+// Известная плата: многосложные глаголы с ударением на последнем слоге
+// («prefer» → preferred) правило пропустит. В банке заданий их нет, а гадать об
+// ударении без словаря — хуже, чем не гадать: сейчас ошибка возможна только на
+// слове, которого в приложении не существует.
+
+/** Одна группа гласных — считаем слово односложным. */
+function oneSyllable(base: string): boolean {
+  return (base.match(/[aeiou]+/g) ?? []).length <= 1;
+}
+
+/** Последняя согласная удваивается перед -ing и -ed. */
+function doublesFinal(base: string): boolean {
+  return oneSyllable(base) && /[^aeiou][aeiou][^aeiouwxy]$/.test(base);
+}
+
+/** Причастие на -ing: make → making, run → running, stop → stopping, be → being. */
 export function ingForm(base: string): string {
   const special = IRREGULAR_PRESENT[base];
   if (special) return special.ing;
   if (/[^aeiou]e$/.test(base)) return `${base.slice(0, -1)}ing`;
-  if (/^[^aeiou]?[aeiou][^aeiouwxy]$/.test(base)) return `${base}${base.slice(-1)}ing`;
+  if (doublesFinal(base)) return `${base}${base.slice(-1)}ing`;
   return `${base}ing`;
 }
 
-/** Правильное прошедшее: work → worked, live → lived, study → studied. */
+/** Правильное прошедшее: work → worked, live → lived, study → studied, stop → stopped. */
 export function edForm(base: string): string {
   if (base.endsWith("e")) return `${base}d`;
   if (/[^aeiou]y$/.test(base)) return `${base.slice(0, -1)}ied`;
-  if (/^[^aeiou]?[aeiou][^aeiouwxy]$/.test(base)) return `${base}${base.slice(-1)}ed`;
+  if (doublesFinal(base)) return `${base}${base.slice(-1)}ed`;
   return `${base}ed`;
 }
 
