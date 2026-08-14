@@ -5,7 +5,7 @@ import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import { useEffect, useRef, useCallback, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CalendarBadgeProvider, useCalendarBadge } from "@/contexts/CalendarBadgeContext";
-import { MessagesBadgeProvider, useMessagesBadge } from "@/contexts/MessagesBadgeContext";
+import { MessagesBadgeProvider } from "@/contexts/MessagesBadgeContext";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import authStorage from "@/utils/authStorage";
@@ -101,6 +101,71 @@ function StudentTimerManager() {
   return null;
 }
 
+/**
+ * Присутствие для НЕ-ученика (учитель, родитель, админ).
+ *
+ * Раньше lastSeenAt для этих ролей не писал вообще никто и никогда: вход не
+ * трогает это поле, StudentTimerManager (единственное место, где оно
+ * обновляется) рендерится только для ученика, а старый /users/offline и вовсе
+ * обнулял его при выходе (починено отдельно). Поэтому «ещё не заходил» у
+ * учителя было не устаревшими данными, а буквальной правдой с точки зрения
+ * сервера — сколько бы учитель ни пользовался приложением.
+ *
+ * В отличие от StudentTimerManager, здесь только пинг: понятия учебной сессии
+ * (время в приложении, которое считает раздел «Учёба») у этих ролей нет, и
+ * дёргать /api/time-tracking/start|end для них незачем — сам пинг безвреден:
+ * он просто обновит lastSeenAt и, если открытой учебной сессии нет (а у этих
+ * ролей её и не бывает), больше ничего не сделает.
+ */
+function PresenceHeartbeat() {
+  const tokenRef = useRef<string | null>(null);
+
+  const ping = useCallback(() => {
+    const token = tokenRef.current;
+    if (!token) return;
+    fetch(`${BASE_URL}/api/users/ping`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      keepalive: true,
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    authStorage.getItem("auth_token").then((t) => {
+      if (!alive) return;
+      tokenRef.current = t;
+      ping();
+    });
+
+    const interval = setInterval(ping, 60_000);
+
+    // На вебе — тот же приём, что у StudentTimerManager: вернувшись на вкладку
+    // после долгого простоя, не ждём до минуты, а пингуем сразу.
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      const onVisibilityChange = () => { if (!document.hidden) ping(); };
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      return () => {
+        alive = false;
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        clearInterval(interval);
+      };
+    }
+
+    const appStateSub = AppState.addEventListener("change", (state) => {
+      if (state === "active") ping();
+    });
+
+    return () => {
+      alive = false;
+      appStateSub.remove();
+      clearInterval(interval);
+    };
+  }, [ping]);
+
+  return null;
+}
+
 function CalendarTabIcon({ color }: { color: string }) {
   const { unreadCount } = useCalendarBadge();
   return (
@@ -118,37 +183,6 @@ function CalendarTabIcon({ color }: { color: string }) {
         }}>
           <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 13 }}>
             {unreadCount > 9 ? "9+" : unreadCount}
-          </Text>
-        </View>
-      )}
-    </View>
-  );
-}
-
-/**
- * Значок вкладки «Друзья» — она же и есть «кнопка чата»: у неё чат-иконка, и
- * через неё же (или через «Написать» у ученика) открывается вся переписка.
- * Раньше учитель узнавал о новом сообщении, только зайдя в конкретный диалог
- * — сигнала снаружи не было вообще, и приходилось «тыкать и искать», кто
- * написал. Число непрочитанных сразу по ВСЕМ беседам (и с друзьями, и с
- * учениками — это одна и та же таблица на сервере, см. MessagesBadgeContext)
- * теперь светится тем же приёмом, что уже работает у CalendarTabIcon выше.
- */
-function FriendsTabIcon({ color }: { color: string }) {
-  const { unreadTotal } = useMessagesBadge();
-  return (
-    <View style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center" }}>
-      <Glyph name="chat" size={22} color={color} />
-      {unreadTotal > 0 && (
-        <View style={{
-          position: "absolute", top: -6, right: -8,
-          backgroundColor: "#e11d48", borderRadius: 9,
-          minWidth: 18, height: 18, paddingHorizontal: 4,
-          alignItems: "center", justifyContent: "center",
-          borderWidth: 2, borderColor: "#ffffff",
-        }}>
-          <Text style={{ color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 13 }}>
-            {unreadTotal > 9 ? "9+" : unreadTotal}
           </Text>
         </View>
       )}
@@ -455,7 +489,7 @@ function MainLayoutInner() {
 
   return (
     <>
-      {isStudent && <StudentTimerManager />}
+      {isStudent ? <StudentTimerManager /> : <PresenceHeartbeat />}
       <Tabs
         tabBar={(props) => (
           <CustomTabBar
@@ -555,16 +589,12 @@ function MainLayoutInner() {
           }
         />
 
-        <Tabs.Screen
-          name="friends"
-          options={isTeacher
-            ? {
-                title: "Друзья",
-                tabBarIcon: ({ color }) => <FriendsTabIcon color={color} />,
-              }
-            : { href: null }
-          }
-        />
+        {/* «Друзья» больше не вкладка панели ни для одной роли: у учителя и
+            родителя вход теперь через кнопку в «Профиле» (см. profile.tsx),
+            у ученика он и раньше жил там же (FriendsSheet). Маршрут остаётся
+            зарегистрированным — на него переходят обычным push, а не через
+            панель, поэтому здесь всегда href: null. */}
+        <Tabs.Screen name="friends" options={{ href: null }} />
 
         <Tabs.Screen
           name="profile"
