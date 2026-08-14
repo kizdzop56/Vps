@@ -22,9 +22,17 @@ export default function StudyScreen() {
   }, [qc, id]);
 
   // См. session.tsx: router.back() в табах уводит на первую вкладку.
+  //
+  // Ведём в «Слова» (/flashcards/words), А НЕ в /flashcards: последний адрес —
+  // оглавление режимов раздела («Учёба»), на шаг дальше того места, откуда
+  // ученик пришёл (список своих колод). Раньше здесь стоял /flashcards, и
+  // ученик, закончив колоду, попадал не в список колод, а в выбор режима —
+  // ровно та же ошибка, что уже когда-то поправили в session.tsx и
+  // marathon.tsx (см. их комментарии), но забыли применить здесь при
+  // выделении тренировки колоды в отдельный роут.
   const exit = React.useCallback(() => {
     refreshLists();
-    router.replace("/flashcards");
+    router.replace("/flashcards/words");
   }, [refreshLists, router]);
 
   return (
