@@ -40,6 +40,32 @@ export function clean<T extends Record<string, any>>(o: T): T {
   return out;
 }
 
+// ── Причина пустой очереди ──────────────────────────────────────────────────
+//
+// Раньше пустая очередь всегда читалась клиентом как одно и то же «повторять
+// пока нечего», хотя причины у неё три совершенно разные:
+//   capped  — новые слова ЕСТЬ, но дневной лимит новых слов исчерпан;
+//   waiting — всё введённое уже отвечено и ждёт своего времени (у SRS-карточки,
+//             провалившейся с оценкой «ещё раз», это время — уже через минуту,
+//             поэтому слово может «вернуться» почти сразу после уведомления);
+//   done    — вообще нечего показывать (пустая колода или все слова выучены).
+export type EmptyReason = "capped" | "waiting" | "done";
+
+export function computeEmptyInfo(
+  now: Date,
+  freshAvailable: boolean,
+  candidateStates: StateRow[],
+): { emptyReason: EmptyReason; nextDueAt?: string } {
+  if (freshAvailable) return { emptyReason: "capped" };
+  const future = candidateStates
+    .map((s) => s.dueAt.getTime())
+    .filter((t) => t > now.getTime());
+  if (future.length > 0) {
+    return { emptyReason: "waiting", nextDueAt: new Date(Math.min(...future)).toISOString() };
+  }
+  return { emptyReason: "done" };
+}
+
 // ── Доступ ──────────────────────────────────────────────────────────────────
 
 /**
@@ -304,6 +330,10 @@ export function stateForHard(st: StateRow) {
  * Выученные слова (уровень памяти ≥ LEARNED_LEVEL) сюда НЕ попадают: их место
  * в марафоне. Слово, на котором ученик сорвался, падает ниже порога и
  * возвращается доучиваться само (см. lib/wordQueue.ts).
+ *
+ * Когда очередь пуста, вместе с ней считаем emptyReason/nextDueAt (см.
+ * computeEmptyInfo выше) — без этого клиент не может объяснить пользователю,
+ * почему сейчас нечего повторять и когда появится следующее слово.
  */
 export async function buildTrainerQueue(userId: number, scope: "all" | "hard", now: Date) {
   const settings = await ensureSettings(userId);
@@ -324,6 +354,7 @@ export async function buildTrainerQueue(userId: number, scope: "all" | "hard", n
   let picked: WordRow[];
   let newCount = 0;
   let reviewCount = 0;
+  let emptyInfo: { emptyReason?: EmptyReason; nextDueAt?: string } = {};
 
   if (scope === "hard") {
     const byId = new Map(words.map((w) => [w.id, w]));
@@ -334,6 +365,7 @@ export async function buildTrainerQueue(userId: number, scope: "all" | "hard", n
       .filter((w): w is WordRow => Boolean(w))
       .slice(0, HARD_MAX_CARDS);
     reviewCount = picked.length;
+    if (picked.length === 0) emptyInfo = { emptyReason: "done" };
   } else {
     // порядок датасета — это порядок обучения: сначала простые слова колоды
     const ordered = [...words].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
@@ -356,6 +388,15 @@ export async function buildTrainerQueue(userId: number, scope: "all" | "hard", n
     picked = interleaveQueue(dueTaken, freshTaken);
     newCount = freshTaken.length;
     reviewCount = dueTaken.length;
+
+    if (picked.length === 0) {
+      // Новые слова «есть», но кэп по ним сейчас 0 (freshTaken пуст, хотя
+      // fresh — нет) → капнуто дневным лимитом, а не отсутствием слов.
+      const cappedByLimit = fresh.length > 0 && freshTaken.length === 0;
+      const wordIdSet = new Set(words.map((w) => w.id));
+      const candidateStates = states.filter((s) => wordIdSet.has(s.wordId));
+      emptyInfo = computeEmptyInfo(now, cappedByLimit, candidateStates);
+    }
   }
 
   const progress = await dailyWordProgress(userId, settings.dailyWordGoal, now);
@@ -368,6 +409,7 @@ export async function buildTrainerQueue(userId: number, scope: "all" | "hard", n
     newCount,
     reviewCount,
     ...progress,
+    ...emptyInfo,
     cards: picked.map((w) => trainerCard(w, stateByWord.get(w.id), all, now)),
   });
 }
