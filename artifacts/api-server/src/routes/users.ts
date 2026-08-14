@@ -472,12 +472,16 @@ router.post("/users/ping", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Mark user as offline on logout (clears lastSeenAt)
-router.post("/users/offline", requireAuth, async (req, res) => {
-  const user = getUser(req);
-  await db.update(usersTable)
-    .set({ lastSeenAt: null })
-    .where(eq(usersTable.id, user.userId));
+// «Выход из приложения»: раньше здесь обнулялся lastSeenAt, и следующий
+// собеседник видел «ещё не заходил», хотя человек только что закрыл вкладку.
+// Это поле — единственная запись «когда его видели в последний раз», и её
+// нельзя стирать по своей воле: онлайн-статус и так считается порогом времени
+// (см. isOnline = now - lastSeenAt < ONLINE_MS везде, где он читается) —
+// он сам погаснет через ONLINE_MS после последнего пинга, обнулять поле ради
+// этого не нужно. Теперь ручка ничего не трогает: последний пинг остаётся
+// точным временем «видели в последний раз» — то есть, по сути, временем, когда
+// человек вышел.
+router.post("/users/offline", requireAuth, async (_req, res) => {
   res.json({ ok: true });
 });
 
