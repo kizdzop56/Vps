@@ -174,7 +174,7 @@ router.post("/messages/with/:userId", requireAuth, async (req, res) => {
   const { text, attachmentUrl, attachmentType } = req.body as {
     text?: string;
     attachmentUrl?: string;
-    attachmentType?: "image" | "audio";
+    attachmentType?: "image" | "audio" | "video";
   };
 
   const trimmed = (text ?? "").trim();
@@ -182,7 +182,7 @@ router.post("/messages/with/:userId", requireAuth, async (req, res) => {
     res.status(400).json({ error: "Сообщение не может быть пустым" });
     return;
   }
-  if (attachmentUrl && attachmentType !== "image" && attachmentType !== "audio") {
+  if (attachmentUrl && attachmentType !== "image" && attachmentType !== "audio" && attachmentType !== "video") {
     res.status(400).json({ error: "Некорректный тип вложения" });
     return;
   }
@@ -194,7 +194,7 @@ router.post("/messages/with/:userId", requireAuth, async (req, res) => {
     senderId: me,
     text: trimmed || null,
     attachmentUrl: attachmentUrl ?? null,
-    attachmentType: attachmentUrl ? (attachmentType as "image" | "audio") : null,
+    attachmentType: attachmentUrl ? (attachmentType as "image" | "audio" | "video") : null,
   }).returning();
 
   // Bump the conversation so it sorts to the top of both users' lists.
