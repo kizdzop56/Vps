@@ -85,21 +85,43 @@ type PersonExtras = {
   overdue: number;
 };
 
+/** Два аргумента одной календарной даты (без времени), для сравнения дней. */
+function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
 /**
- * «Был в сети» словами. Точная дата учителю не нужна — нужен ответ на вопрос
- * «стоит ли писать». Порог в неделю дальше используется для метки «молчит».
+ * «Был в сети» словами. Показывает ТОЧНОЕ время последнего появления
+ * («сегодня в 14:32», «вчера в 09:05», «3 мар в 21:40»), а не прикидку в днях:
+ * учителю важно знать, стоит ли писать именно сейчас, и точное время отвечает
+ * на этот вопрос лучше, чем «был 3 дня назад».
+ *
+ * «Ещё не заходил» — честный ответ только для аккаунта, у которого lastSeenAt
+ * в принципе никогда не проставлялся. Раньше это сообщение ошибочно показывали
+ * и активным ученикам сразу после выхода из приложения: POST /users/offline на
+ * сервере обнулял lastSeenAt при каждом логауте — исправлено там же.
  */
 function lastSeenText(lastSeenAt: string | null | undefined, isOnline: boolean | undefined): string {
   if (isOnline) return "в сети";
   if (!lastSeenAt) return "ещё не заходил";
   const seen = new Date(lastSeenAt);
   if (Number.isNaN(seen.getTime())) return "ещё не заходил";
-  const days = Math.floor((Date.now() - seen.getTime()) / 86400000);
-  if (days <= 0) return "был сегодня";
-  if (days === 1) return "был вчера";
-  if (days < 7) return `был ${days} дня назад`;
-  if (days < 30) return `не заходил ${days} дней`;
-  return "не заходил больше месяца";
+
+  const now = new Date();
+  const time = seen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  if (sameDay(seen, now)) return `был сегодня в ${time}`;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameDay(seen, yesterday)) return `был вчера в ${time}`;
+
+  const dateLabel = seen.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "short",
+    ...(seen.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+  return `был ${dateLabel} в ${time}`;
 }
 
 /** Дней с последнего захода. null — неизвестно. */
