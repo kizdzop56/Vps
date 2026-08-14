@@ -16,6 +16,13 @@
 // типов и всё, что требует переноса данных, остаются за drizzle-kit push: их
 // нельзя выполнять вслепую на живой базе.
 //
+// Исключение — добавление ЗНАЧЕНИЯ в уже существующий enum (ALTER TYPE ... ADD
+// VALUE IF NOT EXISTS): это тоже безопасно и обратимо только вперёд, как и
+// добавление колонки, а без него разрастание enum (например,
+// message_attachment_type: 'image'/'audio' → плюс 'video') на
+// уже развёрнутой базе не доедет никогда — сам CREATE TYPE выполняется только
+// «если не существует» и молча не тронет уже созданный тип.
+//
 // Оставшиеся не нужными колонки здесь НЕ удаляются: удаление необратимо, а
 // лишняя колонка с DEFAULT никому не мешает.
 //
@@ -46,10 +53,16 @@ interface ColumnPatch {
 
 const CONVERSATIONS_ENUM_DDL = [
   "do $$ begin",
-  "  create type \"message_attachment_type\" as enum ('image', 'audio');",
+  "  create type \"message_attachment_type\" as enum ('image', 'audio', 'video');",
   "exception when duplicate_object then null;",
   "end $$",
 ].join("\n");
+
+// Базы, где тип уже был создан ДО того, как в него добавили 'video', не
+// получат новое значение от CONVERSATIONS_ENUM_DDL выше (он срабатывает только
+// «если типа ещё нет вовсе»). Это отдельный шаг именно за это и отвечает.
+const MESSAGE_ATTACHMENT_VIDEO_DDL =
+  "alter type \"message_attachment_type\" add value if not exists 'video'";
 
 const CONVERSATIONS_TABLE_DDL = [
   "create table if not exists \"conversations\" (",
@@ -85,6 +98,7 @@ const TABLES: TablePatch[] = [
       "личные сообщения (ученик/учитель/родитель): без таблиц раздел «Чат» отвечает 500 на КАЖДЫЙ запрос, вне зависимости от собеседника",
     ddl: [
       CONVERSATIONS_ENUM_DDL,
+      MESSAGE_ATTACHMENT_VIDEO_DDL,
       CONVERSATIONS_TABLE_DDL,
       MESSAGES_TABLE_DDL,
       MESSAGES_INDEX_DDL,
