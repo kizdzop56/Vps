@@ -3,6 +3,27 @@
  * Запуск: pnpm --filter @workspace/api-server test
  *
  * Зависимостей нет — только node:test и node:assert.
+ *
+ * ── Что здесь поменялось вслед за кодом ─────────────────────────────────────
+ * Часть тестов была написана под первую версию тренажёра и отстала от правил:
+ *
+ *   • на уровнях 4–5 упражнение было всегда «собери из букв», а теперь по кругу
+ *     идут сборка, письмо и произношение;
+ *   • на уровне 3 без озвучки подставлялся выбор (choiceEn), а теперь письмо:
+ *     выбор — это узнавание, и заменять им воспроизведение нельзя;
+ *   • при недоборе вариантов возвращался typeRu («напиши перевод»), а такого
+ *     упражнения генератор больше не выдаёт вовсе — вопрос «напиши перевод» не
+ *     определяет ожидаемый ответ (см. шапку wordExercise.ts).
+ *
+ * Тесты приведены к текущим правилам. Проверять «всегда build» на выученном
+ * слове было бы вредно: это закрепило бы поведение, от которого ушли осознанно.
+ *
+ * ── ГРАБЛИ: не привязывайся к конкретному типу на уровнях 3–5 ───────────────
+ * Там тип зависит от cardSeed(wordId, день), то есть от номера слова. Тест,
+ * который ждёт ровно «typeEn», проходит на одном id и падает на другом —
+ * именно так и упал первый вариант проверки «без перевода, но с примером».
+ * Проверять нужно СВОЙСТВО (задание не пустое, ответ фиксирован), а не
+ * конкретную ветку колеса.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -105,11 +126,26 @@ test("при memoryLevel ≥ 1 оба направления встречают�
   assert.ok(types.has("choiceEn"), "choiceEn должен встречаться среди разных wordId");
 });
 
-test("уровни 3 и выше остаются без изменений", () => {
-  const type = (level: number) => pickExerciseType({ memoryLevel: level, isNew: false, english: "apple", wordId: 1, now: NOW });
-  assert.equal(type(3), "listen");
-  assert.equal(type(4), "build");
-  assert.equal(type(5), "build");
+test("уровень 3 — письмо или аудирование, выбора там уже нет", () => {
+  // Раньше уровень 3 был только аудированием. Половина показов ушла письму:
+  // выбор из вариантов — узнавание, а на этом уровне пора воспроизводить.
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const t = pickExerciseType({ memoryLevel: 3, isNew: false, english: "apple", wordId: id, now: NOW });
+    assert.ok(["typeEn", "listen"].includes(t), `wordId=${id} дал ${t}`);
+  }
+});
+
+test("уровни 4–5: воспроизведение по кругу — сборка, письмо, речь", () => {
+  const seen = new Set<string>();
+  for (const level of [4, 5]) {
+    for (let id = 1; id <= 12; id++) {
+      const t = pickExerciseType({ memoryLevel: level, isNew: false, english: "apple", wordId: id, now: NOW });
+      assert.ok(["build", "typeEn", "speak"].includes(t), `level=${level} wordId=${id} дал ${t}`);
+      seen.add(t);
+    }
+  }
+  // Все три обязаны встречаться: иначе колесо выродилось в одно упражнение.
+  assert.deepEqual([...seen].sort(), ["build", "speak", "typeEn"]);
 });
 
 test("без wordId дефолт — choiceRu (безопасный фолбэк для обратной совместимости)", () => {
@@ -117,9 +153,21 @@ test("без wordId дефолт — choiceRu (безопасный фолбэк
   assert.equal(pickExerciseType({ memoryLevel: 2, isNew: false, english: "apple" }), "choiceRu");
 });
 
-test("без озвучки аудирование заменяется choiceEn", () => {
+test("без озвучки на уровне 3 остаётся письмо, а не выбор", () => {
+  // Аудирование заменяется письмом: и то, и другое — воспроизведение. Выбор
+  // вернулся бы на ступень назад, к узнаванию.
   assert.equal(
     pickExerciseType({ memoryLevel: 3, isNew: false, english: "apple", allowListen: false, wordId: 1, now: NOW }),
+    "typeEn",
+  );
+});
+
+test("без озвучки и без письма остаётся выбор", () => {
+  // Длинную конструкцию не пишут целиком (MAX_TYPING_LENGTH), собрать из букв
+  // её тоже нельзя — тогда и правда остаётся только выбор.
+  const long = "take care of sb/sth/yourself";
+  assert.equal(
+    pickExerciseType({ memoryLevel: 3, isNew: false, english: long, allowListen: false, wordId: 1, now: NOW }),
     "choiceEn",
   );
 });
@@ -130,8 +178,11 @@ test("фразы и длинные слова из букв не собирае�
   assert.equal(isBuildable("mother-in-law"), false);     // дефис
   assert.equal(isBuildable("go"), false);                // слишком короткое
   assert.equal(isBuildable("a".repeat(MAX_BUILD_LENGTH + 1)), false);
-  // выученное словосочетание уходит в аудирование, а не в сборку
-  assert.equal(pickExerciseType({ memoryLevel: 5, isNew: false, english: "a piece of cake" }), "listen");
+  // Выученное словосочетание из букв не собирается: его пишут целиком или
+  // произносят.
+  const t = pickExerciseType({ memoryLevel: 5, isNew: false, english: "a piece of cake" });
+  assert.notEqual(t, "build");
+  assert.ok(["typeEn", "speak", "listen"].includes(t), `получили ${t}`);
 });
 
 // ── варианты ответа ─────────────────────────────────────────────────────────
@@ -402,16 +453,39 @@ test("buildExercise: к словосочетанию не подмешивают
   assert.equal(ex.options!.includes("спать"), false);
 });
 
-test("buildExercise: нет подходящих вариантов — свободный ответ, а не самооценка", () => {
+test("buildExercise: нет подходящих вариантов — проверяемое задание, а не самооценка", () => {
   // Вокруг только словосочетания: к одиночному слову их подставлять нельзя,
   // набор вариантов не собирается. Знакомое слово при этом обязано остаться
   // ПРОВЕРЯЕМЫМ — intro означал бы «поставь себе оценку сам».
+  //
+  // Запасной вариант — сборка слова из букв: ответ в ней фиксирован так же
+  // жёстко, как в письме, а вопрос («завтрак») остаётся однозначным. Свободного
+  // перевода на русский (typeRu) генератор больше не выдаёт вовсе.
   const pool = [full(41, "breakfast", ["завтрак"], "noun", "A1", 5), ...ROUTINE.slice(0, 3)];
   const ex = buildExercise({ word: pool[0]!, memoryLevel: 0, isNew: false, pool, now: NOW });
   assert.notEqual(ex.type, "intro");
-  assert.equal(ex.type, "typeRu");
-  assert.equal(ex.prompt, "breakfast");
-  assert.ok(ex.accept!.includes("завтрак"));
+  assert.equal(ex.type, "build");
+  assert.equal(ex.prompt, "завтрак");
+  assert.equal(ex.answer, "breakfast");
+  assert.ok((ex.letters?.length ?? 0) > "breakfast".length);
+});
+
+test("buildExercise: письмо по фразе с пропуском, если у карточки есть пример", () => {
+  // Фраза — единственная постановка вопроса с однозначным ответом, поэтому она
+  // идёт раньше сборки: сборка требует перевода, а фраза задаёт смысл сама.
+  // Уровень 0 взят намеренно: там тип не зависит от сида (см. ГРАБЛИ в шапке).
+  const withExample: WordLike = {
+    id: 51,
+    english: "help",
+    translationsRu: ["помогать"],
+    exampleEn: "Can you help me, please?",
+    exampleRu: "Ты можешь мне помочь?",
+  };
+  const ex = buildExercise({ word: withExample, memoryLevel: 0, isNew: false, pool: [withExample], now: NOW });
+  assert.equal(ex.type, "typeEn");
+  assert.ok(ex.prompt.includes("____"), `в задании нет пропуска: ${ex.prompt}`);
+  assert.ok(ex.prompt.includes("Ты можешь мне помочь?"), "перевод фразы обязан быть рядом с пропуском");
+  assert.deepEqual(ex.accept, ["help"]);
   assert.ok(isFreeAnswer(ex.type), "свободный ответ проверяет сервер");
 });
 
@@ -493,11 +567,19 @@ test("buildExercise выдаёт разные типы для разных wordI
 });
 
 test("build: даём перевод, ответ — слово, плитки перемешаны", () => {
-  const ex = buildExercise({ word: POOL[0]!, memoryLevel: 4, isNew: false, pool: POOL, now: NOW });
-  assert.equal(ex.type, "build");
-  assert.equal(ex.prompt, "яблоко");
-  assert.equal(ex.answer, "apple");
-  assert.ok((ex.letters?.length ?? 0) > "apple".length);
+  // Уровни 4–5 чередуют сборку, письмо и речь по сиду, поэтому конкретный тип не
+  // фиксируем: собираем все упражнения-сборки, которые встретились, и проверяем
+  // их устройство.
+  const built = [4, 5]
+    .flatMap((level) =>
+      POOL.map((w) => buildExercise({ word: w, memoryLevel: level, isNew: false, pool: POOL, now: NOW })),
+    )
+    .filter((ex) => ex.type === "build");
+  assert.ok(built.length > 0, "на уровнях 4–5 сборка обязана встречаться");
+  for (const ex of built) {
+    assert.ok(ex.prompt.length > 0, "задание без перевода — задание без вопроса");
+    assert.ok((ex.letters?.length ?? 0) > (ex.answer?.length ?? 0));
+  }
 });
 
 test("само слово не попадает в свои же варианты (choiceRu)", () => {
@@ -518,20 +600,61 @@ test("само слово не попадает в свои же вариант�
   assert.equal(ex.options!.filter((o) => o === "яблоко").length, 0);
 });
 
-test("пустая подборка не отменяет проверку: слово просят написать", () => {
+test("пустая подборка не отменяет проверку: слово собирают из букв", () => {
   const only = [POOL[0]!];
   // wordId=1 → choiceEn → кроме самого слова в пуле никого → вариантов нет.
   const ex = buildExercise({ word: POOL[0]!, memoryLevel: 1, isNew: false, pool: only, now: NOW });
   assert.notEqual(ex.type, "intro", "знакомое слово не должно оценивать себя само");
-  assert.equal(ex.type, "typeRu");
-  assert.equal(ex.prompt, "apple");
-  assert.deepEqual(ex.accept, ["яблоко"]);
+  assert.equal(ex.type, "build");
+  assert.equal(ex.prompt, "яблоко");
+  assert.equal(ex.answer, "apple");
 });
 
 test("без перевода проверить нечего — только знакомство", () => {
   const empty = word(99, "apple", []);
   const ex = buildExercise({ word: empty, memoryLevel: 1, isNew: false, pool: [empty], now: NOW });
   assert.equal(ex.type, "intro");
+});
+
+test("карточка без перевода никогда не даёт задания без вопроса", () => {
+  // Тот самый баг: и сборка из букв, и письмо показывают в задании перевод, а у
+  // карточки без перевода он пустой. Ребёнок видел плитки букв и ни слова о том,
+  // что собирать. Теперь такая карточка уходит в знакомство.
+  const empty = word(99, "apple", []);
+  for (const level of [0, 1, 2, 3, 4, 5]) {
+    const ex = buildExercise({ word: empty, memoryLevel: level, isNew: false, pool: [empty], now: NOW });
+    assert.ok(ex.prompt.trim().length > 0, `level=${level}: пустое задание`);
+    assert.equal(ex.type, "intro", `level=${level}: без перевода спрашивать нечего, получили ${ex.type}`);
+  }
+});
+
+test("без перевода, но с примером — задание всё равно осмысленное", () => {
+  // Перевода нет, зато есть пример: фраза задаёт вопрос сама, и проверка
+  // остаётся честной. Знакомство здесь было бы потерей упражнения.
+  //
+  // Конкретный тип не фиксируем: на уровнях 4–5 работает колесо, и слово может
+  // попасть на произношение — это тоже полноценная проверка. Проверяем свойства:
+  // задание не пустое, ответ зафиксирован, письмо идёт именно фразой.
+  const noTranslation: WordLike = {
+    id: 77,
+    english: "help",
+    translationsRu: [],
+    exampleEn: "Can you help me, please?",
+    exampleRu: "Ты можешь мне помочь?",
+  };
+  for (const level of [3, 4, 5]) {
+    const ex = buildExercise({
+      word: noTranslation, memoryLevel: level, isNew: false, pool: [noTranslation], now: NOW,
+    });
+    assert.notEqual(ex.type, "intro", `level=${level}: пример есть, спрашивать есть о чём`);
+    assert.ok(ex.prompt.trim().length > 0, `level=${level}: пустое задание`);
+    assert.deepEqual(ex.accept, ["help"], `level=${level}: ответ должен быть зафиксирован`);
+    // Сборка из букв здесь невозможна: она показывает перевод, а его нет.
+    assert.notEqual(ex.type, "build", `level=${level}: сборка без перевода — задание без вопроса`);
+    if (ex.type === "typeEn") {
+      assert.ok(ex.prompt.includes("____"), `level=${level}: письмо без фразы: ${ex.prompt}`);
+    }
+  }
 });
 
 // ── очередь сессии ──────────────────────────────────────────────────────────
