@@ -135,6 +135,13 @@
 // «Верно» окрашено фирменным фиолетовым (зелёного в палитре нет намеренно).
 // Эмодзи в интерфейсе не используются; card.emoji приходит из данных слова
 // и остаётся как иллюстрация к слову, это не иконка интерфейса.
+//
+// ── Опыт не мелькает во время тренировки ────────────────────────────────────
+// Раньше в шапке экрана при каждом верном ответе прыгал счётчик «+N очков» —
+// он менялся посреди упражнения и отвлекал от самого задания. Теперь очки во
+// время сессии нигде не показываются: они по-прежнему копятся молча (state
+// points не убран — он нужен для итогового экрана), а видно их становится
+// РОВНО ОДИН РАЗ — на SessionSummary, когда колода или марафон закончены.
 import React from "react";
 import { View, Text, TextInput, TouchableOpacity, Pressable, Animated, Easing, ActivityIndicator, ScrollView, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -327,6 +334,8 @@ export function WordTrainer({
   // итоги сессии
   const [answered, setAnswered] = React.useState(0);
   const [correctCount, setCorrectCount] = React.useState(0);
+  // Копится молча в течение всей сессии, на экране не отображается ни разу —
+  // видно его будет только на SessionSummary, когда сессия завершится.
   const [points, setPoints] = React.useState(0);
   const [learned, setLearned] = React.useState(0);
   const [progress, setProgress] = React.useState<{ wordsToday: number; dailyWordGoal: number } | null>(null);
@@ -1338,7 +1347,8 @@ export function WordTrainer({
 
   return (
     <View style={{ flex: 1, backgroundColor: background, paddingTop: insets.top + 8 }}>
-      {/* шапка: выход, счётчик, прогресс */}
+      {/* шапка: выход, счётчик, прогресс. Опыт здесь НЕ показывается — см.
+          комментарий в шапке файла: копится молча, виден только на итогах. */}
       <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }}>
         <Pressable onPress={onExit} hitSlop={10} style={{ padding: 8 }} accessibilityLabel="Закрыть тренировку">
           <Glyph name="close" size={24} color={colors.foreground} />
@@ -1355,13 +1365,9 @@ export function WordTrainer({
             style={{ width: 150, marginTop: 6 }}
           />
         </View>
-        <View style={{ width: 44, alignItems: "flex-end", paddingRight: 6 }}>
-          {points > 0 && (
-            <Text style={{ color: colors.primary, fontWeight: "900", fontSize: 13, fontVariant: ["tabular-nums"] }}>
-              +{points}
-            </Text>
-          )}
-        </View>
+        {/* Пустой спейсер той же ширины, что и кнопка закрытия слева: заголовок
+            остаётся по центру. Раньше здесь стоял живой счётчик «+N очков». */}
+        <View style={{ width: 44 }} />
       </View>
 
       <ScrollView
@@ -1867,7 +1873,9 @@ function SessionSummary({
   const tiles: TileSpec[] = [
     { key: "words", icon: "cards", tint: colors.primary, edge: accents.indigoDeep, value: answered, label: "слов пройдено" },
     { key: "accuracy", icon: "target", tint: accents.amber, edge: "#b45309", value: `${accuracy}%`, label: "с первого раза" },
-    // Очки показываем, только если они есть: см. комментарий выше.
+    // Очки показываем, только если они есть: см. комментарий выше. Это ЕДИНСТВЕННОЕ
+    // место, где ученик вообще видит очки за эту сессию — во время самой тренировки
+    // они нигде не отображаются (см. шапку файла и шапку экрана тренажёра).
     ...(points > 0
       ? [{ key: "points", icon: "star" as GlyphName, tint: accents.magenta, edge: "#a21caf", value: `+${points}`, label: "очков" }]
       : []),
