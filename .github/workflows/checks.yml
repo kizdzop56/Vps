@@ -4,7 +4,7 @@
 # Раньше их было два файла: tests.yml и validate-words.yml. Модульные тесты
 # сервера в них дублировались — один и тот же прогон шёл дважды на каждый PR, а
 # в списке проверок висели два одинаковых «test», по которым нельзя было понять,
-# что именно упало. Теперь один файл и три разных job.
+# что именно упало. Теперь один файл и два разных job.
 #
 # ── Почему отчёт публикуется в pull request ─────────────────────────────────
 # Разработка этого проекта идёт с ТЕЛЕФОНА. Логи Actions там открываются в три
@@ -22,6 +22,12 @@
 # bash без pipefail: код возврата брался бы у tee, то есть всегда нулевой, и
 # падение проверки прошло бы незамеченным. Поэтому в каждом шаге стоит
 # `set -o pipefail`.
+#
+# ── ГРАБЛИ: скрипт вызывается через bash ────────────────────────────────────
+# Файлы, добавленные в репозиторий через GitHub API, приходят с режимом 100644 —
+# без бита исполнения. Прямой вызов `.github/ci-report.sh` упал бы с Permission
+# denied, и упал бы ИМЕННО в шаге, который сообщает о падении. Поэтому явное
+# `bash .github/ci-report.sh`: так вызов не зависит от прав файла вовсе.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Проверки
 
@@ -78,7 +84,7 @@ jobs:
 
       - name: Отчёт о падении
         if: always() && (steps.examples.outcome == 'failure' || steps.flashcards.outcome == 'failure')
-        run: .github/ci-report.sh "Датасет" examples.log flashcards.log
+        run: bash .github/ci-report.sh "Датасет" examples.log flashcards.log
 
       - name: Итог
         if: always()
@@ -132,7 +138,7 @@ jobs:
 
       - name: Отчёт о падении
         if: always() && (steps.install.outcome == 'failure' || steps.tests.outcome == 'failure')
-        run: .github/ci-report.sh "Тесты сервера" install.log tests.log
+        run: bash .github/ci-report.sh "Тесты сервера" install.log tests.log
 
       - name: Итог
         if: always()
