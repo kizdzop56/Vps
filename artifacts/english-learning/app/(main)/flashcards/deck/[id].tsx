@@ -17,23 +17,45 @@
 //  5. Эмодзи на экране не используются: значок колоды рисует DeckGlyph, у слов
 //     показываем метку из первой буквы (поле word.emoji приходит из словаря и
 //     на разных платформах выглядит по-разному). Данные при этом не меняются.
+//
+// ── Единая порода поверхностей ──────────────────────────────────────────────
+// Экран приведён к тому же языку, что «Слова», статистика и марафон: у каждой
+// белой карточки НИЖНЯЯ ГРАНЬ — отдельный слой под корпусом (см. Chunky/
+// ChunkyTap), проседающий при нажатии там, где нажатие что-то открывает.
+// Значки — из общего набора Glyph (components/ui/Glyph.tsx), а не системные
+// Feather: у Glyph одна толщина штриха на весь продукт и он красится темой.
+// ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator,
-  Alert, Platform, Modal, Dimensions,
+  View, Text, TouchableOpacity, Pressable, ScrollView, TextInput, ActivityIndicator,
+  Alert, Platform, Modal, Dimensions, Animated, Easing,
+  type ViewStyle, type StyleProp,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { fc, apiFetch, speak, speakWord, speechAvailable, type ManualWordInput, type FlashcardWordWithEmoji } from "@/hooks/useFlashcards";
 import { useAuth, isTeacherOrAdmin } from "@/contexts/AuthContext";
 import WordPicker from "@/components/WordPicker";
 import { DeckGlyph } from "@/components/ui/DeckGlyph";
-import { Glyph } from "@/components/ui/Glyph";
+import { Glyph, type GlyphName } from "@/components/ui/Glyph";
+import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
+import { accents, gradients, radii, chunky, timing } from "@/constants/theme";
+import { screenBottom, screenTop } from "@/constants/layout";
 
 type StudentItem = { id: number; name: string; surname?: string | null; username: string };
+
+const NATIVE_DRIVER = Platform.OS !== "web";
+
+/** Толщина нижней грани и её цвет под светлой карточкой — как на «Словах». */
+const EDGE = 5;
+const EDGE_DECK_ROW = 6;
+const EDGE_LIGHT = "#c9bdf0";
+
+/** Размер ведущего значка строки — единый на весь экран. */
+const ICON = 46;
 
 // Подтверждение: на web — window.confirm, на нативе — Alert.
 function confirmAction(title: string, message: string, onYes: () => void) {
@@ -45,6 +67,137 @@ function confirmAction(title: string, message: string, onYes: () => void) {
     { text: "Отмена", style: "cancel" },
     { text: "Удалить", style: "destructive", onPress: onYes },
   ]);
+}
+
+// ── Объёмные оболочки (тот же приём, что на «Словах»/статистике/марафоне) ──
+
+/** Грань без проседания: для того, что не нажимается. */
+function Chunky({
+  color = EDGE_LIGHT, edge = EDGE, radius = radii.md, style, children,
+}: {
+  color?: string; edge?: number; radius?: number;
+  style?: StyleProp<ViewStyle>; children: React.ReactNode;
+}) {
+  return (
+    <View style={[{ paddingBottom: edge }, style]}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: edge, bottom: 0,
+        borderRadius: radius, backgroundColor: color,
+      }} />
+      {children}
+    </View>
+  );
+}
+
+/** Грань + проседание: только там, где нажатие что-то открывает. */
+function ChunkyTap({
+  color = EDGE_LIGHT, edge = EDGE, radius = radii.md, onPress, disabled, style, accessibilityLabel, children,
+}: {
+  color?: string; edge?: number; radius?: number;
+  onPress?: () => void; disabled?: boolean; style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string; children: React.ReactNode;
+}) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: timing.press,
+      easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+    }).start();
+
+  return (
+    <View style={[{ paddingBottom: edge, opacity: disabled ? 0.6 : 1 }, style]}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: edge, bottom: 0,
+        borderRadius: radius, backgroundColor: color,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={disabled ? undefined : onPress}
+          onPressIn={() => !disabled && set(edge)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          accessibilityState={{ disabled: !!disabled }}
+        >
+          {children}
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
+}
+
+/** Корпус светлой карточки: общий вид для всех блоков экрана. */
+function cardBody(colors: any, extra?: ViewStyle): ViewStyle {
+  return {
+    backgroundColor: colors.card,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    shadowColor: accents.violetDeep,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    elevation: 3,
+    ...extra,
+  };
+}
+
+/**
+ * Кнопка отправки формы с градиентом и просадкой — та же физика, что у
+ * ChunkyButton из GameKit, но с собственным индикатором загрузки (busy):
+ * общий компонент такого пропа не поддерживает, а здесь он нужен и на «Добавить
+ * слово», и на «Добавить все слова».
+ */
+function GradientSubmitButton({
+  label, icon, busy, disabled, onPress,
+}: { label: string; icon?: GlyphName; busy: boolean; disabled: boolean; onPress: () => void }) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const inactive = disabled || busy;
+  const set = (to: number) =>
+    Animated.timing(press, {
+      toValue: to, duration: chunky.duration,
+      easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER,
+    }).start();
+
+  return (
+    <View>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: chunky.edge, bottom: 0,
+        borderRadius: radii.md, backgroundColor: inactive ? "#c7c3d4" : accents.indigoDeep,
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={inactive ? undefined : onPress}
+          onPressIn={() => !inactive && set(chunky.pressDepth)}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ disabled: inactive }}
+        >
+          <LinearGradient
+            colors={(inactive ? ["#ddd9e8", "#cfcadc"] : gradients.action) as unknown as string[]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{
+              borderRadius: radii.md, paddingVertical: 14, minHeight: 50,
+              alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
+            }}
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                {icon && <Glyph name={icon} size={18} color="#fff" />}
+                <Text style={{ color: "#fff", fontWeight: "900", fontSize: 15 }}>{label}</Text>
+              </>
+            )}
+          </LinearGradient>
+        </Pressable>
+      </Animated.View>
+      <View style={{ height: chunky.edge }} />
+    </View>
+  );
 }
 
 export default function DeckDetail() {
@@ -229,32 +382,46 @@ export default function DeckDetail() {
   }
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 8, paddingBottom: 120 }}>
-      {/* шапка */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 }}>
-        <TouchableOpacity onPress={() => router.back()} style={{ padding: 6 }}>
-          <Feather name="arrow-left" size={24} color={colors.foreground} />
-        </TouchableOpacity>
+    <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: screenTop(insets), paddingBottom: screenBottom(insets) }}>
+      {/* шапка: та же стрелка-chevron, что на статистике и марафоне, вместо
+          системной Feather-стрелки. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 18 }}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Назад"
+          hitSlop={10}
+          style={{ transform: [{ rotate: "180deg" }], padding: 4 }}
+        >
+          <Glyph name="chevron" size={24} color={colors.foreground} />
+        </Pressable>
         {/* Значок колоды: тот же компонент, что и в списке, — колода узнаётся
             по одному и тому же глифу и цвету на всех экранах. */}
-        <DeckGlyph title={deck?.title ?? "Колода"} emoji={deck?.emoji} size={42} />
-        <View style={{ flex: 1 }}>
+        <DeckGlyph title={deck?.title ?? "Колода"} emoji={deck?.emoji} size={ICON} />
+        <View style={{ flex: 1, minWidth: 0 }}>
           {deckQ.isLoading ? (
             <Text style={{ fontSize: 20, fontWeight: "900", color: colors.mutedForeground }}>Загрузка…</Text>
           ) : (
             <Text style={{ fontSize: 20, fontWeight: "900", color: colors.foreground }}>{deck?.title ?? "Колода"}</Text>
           )}
-          <Text style={{ fontSize: 12, color: colors.mutedForeground }}>
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
             {words.length} слов{deck ? ` · выучено ${deck.learnedCount}` : ""}
             {canAssign && deck?.assignedCount ? ` · отправлена ${deck.assignedCount} ученикам` : ""}
           </Text>
         </View>
         {canEdit && (
-          <TouchableOpacity onPress={removeDeck} disabled={deleting} style={{ padding: 6 }}>
+          <Pressable
+            onPress={removeDeck}
+            disabled={deleting}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Удалить колоду"
+            style={{ padding: 6 }}
+          >
             {deleting
               ? <ActivityIndicator color={colors.destructive} />
-              : <Feather name="trash-2" size={22} color={colors.destructive} />}
-          </TouchableOpacity>
+              : <Glyph name="trash" size={22} color={colors.destructive} />}
+          </Pressable>
         )}
       </View>
 
@@ -262,195 +429,202 @@ export default function DeckDetail() {
           ученику в любой колоде (своей или назначенной) — тренировка */}
       {canAssign ? (
         <>
-          <TouchableOpacity
-            onPress={() => router.push(`/flashcards/preview/${deckId}`)}
-            activeOpacity={0.85}
+          <ChunkyButton
+            label="Предпросмотр колоды"
+            icon="book"
+            chevron
             disabled={words.length === 0}
-            style={{
-              backgroundColor: words.length === 0 ? colors.border : colors.primary,
-              borderRadius: 16, paddingVertical: 16, alignItems: "center",
-              flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10,
-            }}
-          >
-            <Feather name="eye" size={18} color="#fff" />
-            <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Предпросмотр колоды</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
+            onPress={() => router.push(`/flashcards/preview/${deckId}`)}
+            style={{ marginBottom: 12 }}
+          />
+          <ChunkyTap
             onPress={() => setSendOpen(true)}
-            activeOpacity={0.85}
-            style={{
-              borderRadius: 16, paddingVertical: 15, alignItems: "center", flexDirection: "row",
-              justifyContent: "center", gap: 8, marginBottom: 18,
-              borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.primary + "12",
-            }}
+            style={{ marginBottom: 18 }}
+            accessibilityLabel="Отправить ученикам"
           >
-            <Feather name="send" size={18} color={colors.primary} />
-            <Text style={{ color: colors.primary, fontWeight: "800", fontSize: 15 }}>Отправить ученикам</Text>
-          </TouchableOpacity>
+            <View style={cardBody(colors, { flexDirection: "row", alignItems: "center", gap: 13, borderColor: colors.primary + "44" })}>
+              <View style={{
+                width: ICON, height: ICON, borderRadius: radii.sm + 3,
+                alignItems: "center", justifyContent: "center",
+                backgroundColor: colors.primary + "14",
+              }}>
+                <Glyph name="send" size={Math.round(ICON * 0.46)} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Отправить ученикам</Text>
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                  Разослать колоду выбранным ученикам
+                </Text>
+              </View>
+              <Glyph name="chevron" size={20} color={colors.mutedForeground} />
+            </View>
+          </ChunkyTap>
         </>
       ) : (
-        <TouchableOpacity
-          onPress={() => router.push(`/flashcards/study/${deckId}`)}
-          activeOpacity={0.85}
+        <ChunkyButton
+          label="Начать учить"
+          icon="play"
+          chevron
           disabled={words.length === 0}
-          style={{
-            backgroundColor: words.length === 0 ? colors.border : colors.primary,
-            borderRadius: 16, paddingVertical: 16, alignItems: "center",
-            flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 18,
-          }}
-        >
-          <Glyph name="play" size={18} color="#fff" />
-          <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Начать учить</Text>
-        </TouchableOpacity>
+          onPress={() => router.push(`/flashcards/study/${deckId}`)}
+          style={{ marginBottom: 18 }}
+        />
       )}
 
       {/* добавление слов — только в своей колоде, свёрнуто аккордеоном */}
       {canEdit && (
-        <TouchableOpacity
+        <ChunkyTap
           onPress={() => setAddOpen((v) => !v)}
-          activeOpacity={0.85}
-          style={{
-            flexDirection: "row", alignItems: "center", gap: 10,
-            backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border,
-            padding: 14, marginBottom: 12,
-          }}
+          style={{ marginBottom: 12 }}
+          accessibilityLabel={addOpen ? "Свернуть добавление слов" : "Добавить или изменить слова"}
         >
-          <Feather name="plus-circle" size={18} color={colors.primary} />
-          <Text style={{ flex: 1, fontSize: 14, fontWeight: "800", color: colors.foreground }}>
-            Добавить или изменить слова
-          </Text>
-          <Feather name={addOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.mutedForeground} />
-        </TouchableOpacity>
-      )}
-      {canEdit && addOpen && (
-        <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 18 }}>
-          {/* Основной способ наполнить колоду — отметить готовые слова в каталоге
-              (системные колоды по темам и уровням A1–C2). Раньше слова можно было
-              только набирать руками, поэтому колода собиралась долго. */}
-          <TouchableOpacity
-            onPress={() => setCatalogOpen(true)}
-            activeOpacity={0.85}
-            style={{
-              flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-              backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 13, marginBottom: 10,
-            }}
-          >
-            <Feather name="grid" size={17} color="#fff" />
-            <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>Выбрать слова из каталога</Text>
-          </TouchableOpacity>
-          <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", marginBottom: 12 }}>
-            или наберите свои слова
-          </Text>
-
-          <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
-            {(([["one", "Одно слово"], ["many", "Списком"]] as const)).map(([key, label]) => {
-              const active = addMode === key;
-              return (
-                <TouchableOpacity
-                  key={key}
-                  onPress={() => { setAddMode(key); setNotice(null); }}
-                  style={{
-                    flex: 1, paddingVertical: 9, borderRadius: 10, alignItems: "center", borderWidth: 1,
-                    borderColor: active ? colors.primary : colors.border,
-                    backgroundColor: active ? colors.primary + "14" : "transparent",
-                  }}
-                >
-                  <Text style={{ fontWeight: "700", fontSize: 13, color: active ? colors.primary : colors.mutedForeground }}>
-                    {label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {addMode === "one" ? (
-            <>
-              <TextInput
-                value={newEn}
-                onChangeText={(v) => { setNewEn(v); setNotice(null); }}
-                placeholder="Английское слово или фраза (или русское во второй строке)"
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholderTextColor={colors.mutedForeground}
-                style={{
-                  backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
-                  borderWidth: 1, borderColor: colors.border, borderRadius: 12,
-                  paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8,
-                }}
-              />
-              <TextInput
-                value={newRu}
-                onChangeText={(v) => { setNewRu(v); setNotice(null); }}
-                placeholder="Перевод или русское слово (по нему система найдёт английское)"
-                placeholderTextColor={colors.mutedForeground}
-                style={{
-                  backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
-                  borderWidth: 1, borderColor: colors.border, borderRadius: 12,
-                  paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8,
-                }}
-              />
-              <Hint colors={colors} text="Заполните любое поле: по английскому подберётся перевод, по русскому — английское слово и транскрипция. Свой перевод во втором поле всегда важнее автоматического." />
-              <ActionButton
-                colors={colors}
-                label="Добавить слово"
-                busy={adding}
-                disabled={!newEn.trim() && !newRu.trim()}
-                onPress={addWord}
-              />
-            </>
-          ) : (
-            <>
-              <TextInput
-                value={bulk}
-                onChangeText={(v) => { setBulk(v); setNotice(null); }}
-                placeholder={"hello — привет\nbook — книга\nrun — бежать"}
-                multiline
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholderTextColor={colors.mutedForeground}
-                style={{
-                  backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
-                  borderWidth: 1, borderColor: colors.border, borderRadius: 12,
-                  paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground,
-                  marginBottom: 8, minHeight: 120, textAlignVertical: "top",
-                }}
-              />
-              <Hint colors={colors} text="Одна строка — одно слово. Перевод после тире, двоеточия или табуляции. Строку без перевода переведёт сервер." />
-              <ActionButton
-                colors={colors}
-                label="Добавить все слова"
-                busy={adding}
-                disabled={!bulk.trim()}
-                onPress={addBulk}
-              />
-            </>
-          )}
-
-          {notice && (
-            <View style={{
-              flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 10,
-              backgroundColor: (notice.type === "success" ? colors.success : colors.destructive) + "14",
-              borderWidth: 1, borderColor: (notice.type === "success" ? colors.success : colors.destructive) + "45",
-              borderRadius: 12, padding: 10,
-            }}>
-              <Feather
-                name={notice.type === "success" ? "check-circle" : "alert-circle"}
-                size={16}
-                color={notice.type === "success" ? colors.success : colors.destructive}
-                style={{ marginTop: 1 }}
-              />
-              <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: notice.type === "success" ? colors.success : colors.destructive }}>
-                {notice.text}
+          <View style={cardBody(colors, { flexDirection: "row", alignItems: "center", gap: 13 })}>
+            <LinearGradient
+              colors={gradients.action as unknown as string[]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={{ width: ICON, height: ICON, borderRadius: radii.sm + 3, alignItems: "center", justifyContent: "center" }}
+            >
+              <Glyph name="plus" size={Math.round(ICON * 0.5)} color="#fff" />
+            </LinearGradient>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>
+                Добавить или изменить слова
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, marginTop: 2 }}>
+                Из каталога готовых слов или вручную
               </Text>
             </View>
-          )}
-        </View>
+            <View style={{ transform: [{ rotate: addOpen ? "-90deg" : "90deg" }] }}>
+              <Glyph name="chevron" size={20} color={colors.mutedForeground} />
+            </View>
+          </View>
+        </ChunkyTap>
+      )}
+      {canEdit && addOpen && (
+        <Chunky style={{ marginBottom: 18 }}>
+          <View style={cardBody(colors, { padding: 16 })}>
+            {/* Основной способ наполнить колоду — отметить готовые слова в каталоге
+                (системные колоды по темам и уровням A1–C2). Раньше слова можно было
+                только набирать руками, поэтому колода собиралась долго. */}
+            <ChunkyButton
+              label="Выбрать слова из каталога"
+              icon="cards"
+              center
+              onPress={() => setCatalogOpen(true)}
+              style={{ marginBottom: 10 }}
+            />
+            <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", marginBottom: 12 }}>
+              или наберите свои слова
+            </Text>
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+              {(([["one", "Одно слово"], ["many", "Списком"]] as const)).map(([key, label]) => {
+                const active = addMode === key;
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    onPress={() => { setAddMode(key); setNotice(null); }}
+                    style={{
+                      flex: 1, paddingVertical: 9, borderRadius: radii.sm, alignItems: "center", borderWidth: 1,
+                      borderColor: active ? colors.primary : colors.border,
+                      backgroundColor: active ? colors.primary + "14" : "transparent",
+                    }}
+                  >
+                    <Text style={{ fontWeight: "800", fontSize: 13, color: active ? colors.primary : colors.mutedForeground }}>
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {addMode === "one" ? (
+              <>
+                <TextInput
+                  value={newEn}
+                  onChangeText={(v) => { setNewEn(v); setNotice(null); }}
+                  placeholder="Английское слово или фраза (или русское во второй строке)"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholderTextColor={colors.mutedForeground}
+                  style={{
+                    backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
+                    borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm,
+                    paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8,
+                  }}
+                />
+                <TextInput
+                  value={newRu}
+                  onChangeText={(v) => { setNewRu(v); setNotice(null); }}
+                  placeholder="Перевод или русское слово (по нему система найдёт английское)"
+                  placeholderTextColor={colors.mutedForeground}
+                  style={{
+                    backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
+                    borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm,
+                    paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground, marginBottom: 8,
+                  }}
+                />
+                <Hint colors={colors} text="Заполните любое поле: по английскому подберётся перевод, по русскому — английское слово и транскрипция. Свой перевод во втором поле всегда важнее автоматического." />
+                <GradientSubmitButton
+                  label="Добавить слово"
+                  icon="plus"
+                  busy={adding}
+                  disabled={!newEn.trim() && !newRu.trim()}
+                  onPress={addWord}
+                />
+              </>
+            ) : (
+              <>
+                <TextInput
+                  value={bulk}
+                  onChangeText={(v) => { setBulk(v); setNotice(null); }}
+                  placeholder={"hello — привет\nbook — книга\nrun — бежать"}
+                  multiline
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholderTextColor={colors.mutedForeground}
+                  style={{
+                    backgroundColor: colors.background === "transparent" ? "#fff" : colors.background,
+                    borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm,
+                    paddingHorizontal: 12, paddingVertical: 10, color: colors.foreground,
+                    marginBottom: 8, minHeight: 120, textAlignVertical: "top",
+                  }}
+                />
+                <Hint colors={colors} text="Одна строка — одно слово. Перевод после тире, двоеточия или табуляции. Строку без перевода переведёт сервер." />
+                <GradientSubmitButton
+                  label="Добавить все слова"
+                  icon="plus"
+                  busy={adding}
+                  disabled={!bulk.trim()}
+                  onPress={addBulk}
+                />
+              </>
+            )}
+
+            {notice && (
+              <View style={{
+                flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 10,
+                backgroundColor: (notice.type === "success" ? colors.success : colors.destructive) + "14",
+                borderWidth: 1, borderColor: (notice.type === "success" ? colors.success : colors.destructive) + "45",
+                borderRadius: radii.sm, padding: 10,
+              }}>
+                <Glyph
+                  name={notice.type === "success" ? "check" : "alert"}
+                  size={16}
+                  color={notice.type === "success" ? colors.success : colors.destructive}
+                />
+                <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: notice.type === "success" ? colors.success : colors.destructive }}>
+                  {notice.text}
+                </Text>
+              </View>
+            )}
+          </View>
+        </Chunky>
       )}
 
       {/* список слов */}
-      <Text style={{ fontSize: 13, fontWeight: "800", color: colors.mutedForeground, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>
-        Слова
-      </Text>
+      <SectionLabel>Слова</SectionLabel>
       {wordsQ.isLoading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 20 }} />
       ) : wordsQ.isError ? (
@@ -465,31 +639,39 @@ export default function DeckDetail() {
         </Text>
       ) : (
         words.map((w) => (
-          <View key={w.id} style={{ backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 }}>
-            {/* Метка слова: первая буква английского написания в фирменной
-                плашке. Поле w.emoji приходит из словаря и на каждой платформе
-                выглядит по-своему, поэтому на экран оно не выводится. */}
-            <WordMark colors={colors} english={w.english} />
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{w.english}</Text>
-                {!!w.ipa && <Text style={{ fontSize: 13, color: colors.mutedForeground }}>{w.ipa}</Text>}
+          <Chunky key={w.id} edge={EDGE_DECK_ROW} style={{ marginBottom: 10 }}>
+            <View style={cardBody(colors, { padding: 15, flexDirection: "row", alignItems: "center", gap: 10 })}>
+              {/* Метка слова: первая буква английского написания в фирменной
+                  плашке. Поле w.emoji приходит из словаря и на каждой платформе
+                  выглядит по-своему, поэтому на экран оно не выводится. */}
+              <WordMark colors={colors} english={w.english} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Text style={{ fontSize: 16, fontWeight: "800", color: colors.foreground }}>{w.english}</Text>
+                  {!!w.ipa && <Text style={{ fontSize: 13, color: colors.mutedForeground }}>{w.ipa}</Text>}
+                </View>
+                <Text style={{ fontSize: 14, color: colors.mutedForeground, marginTop: 2 }}>{w.translationsRu.join(", ")}</Text>
               </View>
-              <Text style={{ fontSize: 14, color: colors.mutedForeground, marginTop: 2 }}>{w.translationsRu.join(", ")}</Text>
+              {speechAvailable() && (
+                <Pressable onPress={() => speakWord(w.id, w.english)} hitSlop={8} accessibilityLabel={`Прослушать: ${w.english}`} style={{ padding: 6 }}>
+                  <Glyph name="sound" size={18} color={colors.primary} />
+                </Pressable>
+              )}
+              {canEdit && (
+                <Pressable
+                  onPress={() => removeWord(w.id, w.english)}
+                  disabled={removingWord === w.id}
+                  hitSlop={8}
+                  accessibilityLabel={`Удалить слово: ${w.english}`}
+                  style={{ padding: 6 }}
+                >
+                  {removingWord === w.id
+                    ? <ActivityIndicator color={colors.destructive} />
+                    : <Glyph name="close" size={18} color={colors.destructive} />}
+                </Pressable>
+              )}
             </View>
-            {speechAvailable() && (
-              <TouchableOpacity onPress={() => speakWord(w.id, w.english)} style={{ padding: 6 }}>
-                <Glyph name="sound" size={18} color={colors.primary} />
-              </TouchableOpacity>
-            )}
-            {canEdit && (
-              <TouchableOpacity onPress={() => removeWord(w.id, w.english)} disabled={removingWord === w.id} style={{ padding: 6 }}>
-                {removingWord === w.id
-                  ? <ActivityIndicator color={colors.destructive} />
-                  : <Glyph name="close" size={18} color={colors.destructive} />}
-              </TouchableOpacity>
-            )}
-          </View>
+          </Chunky>
         ))
       )}
 
@@ -546,35 +728,24 @@ function WordMark({ colors, english }: { colors: any; english: string }) {
 function Hint({ colors, text }: { colors: any; text: string }) {
   return (
     <View style={{ flexDirection: "row", gap: 6, alignItems: "flex-start", marginBottom: 10 }}>
-      <Feather name="zap" size={14} color={colors.primary} style={{ marginTop: 1 }} />
+      <Glyph name="spark" size={14} color={colors.primary} />
       <Text style={{ flex: 1, fontSize: 12, lineHeight: 17, color: colors.mutedForeground }}>{text}</Text>
     </View>
   );
 }
 
-function ActionButton({ colors, label, busy, disabled, onPress }: {
-  colors: any; label: string; busy: boolean; disabled: boolean; onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      disabled={busy || disabled}
-      activeOpacity={0.85}
-      style={{ backgroundColor: disabled ? colors.border : colors.primary, borderRadius: 12, paddingVertical: 12, alignItems: "center" }}
-    >
-      {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "800" }}>{label}</Text>}
-    </TouchableOpacity>
-  );
-}
-
 function InlineError({ colors, text, onRetry }: { colors: any; text: string; onRetry: () => void }) {
   return (
-    <View style={{ backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: 14, padding: 14, gap: 10 }}>
-      <Text style={{ color: colors.destructive, fontSize: 14, fontWeight: "600" }}>{text}</Text>
-      <TouchableOpacity onPress={onRetry} style={{ alignSelf: "flex-start", backgroundColor: colors.primary, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 9 }}>
-        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Повторить</Text>
-      </TouchableOpacity>
-    </View>
+    <Chunky color={colors.destructive + "55"}>
+      <View style={cardBody(colors, {
+        backgroundColor: colors.destructive + "12",
+        borderColor: colors.destructive + "40",
+        gap: 12,
+      })}>
+        <Text style={{ fontSize: 14, lineHeight: 19, color: colors.destructive, fontWeight: "600" }}>{text}</Text>
+        <ChunkyButton label="Повторить" icon="repeat" center onPress={onRetry} />
+      </View>
+    </Chunky>
   );
 }
 
@@ -582,21 +753,28 @@ function ErrorScreen({ colors, insets, title, text, onBack, onRetry }: {
   colors: any; insets: any; title: string; text: string; onBack: () => void; onRetry?: () => void;
 }) {
   return (
-    <View style={{ flex: 1, padding: 16, paddingTop: insets.top + 8, backgroundColor: colors.background }}>
-      <TouchableOpacity onPress={onBack} style={{ padding: 6, alignSelf: "flex-start", marginBottom: 20 }}>
-        <Feather name="arrow-left" size={24} color={colors.foreground} />
-      </TouchableOpacity>
-      <View style={{ alignItems: "center", gap: 12, marginTop: 40 }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: screenTop(insets), paddingBottom: screenBottom(insets) }}
+    >
+      <Pressable
+        onPress={onBack}
+        accessibilityRole="button"
+        accessibilityLabel="Назад"
+        hitSlop={10}
+        style={{ alignSelf: "flex-start", padding: 4, marginBottom: 24, transform: [{ rotate: "180deg" }] }}
+      >
+        <Glyph name="chevron" size={24} color={colors.foreground} />
+      </Pressable>
+      <View style={{ alignItems: "center", gap: 12, marginTop: 30 }}>
         <Glyph name="alert" size={44} color={colors.destructive} />
-        <Text style={{ fontSize: 18, fontWeight: "800", color: colors.foreground, textAlign: "center" }}>{title}</Text>
+        <Text style={{ fontSize: 18, fontWeight: "900", color: colors.foreground, textAlign: "center" }}>{title}</Text>
         <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20 }}>{text}</Text>
         {onRetry && (
-          <TouchableOpacity onPress={onRetry} style={{ marginTop: 8, backgroundColor: colors.primary, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 12 }}>
-            <Text style={{ color: "#fff", fontWeight: "700" }}>Повторить</Text>
-          </TouchableOpacity>
+          <ChunkyButton label="Повторить" icon="repeat" center onPress={onRetry} style={{ marginTop: 8, minWidth: 220 }} />
         )}
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -671,9 +849,9 @@ function CatalogPickerModal({ visible, onClose, deckId, alreadyIn, colors, onSav
                 Отметьте готовые слова или добавьте свои
               </Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Закрыть" style={{ padding: 6 }}>
               <Glyph name="close" size={22} color={colors.mutedForeground} />
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
           {/* WordPicker не скроллится сам — оборачиваем в свой ScrollView. */}
@@ -692,28 +870,20 @@ function CatalogPickerModal({ visible, onClose, deckId, alreadyIn, colors, onSav
             <View style={{
               flexDirection: "row", gap: 8, alignItems: "flex-start", marginBottom: 10,
               backgroundColor: colors.destructive + "14", borderWidth: 1,
-              borderColor: colors.destructive + "45", borderRadius: 12, padding: 10,
+              borderColor: colors.destructive + "45", borderRadius: radii.sm, padding: 10,
             }}>
-              <Feather name="alert-circle" size={16} color={colors.destructive} style={{ marginTop: 1 }} />
+              <Glyph name="alert" size={16} color={colors.destructive} />
               <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: colors.destructive }}>{error}</Text>
             </View>
           )}
 
-          <TouchableOpacity
+          <GradientSubmitButton
+            label={total === 0 ? "Выберите слова" : `Добавить в колоду (${total})`}
+            icon="check"
+            busy={saving}
+            disabled={total === 0}
             onPress={save}
-            disabled={saving || total === 0}
-            activeOpacity={0.85}
-            style={{
-              borderRadius: 14, paddingVertical: 14, alignItems: "center",
-              backgroundColor: total === 0 ? colors.border : colors.primary,
-            }}
-          >
-            {saving
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>
-                {total === 0 ? "Выберите слова" : `Добавить в колоду (${total})`}
-              </Text>}
-          </TouchableOpacity>
+          />
         </View>
       </View>
     </Modal>
@@ -800,16 +970,16 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
         }}>
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
             <Text style={{ flex: 1, fontSize: 18, fontWeight: "800", color: colors.foreground }}>Отправить ученикам</Text>
-            <TouchableOpacity onPress={onClose} style={{ padding: 6 }}>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Закрыть" style={{ padding: 6 }}>
               <Glyph name="close" size={22} color={colors.mutedForeground} />
-            </TouchableOpacity>
+            </Pressable>
           </View>
           <Text style={{ fontSize: 13, color: colors.mutedForeground, marginBottom: 14 }}>
             Колода «{deckTitle}» · {wordCount} слов
           </Text>
 
           {wordCount === 0 && (
-            <View style={{ backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: 12, padding: 12, marginBottom: 14 }}>
+            <View style={{ backgroundColor: colors.destructive + "12", borderWidth: 1, borderColor: colors.destructive + "40", borderRadius: radii.sm, padding: 12, marginBottom: 14 }}>
               <Text style={{ color: colors.destructive, fontSize: 13, lineHeight: 18 }}>
                 В колоде пока нет слов. Отправить её можно, но учить ученику будет нечего — сначала добавьте слова.
               </Text>
@@ -838,26 +1008,31 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
                 return (
                   <View key={s.id} style={{
                     flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.card,
-                    borderRadius: 14, padding: 14, borderWidth: 1,
+                    borderRadius: radii.md, padding: 14, borderWidth: 1,
                     borderColor: on ? colors.primary : colors.border, marginBottom: 10,
                   }}>
-                    <View style={{ flex: 1 }}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={{ fontSize: 15, fontWeight: "700", color: colors.foreground }}>{fullName || s.username}</Text>
                       <Text style={{ fontSize: 12, color: has ? colors.success : colors.mutedForeground, marginTop: 2 }}>
                         {has ? "Колода уже отправлена" : `@${s.username}`}
                       </Text>
                     </View>
                     {has ? (
-                      <TouchableOpacity onPress={() => revoke(s.id)} disabled={sending} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.destructive }}>
+                      <TouchableOpacity onPress={() => revoke(s.id)} disabled={sending} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.sm, borderWidth: 1, borderColor: colors.destructive }}>
                         <Text style={{ color: colors.destructive, fontWeight: "700", fontSize: 12 }}>Отозвать</Text>
                       </TouchableOpacity>
                     ) : (
-                      <TouchableOpacity onPress={() => toggle(s.id)} style={{
-                        width: 26, height: 26, borderRadius: 8, borderWidth: 2, alignItems: "center", justifyContent: "center",
-                        borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primary : "transparent",
-                      }}>
-                        {on && <Feather name="check" size={16} color="#fff" />}
-                      </TouchableOpacity>
+                      <Pressable
+                        onPress={() => toggle(s.id)}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: on }}
+                        style={{
+                          width: 26, height: 26, borderRadius: 8, borderWidth: 2, alignItems: "center", justifyContent: "center",
+                          borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primary : "transparent",
+                        }}
+                      >
+                        {on && <Glyph name="check" size={16} color="#fff" />}
+                      </Pressable>
                     )}
                   </View>
                 );
@@ -870,13 +1045,12 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
               flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 10,
               backgroundColor: (result.type === "success" ? colors.success : colors.destructive) + "14",
               borderWidth: 1, borderColor: (result.type === "success" ? colors.success : colors.destructive) + "45",
-              borderRadius: 12, padding: 10,
+              borderRadius: radii.sm, padding: 10,
             }}>
-              <Feather
-                name={result.type === "success" ? "check-circle" : "alert-circle"}
+              <Glyph
+                name={result.type === "success" ? "check" : "alert"}
                 size={16}
                 color={result.type === "success" ? colors.success : colors.destructive}
-                style={{ marginTop: 1 }}
               />
               <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: result.type === "success" ? colors.success : colors.destructive }}>
                 {result.text}
@@ -885,21 +1059,15 @@ function SendDeckModal({ visible, onClose, deckId, deckTitle, wordCount, colors 
           )}
 
           {students.length > 0 && (
-            <TouchableOpacity
-              onPress={send}
-              disabled={sending || picked.size === 0}
-              activeOpacity={0.85}
-              style={{
-                marginTop: 14, borderRadius: 14, paddingVertical: 14, alignItems: "center",
-                backgroundColor: picked.size === 0 ? colors.border : colors.primary,
-              }}
-            >
-              {sending
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>
-                  {picked.size === 0 ? "Выберите учеников" : `Отправить (${picked.size})`}
-                </Text>}
-            </TouchableOpacity>
+            <View style={{ marginTop: 14 }}>
+              <GradientSubmitButton
+                label={picked.size === 0 ? "Выберите учеников" : `Отправить (${picked.size})`}
+                icon="send"
+                busy={sending}
+                disabled={picked.size === 0}
+                onPress={send}
+              />
+            </View>
           )}
         </View>
       </View>
