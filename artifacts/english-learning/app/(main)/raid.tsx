@@ -33,6 +33,16 @@
 //
 // Подтверждение покупки осталось настоящим модальным окном по центру: оно не
 // уезжает со скроллом и подходит и бою, и лавке одинаково.
+//
+// ── Что починили в этом проходе ─────────────────────────────────────────────
+// 1. Цель дня теперь не декоративная: кнопка реально забирает награду через
+//    /raid/quest, а не висит disabled навсегда.
+// 2. Ключи убраны из UI: пока они ничего не открывают, держать их счётчиком на
+//    экране — чистый мусор.
+// 3. У HP появилась догоняющая полоска-хвост: большой удар теперь не просто
+//    меняет цифру, а visibly «срезает» здоровье.
+// 4. В лавке текст «не хватает монет» больше не прячется только потому, что в
+//    сумке уже лежит такой же баф. Владение и нехватка денег — разные вещи.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -57,19 +67,25 @@ import {
 } from "@/hooks/useRaid";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
-const EDGE_LIGHT = "#c9bdf0";
 
 type RaidTab = "battle" | "shop" | "previous";
 
-/**
- * Сколько времени сервер копит одну единицу энергии.
- *
- * Держим её здесь же, рядом с UI, а не тянем из lib/raid.ts (сервер): значение
- * нужно только для доли шкалы (сколько уже прошло из тридцати минут), сама
- * длительность окна сюда не приходит — только момент, когда истечёт текущее.
- * Если серверная константа когда-нибудь изменится, это единственное место на
- * клиенте, которое придётся поправить вместе с ней.
- */
+/** Цвет акцента для нарастающего комбо. */
+function comboTier(combo: number): { tone: string; color: string } | null {
+  if (combo >= 10) return { tone: "комбо x10", color: "#f43f5e" };
+  if (combo >= 5) return { tone: "комбо x5", color: "#fb923c" };
+  if (combo >= 3) return { tone: "комбо x3", color: "#fbbf24" };
+  return null;
+}
+
+/** Вспышка попадания по фазе босса. */
+function phaseFlashColor(phase: string): string {
+  if (phase === "berserk") return "#fb7185";
+  if (phase === "hardened") return "#fbbf24";
+  return "#ffffff";
+}
+
+/** Сколько времени сервер копит одну единицу энергии. */
 const STAMINA_REGEN_MS = 30 * 60 * 1000;
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
@@ -109,23 +125,65 @@ function card(colors: any, extra?: ViewStyle): ViewStyle {
 
 /** Полоса с заливкой градиентом. Ширина анимируется от прошлого значения. */
 function Bar({
-  ratio, colors: fill, height = 10, glow = false,
-}: { ratio: number; colors: readonly string[]; height?: number; glow?: boolean }) {
-  const width = React.useRef(new Animated.Value(Math.max(0, Math.min(1, ratio)))).current;
+  ratio, colors: fill, height = 10, glow = false, trailColor,
+}: {
+  ratio: number;
+  colors: readonly string[];
+  height?: number;
+  glow?: boolean;
+  /** Догоняющий хвост урона: прошлое значение полосы уезжает медленнее. */
+  trailColor?: string;
+}) {
+  const safeRatio = Math.max(0, Math.min(1, ratio));
+  const width = React.useRef(new Animated.Value(safeRatio)).current;
+  const trail = React.useRef(new Animated.Value(safeRatio)).current;
+  const prev = React.useRef(safeRatio);
 
   React.useEffect(() => {
+    const last = prev.current;
     Animated.timing(width, {
-      toValue: Math.max(0, Math.min(1, ratio)),
+      toValue: safeRatio,
       duration: timing.progress,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
-  }, [ratio, width]);
+
+    // Хвост нужен прежде всего при потере HP: сначала уходит живая полоса,
+    // затем её догоняет бледный остаток. На росте полосы тянуть хвост не надо,
+    // иначе восстановление выглядело бы как задержка интерфейса.
+    if (trailColor && safeRatio < last) {
+      trail.setValue(last);
+      Animated.timing(trail, {
+        toValue: safeRatio,
+        duration: timing.progress + 420,
+        delay: 110,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    } else {
+      trail.setValue(safeRatio);
+    }
+    prev.current = safeRatio;
+  }, [safeRatio, width, trail, trailColor]);
 
   return (
     <View style={{
       height, borderRadius: height, backgroundColor: "rgba(109,40,217,0.16)", overflow: "hidden",
     }}>
+      {!!trailColor && (
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: trail.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
+            backgroundColor: trailColor,
+            opacity: 0.95,
+          }}
+        />
+      )}
       <Animated.View
         style={{
           height: "100%",
@@ -146,7 +204,7 @@ function Bar({
   );
 }
 
-/** Счётчик с иконкой: энергия, монеты, комбо, ключи. */
+/** Счётчик с иконкой: энергия, монеты, комбо. */
 function Stat({
   icon, coin, value, label, color,
 }: { icon?: GlyphName; coin?: boolean; value: string; label: string; color: string }) {
@@ -442,7 +500,7 @@ function ShopItem({
               </View>
             </View>
 
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14, gap: 8 }}>
               <View style={{
                 flexDirection: "row", alignItems: "center", gap: 6,
                 paddingHorizontal: 11, paddingVertical: 6,
@@ -453,17 +511,20 @@ function ShopItem({
                 <Text style={{ fontSize: 13, fontWeight: "900", color: "#fff" }}>{price}</Text>
               </View>
 
-              {owned ? (
-                <Pill text={owned} tone="soft" color={color} />
-              ) : !canBuy ? (
-                <Text style={{ fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.6)" }}>
-                  не хватает монет
-                </Text>
-              ) : (
-                <Text style={{ fontSize: 11.5, fontWeight: "900", color }}>
-                  купить
-                </Text>
-              )}
+              <View style={{ flex: 1, alignItems: "flex-end", gap: 6 }}>
+                {!canBuy && (
+                  <Text style={{ fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.6)" }}>
+                    не хватает монет
+                  </Text>
+                )}
+                {owned ? (
+                  <Pill text={owned} tone="soft" color={color} />
+                ) : canBuy ? (
+                  <Text style={{ fontSize: 11.5, fontWeight: "900", color }}>
+                    купить
+                  </Text>
+                ) : null}
+              </View>
             </View>
           </LinearGradient>
         </Pressable>
@@ -644,12 +705,16 @@ function BattleTab({
   hitToken,
   top,
   meInTop,
+  claimingQuest,
+  onClaimQuest,
 }: {
   data: RaidSnapshot;
   countdown: string;
   hitToken: number;
   top: RaidSnapshot["top"];
   meInTop: boolean;
+  claimingQuest: boolean;
+  onClaimQuest: () => void;
 }) {
   const colors = useColors();
   const router = useRouter();
@@ -658,6 +723,7 @@ function BattleTab({
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
   const questDone = quest.done >= quest.need;
+  const comboFx = comboTier(me.combo);
 
   return (
     <View>
@@ -696,11 +762,11 @@ function BattleTab({
           </Text>
         ) : (
           <ChunkyButton
-            label={questDone ? "Забрать награду" : "Ещё не выполнено"}
+            label={questDone ? (claimingQuest ? "Забираю награду..." : "Забрать награду") : "Ещё не выполнено"}
             icon="check"
             center
-            onPress={() => {}}
-            disabled
+            onPress={onClaimQuest}
+            disabled={!questDone || claimingQuest}
             style={{ marginTop: 11, opacity: questDone ? 1 : 0.45 }}
           />
         )}
@@ -738,6 +804,8 @@ function BattleTab({
             hitToken={hitToken}
             size={190}
             defeated={dead}
+            flashColor={phaseFlashColor(event.phase)}
+            aura={comboFx ? (me.combo >= 10 ? 3 : me.combo >= 5 ? 2 : 1) : 0}
           />
         </View>
 
@@ -753,6 +821,7 @@ function BattleTab({
           ratio={hpRatio}
           height={16}
           glow
+          trailColor="rgba(255,255,255,0.34)"
           colors={event.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7", "#6366f1"]}
         />
 
@@ -783,6 +852,18 @@ function BattleTab({
               до конца {countdown}
             </Text>
           </View>
+          {comboFx && (
+            <View style={{
+              paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
+              backgroundColor: comboFx.color + "33",
+              borderWidth: 1,
+              borderColor: comboFx.color + "66",
+            }}>
+              <Text style={{ fontSize: 11, fontWeight: "900", color: "#fff" }}>
+                {comboFx.tone}
+              </Text>
+            </View>
+          )}
         </View>
         <Text style={{ fontSize: 12, lineHeight: 18, color: "rgba(255,255,255,0.82)", marginTop: 8 }}>
           {event.about} {phaseAbout(event.phase)}
@@ -808,7 +889,7 @@ function BattleTab({
           </View>
           <View style={{ alignItems: "flex-end", gap: 6 }}>
             <Pill text={`${me.rank} место`} tone="soft" color={colors.primary} />
-            {me.combo >= 3 && <Pill text={`комбо ${me.combo}`} tone="soft" color={accents.amber} />}
+            {comboFx && <Pill text={comboFx.tone} tone="soft" color={comboFx.color} />}
             {me.rusty && <Pill text="ржавчина −20%" tone="soft" color="#e11d48" />}
             {me.boosted && <Pill text="множитель ×1.5" tone="soft" color={accents.gold} />}
           </View>
@@ -818,7 +899,6 @@ function BattleTab({
           <Stat icon="spark" value={`${me.stamina}/${me.staminaMax}`} label="ЭНЕРГИЯ" color={accents.amber} />
           <Stat coin value={String(me.coins)} label="МОНЕТЫ" color={accents.gold} />
           <Stat icon="flame" value={String(me.bestCombo)} label="КОМБО" color={colors.primary} />
-          <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
         <Bar ratio={me.stamina / me.staminaMax} colors={["#fbbf24", "#f59e0b"]} />
         <StaminaRefillBar nextAt={me.staminaNextAt} />
@@ -1018,6 +1098,11 @@ export default function RaidScreen() {
             hitToken={hitToken}
             top={data.top ?? []}
             meInTop={(data.top ?? []).some((r) => r.me)}
+            claimingQuest={questM.isPending}
+            onClaimQuest={() => {
+              if (questM.isPending || data.quest.claimed || data.quest.done < data.quest.need) return;
+              questM.mutate();
+            }}
           />
         )}
 
