@@ -15,6 +15,13 @@
 // Цель дня остаётся только на вкладке боя: это действие «прямо сейчас», а не
 // часть лавки или архива. Сам бой по-прежнему отдельный экран (raid/battle).
 //
+// ── Прошлый рейд живёт ТОЛЬКО в своей вкладке ───────────────────────────────
+// Внизу боя раньше висела ещё и карточка-ссылка «Прошлый рейд», открывавшая тот
+// же итог модалкой. Это был дубль: после появления отдельной вкладки один и тот
+// же материал имел два входа, и хвост под топом мешал читать бой. Вход теперь
+// один — вкладка. Если понадобится вернуть быстрый переход, это должна быть
+// именно навигация на вкладку, а не второе окно с тем же содержимым.
+//
 // ── Лавка усилений ──────────────────────────────────────────────────────────
 // Это не просто «ещё один список бафов». Пользователь просил ощущение лавки
 // старца-колдуна, поэтому здесь свой визуальный язык:
@@ -637,19 +644,16 @@ function BattleTab({
   hitToken,
   top,
   meInTop,
-  onOpenPrevious,
 }: {
   data: RaidSnapshot;
   countdown: string;
   hitToken: number;
   top: RaidSnapshot["top"];
   meInTop: boolean;
-  onOpenPrevious: () => void;
 }) {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { event, me, quest, previous } = data;
+  const { event, me, quest } = data;
   const hpRatio = event.hpTotal > 0 ? event.hpLeft / event.hpTotal : 0;
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
@@ -888,37 +892,6 @@ function BattleTab({
           </View>
         )}
       </View>
-
-      {previous && (
-        <>
-          <SectionLabel>Прошлый рейд</SectionLabel>
-          <Pressable
-            onPress={onOpenPrevious}
-            accessibilityRole="button"
-            accessibilityLabel={`Открыть итог рейда против ${previous.bossName}`}
-            style={card(colors, {
-              marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 11,
-            })}
-          >
-            <View style={{
-              width: 42, height: 42, borderRadius: radii.sm,
-              alignItems: "center", justifyContent: "center",
-              backgroundColor: previous.status === "won" ? accents.gold + "1f" : colors.primary + "12",
-            }}>
-              <Glyph name={previous.status === "won" ? "trophy" : "note"} size={20} color={previous.status === "won" ? accents.amber : colors.primary} />
-            </View>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 14.5, fontWeight: "900", color: colors.foreground }} numberOfLines={1}>
-                {previous.bossName}
-              </Text>
-              <Text style={{ fontSize: 11.5, lineHeight: 17, color: colors.mutedForeground, marginTop: 2 }}>
-                {previous.status === "won" ? "победа сообщества" : "босс выжил"} · мой урон {previous.myDamage.toLocaleString("ru-RU")}
-              </Text>
-            </View>
-            <Glyph name="chevron" size={17} color={colors.mutedForeground} />
-          </Pressable>
-        </>
-      )}
     </View>
   );
 }
@@ -966,7 +939,6 @@ export default function RaidScreen() {
     about: string;
     cost: number;
   }>(null);
-  const [previousOpen, setPreviousOpen] = React.useState(false);
 
   const refresh = (snapshot: RaidSnapshot) => {
     qc.setQueryData(["raid"], snapshot);
@@ -1046,7 +1018,6 @@ export default function RaidScreen() {
             hitToken={hitToken}
             top={data.top ?? []}
             meInTop={(data.top ?? []).some((r) => r.me)}
-            onOpenPrevious={() => setPreviousOpen(true)}
           />
         )}
 
@@ -1088,16 +1059,6 @@ export default function RaidScreen() {
             onCancel={() => setConfirmBuff(null)}
             onAction={() => buyM.mutate(confirmBuff.buff)}
           />
-        </CenteredModal>
-      )}
-      {previousOpen && previous && (
-        <CenteredModal onDismiss={() => setPreviousOpen(false)}>
-          <DetailCard
-            title="Итог прошлого рейда"
-            onClose={() => setPreviousOpen(false)}
-          >
-            <PreviousRaidBody previous={previous} colors={colors} />
-          </DetailCard>
         </CenteredModal>
       )}
       {!!chestText && (
@@ -1165,24 +1126,6 @@ function ModalCard({
       {cancel && onCancel && (
         <ChunkyButton label={cancel} tone="dark" center onPress={onCancel} style={{ marginTop: 8 }} />
       )}
-    </View>
-  );
-}
-
-/** Большое окно деталей: прошлый рейд. */
-function DetailCard({
-  title, children, onClose,
-}: { title: string; children: React.ReactNode; onClose: () => void }) {
-  const colors = useColors();
-  return (
-    <View style={card(colors, { width: "100%", maxWidth: 420, padding: 18, maxHeight: "85%" })}>
-      <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4, marginBottom: 12 }}>
-        {title}
-      </Text>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
-        {children}
-      </ScrollView>
-      <ChunkyButton label="Закрыть" tone="dark" center onPress={onClose} style={{ marginTop: 14 }} />
     </View>
   );
 }
