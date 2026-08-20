@@ -1,88 +1,31 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Вкладка «Рейд»: недельный босс на всё сообщество.
 //
-// Порядок экрана задан вопросами, которые возникают в этом же порядке:
-//   1. что я должен сделать сегодня (цель дня стоит ПЕРВОЙ, над боссом);
-//   2. кого бьём и сколько у него осталось, тут же кнопка боя;
-//   3. что могу я (мой урон, энергия, монеты, атаки);
-//   4. кто впереди (топ) и что было раньше (прошлый рейд отдельным экраном).
+// Порядок экрана теперь разделён на ТРИ внутренние вкладки:
+//   • Бой              — всё про текущего босса, цель дня и топ;
+//   • Лавка усилений   — отдельный магазин бафов в стиле лавки колдуна;
+//   • Прошлый рейд     — итог только прошлого события.
 //
-// Цель дня подняли наверх намеренно: это единственная строка экрана, которая
-// говорит «сделай столько и получишь награду». Под боссом она читалась как
-// сноска, хотя именно она задаёт дневной ритм; босс же остаётся крупным и
-// никуда не девается — он сразу под ней.
+// Почему так лучше, чем одна длинная простыня. У боя, магазина и истории разный
+// темп чтения: в бою нужен быстрый доступ к кнопке «Бить босса», в лавке —
+// спокойный выбор и сравнение усилений, в прошлом рейде — постфактум разбор.
+// Когда всё лежит в одном ScrollView, эти режимы мешают друг другу: ради покупки
+// приходится пролистывать топ, ради истории — магазин, и наоборот.
 //
-// Сам бой — на отдельном экране (raid/battle). «Учёба» устроена для обучения
-// (интервальные повторения, разбор ошибок, дневные нормы), а рейду нужна
-// практика без объяснений, поэтому у боя свои задания и своя проверка.
+// Цель дня остаётся только на вкладке боя: это действие «прямо сейчас», а не
+// часть лавки или архива. Сам бой по-прежнему отдельный экран (raid/battle).
 //
-// Цифры урона вылетают поверх ЛЮБОГО экрана (components/raid/RaidHitOverlay),
-// поэтому здесь их дублировать не нужно: сюда приходят смотреть итог.
+// ── Лавка усилений ──────────────────────────────────────────────────────────
+// Это не просто «ещё один список бафов». Пользователь просил ощущение лавки
+// старца-колдуна, поэтому здесь свой визуальный язык:
+//   • тёмная подложка и витринные карточки-талисманы;
+//   • у каждой покупки свой амулет/ингредиент, цена и легенда;
+//   • сверху — прилавок «что уже лежит в сумке»;
+//   • магазин не прячется за модалкой внизу, а живёт отдельной вкладкой и не
+//     спорит за место с боссом и рейтингом.
 //
-// ── Медалей здесь больше НЕТ ────────────────────────────────────────────────
-// Медали за рейды переехали в витрину наград профиля и стали частью общего
-// каталога (constants/raidAchievements.ts). Раньше у события был свой блок со
-// своим оформлением: коллекция ученика делилась надвое, общий счётчик наград
-// перестал быть общим, а вторая вёрстка медалей разъезжалась с первой на каждой
-// правке. Сначала здесь осталась строка-указатель на профиль, но и она не
-// решала никакой задачи: это просто напоминание о другой вкладке. Теперь её нет
-// вовсе — во вкладке рейда только то, что относится к самому рейду.
-//
-// ── Один топ, без лиг ───────────────────────────────────────────────────────
-// Лиги по уровню профиля убраны: три таблицы по одной строке и переключатель
-// между пустотами. Событие общее — таблица одна. Если ученик не попал в первые
-// двадцать, его место показывается отдельной строкой под таблицей.
-//
-// ── Подтверждение покупки — реальным МОДАЛЬНЫМ окном ───────────────────────
-// Первую версию подтверждения нарисовали поверх экрана абсолютным View прямо
-// внутри ScrollView. Выглядело почти как модалка, но вела себя как обычный кусок
-// страницы: если экран был прокручен, окно тоже уезжало вместе со скроллом,
-// и чтобы нажать «Купить» или «Отмена», приходилось листать вниз. Это ровно не
-// то, что должна делать модалка.
-//
-// Теперь подтверждение и окно прошлого рейда — настоящие Modal-компоненты
-// React Native. Они живут вне ScrollView, всегда стоят ПО ЦЕНТРУ экрана и не
-// зависят от прокрутки фона.
-//
-// ── Бафы можно покупать ещё раз, пока первый не потратился ────────────────
-// Раньше UI сам запрещал повторную покупку, если баф уже «горит» — даже после
-// серверной правки, которая научила рейд хранить запас впрок. Здесь стояла
-// старая логика: active = true => кнопка фактически мертва. В итоге сервер уже
-// умел складывать бафы, а клиент не давал до этого дойти.
-//
-// Теперь карточка остаётся покупаемой, даже если баф активен:
-//   • мощный удар показывает «заряжено N» и покупается ещё;
-//   • AOE показывает «осталось N» и добавляет ещё 5 сверху;
-//   • щит показывает, что стоит, но тоже продлевается ещё на 7 дней;
-//   • полная энергия — исключение, её по-прежнему нельзя купить при полном баке.
-//
-// Цена теперь видна ВСЕГДА, даже у активного бафа: иначе было непонятно,
-// сколько снимется за ещё одну покупку.
-//
-// ── История: только прошлый рейд и отдельный экран деталей ─────────────────
-// Список из нескольких прошлых рейдов на главном экране не читался: это
-// недельное событие, а четвёртая строка — уже древняя история. Теперь снимок
-// несёт РОВНО ОДИН прошлый рейд (previous), а здесь стоит одна строка-кнопка.
-// По нажатию открывается отдельное окно с полным итогом: мой урон, доля,
-// криты, удары, лучшее комбо и общий результат сообщества.
-//
-// ── Монеты рисует Coin, а не Glyph ──────────────────────────────────────────
-// Монеты стояли под глифом «cup»: на маленьком размере кубок читается кружкой.
-// Валюте нужен заливной двухцветный знак, а весь Glyph — контурный и
-// однотонный, поэтому монета живёт отдельным компонентом (components/ui/Coin).
-//
-// ── До следующей энергии — шкала, а не статичный текст ─────────────────────
-// Раньше под полосой энергии стояла одна и та же подпись «Восстановление: +1
-// каждые 30 минут» — она объясняет ПРАВИЛО, но не отвечает на вопрос, который
-// у ученика в голове именно сейчас: сколько ждать. Теперь вместо неё тонкая
-// шкала (StaminaRefillBar) и обратный отсчёт мм:сс до следующей единицы,
-// который тикает раз в секунду. Источник — me.staminaNextAt с сервера
-// (см. api-server/src/lib/raid.ts, syncState). Когда энергия уже полная, шкалы
-// нет вовсе: считать «время до следующей» не от чего.
-//
-// ── Чего здесь нет ──────────────────────────────────────────────────────────
-// Шкала вех личного вклада скрыта до отдельного разговора о наградах. Сервер её
-// по-прежнему считает, вернуть блок — правка разметки, а не механики.
+// Подтверждение покупки осталось настоящим модальным окном по центру: оно не
+// уезжает со скроллом и подходит и бою, и лавке одинаково.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
@@ -108,6 +51,8 @@ import {
 
 const NATIVE_DRIVER = Platform.OS !== "web";
 const EDGE_LIGHT = "#c9bdf0";
+
+type RaidTab = "battle" | "shop" | "previous";
 
 /**
  * Сколько времени сервер копит одну единицу энергии.
@@ -166,8 +111,6 @@ function Bar({
       toValue: Math.max(0, Math.min(1, ratio)),
       duration: timing.progress,
       easing: Easing.out(Easing.cubic),
-      // Ширина не поддерживается нативным драйвером — здесь это одна полоса,
-      // и на неё это не влияет.
       useNativeDriver: false,
     }).start();
   }, [ratio, width]);
@@ -230,19 +173,7 @@ function useCountdown(endsAt: string | undefined): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-/**
- * Доля прошедшего времени и обратный отсчёт до следующей единицы энергии.
- *
- * Тикает раз в секунду, только пока есть что считать: если энергия уже
- * полная или сервер не прислал staminaNextAt (тот же признак «полного
- * бака» — см. me.staminaNextAt в api-server/src/lib/raid.ts), таймер не
- * запускается вовсе — незачем дёргать интервал ради значения, которое не
- * изменится.
- *
- * ratio — от 0 (только что потратили энергию, ждать полные 30 минут) до 1
- * (вот-вот прибавится) — так шкала растёт слева направо по мере ожидания,
- * а не наоборот.
- */
+/** Шкала до следующей энергии. */
 function useStaminaRefill(nextAt: string | null): { ratio: number; label: string } | null {
   const [now, setNow] = React.useState(() => Date.now());
 
@@ -267,16 +198,6 @@ function useStaminaRefill(nextAt: string | null): { ratio: number; label: string
   };
 }
 
-/**
- * Шкала до следующей единицы энергии + обратный отсчёт.
- *
- * Заменяет прежнюю статичную подпись «+1 каждые 30 минут»: та объясняла
- * правило один раз и больше ничего не говорила, а этот блок отвечает на
- * вопрос «сколько ждать ИМЕННО СЕЙЧАС» и меняется у ученика на глазах.
- * Когда энергия уже полная, компонент ничего не рисует — заполнять шкалу
- * до конца ради надписи «готово» здесь незачем, полосу энергии сверху и так
- * видно.
- */
 function StaminaRefillBar({ nextAt }: { nextAt: string | null }) {
   const colors = useColors();
   const refill = useStaminaRefill(nextAt);
@@ -371,133 +292,371 @@ function PreviousRaidBody({ previous, colors }: { previous: RaidPrevious; colors
   );
 }
 
-export default function RaidScreen() {
+/** Внутренняя навигация вкладки рейда. */
+function RaidTabs({
+  tab, onChange, previousAvailable,
+}: {
+  tab: RaidTab;
+  onChange: (tab: RaidTab) => void;
+  previousAvailable: boolean;
+}) {
+  const colors = useColors();
+  const tabs: Array<{ key: RaidTab; label: string; icon: GlyphName; disabled?: boolean }> = [
+    { key: "battle", label: "Бой", icon: "flame" },
+    { key: "shop", label: "Лавка усилений", icon: "spark" },
+    { key: "previous", label: "Прошлый рейд", icon: "note", disabled: !previousAvailable },
+  ];
+
+  return (
+    <View style={{
+      flexDirection: "row",
+      backgroundColor: colors.primary + "14",
+      borderRadius: radii.pill,
+      padding: 4,
+      marginBottom: 14,
+      gap: 4,
+    }}>
+      {tabs.map((item) => {
+        const active = tab === item.key;
+        const disabled = !!item.disabled;
+        return (
+          <Pressable
+            key={item.key}
+            onPress={() => { if (!disabled) onChange(item.key); }}
+            accessibilityRole="button"
+            accessibilityState={{ selected: active, disabled }}
+            style={{
+              flex: 1,
+              borderRadius: radii.pill,
+              paddingVertical: 10,
+              paddingHorizontal: 10,
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 4,
+              backgroundColor: active ? colors.card : "transparent",
+              opacity: disabled ? 0.45 : 1,
+            }}
+          >
+            <Glyph name={item.icon} size={16} color={active ? colors.primary : colors.mutedForeground} />
+            <Text
+              numberOfLines={1}
+              style={{
+                fontSize: 11.5,
+                fontWeight: active ? "900" : "700",
+                color: active ? colors.primary : colors.mutedForeground,
+              }}
+            >
+              {item.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Карточка с атмосферой лавки: амулет, легенда, цена и что уже куплено. */
+function ShopItem({
+  title,
+  lore,
+  effect,
+  icon,
+  color,
+  price,
+  owned,
+  canBuy,
+  onPress,
+}: {
+  title: string;
+  lore: string;
+  effect: string;
+  icon: GlyphName;
+  color: string;
+  price: number;
+  owned?: string;
+  canBuy: boolean;
+  onPress: () => void;
+}) {
+  const press = React.useRef(new Animated.Value(0)).current;
+  const set = (to: number) => Animated.timing(press, {
+    toValue: to,
+    duration: timing.press,
+    easing: Easing.out(Easing.quad),
+    useNativeDriver: NATIVE_DRIVER,
+  }).start();
+
+  return (
+    <View style={{ paddingBottom: 6 }}>
+      <View style={{
+        position: "absolute", left: 0, right: 0, top: 6, bottom: 0,
+        borderRadius: radii.lg, backgroundColor: canBuy ? "#3b2b63" : "#2a2341",
+      }} />
+      <Animated.View style={{ transform: [{ translateY: press }] }}>
+        <Pressable
+          onPress={onPress}
+          onPressIn={() => { if (canBuy) set(6); }}
+          onPressOut={() => set(0)}
+          accessibilityRole="button"
+          accessibilityLabel={`${title}. ${effect}. Цена ${price} монет`}
+        >
+          <LinearGradient
+            colors={["#25183d", "#19132c"]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={{
+              borderRadius: radii.lg,
+              borderWidth: 1,
+              borderColor: color + "66",
+              padding: 15,
+              opacity: canBuy || owned ? 1 : 0.55,
+            }}
+          >
+            <View style={{ flexDirection: "row", gap: 12, alignItems: "flex-start" }}>
+              <View style={{
+                width: 54, height: 54, borderRadius: 18,
+                alignItems: "center", justifyContent: "center",
+                backgroundColor: color + "22",
+                borderWidth: 1.5,
+                borderColor: color + "66",
+              }}>
+                <Glyph name={icon} size={25} color={color} />
+              </View>
+
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 17, fontWeight: "900", color: "#fff", letterSpacing: -0.4 }}>
+                  {title}
+                </Text>
+                <Text style={{ fontSize: 11.5, lineHeight: 17, color: "rgba(255,255,255,0.58)", marginTop: 3 }}>
+                  {lore}
+                </Text>
+                <Text style={{ fontSize: 12.5, lineHeight: 18, color: "rgba(255,255,255,0.9)", marginTop: 7 }}>
+                  {effect}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}>
+              <View style={{
+                flexDirection: "row", alignItems: "center", gap: 6,
+                paddingHorizontal: 11, paddingVertical: 6,
+                borderRadius: radii.pill,
+                backgroundColor: "rgba(255,255,255,0.08)",
+              }}>
+                <Coin size={16} />
+                <Text style={{ fontSize: 13, fontWeight: "900", color: "#fff" }}>{price}</Text>
+              </View>
+
+              {owned ? (
+                <Pill text={owned} tone="soft" color={color} />
+              ) : !canBuy ? (
+                <Text style={{ fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.6)" }}>
+                  не хватает монет
+                </Text>
+              ) : (
+                <Text style={{ fontSize: 11.5, fontWeight: "900", color }}>
+                  купить
+                </Text>
+              )}
+            </View>
+          </LinearGradient>
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
+}
+
+function WizardShopTab({
+  data,
+  onBuy,
+  buying,
+}: {
+  data: RaidSnapshot;
+  onBuy: (payload: { buff: RaidBuff; title: string; about: string; cost: number; disabled: boolean }) => void;
+  buying: boolean;
+}) {
+  const colors = useColors();
+  const { me, abilities } = data;
+  const active: Array<{ icon: GlyphName; label: string; value: string; color: string }> = [];
+  if (abilities.power.stacks > 0) active.push({ icon: "flame", label: "Мощный удар", value: `${abilities.power.stacks} заряд${abilities.power.stacks === 1 ? "" : abilities.power.stacks < 5 ? "а" : "ов"}`, color: accents.amber });
+  if (abilities.aoe.left > 0) active.push({ icon: "spark", label: "AOE-удар", value: `${abilities.aoe.left} усиленных заданий`, color: "#c084fc" });
+  if (abilities.shield.active) active.push({ icon: "rank", label: "Щит", value: "защита стоит", color: "#7dd3fc" });
+  if (abilities.stamina.full) active.push({ icon: "cards", label: "Энергия", value: "бак полный", color: "#fbbf24" });
+
+  return (
+    <View style={{ gap: 14 }}>
+      <LinearGradient
+        colors={["#140f26", "#1f1636", "#120d22"]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={{
+          borderRadius: radii.lg,
+          padding: 16,
+          borderWidth: 1,
+          borderColor: "rgba(192,132,252,0.24)",
+          overflow: "hidden",
+        }}
+      >
+        <View style={{
+          position: "absolute", width: 240, height: 240, borderRadius: 120,
+          top: -150, right: -80, backgroundColor: "rgba(192,132,252,0.10)",
+        }} />
+        <Text style={{ fontSize: 11, fontWeight: "900", color: "rgba(255,255,255,0.62)", letterSpacing: 1.2 }}>
+          ЛАВКА СТАРЦА-КОЛДУНА
+        </Text>
+        <Text style={{ fontSize: 21, fontWeight: "900", color: "#fff", letterSpacing: -0.5, marginTop: 4 }}>
+          Усиления за монеты
+        </Text>
+        <Text style={{ fontSize: 12.5, lineHeight: 18, color: "rgba(255,255,255,0.78)", marginTop: 7 }}>
+          Старец не спорит, зачем тебе сила. Есть монеты, значит бери амулеты впрок.
+        </Text>
+
+        <View style={{ marginTop: 14, flexDirection: "row", gap: 10 }}>
+          <View style={[card(colors, { flex: 1, backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.10)" })]}>
+            <Text style={{ fontSize: 10.5, fontWeight: "800", color: "rgba(255,255,255,0.62)", letterSpacing: 0.8 }}>МОИ МОНЕТЫ</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 7, marginTop: 6 }}>
+              <Coin size={18} />
+              <Text style={{ fontSize: 26, fontWeight: "900", color: "#fff", letterSpacing: -0.8 }}>{me.coins}</Text>
+            </View>
+          </View>
+          <View style={[card(colors, { flex: 1, backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.10)" })]}>
+            <Text style={{ fontSize: 10.5, fontWeight: "800", color: "rgba(255,255,255,0.62)", letterSpacing: 0.8 }}>ЭНЕРГИЯ</Text>
+            <Text style={{ fontSize: 26, fontWeight: "900", color: "#fff", letterSpacing: -0.8, marginTop: 6 }}>{me.stamina}/{me.staminaMax}</Text>
+          </View>
+        </View>
+      </LinearGradient>
+
+      <View style={[card(colors, { backgroundColor: "#221936", borderColor: "rgba(192,132,252,0.22)" })]}>
+        <Text style={{ fontSize: 12, fontWeight: "900", color: "rgba(255,255,255,0.68)", letterSpacing: 1, marginBottom: 10 }}>
+          СЕЙЧАС В СУМКЕ
+        </Text>
+        {active.length === 0 ? (
+          <Text style={{ fontSize: 12.5, lineHeight: 18, color: "rgba(255,255,255,0.62)" }}>
+            Пусто. Старец качает головой: без артефактов бить босса честнее, но дольше.
+          </Text>
+        ) : (
+          <View style={{ gap: 8 }}>
+            {active.map((item) => (
+              <View
+                key={item.label}
+                style={{
+                  flexDirection: "row", alignItems: "center", gap: 10,
+                  backgroundColor: "rgba(255,255,255,0.06)",
+                  borderRadius: radii.sm,
+                  padding: 11,
+                  borderWidth: 1,
+                  borderColor: item.color + "44",
+                }}
+              >
+                <Glyph name={item.icon} size={16} color={item.color} />
+                <Text style={{ flex: 1, fontSize: 13.5, fontWeight: "800", color: "#fff" }}>{item.label}</Text>
+                <Text style={{ fontSize: 12, fontWeight: "800", color: item.color }}>{item.value}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+
+      <SectionLabel>Товары колдуна</SectionLabel>
+      <View style={{ gap: 10 }}>
+        <ShopItem
+          title="Мощный удар"
+          lore="Амулет с пламенной жилой. Старец говорит: сработает на первом же точном ответе."
+          effect={`Следующий верный ответ бьёт ×${abilities.power.mult}. Можно хранить запасом.`}
+          icon="flame"
+          color={accents.amber}
+          price={abilities.power.cost}
+          owned={abilities.power.stacks > 0 ? `заряжено ${abilities.power.stacks}` : undefined}
+          canBuy={me.coins >= abilities.power.cost && !buying}
+          onPress={() => onBuy({
+            buff: "power",
+            title: "Мощный удар",
+            about: `Следующий верный ответ бьёт ×${abilities.power.mult}`,
+            cost: abilities.power.cost,
+            disabled: me.coins < abilities.power.cost,
+          })}
+        />
+        <ShopItem
+          title="AOE-удар"
+          lore="Пыль звёзд в узком флаконе. Разлетается на несколько заданий сразу."
+          effect={`Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}. Покупка добавляет ещё ${abilities.aoe.tasks}.`}
+          icon="spark"
+          color="#c084fc"
+          price={abilities.aoe.cost}
+          owned={abilities.aoe.left > 0 ? `осталось ${abilities.aoe.left}` : undefined}
+          canBuy={me.coins >= abilities.aoe.cost && !buying}
+          onPress={() => onBuy({
+            buff: "aoe",
+            title: "AOE-удар",
+            about: `Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`,
+            cost: abilities.aoe.cost,
+            disabled: me.coins < abilities.aoe.cost,
+          })}
+        />
+        <ShopItem
+          title="Щит от ржавчины"
+          lore="Руна, которую старец выжигает на старой бляхе. Спасает от языковой ржавчины."
+          effect="Гасит штраф за пропуск дней. Повторная покупка продлевает защиту ещё на 7 дней."
+          icon="rank"
+          color="#7dd3fc"
+          price={abilities.shield.cost}
+          owned={abilities.shield.active ? "щит стоит" : undefined}
+          canBuy={me.coins >= abilities.shield.cost && !buying}
+          onPress={() => onBuy({
+            buff: "shield",
+            title: "Щит",
+            about: "Гасит штраф за пропуск дней («языковая ржавчина»)",
+            cost: abilities.shield.cost,
+            disabled: me.coins < abilities.shield.cost,
+          })}
+        />
+        <ShopItem
+          title="Полная энергия"
+          lore="Запечатанная колба с жёлтым светом. Открывать только когда уже вымотан."
+          effect={`Сразу ${me.staminaMax} энергии. Полный бак второй раз не зальёшь.`}
+          icon="cards"
+          color="#fbbf24"
+          price={abilities.stamina.cost}
+          owned={abilities.stamina.full ? "бак полный" : undefined}
+          canBuy={me.coins >= abilities.stamina.cost && !abilities.stamina.full && !buying}
+          onPress={() => onBuy({
+            buff: "stamina",
+            title: "Полная энергия",
+            about: `Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`,
+            cost: abilities.stamina.cost,
+            disabled: me.coins < abilities.stamina.cost || abilities.stamina.full,
+          })}
+        />
+      </View>
+    </View>
+  );
+}
+
+function BattleTab({
+  data,
+  countdown,
+  hitToken,
+  top,
+  meInTop,
+  onOpenPrevious,
+}: {
+  data: RaidSnapshot;
+  countdown: string;
+  hitToken: number;
+  top: RaidSnapshot["top"];
+  meInTop: boolean;
+  onOpenPrevious: () => void;
+}) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const qc = useQueryClient();
-
-  const q = useQuery({
-    queryKey: ["raid"],
-    queryFn: raid.current,
-    // Пул общий: пока ученик смотрит на шкалу, её двигают другие.
-    refetchInterval: 30_000,
-    staleTime: 10_000,
-  });
-
-  /** Токен удара для шейка фигуры и обновления шкалы. */
-  const [hitToken, setHitToken] = React.useState(0);
-  React.useEffect(() => onRaidHit(() => {
-    setHitToken((t) => t + 1);
-    void qc.invalidateQueries({ queryKey: ["raid"] });
-  }), [qc]);
-
-  const [chestText, setChestText] = React.useState<string | null>(null);
-  const [problem, setProblem] = React.useState<string | null>(null);
-  /** Что именно собираемся купить. Без подтверждения монеты не тратим. */
-  const [confirmBuff, setConfirmBuff] = React.useState<null | {
-    buff: RaidBuff;
-    title: string;
-    about: string;
-    cost: number;
-  }>(null);
-  /** Открыт разбор прошлого рейда. */
-  const [previousOpen, setPreviousOpen] = React.useState(false);
-
-  const refresh = (snapshot: RaidSnapshot) => {
-    qc.setQueryData(["raid"], snapshot);
-  };
-  const complain = (err: unknown) => {
-    setProblem(err instanceof Error ? err.message : "Не получилось");
-    setTimeout(() => setProblem(null), 2600);
-  };
-
-  const buyM = useMutation({
-    mutationFn: (buff: RaidBuff) => raid.buy(buff),
-    onSuccess: (snapshot) => {
-      refresh(snapshot);
-      setConfirmBuff(null);
-    },
-    onError: complain,
-  });
-  const questM = useMutation({ mutationFn: () => raid.quest(), onSuccess: refresh, onError: complain });
-  const chestM = useMutation({
-    mutationFn: (eventId: number) => raid.chest(eventId),
-    onSuccess: (res) => {
-      refresh(res.snapshot);
-      setChestText(
-        res.chest.status === "won"
-          ? `Золотой сундук: ${res.chest.coins} монет, титул «${res.chest.title}» и множитель урона ×1.5 на 48 часов`
-          : `Серебряный сундук: ${res.chest.coins} монет и титул «${res.chest.title}»`,
-      );
-    },
-    onError: complain,
-  });
-
-  const data = q.data;
-  const countdown = useCountdown(data?.event.endsAt);
-
-  if (q.isLoading || !data) {
-    return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  const { event, me, quest, abilities } = data;
+  const { event, me, quest, previous } = data;
   const hpRatio = event.hpTotal > 0 ? event.hpLeft / event.hpTotal : 0;
   const dead = event.hpLeft <= 0;
   const weak = event.weak.map(tagTitle).join(" · ");
   const questDone = quest.done >= quest.need;
-  const top = data.top ?? [];
-  const meInTop = top.some((r) => r.me);
-  const previous = data.previous;
-
-  /**
-   * Бафы не появляются сами: сервер включает их только через POST /raid/buy.
-   *
-   * UI больше не запрещает покупать активный баф повторно: сервер умеет
-   * складывать power/AOE/щит впрок, и именно это поведение здесь и нужно.
-   * Исключение одно: полная энергия при полном баке — там покупать нечего.
-   */
-  const askBuy = (payload: { buff: RaidBuff; title: string; about: string; cost: number; disabled: boolean }) => {
-    if (payload.disabled || buyM.isPending) return;
-    setConfirmBuff({ buff: payload.buff, title: payload.title, about: payload.about, cost: payload.cost });
-  };
-
-  const powerLabel = abilities.power.stacks > 0
-    ? `заряжено ${abilities.power.stacks}`
-    : undefined;
-  const aoeLabel = abilities.aoe.left > 0
-    ? `осталось ${abilities.aoe.left}`
-    : undefined;
-  const shieldLabel = abilities.shield.active ? "стоит" : undefined;
 
   return (
-    <ScrollView
-      contentContainerStyle={{
-        paddingHorizontal: 16,
-        paddingTop: screenTop(insets),
-        paddingBottom: screenBottom(insets),
-      }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={{ flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between" }}>
-        <Text style={{ fontSize: 28, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
-          Рейд
-        </Text>
-        <View style={{ alignItems: "flex-end" }}>
-          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.6 }}>
-            ДО КОНЦА
-          </Text>
-          <Text style={{ fontSize: 15, fontWeight: "900", color: accents.violetDeep }}>{countdown}</Text>
-        </View>
-      </View>
-      <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 14 }}>
-        Бьём все вместе. Задания в бою — на практику: ошибку не разбираем, просто показываем ответ.
-      </Text>
-
+    <View>
       {/* ── Цель на сегодня: первый блок экрана ─────────────────────────── */}
       <SectionLabel>Цель на сегодня</SectionLabel>
       <View style={card(colors, { marginBottom: 14 })}>
@@ -536,7 +695,8 @@ export default function RaidScreen() {
             label={questDone ? "Забрать награду" : "Ещё не выполнено"}
             icon="check"
             center
-            onPress={() => { if (questDone) questM.mutate(); }}
+            onPress={() => {}}
+            disabled
             style={{ marginTop: 11, opacity: questDone ? 1 : 0.45 }}
           />
         )}
@@ -592,7 +752,6 @@ export default function RaidScreen() {
           colors={event.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7", "#6366f1"]}
         />
 
-        {/* Главное действие — сразу под шкалой здоровья. */}
         <ChunkyButton
           label={dead ? "Босс повержен" : "Бить босса"}
           sublabel={dead ? "Ждём следующего в понедельник" : "12 заданий на практику · удар за каждый верный ответ"}
@@ -612,14 +771,14 @@ export default function RaidScreen() {
               {phaseTitle(event.phase)} · {event.percentLeft}%
             </Text>
           </View>
-          {dead && (
-            <View style={{
-              paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
-              backgroundColor: accents.gold,
-            }}>
-              <Text style={{ fontSize: 11, fontWeight: "900", color: "#3b2506" }}>ПОВЕРЖЕН</Text>
-            </View>
-          )}
+          <View style={{
+            paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
+            backgroundColor: "rgba(255,255,255,0.16)",
+          }}>
+            <Text style={{ fontSize: 11, fontWeight: "900", color: "#fff" }}>
+              до конца {countdown}
+            </Text>
+          </View>
         </View>
         <Text style={{ fontSize: 12, lineHeight: 18, color: "rgba(255,255,255,0.82)", marginTop: 8 }}>
           {event.about} {phaseAbout(event.phase)}
@@ -658,10 +817,6 @@ export default function RaidScreen() {
           <Stat icon="key" value={String(me.keys)} label="КЛЮЧИ" color={accents.violetDeep} />
         </View>
         <Bar ratio={me.stamina / me.staminaMax} colors={["#fbbf24", "#f59e0b"]} />
-
-        {/* До следующей энергии: шкала + обратный отсчёт, тикает раз в секунду.
-            Ничего не рисует, если энергия уже полная — staminaNextAt тогда
-            приходит null (см. api-server/src/lib/raid.ts, raidSnapshot). */}
         <StaminaRefillBar nextAt={me.staminaNextAt} />
         {me.stamina >= me.staminaMax && (
           <Text style={{ fontSize: 11.5, fontWeight: "800", color: colors.primary, marginTop: 10 }}>
@@ -678,76 +833,6 @@ export default function RaidScreen() {
         )}
       </View>
 
-      {/* ── Атаки и бафы за монеты ─────────────────────────────────────── */}
-      <SectionLabel>Атаки за монеты</SectionLabel>
-      <View style={{ gap: 9, marginBottom: 14 }}>
-        <Buff
-          icon="flame"
-          title="Мощный удар"
-          about={`Следующий верный ответ бьёт ×${abilities.power.mult}`}
-          cost={abilities.power.cost}
-          coins={me.coins}
-          activeLabel={powerLabel}
-          onPress={() => askBuy({
-            buff: "power",
-            title: "Мощный удар",
-            about: `Следующий верный ответ бьёт ×${abilities.power.mult}`,
-            cost: abilities.power.cost,
-            disabled: me.coins < abilities.power.cost,
-          })}
-          busy={buyM.isPending}
-        />
-        <Buff
-          icon="spark"
-          title="AOE-удар"
-          about={`Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`}
-          cost={abilities.aoe.cost}
-          coins={me.coins}
-          activeLabel={aoeLabel}
-          onPress={() => askBuy({
-            buff: "aoe",
-            title: "AOE-удар",
-            about: `Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`,
-            cost: abilities.aoe.cost,
-            disabled: me.coins < abilities.aoe.cost,
-          })}
-          busy={buyM.isPending}
-        />
-        <Buff
-          icon="rank"
-          title="Щит"
-          about="Гасит штраф за пропуск дней («языковая ржавчина»)"
-          cost={abilities.shield.cost}
-          coins={me.coins}
-          activeLabel={shieldLabel}
-          onPress={() => askBuy({
-            buff: "shield",
-            title: "Щит",
-            about: "Гасит штраф за пропуск дней («языковая ржавчина»)",
-            cost: abilities.shield.cost,
-            disabled: me.coins < abilities.shield.cost,
-          })}
-          busy={buyM.isPending}
-        />
-        <Buff
-          icon="cards"
-          title="Полная энергия"
-          about={`Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`}
-          cost={abilities.stamina.cost}
-          coins={me.coins}
-          activeLabel={abilities.stamina.full ? "полная" : undefined}
-          onPress={() => askBuy({
-            buff: "stamina",
-            title: "Полная энергия",
-            about: `Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`,
-            cost: abilities.stamina.cost,
-            disabled: me.coins < abilities.stamina.cost || abilities.stamina.full,
-          })}
-          busy={buyM.isPending}
-        />
-      </View>
-
-      {/* ── Единый топ ─────────────────────────────────────────────────── */}
       <SectionLabel>Топ по урону</SectionLabel>
       <View style={card(colors, { marginBottom: 12, gap: 8 })}>
         {top.length === 0 ? (
@@ -786,8 +871,6 @@ export default function RaidScreen() {
           ))
         )}
 
-        {/* Не попал в таблицу — своё место отдельной строкой: она нужна
-            именно тем, кого в списке нет. */}
         {top.length > 0 && !meInTop && me.damage > 0 && (
           <View style={{
             flexDirection: "row", alignItems: "center", gap: 10,
@@ -806,12 +889,11 @@ export default function RaidScreen() {
         )}
       </View>
 
-      {/* ── Прошлый рейд: одна кнопка, отдельный экран деталей ─────────── */}
       {previous && (
         <>
           <SectionLabel>Прошлый рейд</SectionLabel>
           <Pressable
-            onPress={() => setPreviousOpen(true)}
+            onPress={onOpenPrevious}
             accessibilityRole="button"
             accessibilityLabel={`Открыть итог рейда против ${previous.bossName}`}
             style={card(colors, {
@@ -837,8 +919,151 @@ export default function RaidScreen() {
           </Pressable>
         </>
       )}
+    </View>
+  );
+}
 
-      {/* ── Окна: сундук, ошибка, подтверждение покупки, прошлый рейд ───── */}
+function PreviousRaidTab({ previous }: { previous: RaidPrevious | null }) {
+  const colors = useColors();
+  if (!previous) {
+    return (
+      <View style={card(colors, { alignItems: "center", gap: 10, paddingVertical: 26 })}>
+        <Glyph name="note" size={28} color={colors.mutedForeground} />
+        <Text style={{ fontSize: 15, fontWeight: "800", color: colors.foreground }}>Прошлого рейда ещё нет</Text>
+        <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.mutedForeground, textAlign: "center" }}>
+          Как только неделя закроется, здесь останется только её итог, без старого хвоста из прошлых событий.
+        </Text>
+      </View>
+    );
+  }
+  return <PreviousRaidBody previous={previous} colors={colors} />;
+}
+
+export default function RaidScreen() {
+  const colors = useColors();
+  const insets = useSafeAreaInsets();
+  const qc = useQueryClient();
+
+  const q = useQuery({
+    queryKey: ["raid"],
+    queryFn: raid.current,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  });
+
+  const [tab, setTab] = React.useState<RaidTab>("battle");
+  const [hitToken, setHitToken] = React.useState(0);
+  React.useEffect(() => onRaidHit(() => {
+    setHitToken((t) => t + 1);
+    void qc.invalidateQueries({ queryKey: ["raid"] });
+  }), [qc]);
+
+  const [chestText, setChestText] = React.useState<string | null>(null);
+  const [problem, setProblem] = React.useState<string | null>(null);
+  const [confirmBuff, setConfirmBuff] = React.useState<null | {
+    buff: RaidBuff;
+    title: string;
+    about: string;
+    cost: number;
+  }>(null);
+  const [previousOpen, setPreviousOpen] = React.useState(false);
+
+  const refresh = (snapshot: RaidSnapshot) => {
+    qc.setQueryData(["raid"], snapshot);
+  };
+  const complain = (err: unknown) => {
+    setProblem(err instanceof Error ? err.message : "Не получилось");
+    setTimeout(() => setProblem(null), 2600);
+  };
+
+  const buyM = useMutation({
+    mutationFn: (buff: RaidBuff) => raid.buy(buff),
+    onSuccess: (snapshot) => {
+      refresh(snapshot);
+      setConfirmBuff(null);
+    },
+    onError: complain,
+  });
+  const questM = useMutation({ mutationFn: () => raid.quest(), onSuccess: refresh, onError: complain });
+  const chestM = useMutation({
+    mutationFn: (eventId: number) => raid.chest(eventId),
+    onSuccess: (res) => {
+      refresh(res.snapshot);
+      setChestText(
+        res.chest.status === "won"
+          ? `Золотой сундук: ${res.chest.coins} монет, титул «${res.chest.title}» и множитель урона ×1.5 на 48 часов`
+          : `Серебряный сундук: ${res.chest.coins} монет и титул «${res.chest.title}»`,
+      );
+    },
+    onError: complain,
+  });
+
+  const data = q.data;
+  const countdown = useCountdown(data?.event.endsAt);
+
+  if (q.isLoading || !data) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  const { previous } = data;
+  if (tab === "previous" && !previous) setTab("battle");
+
+  return (
+    <>
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingTop: screenTop(insets),
+          paddingBottom: screenBottom(insets),
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between" }}>
+          <Text style={{ fontSize: 28, fontWeight: "900", letterSpacing: -0.7, color: colors.foreground }}>
+            Рейд
+          </Text>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground, letterSpacing: 0.6 }}>
+              ДО КОНЦА
+            </Text>
+            <Text style={{ fontSize: 15, fontWeight: "900", color: accents.violetDeep }}>{countdown}</Text>
+          </View>
+        </View>
+        <Text style={{ fontSize: 13, lineHeight: 19, color: colors.mutedForeground, marginTop: 5, marginBottom: 14 }}>
+          Бьём все вместе. В бою тренируемся, в лавке усиливаемся, а прошлый рейд оставляем как один понятный итог, без мусорной истории.
+        </Text>
+
+        <RaidTabs tab={tab} onChange={setTab} previousAvailable={!!previous} />
+
+        {tab === "battle" && (
+          <BattleTab
+            data={data}
+            countdown={countdown}
+            hitToken={hitToken}
+            top={data.top ?? []}
+            meInTop={(data.top ?? []).some((r) => r.me)}
+            onOpenPrevious={() => setPreviousOpen(true)}
+          />
+        )}
+
+        {tab === "shop" && (
+          <WizardShopTab
+            data={data}
+            buying={buyM.isPending}
+            onBuy={(payload) => {
+              if (payload.disabled || buyM.isPending) return;
+              setConfirmBuff({ buff: payload.buff, title: payload.title, about: payload.about, cost: payload.cost });
+            }}
+          />
+        )}
+
+        {tab === "previous" && <PreviousRaidTab previous={previous} />}
+      </ScrollView>
+
       {!!data.chest && (
         <CenteredModal>
           <ModalCard
@@ -888,80 +1113,7 @@ export default function RaidScreen() {
           <Text style={{ color: "#fff", fontSize: 12.5, fontWeight: "700" }}>{problem}</Text>
         </View>
       )}
-    </ScrollView>
-  );
-}
-
-/** Кнопка атаки или бафа: цена монетами и текущий статус. */
-function Buff({
-  icon, title, about, cost, coins, activeLabel, onPress, busy,
-}: {
-  icon: GlyphName;
-  title: string;
-  about: string;
-  cost: number;
-  coins: number;
-  activeLabel?: string;
-  onPress: () => void;
-  busy: boolean;
-}) {
-  const colors = useColors();
-  const enough = coins >= cost && !busy;
-  const active = !!activeLabel;
-  const press = React.useRef(new Animated.Value(0)).current;
-  const set = (to: number) =>
-    Animated.timing(press, {
-      toValue: to, duration: timing.press,
-      easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER,
-    }).start();
-
-  return (
-    <View style={{ paddingBottom: 6 }}>
-      <View style={{
-        position: "absolute", left: 0, right: 0, top: 6, bottom: 0,
-        borderRadius: radii.md, backgroundColor: enough ? EDGE_LIGHT : "transparent",
-      }} />
-      <Animated.View style={{ transform: [{ translateY: press }] }}>
-        <Pressable
-          onPress={onPress}
-          onPressIn={() => { if (enough) set(6); }}
-          onPressOut={() => set(0)}
-          accessibilityRole="button"
-          accessibilityLabel={`${title}. ${about}. Цена ${cost} монет`}
-        >
-          <View style={card(colors, {
-            flexDirection: "row", alignItems: "center", gap: 11,
-            opacity: enough || active ? 1 : 0.55,
-          })}>
-            <View style={{
-              width: 42, height: 42, borderRadius: radii.sm,
-              alignItems: "center", justifyContent: "center",
-              backgroundColor: active ? "rgba(251,191,36,0.2)" : "rgba(99,102,241,0.12)",
-            }}>
-              <Glyph name={icon} size={20} color={active ? accents.gold : colors.primary} />
-            </View>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 14.5, fontWeight: "900", color: colors.foreground }}>{title}</Text>
-              <Text style={{ fontSize: 11.5, lineHeight: 17, color: colors.mutedForeground, marginTop: 2 }}>
-                {about}
-              </Text>
-            </View>
-            <View style={{ alignItems: "flex-end", gap: 6 }}>
-              {activeLabel && <Pill text={activeLabel} tone="soft" color={accents.gold} />}
-              {/* Цена видна ВСЕГДА: активный баф тоже можно купить ещё раз. */}
-              <View style={{
-                flexDirection: "row", alignItems: "center", gap: 5,
-                paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill,
-                backgroundColor: colors.primary + "1a",
-              }}>
-                <Coin size={15} />
-                <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>{cost}</Text>
-              </View>
-            </View>
-          </View>
-        </Pressable>
-      </Animated.View>
-    </View>
+    </>
   );
 }
 
