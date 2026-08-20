@@ -30,7 +30,7 @@ export const usersTable = pgTable("users", {
   // метками в блоке «О себе» и подсказывают учителю, на чём строить занятие.
   // null у старых строк эквивалентен пустому списку.
   interests: jsonb("interests").$type<string[]>(),
-  avatarEmoji: text("avatar_emoji").default("🦁"),
+  avatarEmoji: text("avatar_emoji").default("\u{1F981}"),
   avatarColor: text("avatar_color").default("#6366f1"),
   avatarUrl: text("avatar_url"),
   totalTimeMinutes: integer("total_time_minutes").notNull().default(0),
@@ -59,6 +59,28 @@ export const usersTable = pgTable("users", {
   // Список просмотренных вкладок онбординга (гайд «Снежа»).
   // null у существующих строк эквивалентен пустому массиву.
   onboardingSeen: jsonb("onboarding_seen").$type<string[]>(),
+
+  // ── СОГЛАСИЕ С ДОКУМЕНТАМИ ────────────────────────────────────────────────
+  //
+  // Галочка на экране регистрации ничего не доказывает: если согласие не
+  // ЗАПИСАНО, то его по закону нет (GDPR требует уметь продемонстрировать
+  // согласие). Поэтому здесь лежат три вещи: КОГДА согласились, с КАКОЙ
+  // версией документов и КТО согласился.
+  //
+  // Версия критична: без неё после правки политики невозможно отличить тех, кто
+  // видел новую редакцию, от тех, кто соглашался со старой, и придётся снова
+  // спрашивать всех подряд.
+  //
+  // consentBy: "self" — согласился сам пользователь, "parent" — за ребёнка
+  // согласился родитель/законный представитель, "teacher" — аккаунт завёл учитель.
+  // Для несовершеннолетних согласие ребёнка само по себе не имеет силы
+  // (GDPR ст. 8), и это поле показывает, есть ли родительский путь.
+  termsAcceptedAt: timestamp("terms_accepted_at"),
+  termsVersion: text("terms_version"),
+  privacyAcceptedAt: timestamp("privacy_accepted_at"),
+  privacyVersion: text("privacy_version"),
+  consentBy: text("consent_by"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
