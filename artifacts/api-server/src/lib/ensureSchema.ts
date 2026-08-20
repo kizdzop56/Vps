@@ -209,7 +209,7 @@ const TABLES: TablePatch[] = [
   },
   {
     table: "raid_state",
-    reason: "боевое состояние ученика: энергия, комбо, монеты, бафы",
+    reason: "боевое состояние ученика: энергия, комбо, монеты, сумка бафов",
     ddl: [
       `create table if not exists "raid_state" (
          "user_id" integer primary key references "users"("id") on delete cascade,
@@ -219,7 +219,10 @@ const TABLES: TablePatch[] = [
          "clean_streak" integer not null default 0,
          "power_armed" boolean not null default false,
          "power_stacks" integer not null default 0,
+         "aoe_stock" integer not null default 0,
          "aoe_left" integer not null default 0,
+         "stamina_stock" integer not null default 0,
+         "hints" integer not null default 0,
          "shield_until" timestamp,
          "rust_until" timestamp,
          "boost_until" timestamp,
@@ -370,6 +373,28 @@ const PATCHES: ColumnPatch[] = [
     definition: "integer not null default 0",
     reason:
       "запас купленных мощных ударов: без неё баф нельзя купить второй раз, пока не потрачен первый",
+  },
+  // Сумка бафов. Колонки появились вместе с ручным применением бафов и
+  // свитками подсказок. Без них на развёрнутой базе drizzle выбирает
+  // несуществующие поля, и ЛЮБОЙ запрос к raid_state отвечает пятисоткой —
+  // вкладка «Рейд» в этот момент грузится бесконечно.
+  {
+    table: "raid_state",
+    column: "aoe_stock",
+    definition: "integer not null default 0",
+    reason: "запас купленных AOE-ударов в сумке (отдельно от активного aoe_left)",
+  },
+  {
+    table: "raid_state",
+    column: "stamina_stock",
+    definition: "integer not null default 0",
+    reason: "запас колб полной энергии: применяются вручную в бою",
+  },
+  {
+    table: "raid_state",
+    column: "hints",
+    definition: "integer not null default 0",
+    reason: "свитки подсказок: без них весь рейд отвечает ошибкой",
   },
 ];
 
