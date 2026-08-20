@@ -33,12 +33,31 @@
 // между пустотами. Событие общее — таблица одна. Если ученик не попал в первые
 // двадцать, его место показывается отдельной строкой под таблицей.
 //
-// ── Покупка бафа требует подтверждения ──────────────────────────────────────
-// Раньше карточка бафа тратила монеты ОДНИМ тапом. Это выглядело как простая
-// инфо-карточка, а на деле сразу списывало 40 или 80 монет и включало баф.
-// Отсюда и жалоба «я не покупал»: вполне можно ткнуть, просто читая, и уже
-// купить усиление. Теперь первый тап открывает подтверждение с точной ценой,
-// а покупка уходит только со второго.
+// ── Подтверждение покупки — реальным МОДАЛЬНЫМ окном ───────────────────────
+// Первую версию подтверждения нарисовали поверх экрана абсолютным View прямо
+// внутри ScrollView. Выглядело почти как модалка, но вела себя как обычный кусок
+// страницы: если экран был прокручен, окно тоже уезжало вместе со скроллом,
+// и чтобы нажать «Купить» или «Отмена», приходилось листать вниз. Это ровно не
+// то, что должна делать модалка.
+//
+// Теперь подтверждение и окно прошлого рейда — настоящие Modal-компоненты
+// React Native. Они живут вне ScrollView, всегда стоят ПО ЦЕНТРУ экрана и не
+// зависят от прокрутки фона.
+//
+// ── Бафы можно покупать ещё раз, пока первый не потратился ────────────────
+// Раньше UI сам запрещал повторную покупку, если баф уже «горит» — даже после
+// серверной правки, которая научила рейд хранить запас впрок. Здесь стояла
+// старая логика: active = true => кнопка фактически мертва. В итоге сервер уже
+// умел складывать бафы, а клиент не давал до этого дойти.
+//
+// Теперь карточка остаётся покупаемой, даже если баф активен:
+//   • мощный удар показывает «заряжено N» и покупается ещё;
+//   • AOE показывает «осталось N» и добавляет ещё 5 сверху;
+//   • щит показывает, что стоит, но тоже продлевается ещё на 7 дней;
+//   • полная энергия — исключение, её по-прежнему нельзя купить при полном баке.
+//
+// Цена теперь видна ВСЕГДА, даже у активного бафа: иначе было непонятно,
+// сколько снимется за ещё одну покупку.
 //
 // ── История: только прошлый рейд и отдельный экран деталей ─────────────────
 // Список из нескольких прошлых рейдов на главном экране не читался: это
@@ -68,7 +87,7 @@
 import React from "react";
 import {
   View, Text, Pressable, ScrollView, Animated, Easing, Platform, ActivityIndicator,
-  type ViewStyle,
+  Modal as RNModal, type ViewStyle,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -435,11 +454,25 @@ export default function RaidScreen() {
   const meInTop = top.some((r) => r.me);
   const previous = data.previous;
 
-  /** Бафы не появляются сами: сервер включает их только через POST /raid/buy. */
-  const askBuy = (payload: { buff: RaidBuff; title: string; about: string; cost: number; active: boolean; enough: boolean }) => {
-    if (payload.active || !payload.enough || buyM.isPending) return;
+  /**
+   * Бафы не появляются сами: сервер включает их только через POST /raid/buy.
+   *
+   * UI больше не запрещает покупать активный баф повторно: сервер умеет
+   * складывать power/AOE/щит впрок, и именно это поведение здесь и нужно.
+   * Исключение одно: полная энергия при полном баке — там покупать нечего.
+   */
+  const askBuy = (payload: { buff: RaidBuff; title: string; about: string; cost: number; disabled: boolean }) => {
+    if (payload.disabled || buyM.isPending) return;
     setConfirmBuff({ buff: payload.buff, title: payload.title, about: payload.about, cost: payload.cost });
   };
+
+  const powerLabel = abilities.power.stacks > 0
+    ? `заряжено ${abilities.power.stacks}`
+    : undefined;
+  const aoeLabel = abilities.aoe.left > 0
+    ? `осталось ${abilities.aoe.left}`
+    : undefined;
+  const shieldLabel = abilities.shield.active ? "стоит" : undefined;
 
   return (
     <ScrollView
@@ -654,15 +687,13 @@ export default function RaidScreen() {
           about={`Следующий верный ответ бьёт ×${abilities.power.mult}`}
           cost={abilities.power.cost}
           coins={me.coins}
-          active={abilities.power.armed}
-          activeText="заряжен"
+          activeLabel={powerLabel}
           onPress={() => askBuy({
             buff: "power",
             title: "Мощный удар",
             about: `Следующий верный ответ бьёт ×${abilities.power.mult}`,
             cost: abilities.power.cost,
-            active: abilities.power.armed,
-            enough: me.coins >= abilities.power.cost,
+            disabled: me.coins < abilities.power.cost,
           })}
           busy={buyM.isPending}
         />
@@ -672,34 +703,29 @@ export default function RaidScreen() {
           about={`Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`}
           cost={abilities.aoe.cost}
           coins={me.coins}
-          active={abilities.aoe.left > 0}
-          activeText={`осталось ${abilities.aoe.left}`}
+          activeLabel={aoeLabel}
           onPress={() => askBuy({
             buff: "aoe",
             title: "AOE-удар",
             about: `Урон следующих ${abilities.aoe.tasks} заданий ×${abilities.aoe.mult}`,
             cost: abilities.aoe.cost,
-            active: abilities.aoe.left > 0,
-            enough: me.coins >= abilities.aoe.cost,
+            disabled: me.coins < abilities.aoe.cost,
           })}
           busy={buyM.isPending}
         />
         <Buff
           icon="rank"
           title="Щит"
-          about="Гасит штраф за пропуск дней («языковая ржавчина»)
-"
+          about="Гасит штраф за пропуск дней («языковая ржавчина»)"
           cost={abilities.shield.cost}
           coins={me.coins}
-          active={abilities.shield.active}
-          activeText="стоит"
+          activeLabel={shieldLabel}
           onPress={() => askBuy({
             buff: "shield",
             title: "Щит",
             about: "Гасит штраф за пропуск дней («языковая ржавчина»)",
             cost: abilities.shield.cost,
-            active: abilities.shield.active,
-            enough: me.coins >= abilities.shield.cost,
+            disabled: me.coins < abilities.shield.cost,
           })}
           busy={buyM.isPending}
         />
@@ -709,15 +735,13 @@ export default function RaidScreen() {
           about={`Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`}
           cost={abilities.stamina.cost}
           coins={me.coins}
-          active={abilities.stamina.full}
-          activeText="полная"
+          activeLabel={abilities.stamina.full ? "полная" : undefined}
           onPress={() => askBuy({
             buff: "stamina",
             title: "Полная энергия",
             about: `Сразу ${me.staminaMax} энергии — бьёшь дальше, не ожидая`,
             cost: abilities.stamina.cost,
-            active: abilities.stamina.full,
-            enough: me.coins >= abilities.stamina.cost,
+            disabled: me.coins < abilities.stamina.cost || abilities.stamina.full,
           })}
           busy={buyM.isPending}
         />
@@ -816,37 +840,45 @@ export default function RaidScreen() {
 
       {/* ── Окна: сундук, ошибка, подтверждение покупки, прошлый рейд ───── */}
       {!!data.chest && (
-        <Modal
-          title={data.chest.status === "won" ? "Босс повержен" : "Рейд закончился"}
-          body={
-            data.chest.status === "won"
-              ? `${data.chest.bossName} пал. Ты нанёс ${data.chest.damage.toLocaleString("ru-RU")} урона — забирай золотой сундук.`
-              : `${data.chest.bossName} выжил. Твои ${data.chest.damage.toLocaleString("ru-RU")} урона не пропали: держи утешительный сундук.`
-          }
-          action={data.chest.status === "won" ? "Открыть золотой сундук" : "Открыть серебряный сундук"}
-          onAction={() => chestM.mutate(data.chest!.eventId)}
-        />
+        <CenteredModal>
+          <ModalCard
+            title={data.chest.status === "won" ? "Босс повержен" : "Рейд закончился"}
+            body={
+              data.chest.status === "won"
+                ? `${data.chest.bossName} пал. Ты нанёс ${data.chest.damage.toLocaleString("ru-RU")} урона — забирай золотой сундук.`
+                : `${data.chest.bossName} выжил. Твои ${data.chest.damage.toLocaleString("ru-RU")} урона не пропали: держи утешительный сундук.`
+            }
+            action={data.chest.status === "won" ? "Открыть золотой сундук" : "Открыть серебряный сундук"}
+            onAction={() => chestM.mutate(data.chest!.eventId)}
+          />
+        </CenteredModal>
       )}
       {!!confirmBuff && (
-        <Modal
-          title={`Купить: ${confirmBuff.title}?`}
-          body={`${confirmBuff.about}\n\nЦена: ${confirmBuff.cost} монет.`}
-          action="Купить"
-          cancel="Отмена"
-          onCancel={() => setConfirmBuff(null)}
-          onAction={() => buyM.mutate(confirmBuff.buff)}
-        />
+        <CenteredModal onDismiss={() => setConfirmBuff(null)}>
+          <ModalCard
+            title={`Купить: ${confirmBuff.title}?`}
+            body={`${confirmBuff.about}\n\nЦена: ${confirmBuff.cost} монет.`}
+            action="Купить"
+            cancel="Отмена"
+            onCancel={() => setConfirmBuff(null)}
+            onAction={() => buyM.mutate(confirmBuff.buff)}
+          />
+        </CenteredModal>
       )}
       {previousOpen && previous && (
-        <DetailModal
-          title="Итог прошлого рейда"
-          onClose={() => setPreviousOpen(false)}
-        >
-          <PreviousRaidBody previous={previous} colors={colors} />
-        </DetailModal>
+        <CenteredModal onDismiss={() => setPreviousOpen(false)}>
+          <DetailCard
+            title="Итог прошлого рейда"
+            onClose={() => setPreviousOpen(false)}
+          >
+            <PreviousRaidBody previous={previous} colors={colors} />
+          </DetailCard>
+        </CenteredModal>
       )}
       {!!chestText && (
-        <Modal title="Сундук открыт" body={chestText} action="Отлично" onAction={() => setChestText(null)} />
+        <CenteredModal>
+          <ModalCard title="Сундук открыт" body={chestText} action="Отлично" onAction={() => setChestText(null)} />
+        </CenteredModal>
       )}
       {!!problem && (
         <View style={{
@@ -860,15 +892,22 @@ export default function RaidScreen() {
   );
 }
 
-/** Кнопка атаки или бафа: цена монетами, состояние «уже действует». */
+/** Кнопка атаки или бафа: цена монетами и текущий статус. */
 function Buff({
-  icon, title, about, cost, coins, active, activeText, onPress, busy,
+  icon, title, about, cost, coins, activeLabel, onPress, busy,
 }: {
-  icon: GlyphName; title: string; about: string; cost: number; coins: number;
-  active: boolean; activeText: string; onPress: () => void; busy: boolean;
+  icon: GlyphName;
+  title: string;
+  about: string;
+  cost: number;
+  coins: number;
+  activeLabel?: string;
+  onPress: () => void;
+  busy: boolean;
 }) {
   const colors = useColors();
-  const enough = coins >= cost && !active && !busy;
+  const enough = coins >= cost && !busy;
+  const active = !!activeLabel;
   const press = React.useRef(new Animated.Value(0)).current;
   const set = (to: number) =>
     Animated.timing(press, {
@@ -907,11 +946,9 @@ function Buff({
                 {about}
               </Text>
             </View>
-            {active ? (
-              <Pill text={activeText} tone="soft" color={accents.gold} />
-            ) : (
-              // Цена — монетой и цифрой рядом: знак валюты объясняет цифру
-              // лучше, чем слово «монет» мелким кеглем.
+            <View style={{ alignItems: "flex-end", gap: 6 }}>
+              {activeLabel && <Pill text={activeLabel} tone="soft" color={accents.gold} />}
+              {/* Цена видна ВСЕГДА: активный баф тоже можно купить ещё раз. */}
               <View style={{
                 flexDirection: "row", alignItems: "center", gap: 5,
                 paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill,
@@ -920,7 +957,7 @@ function Buff({
                 <Coin size={15} />
                 <Text style={{ fontSize: 12.5, fontWeight: "900", color: colors.foreground }}>{cost}</Text>
               </View>
-            )}
+            </View>
           </View>
         </Pressable>
       </Animated.View>
@@ -928,8 +965,32 @@ function Buff({
   );
 }
 
+/** Центрированный системный оверлей поверх всего экрана, а не над скроллом. */
+function CenteredModal({
+  children, onDismiss,
+}: { children: React.ReactNode; onDismiss?: () => void }) {
+  return (
+    <RNModal visible transparent animationType="fade" onRequestClose={onDismiss ?? (() => {})}>
+      <Pressable
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          backgroundColor: "rgba(20,10,40,0.55)",
+        }}
+        onPress={() => onDismiss?.()}
+      >
+        <Pressable onPress={() => {}} style={{ width: "100%", alignItems: "center", justifyContent: "center" }}>
+          {children}
+        </Pressable>
+      </Pressable>
+    </RNModal>
+  );
+}
+
 /** Простое окно события: сундук, подтверждение покупки. */
-function Modal({
+function ModalCard({
   title, body, action, onAction, cancel, onCancel,
 }: {
   title: string;
@@ -941,47 +1002,35 @@ function Modal({
 }) {
   const colors = useColors();
   return (
-    <View style={{
-      position: "absolute", left: 0, right: 0, top: 0, bottom: 0,
-      alignItems: "center", justifyContent: "center", padding: 24,
-      backgroundColor: "rgba(20,10,40,0.55)",
-    }}>
-      <View style={card(colors, { width: "100%", maxWidth: 340, padding: 20 })}>
-        <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4 }}>
-          {title}
-        </Text>
-        <Text style={{ fontSize: 13, lineHeight: 20, color: colors.mutedForeground, marginTop: 8 }}>
-          {body}
-        </Text>
-        <ChunkyButton label={action} icon="check" center onPress={onAction} style={{ marginTop: 16 }} />
-        {cancel && onCancel && (
-          <ChunkyButton label={cancel} tone="dark" center onPress={onCancel} style={{ marginTop: 8 }} />
-        )}
-      </View>
+    <View style={card(colors, { width: "100%", maxWidth: 340, padding: 20 })}>
+      <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4 }}>
+        {title}
+      </Text>
+      <Text style={{ fontSize: 13, lineHeight: 20, color: colors.mutedForeground, marginTop: 8 }}>
+        {body}
+      </Text>
+      <ChunkyButton label={action} icon="check" center onPress={onAction} style={{ marginTop: 16 }} />
+      {cancel && onCancel && (
+        <ChunkyButton label={cancel} tone="dark" center onPress={onCancel} style={{ marginTop: 8 }} />
+      )}
     </View>
   );
 }
 
 /** Большое окно деталей: прошлый рейд. */
-function DetailModal({
+function DetailCard({
   title, children, onClose,
 }: { title: string; children: React.ReactNode; onClose: () => void }) {
   const colors = useColors();
   return (
-    <View style={{
-      position: "absolute", left: 0, right: 0, top: 0, bottom: 0,
-      backgroundColor: "rgba(20,10,40,0.55)",
-      padding: 20, justifyContent: "center",
-    }}>
-      <View style={card(colors, { width: "100%", maxWidth: 420, alignSelf: "center", padding: 18 })}>
-        <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4, marginBottom: 12 }}>
-          {title}
-        </Text>
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
-          {children}
-        </ScrollView>
-        <ChunkyButton label="Закрыть" tone="dark" center onPress={onClose} style={{ marginTop: 14 }} />
-      </View>
+    <View style={card(colors, { width: "100%", maxWidth: 420, padding: 18, maxHeight: "85%" })}>
+      <Text style={{ fontSize: 19, fontWeight: "900", color: colors.foreground, letterSpacing: -0.4, marginBottom: 12 }}>
+        {title}
+      </Text>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
+        {children}
+      </ScrollView>
+      <ChunkyButton label="Закрыть" tone="dark" center onPress={onClose} style={{ marginTop: 14 }} />
     </View>
   );
 }
