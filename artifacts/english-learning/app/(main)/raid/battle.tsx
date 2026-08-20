@@ -41,11 +41,16 @@
 // какой-то причине expected пуст) — тем же фиолетовым, тем же вложенным-Text
 // приёмом, что и у живого ввода. У выбора вариантов и сборки из плиток своего
 // текста с пропуском нет — там подсветка живёт в самих вариантах/плитках.
+//
+// ── Отдача удара ────────────────────────────────────────────────────────────
+// Попадание должно ЧУВСТВОВАТЬСЯ. Поэтому поверх босса живёт вылетающая цифра
+// урона, цвет зависит от удара (обычный / слабость / крит), а шкала HP имеет
+// догоняющий хвост. Иначе бой ощущается как форма с вопросами, а не как рейд.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import {
   View, Text, Pressable, ScrollView, TextInput, ActivityIndicator,
-  useWindowDimensions, type ViewStyle,
+  useWindowDimensions, Animated, Easing, Platform, type ViewStyle,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -54,29 +59,168 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useColors } from "@/hooks/useColors";
 import { Glyph } from "@/components/ui/Glyph";
 import { ChunkyButton, Pill } from "@/components/ui/GameKit";
-import { accents, radii } from "@/constants/theme";
+import { accents, radii, timing } from "@/constants/theme";
 import { screenTop } from "@/constants/layout";
 import { BossArt } from "@/components/raid/BossArt";
 import { speakWord } from "@/hooks/useFlashcards";
 import { damageTitle, raid, type RaidAnswer } from "@/hooks/useRaid";
+
+const NATIVE_DRIVER = Platform.OS !== "web";
 
 /** Доля высоты окна под фигуру босса. Почти половина — так и просили. */
 const BOSS_HEIGHT_SHARE = 0.44;
 /** Шире этого фигура не растёт: на планшете иначе распухает до нелепого. */
 const BOSS_WIDTH_SHARE = 0.92;
 
-/**
- * Ищет пропуск в тексте задания — РЯД из 3+ подчёркиваний, а не точная длина.
- * Тот же приём и по той же причине, что в components/WordTrainer.tsx и
- * app/(main)/flashcards/grammar/[mode].tsx: банк заданий общий, и разные его
- * генераторы не согласованы на точное число подчёркиваний.
- *
- * null — пропуска нет (обычный вопрос без пропуска, например перевод слова).
- */
+/** Цвет вспышки удара по фазе. */
+function phaseFlashColor(phase: string): string {
+  if (phase === "berserk") return "#fb7185";
+  if (phase === "hardened") return "#fbbf24";
+  return "#ffffff";
+}
+
+/** Комбо не просто число: у него есть ступени жара. */
+function comboTier(combo: number): { label: string; color: string; aura: number } | null {
+  if (combo >= 10) return { label: "комбо x10", color: "#f43f5e", aura: 3 };
+  if (combo >= 5) return { label: "комбо x5", color: "#fb923c", aura: 2 };
+  if (combo >= 3) return { label: "комбо x3", color: "#fbbf24", aura: 1 };
+  return null;
+}
+
+/** Один вылетевший урон поверх босса. */
+interface DamagePop {
+  id: number;
+  text: string;
+  color: string;
+  crit: boolean;
+}
+
+/** Ищет пропуск в тексте задания — РЯД из 3+ подчёркиваний, а не точная длина. */
 function findGap(text: string): { before: string; after: string } | null {
   const m = text.match(/_{3,}/);
   if (!m || m.index === undefined) return null;
   return { before: text.slice(0, m.index), after: text.slice(m.index + m[0].length) };
+}
+
+/** Полоса HP с догоняющим хвостом. */
+function HpBar({ ratio, phase }: { ratio: number; phase: string }) {
+  const safeRatio = Math.max(0, Math.min(1, ratio));
+  const main = React.useRef(new Animated.Value(safeRatio)).current;
+  const tail = React.useRef(new Animated.Value(safeRatio)).current;
+  const prev = React.useRef(safeRatio);
+
+  React.useEffect(() => {
+    const last = prev.current;
+    Animated.timing(main, {
+      toValue: safeRatio,
+      duration: timing.progress,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+
+    if (safeRatio < last) {
+      tail.setValue(last);
+      Animated.timing(tail, {
+        toValue: safeRatio,
+        duration: timing.progress + 440,
+        delay: 100,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    } else {
+      tail.setValue(safeRatio);
+    }
+    prev.current = safeRatio;
+  }, [safeRatio, main, tail]);
+
+  const fillColors = phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7"];
+
+  return (
+    <View style={{
+      height: 10, borderRadius: 10, marginTop: 4, overflow: "hidden",
+      backgroundColor: "rgba(109,40,217,0.16)",
+    }}>
+      <Animated.View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: 0,
+          width: tail.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
+          backgroundColor: "rgba(255,255,255,0.34)",
+        }}
+      />
+      <Animated.View
+        style={{
+          width: main.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
+          height: "100%",
+        }}
+      >
+        <LinearGradient
+          colors={fillColors as unknown as string[]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={{ flex: 1, borderRadius: 10 }}
+        />
+      </Animated.View>
+    </View>
+  );
+}
+
+function FloatingDamage({ pop, onDone }: { pop: DamagePop; onDone: () => void }) {
+  const rise = React.useRef(new Animated.Value(0)).current;
+  const scale = React.useRef(new Animated.Value(0.7)).current;
+  const fade = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    Animated.parallel([
+      Animated.sequence([
+        Animated.timing(fade, { toValue: 1, duration: 90, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(fade, { toValue: 0, duration: 520, delay: 220, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER }),
+      ]),
+      Animated.timing(rise, {
+        toValue: 1,
+        duration: 820,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: NATIVE_DRIVER,
+      }),
+      Animated.sequence([
+        Animated.timing(scale, { toValue: pop.crit ? 1.24 : 1.12, duration: 140, easing: Easing.out(Easing.back(2)), useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(scale, { toValue: 1, duration: 280, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER }),
+      ]),
+    ]).start(({ finished }) => {
+      if (finished) onDone();
+    });
+  }, [fade, rise, scale, pop.crit, onDone]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: "42%",
+        alignSelf: "center",
+        opacity: fade,
+        transform: [
+          { translateY: rise.interpolate({ inputRange: [0, 1], outputRange: [18, -58] }) },
+          { scale },
+        ],
+      }}
+    >
+      <Text style={{
+        fontSize: pop.crit ? 34 : 28,
+        fontWeight: "900",
+        letterSpacing: -1.1,
+        color: pop.color,
+        textShadowColor: "rgba(15,10,40,0.45)",
+        textShadowOffset: { width: 0, height: 2 },
+        textShadowRadius: 10,
+      }}>
+        {pop.text}
+      </Text>
+    </Animated.View>
+  );
 }
 
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
@@ -124,6 +268,7 @@ export default function RaidBattle() {
   const [problem, setProblem] = React.useState<string | null>(null);
   const [hitToken, setHitToken] = React.useState(0);
   const [tally, setTally] = React.useState<Tally>({ damage: 0, correct: 0, total: 0, coins: 0, bestCombo: 0 });
+  const [pops, setPops] = React.useState<DamagePop[]>([]);
 
   /** Живые цифры босса: обновляются ответами, не запросами. */
   const [hp, setHp] = React.useState<{ left: number; total: number; phase: string } | null>(null);
@@ -169,6 +314,19 @@ export default function RaidBattle() {
         setHp({ left: hit.hpLeft, total: hit.hpTotal, phase: hit.phase });
         setStamina(hit.stamina);
         setCombo(hit.combo);
+        if (hit.damage > 0) {
+          const color = hit.crit
+            ? "#fbbf24"
+            : hit.superEffective
+              ? "#c084fc"
+              : "#ffffff";
+          setPops((cur) => [...cur, {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            text: `-${hit.damage}`,
+            color,
+            crit: hit.crit,
+          }]);
+        }
         setTally((cur) => ({
           damage: cur.damage + hit.damage,
           correct: cur.correct + (res.correct ? 1 : 0),
@@ -198,6 +356,7 @@ export default function RaidBattle() {
     reset();
     setIndex(0);
     setTally({ damage: 0, correct: 0, total: 0, coins: 0, bestCombo: 0 });
+    setPops([]);
     void battleQ.refetch();
   };
 
@@ -263,16 +422,13 @@ export default function RaidBattle() {
   const ratio = hp && hp.total > 0 ? Math.max(0, hp.left / hp.total) : 1;
   const assembled = picked.join(task.kind === "word" ? "" : " ");
   const bossSize = Math.round(Math.min(width * BOSS_WIDTH_SHARE, height * BOSS_HEIGHT_SHARE));
+  const comboFx = comboTier(combo);
 
   // Живая подстановка ответа в пропуск: только для письменных заданий, пока
   // ответ ещё не проверен. См. шапку файла.
   const liveGap = task.input === "type" && !verdict ? findGap(task.prompt) : null;
 
-  // ПОСЛЕ ответа пропуск заполняется ВЕРНЫМ словом/словосочетанием, а не
-  // остаётся сырыми подчёркиваниями (см. шапку файла) — и подсвечивается тем же
-  // фиолетовым, что и живой ввод. verdict.expected[0] — то, что реально принял
-  // сервер; given — подстраховка на случай пустого expected (не должно
-  // случаться, но рендер не должен показывать пустое место вместо ответа).
+  // ПОСЛЕ ответа пропуск заполняется ВЕРНЫМ словом/словосочетанием.
   const answerGap = task.input === "type" && verdict ? findGap(task.prompt) : null;
   const answerWord = verdict?.expected?.[0] || given;
 
@@ -300,19 +456,7 @@ export default function RaidBattle() {
               {index + 1} / {tasks.length}
             </Text>
           </View>
-          <View style={{
-            height: 10, borderRadius: 10, marginTop: 4, overflow: "hidden",
-            backgroundColor: "rgba(109,40,217,0.16)",
-          }}>
-            <View style={{ width: `${Math.round(ratio * 100)}%`, height: "100%" }}>
-              <LinearGradient
-                colors={hp?.phase === "berserk" ? ["#fb7185", "#e11d48"] : ["#f472b6", "#a855f7"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={{ flex: 1, borderRadius: 10 }}
-              />
-            </View>
-          </View>
+          <HpBar ratio={ratio} phase={hp?.phase ?? "normal"} />
         </View>
 
         <View style={{ alignItems: "center" }}>
@@ -332,7 +476,16 @@ export default function RaidBattle() {
           hitToken={hitToken}
           size={bossSize}
           defeated={!!hp && hp.left <= 0}
+          flashColor={phaseFlashColor(hp?.phase ?? "normal")}
+          aura={comboFx?.aura ?? 0}
         />
+        {pops.map((pop) => (
+          <FloatingDamage
+            key={pop.id}
+            pop={pop}
+            onDone={() => setPops((cur) => cur.filter((item) => item.id !== pop.id))}
+          />
+        ))}
       </View>
 
       {/* ── Задание ──────────────────────────────────────────────────────── */}
@@ -349,11 +502,11 @@ export default function RaidBattle() {
       >
         <View style={{ flexDirection: "row", gap: 7, flexWrap: "wrap" }}>
           <Pill text={damageTitle(task.damage)} tone="soft" color={colors.primary} />
-          {combo >= 3 && <Pill text={`комбо ${combo}`} tone="soft" color={accents.amber} />}
+          {comboFx && <Pill text={comboFx.label} tone="soft" color={comboFx.color} />}
           {task.listen && <Pill text="на слух" tone="soft" color={accents.magenta} />}
         </View>
 
-        <View style={cardStyle(colors)}>
+        <View style={cardStyle(colors, comboFx ? { borderColor: comboFx.color + "55" } : undefined)}>
           {task.listen ? (
             <Pressable
               onPress={() => { if (task.wordId) speakWord(task.wordId, task.prompt); }}
@@ -379,8 +532,6 @@ export default function RaidBattle() {
               {liveGap.after}
             </Text>
           ) : answerGap ? (
-            // После ответа пропуск заполняется верным словом (не сырыми
-            // подчёркиваниями) и подсвечивается фиолетовым — см. шапку файла.
             <Text style={{
               fontSize: task.prompt.length > 40 ? 18 : 24,
               fontWeight: "900",
@@ -461,7 +612,7 @@ export default function RaidBattle() {
                 borderWidth: 2,
                 borderColor: verdict
                   ? (verdict.correct ? colors.primary : "#e11d48")
-                  : colors.border,
+                  : comboFx ? comboFx.color + "55" : colors.border,
                 paddingHorizontal: 15,
                 paddingVertical: 13,
                 fontSize: 17,
@@ -484,7 +635,7 @@ export default function RaidBattle() {
         {/* Сборка из плиток */}
         {task.input === "assemble" && (
           <View style={{ gap: 10 }}>
-            <View style={cardStyle(colors, { minHeight: 54, justifyContent: "center" })}>
+            <View style={cardStyle(colors, { minHeight: 54, justifyContent: "center", ...(comboFx ? { borderColor: comboFx.color + "55" } : null) })}>
               <Text style={{
                 fontSize: 18, fontWeight: "900", color: colors.foreground, textAlign: "center",
               }}>
@@ -508,7 +659,7 @@ export default function RaidBattle() {
                       borderRadius: radii.sm,
                       backgroundColor: spent ? "rgba(120,110,170,0.1)" : colors.card,
                       borderWidth: 1.5,
-                      borderColor: spent ? "transparent" : "rgba(139,92,246,0.35)",
+                      borderColor: spent ? "transparent" : (comboFx ? comboFx.color + "55" : "rgba(139,92,246,0.35)"),
                       opacity: spent ? 0.4 : 1,
                     }}
                   >
