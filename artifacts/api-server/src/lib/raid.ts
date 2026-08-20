@@ -76,10 +76,28 @@
 // Плюс сама проверка «хватает ли монет» жила отдельным SELECT от списания,
 // поэтому два быстрых нажатия проходили её оба.
 //
-// Теперь проверка и списание — ОДИН UPDATE с условием в WHERE (coins >= цена
-// и баф ещё не активен). Не обновилось ни одной строки — значит монет не хватило
-// или баф уже стоял, и покупка не состоялась. Ровно тот же приём, которым в
-// routes/gamification.ts защищены награда за вход и цель дня.
+// Теперь проверка и списание — ОДИН UPDATE с условием в WHERE (coins >= цена).
+// Не обновилось ни одной строки — значит монет не хватило, и покупка не
+// состоялась. Ровно тот же приём, которым в routes/gamification.ts защищены
+// награда за вход и цель дня.
+//
+// ── Бафы можно покупать ВПРОК ───────────────────────────────────────────────
+// Раньше покупка была одноразовой: мощный удар нельзя было купить второй раз,
+// пока не потрачен первый, AOE нельзя было продлить, щит — тоже. Это упиралось
+// в саму форму хранения: powerArmed было булевым флагом, aoeLeft и shieldUntil
+// guard-ились условием «сейчас не активно».
+//
+// Теперь логика такая:
+//   • power — это СТЕК мощных ударов, каждый верный ответ тратит один;
+//   • aoe   — покупка ДОБАВЛЯЕТ ещё 5 усиленных заданий к текущему остатку;
+//   • shield — покупка ПРОДЛЕВАЕТ щит ещё на 7 дней от большего из «сейчас» и
+//              текущего shieldUntil;
+//   • stamina — единственное исключение, её всё ещё нельзя купить впрок, если
+//               бак уже полный: хранить «лишнюю энергию» отдельно здесь нечем и
+//               незачем.
+//
+// Это именно то поведение, которого ждали: купил баф — можешь купить ещё раз,
+// не тратя первый.
 //
 // ── Дисциплина ──────────────────────────────────────────────────────────────
 // recordRaidHit() вызывается ИЗ ПУТИ ОТВЕТА УЧЕНИКА и поэтому не имеет права
@@ -96,7 +114,7 @@ import {
   type RaidEvent,
   type RaidState,
 } from "@workspace/db";
-import { and, desc, eq, gte, isNull, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, sql, type SQL } from "drizzle-orm";
 import { logger } from "./logger";
 import { startOfDay } from "./srs";
 import { localDayKey } from "./timeStats";
@@ -569,8 +587,6 @@ async function applyPatch(userId: number, patch: StatePatch, now: Date): Promise
  * в WHERE. Отдельный SELECT «а хватает ли» ничего не гарантировал: между ним и
  * записью успевали пройти и другая покупка, и начисление за удар в бою.
  *
- * @param guard дополнительное условие: баф ещё не активен. Без него два быстрых
- *   нажатия покупали один и тот же баф дважды, списывая цену два раза.
  * @returns новую строку состояния или null, если условие не выполнено —
  *   значит покупка НЕ состоялась и ни одна монета не списана.
  */
@@ -597,6 +613,17 @@ async function spendCoins(
     .returning();
 
   return row ?? null;
+}
+
+/**
+ * Сколько мощных ударов у ученика реально заряжено.
+ *
+ * powerArmed осталось в таблице как legacy-флаг. После появления powerStacks
+ * источником правды стал именно счётчик: можно купить баф несколько раз подряд,
+ * а каждый верный ответ тратит ровно один заряд.
+ */
+function powerCharges(state: RaidState): number {
+  return Math.max(Number(state.powerStacks ?? 0), state.powerArmed ? 1 : 0);
 }
 
 /**
@@ -634,6 +661,12 @@ export async function syncState(userId: number, now: Date = new Date()): Promise
     patch.questClaimed = false;
   }
 
+  // legacy -> new counter: старые строки с powerArmed = true и powerStacks = 0
+  // считаем одним зарядом и сразу переписываем в новый формат.
+  if (state.powerArmed && Number(state.powerStacks ?? 0) <= 0) {
+    patch.powerStacks = 1;
+  }
+
   // Пропуск сутки и больше: ржавчина, если нет щита. Щит одноразовый.
   const away = state.lastActiveAt ? now.getTime() - state.lastActiveAt.getTime() : 0;
   if (away >= RUST_AFTER_MS) {
@@ -644,6 +677,11 @@ export async function syncState(userId: number, now: Date = new Date()): Promise
     patch.cleanStreak = 0;
   }
   patch.lastActiveAt = now;
+
+  // bool-флаг теперь только зеркало счётчика: true, если есть хотя бы один заряд.
+  if (Object.prototype.hasOwnProperty.call(patch, "powerStacks")) {
+    patch.powerArmed = sql`greatest(${patch.powerStacks}, 0) > 0`;
+  }
 
   return await applyPatch(userId, patch, now);
 }
@@ -769,6 +807,7 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
     const rusty = !!state.rustUntil && state.rustUntil.getTime() > now.getTime();
     const boosted = !!state.boostUntil && state.boostUntil.getTime() > now.getTime();
     const weapon = !!state.weaponSkin && state.weaponEventId !== event.id;
+    const power = powerCharges(state);
 
     const breakdown = computeDamage({
       difficulty: input.difficulty,
@@ -776,7 +815,7 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
       weak: boss.weak,
       streak,
       phase,
-      crit: state.powerArmed,
+      crit: power > 0,
       aoe: state.aoeLeft > 0,
       rusty,
       weapon,
@@ -802,7 +841,10 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
     // шапке файла).
     patch.coins = sql`${raidStateTable.coins} + ${coinsEarned}`;
     spendStamina(state, patch, now);
-    if (state.powerArmed) patch.powerArmed = false;
+    if (power > 0) {
+      patch.powerStacks = power - 1;
+      patch.powerArmed = power - 1 > 0;
+    }
     if (state.aoeLeft > 0) patch.aoeLeft = sql`greatest(${raidStateTable.aoeLeft} - 1, 0)`;
 
     // Ржавчина снимается пятью верными подряд.
@@ -975,6 +1017,7 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
   const myDamage = Number(participant?.damage ?? 0);
   const hpLeft = Math.max(0, event.hpTotal - event.damageDealt);
   const phase = phaseOf(hpLeft, event.hpTotal);
+  const power = powerCharges(state);
 
   // Место в общем топе: сколько участников набили больше.
   const [ahead] = await db
@@ -1103,7 +1146,8 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
       coins: state.coins,
       keys: state.keys,
       frames: state.frames ?? [],
-      powerArmed: state.powerArmed,
+      powerArmed: power > 0,
+      powerStacks: power,
       aoeLeft: state.aoeLeft,
       shielded,
       shieldUntil: state.shieldUntil?.toISOString() ?? null,
@@ -1126,7 +1170,7 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     },
     /** Бафы: всё покупается монетами. */
     abilities: {
-      power: { cost: POWER_COST, mult: POWER_MULT, armed: state.powerArmed },
+      power: { cost: POWER_COST, mult: POWER_MULT, armed: power > 0, stacks: power },
       aoe: { cost: AOE_COST, tasks: AOE_TASKS, mult: AOE_MULT, left: state.aoeLeft },
       shield: { cost: SHIELD_COST, active: shielded },
       stamina: { cost: STAMINA_COST, full: state.stamina >= STAMINA_MAX },
@@ -1198,14 +1242,10 @@ export type RaidBuff = "power" | "aoe" | "shield" | "stamina";
  * Купить баф за монеты.
  *
  * Проверка цены и списание — ОДИН запрос (см. spendCoins и ГРАБЛИ в шапке
- * файла). Раньше «хватает ли монет» проверялось по прочитанной строке, а
- * списание шло отдельной записью абсолютного значения — и баф покупался при
- * нехватке монет, если между чтением и записью проходило любое другое
- * изменение баланса (например, начисление за удар в бою).
- *
- * Отказ отличается от ошибки: не обновилось ни строки — значит либо монет не
- * хватило, либо баф уже стоял. Что именно, выясняем по текущему состоянию,
- * чтобы сообщение было честным.
+ * файла). В отличие от прежнего поведения, бафы теперь можно покупать ВПРОК:
+ * мощный удар складывается в стек, AOE увеличивает остаток усиленных заданий,
+ * щит продлевает срок действия. Только полную энергию по-прежнему нельзя купить,
+ * если бак уже полный: хранить «лишнюю энергию» отдельно здесь незачем.
  */
 export async function buyBuff(
   userId: number,
@@ -1213,29 +1253,31 @@ export async function buyBuff(
   now: Date = new Date(),
 ): Promise<RaidState | RaidActionError> {
   const state = await syncState(userId, now);
+  const power = powerCharges(state);
 
   if (buff === "power") {
     const row = await spendCoins(
       userId,
       POWER_COST,
-      { powerArmed: true },
-      eq(raidStateTable.powerArmed, false),
+      {
+        powerStacks: power + 1,
+        powerArmed: true,
+      },
+      undefined,
       now,
     );
-    if (row) return row;
-    return fail(state.powerArmed ? "Мощный удар уже заряжен" : "Не хватает монет");
+    return row ?? fail("Не хватает монет");
   }
 
   if (buff === "aoe") {
     const row = await spendCoins(
       userId,
       AOE_COST,
-      { aoeLeft: AOE_TASKS },
-      lte(raidStateTable.aoeLeft, 0),
+      { aoeLeft: sql`${raidStateTable.aoeLeft} + ${AOE_TASKS}` },
+      undefined,
       now,
     );
-    if (row) return row;
-    return fail(state.aoeLeft > 0 ? "Удвоение ещё действует" : "Не хватает монет");
+    return row ?? fail("Не хватает монет");
   }
 
   if (buff === "stamina") {
@@ -1243,23 +1285,24 @@ export async function buyBuff(
       userId,
       STAMINA_COST,
       { stamina: STAMINA_MAX, staminaAt: now },
-      lt(raidStateTable.stamina, STAMINA_MAX),
+      sql`${raidStateTable.stamina} < ${STAMINA_MAX}`,
       now,
     );
     if (row) return row;
     return fail(state.stamina >= STAMINA_MAX ? "Энергия и так полная" : "Не хватает монет");
   }
 
-  const shielded = !!state.shieldUntil && state.shieldUntil.getTime() > now.getTime();
+  const currentShieldUntil = state.shieldUntil && state.shieldUntil.getTime() > now.getTime()
+    ? state.shieldUntil
+    : now;
   const row = await spendCoins(
     userId,
     SHIELD_COST,
-    { shieldUntil: new Date(now.getTime() + 7 * DAY_MS) },
-    or(isNull(raidStateTable.shieldUntil), lte(raidStateTable.shieldUntil, now)),
+    { shieldUntil: new Date(currentShieldUntil.getTime() + 7 * DAY_MS) },
+    undefined,
     now,
   );
-  if (row) return row;
-  return fail(shielded ? "Щит уже стоит" : "Не хватает монет");
+  return row ?? fail("Не хватает монет");
 }
 
 export interface ClaimResult {
@@ -1370,11 +1413,7 @@ export async function claimQuest(
     })
     .where(and(
       eq(raidStateTable.userId, userId),
-      or(
-        ne(raidStateTable.questDay, today),
-        isNull(raidStateTable.questDay),
-        eq(raidStateTable.questClaimed, false),
-      ),
+      sql`(${raidStateTable.quest_day} is null or ${raidStateTable.quest_day} <> ${today} or ${raidStateTable.quest_claimed} = false)`,
     ))
     .returning();
 
