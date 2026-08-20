@@ -19,6 +19,12 @@
 // экран рисовал его строками. Теперь приходит previous — РОВНО ОДИН рейд, самый
 // последний, зато со всеми личными счётчиками: из них собирается отдельный экран
 // итога, который открывается по нажатию.
+//
+// ── Бафы теперь можно копить ────────────────────────────────────────────────
+// У мощного удара появился счётчик зарядов (powerStacks): если купить его ещё
+// раз до траты первого, заряд не пропадает, а добавляется в запас. Клиенту
+// нужен этот счётчик, чтобы честно писать «заряжено 2», а не притворяться,
+// будто есть только один флаг armed.
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
@@ -63,6 +69,8 @@ export interface RaidMe {
   keys: number;
   frames: string[];
   powerArmed: boolean;
+  /** Сколько мощных ударов куплено и ещё не потрачено. */
+  powerStacks: number;
   aoeLeft: number;
   shielded: boolean;
   shieldUntil: string | null;
@@ -124,7 +132,7 @@ export interface RaidSnapshot {
   me: RaidMe;
   quest: { need: number; done: number; claimed: boolean; coins: number };
   abilities: {
-    power: { cost: number; mult: number; armed: boolean };
+    power: { cost: number; mult: number; armed: boolean; stacks: number };
     aoe: { cost: number; tasks: number; mult: number; left: number };
     shield: { cost: number; active: boolean };
     stamina: { cost: number; full: boolean };
