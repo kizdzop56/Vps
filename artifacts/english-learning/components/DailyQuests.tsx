@@ -54,6 +54,19 @@
 // который и так висит выше со счётчиками и галочками. Незакрытый день и без
 // напоминаний виден по незачёркнутым строкам.
 //
+// ── НАГРАДА ПОКАЗЫВАЕТСЯ ОКНОМ, А НЕ СТРОЧКОЙ ───────────────────────────────
+// Очки за закрытый день выдаются САМИ, как только план сошёлся: отдельной
+// кнопки «получить» нет намеренно — ребёнок и так всё сделал, лишний шаг тут
+// ничего не добавляет. Но из-за этого начисление проходило совсем незаметно:
+// где-то внизу карточки появлялась серая строка «начислено N очков», и всё.
+// Событие, ради которого затевался весь день, выглядело как сноска.
+//
+// Теперь по факту начисления открывается окно: что именно дали (очки, новый
+// уровень) и за что. Оно показывается РОВНО ОДИН РАЗ и только если сервер
+// действительно начислил очки — то есть на ответ awarded > 0. Повторные вызовы
+// claim (карточка живёт на вкладке и обновляется по таймеру) отвечают
+// alreadyClaimed и окна больше не открывают.
+//
 // Смена цели применяется со СЛЕДУЮЩЕГО дня (см. PATCH /gamification/daily-goal):
 // набор задач зависит от тяжести цели, и мгновенная смена позволяла бы
 // подбирать себе удобные задачи. В интерфейсе про это сказано одной строкой —
@@ -95,6 +108,22 @@ const DRAW_MS = 900;
 /** Доезд дуги до нового процента. Короче: это уже не появление, а подвижка. */
 const STEP_MS = 500;
 
+/**
+ * Что вернул сервер на просьбу выдать награду.
+ *
+ * Форма повторяет DailyGoalClaimResult из hooks/useGamification.ts, но объявлена
+ * здесь своей: карточке нужны ровно три поля, и тащить ради них зависимость от
+ * хука геймификации незачем — она рисует и чужие планы (например, в превью).
+ */
+export interface DailyGoalAward {
+  /** Сколько очков реально начислено. 0 — награда уже была выдана раньше. */
+  awarded: number;
+  /** Очков всего после начисления. */
+  totalPoints?: number;
+  /** Этим начислением взят новый уровень. */
+  leveledUp?: boolean;
+}
+
 export interface DailyQuestsProps {
   plan: DailyPlan;
   /** Цель, выбранная на завтра — она подсвечивается в окне настройки. */
@@ -108,8 +137,12 @@ export interface DailyQuestsProps {
    * Забрать награду за закрытый день. Вызывается сама, как только план
    * сходится: отдельная кнопка «получить» была бы лишним шагом, ребёнок и так
    * всё сделал.
+   *
+   * Если вернуть ответ сервера, карточка покажет окно с тем, что начислено —
+   * см. блок «НАГРАДА ПОКАЗЫВАЕТСЯ ОКНОМ» в шапке файла. Ничего не вернуть тоже
+   * можно: тогда окна просто не будет.
    */
-  onClaim?: () => void;
+  onClaim?: () => void | Promise<DailyGoalAward | null | void>;
 }
 
 export function DailyQuests({
@@ -117,12 +150,34 @@ export function DailyQuests({
 }: DailyQuestsProps) {
   const colors = useColors();
   const [editing, setEditing] = useState(false);
+  /** Что начислено за сегодня. Не null — открыто окно награды. */
+  const [award, setAward] = useState<DailyGoalAward | null>(null);
   const { time, quests, allDone } = plan;
+
+  /**
+   * Просьба уже отправлена в этот заход.
+   *
+   * Карточка живёт на вкладке профиля и обновляется по таймеру, поэтому эффект
+   * ниже может сработать несколько раз до того, как с сервера придёт новое
+   * claimed. Без этой отметки окно награды открывалось бы повторно (сервер
+   * второй раз отвечает alreadyClaimed и awarded = 0, но лишний запрос всё
+   * равно ни к чему).
+   */
+  const asked = useRef(false);
 
   // День сошёлся — просим очки. Сервер сам решит, выдавать ли: повторный вызов
   // безопасен и отвечает alreadyClaimed.
   useEffect(() => {
-    if (allDone && !claimed) onClaim?.();
+    if (!allDone || claimed || asked.current || !onClaim) return;
+    asked.current = true;
+    let alive = true;
+    void (async () => {
+      const result = await onClaim();
+      // Окно открываем ТОЛЬКО на реальном начислении: alreadyClaimed приходит с
+      // awarded = 0, и праздновать там нечего.
+      if (alive && result && result.awarded > 0) setAward(result);
+    })();
+    return () => { alive = false; };
   }, [allDone, claimed, onClaim]);
 
   const r = (RING - STROKE) / 2;
@@ -306,6 +361,58 @@ export function DailyQuests({
       padding: 11, marginBottom: 16,
     },
     noteText: { flex: 1, fontSize: 12, fontWeight: "700", color: colors.mutedForeground, lineHeight: 16 },
+
+    // ── Окно награды ──
+    // Затемнение плотнее, чем у окна настройки цели: это не настройка, а
+    // событие, и на секунду оно имеет право забрать экран целиком.
+    awardOverlay: {
+      flex: 1, backgroundColor: "#000000d9",
+      alignItems: "center", justifyContent: "center", padding: 24,
+    },
+    awardCard: {
+      width: "100%", maxWidth: 340, borderRadius: radii.xl,
+      padding: 22, alignItems: "center", overflow: "hidden",
+    },
+    awardBlob: {
+      position: "absolute", width: 220, height: 220, borderRadius: 110,
+      top: -120, right: -80, backgroundColor: "rgba(255,255,255,0.12)",
+    },
+    awardMedal: {
+      width: 68, height: 68, borderRadius: 34,
+      alignItems: "center", justifyContent: "center",
+      backgroundColor: "rgba(255,255,255,0.18)",
+      borderWidth: 2, borderColor: accents.gold,
+    },
+    awardTitle: {
+      fontSize: 20, fontWeight: "900", color: "#fff",
+      letterSpacing: -0.4, textAlign: "center", marginTop: 13,
+    },
+    awardSub: {
+      fontSize: 12.5, fontWeight: "600", lineHeight: 18,
+      color: "rgba(255,255,255,0.82)", textAlign: "center", marginTop: 6,
+    },
+    // Сама цифра начисления. Крупно и золотом: это то, за чем открыли окно.
+    awardPts: {
+      flexDirection: "row", alignItems: "center", gap: 8,
+      marginTop: 16, paddingHorizontal: 18, paddingVertical: 10,
+      borderRadius: radii.pill, backgroundColor: accents.gold,
+    },
+    awardPtsText: {
+      fontSize: 26, fontWeight: "900", color: "#42200a",
+      letterSpacing: -0.8, fontVariant: ["tabular-nums"],
+    },
+    awardPtsCap: { fontSize: 13, fontWeight: "900", color: "#42200a" },
+    // Строки «за что дали»: то же, что в чек-листе, но уже как перечень заслуг.
+    awardList: {
+      alignSelf: "stretch", marginTop: 16, gap: 7,
+      paddingTop: 14, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.22)",
+    },
+    awardRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+    awardRowText: { flex: 1, fontSize: 12.5, fontWeight: "700", color: "rgba(255,255,255,0.9)" },
+    awardTotal: {
+      fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.74)",
+      marginTop: 14, textAlign: "center", fontVariant: ["tabular-nums"],
+    },
   });
 
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
@@ -423,6 +530,83 @@ export function DailyQuests({
         )}
         </LinearGradient>
       </View>
+
+      {/* ── Окно награды за закрытый день ──
+          Открывается по факту начисления (awarded > 0), а не по признаку
+          «день закрыт»: иначе оно всплывало бы на каждом обновлении экрана
+          уже после того, как очки давно выданы. */}
+      <Modal
+        visible={!!award}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAward(null)}
+      >
+        <Pressable style={s.awardOverlay} onPress={() => setAward(null)}>
+          <Pressable onPress={() => {}} style={{ width: "100%", alignItems: "center" }}>
+            <LinearGradient
+              colors={CARD_GRADIENT as unknown as string[]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={s.awardCard}
+            >
+              <View pointerEvents="none" style={s.awardBlob} />
+
+              <View style={s.awardMedal}>
+                <Glyph name="medal" size={32} color={accents.gold} />
+              </View>
+
+              <Text style={s.awardTitle}>Цель дня закрыта</Text>
+              <Text style={s.awardSub}>
+                {time.target} {plural(time.target, ["минута", "минуты", "минут"])} занятий и все
+                задачи дня — награда твоя
+              </Text>
+
+              <View style={s.awardPts}>
+                <Text style={s.awardPtsText}>+{award?.awarded ?? 0}</Text>
+                <Text style={s.awardPtsCap}>
+                  {plural(award?.awarded ?? 0, ["очко", "очка", "очков"])}
+                </Text>
+              </View>
+
+              {/* За что именно дали: те же задачи, но уже как список заслуг. */}
+              <View style={s.awardList}>
+                <View style={s.awardRow}>
+                  <Glyph name="check" size={15} color={accents.gold} />
+                  <Text style={s.awardRowText}>
+                    Время: {time.target} {plural(time.target, ["минута", "минуты", "минут"])}
+                  </Text>
+                </View>
+                {quests.map((q) => (
+                  <View key={q.kind} style={s.awardRow}>
+                    <Glyph name="check" size={15} color={accents.gold} />
+                    <Text style={s.awardRowText} numberOfLines={1}>{q.title}</Text>
+                  </View>
+                ))}
+                {award?.leveledUp && (
+                  <View style={s.awardRow}>
+                    <Glyph name="rank" size={15} color={accents.gold} />
+                    <Text style={s.awardRowText}>Новый уровень!</Text>
+                  </View>
+                )}
+              </View>
+
+              {typeof award?.totalPoints === "number" && (
+                <Text style={s.awardTotal}>
+                  Всего очков: {award.totalPoints}
+                </Text>
+              )}
+
+              <ChunkyButton
+                label="Забрать"
+                icon="check"
+                center
+                onPress={() => setAward(null)}
+                style={{ alignSelf: "stretch", marginTop: 18 }}
+              />
+            </LinearGradient>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={editing} transparent animationType="slide" onRequestClose={() => setEditing(false)}>
         <Pressable style={s.overlay} onPress={() => setEditing(false)}>
