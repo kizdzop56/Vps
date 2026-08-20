@@ -56,6 +56,31 @@
 // (мощный удар, удвоение, щит) и на энергию. Маны в механике нет: два счётчика
 // делали одно и то же.
 //
+// ── ГРАБЛИ: МОНЕТЫ МЕНЯЮТСЯ ТОЛЬКО SQL-АРИФМЕТИКОЙ ──────────────────────────
+// Любое изменение баланса пишется выражением вида coins = coins ± N, ПРЯМО В
+// БАЗЕ, и никогда — числом, посчитанным из прочитанной ранее строки.
+//
+// Почему это важно, а не «стиль». Раньше и покупка, и начисление за удар
+// работали по схеме «прочитал state.coins → сложил в JS → записал абсолютное
+// значение». Между чтением и записью успевало пройти другое изменение того же
+// поля, и оно молча затиралось. Отсюда РЕАЛЬНЫЙ баг, на который пожаловались:
+// баф покупался при нехватке монет.
+//
+// Как это выглядело на практике:
+//   1. в бою ученик покупает баф: сервер читает 120 монет, пишет 40;
+//   2. параллельно (или сразу после) прилетает ответ на задание боя, который
+//      читал состояние ДО покупки и пишет «120 + 1 монета за попадание» = 121;
+//   3. баланс снова 121, хотя баф уже выдан. Второй баф покупается «бесплатно»,
+//      и так по кругу.
+//
+// Плюс сама проверка «хватает ли монет» жила отдельным SELECT от списания,
+// поэтому два быстрых нажатия проходили её оба.
+//
+// Теперь проверка и списание — ОДИН UPDATE с условием в WHERE (coins >= цена
+// и баф ещё не активен). Не обновилось ни одной строки — значит монет не хватило
+// или баф уже стоял, и покупка не состоялась. Ровно тот же приём, которым в
+// routes/gamification.ts защищены награда за вход и цель дня.
+//
 // ── Дисциплина ──────────────────────────────────────────────────────────────
 // recordRaidHit() вызывается ИЗ ПУТИ ОТВЕТА УЧЕНИКА и поэтому не имеет права
 // падать: любая ошибка внутри логируется и превращается в null. Сломанный рейд
@@ -71,7 +96,7 @@ import {
   type RaidEvent,
   type RaidState,
 } from "@workspace/db";
-import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { logger } from "./logger";
 import { startOfDay } from "./srs";
 import { localDayKey } from "./timeStats";
@@ -513,7 +538,15 @@ async function ensureState(userId: number, now: Date): Promise<RaidState> {
   return row;
 }
 
-type StatePatch = Partial<typeof raidStateTable.$inferInsert>;
+/**
+ * Изменения боевого состояния.
+ *
+ * Значением может быть не только число, но и SQL-выражение (например
+ * coins = coins + 1) — именно так пишутся все изменения монет, см. ГРАБЛИ в
+ * шапке файла. Поэтому тип полей any, а не тип колонки: ключи по-прежнему
+ * проверяются, значения — нет.
+ */
+type StatePatch = Partial<{ [K in keyof typeof raidStateTable.$inferInsert]: any }>;
 
 async function applyPatch(userId: number, patch: StatePatch, now: Date): Promise<RaidState> {
   if (Object.keys(patch).length === 0) {
@@ -526,6 +559,44 @@ async function applyPatch(userId: number, patch: StatePatch, now: Date): Promise
     .where(eq(raidStateTable.userId, userId))
     .returning();
   return row!;
+}
+
+/**
+ * Списать монеты и применить покупку ОДНИМ запросом.
+ *
+ * Здесь и живёт защита от покупки без монет (см. ГРАБЛИ в шапке файла): цена
+ * проверяется тем же UPDATE, который списывает, — условием coins >= cost прямо
+ * в WHERE. Отдельный SELECT «а хватает ли» ничего не гарантировал: между ним и
+ * записью успевали пройти и другая покупка, и начисление за удар в бою.
+ *
+ * @param guard дополнительное условие: баф ещё не активен. Без него два быстрых
+ *   нажатия покупали один и тот же баф дважды, списывая цену два раза.
+ * @returns новую строку состояния или null, если условие не выполнено —
+ *   значит покупка НЕ состоялась и ни одна монета не списана.
+ */
+async function spendCoins(
+  userId: number,
+  cost: number,
+  effect: StatePatch,
+  guard: SQL | undefined,
+  now: Date,
+): Promise<RaidState | null> {
+  const conditions = [eq(raidStateTable.userId, userId), gte(raidStateTable.coins, cost)];
+  if (guard) conditions.push(guard);
+
+  const [row] = await db
+    .update(raidStateTable)
+    .set({
+      ...effect,
+      // Арифметика В БАЗЕ: coins = coins - cost. Никогда не число, посчитанное
+      // из прочитанной ранее строки.
+      coins: sql`${raidStateTable.coins} - ${cost}`,
+      updatedAt: now,
+    })
+    .where(and(...conditions))
+    .returning();
+
+  return row ?? null;
 }
 
 /**
@@ -552,11 +623,13 @@ export async function syncState(userId: number, now: Date = new Date()): Promise
       : new Date(state.staminaAt.getTime() + gained * STAMINA_REGEN_MS);
   }
 
-  // Монеты за вход и сброс дневного задания.
+  // Монеты за вход и сброс дневного задания. Прибавка — SQL-арифметикой: между
+  // чтением и записью мог пройти удар или покупка, и абсолютное значение их бы
+  // затёрло (см. ГРАБЛИ в шапке файла).
   const today = localDayKey(now);
   if (state.bonusDay !== today) {
     patch.bonusDay = today;
-    patch.coins = state.coins + DAILY_COINS;
+    patch.coins = sql`${raidStateTable.coins} + ${DAILY_COINS}`;
     patch.questDay = today;
     patch.questClaimed = false;
   }
@@ -723,10 +796,14 @@ export async function recordRaidHit(input: RaidHitInput): Promise<RaidHitResult 
 
     patch.combo = streak;
     patch.cleanStreak = cleanStreak;
-    patch.coins = state.coins + coinsEarned;
+    // Прибавка монет — SQL-арифметикой, а не «прочитанное значение + N». Именно
+    // здесь и ломалась покупка бафов: удар, читавший баланс ДО покупки, писал
+    // его обратно и возвращал только что потраченные монеты (см. ГРАБЛИ в
+    // шапке файла).
+    patch.coins = sql`${raidStateTable.coins} + ${coinsEarned}`;
     spendStamina(state, patch, now);
     if (state.powerArmed) patch.powerArmed = false;
-    if (state.aoeLeft > 0) patch.aoeLeft = state.aoeLeft - 1;
+    if (state.aoeLeft > 0) patch.aoeLeft = sql`greatest(${raidStateTable.aoeLeft} - 1, 0)`;
 
     // Ржавчина снимается пятью верными подряд.
     let rustCleared = false;
@@ -1117,7 +1194,19 @@ export function isActionError(value: unknown): value is RaidActionError {
 
 export type RaidBuff = "power" | "aoe" | "shield" | "stamina";
 
-/** Купить баф за монеты. */
+/**
+ * Купить баф за монеты.
+ *
+ * Проверка цены и списание — ОДИН запрос (см. spendCoins и ГРАБЛИ в шапке
+ * файла). Раньше «хватает ли монет» проверялось по прочитанной строке, а
+ * списание шло отдельной записью абсолютного значения — и баф покупался при
+ * нехватке монет, если между чтением и записью проходило любое другое
+ * изменение баланса (например, начисление за удар в бою).
+ *
+ * Отказ отличается от ошибки: не обновилось ни строки — значит либо монет не
+ * хватило, либо баф уже стоял. Что именно, выясняем по текущему состоянию,
+ * чтобы сообщение было честным.
+ */
 export async function buyBuff(
   userId: number,
   buff: RaidBuff,
@@ -1126,31 +1215,51 @@ export async function buyBuff(
   const state = await syncState(userId, now);
 
   if (buff === "power") {
-    if (state.powerArmed) return fail("Мощный удар уже заряжен");
-    if (state.coins < POWER_COST) return fail("Не хватает монет");
-    return await applyPatch(userId, { coins: state.coins - POWER_COST, powerArmed: true }, now);
-  }
-  if (buff === "aoe") {
-    if (state.aoeLeft > 0) return fail("Удвоение ещё действует");
-    if (state.coins < AOE_COST) return fail("Не хватает монет");
-    return await applyPatch(userId, { coins: state.coins - AOE_COST, aoeLeft: AOE_TASKS }, now);
-  }
-  if (buff === "stamina") {
-    if (state.stamina >= STAMINA_MAX) return fail("Энергия и так полная");
-    if (state.coins < STAMINA_COST) return fail("Не хватает монет");
-    return await applyPatch(
+    const row = await spendCoins(
       userId,
-      { coins: state.coins - STAMINA_COST, stamina: STAMINA_MAX, staminaAt: now },
+      POWER_COST,
+      { powerArmed: true },
+      eq(raidStateTable.powerArmed, false),
       now,
     );
+    if (row) return row;
+    return fail(state.powerArmed ? "Мощный удар уже заряжен" : "Не хватает монет");
   }
-  if (state.shieldUntil && state.shieldUntil.getTime() > now.getTime()) return fail("Щит уже стоит");
-  if (state.coins < SHIELD_COST) return fail("Не хватает монет");
-  return await applyPatch(
+
+  if (buff === "aoe") {
+    const row = await spendCoins(
+      userId,
+      AOE_COST,
+      { aoeLeft: AOE_TASKS },
+      lte(raidStateTable.aoeLeft, 0),
+      now,
+    );
+    if (row) return row;
+    return fail(state.aoeLeft > 0 ? "Удвоение ещё действует" : "Не хватает монет");
+  }
+
+  if (buff === "stamina") {
+    const row = await spendCoins(
+      userId,
+      STAMINA_COST,
+      { stamina: STAMINA_MAX, staminaAt: now },
+      lt(raidStateTable.stamina, STAMINA_MAX),
+      now,
+    );
+    if (row) return row;
+    return fail(state.stamina >= STAMINA_MAX ? "Энергия и так полная" : "Не хватает монет");
+  }
+
+  const shielded = !!state.shieldUntil && state.shieldUntil.getTime() > now.getTime();
+  const row = await spendCoins(
     userId,
-    { coins: state.coins - SHIELD_COST, shieldUntil: new Date(now.getTime() + 7 * DAY_MS) },
+    SHIELD_COST,
+    { shieldUntil: new Date(now.getTime() + 7 * DAY_MS) },
+    or(isNull(raidStateTable.shieldUntil), lte(raidStateTable.shieldUntil, now)),
     now,
   );
+  if (row) return row;
+  return fail(shielded ? "Щит уже стоит" : "Не хватает монет");
 }
 
 export interface ClaimResult {
@@ -1176,20 +1285,33 @@ export async function claimMilestones(
   const reached = milestonesReached(participant.damage);
   if (reached <= participant.milestone) return fail("Новых вех пока нет");
 
+  // Отметку о выдаче ставим ПЕРВОЙ и с условием: две одновременные попытки
+  // иначе выдали бы одни и те же вехи дважды. Не обновилось — значит нас уже
+  // опередили, и выдавать нечего.
+  const claimed = await db
+    .update(raidParticipantsTable)
+    .set({ milestone: reached })
+    .where(and(
+      eq(raidParticipantsTable.id, participant.id),
+      eq(raidParticipantsTable.milestone, participant.milestone),
+    ))
+    .returning({ id: raidParticipantsTable.id });
+  if (claimed.length === 0) return fail("Новых вех пока нет");
+
   const state = await syncState(userId, now);
   const granted = MILESTONES.slice(participant.milestone, reached).map((m) => m.reward);
 
-  let coins = state.coins;
-  let keys = state.keys;
-  let stamina = state.stamina;
+  let coinsGain = 0;
+  let keysGain = 0;
+  let fullStamina = false;
   const frames = [...(state.frames ?? [])];
   let weaponSkin = state.weaponSkin;
   let weaponEventId = state.weaponEventId;
 
   for (const r of granted) {
-    coins += r.coins;
-    keys += r.keys;
-    if (r.stamina) stamina = STAMINA_MAX;
+    coinsGain += r.coins;
+    keysGain += r.keys;
+    if (r.stamina) fullStamina = true;
     if (r.cosmetic && !frames.includes(r.cosmetic)) frames.push(r.cosmetic);
     if (r.weapon) {
       weaponSkin = r.weapon;
@@ -1198,13 +1320,27 @@ export async function claimMilestones(
     }
   }
 
-  await applyPatch(userId, { coins, keys, stamina, frames, weaponSkin, weaponEventId }, now);
-  await db
-    .update(raidParticipantsTable)
-    .set({ milestone: reached })
-    .where(eq(raidParticipantsTable.id, participant.id));
+  // Монеты и ключи — прибавкой в базе (см. ГРАБЛИ в шапке файла).
+  const patch: StatePatch = {
+    coins: sql`${raidStateTable.coins} + ${coinsGain}`,
+    keys: sql`${raidStateTable.keys} + ${keysGain}`,
+    frames,
+    weaponSkin,
+    weaponEventId,
+  };
+  if (fullStamina) {
+    patch.stamina = STAMINA_MAX;
+    patch.staminaAt = now;
+  }
+  const after = await applyPatch(userId, patch, now);
 
-  return { granted, coins, keys, frames, weaponSkin };
+  return {
+    granted,
+    coins: after.coins,
+    keys: after.keys,
+    frames: after.frames ?? [],
+    weaponSkin: after.weaponSkin,
+  };
 }
 
 /** Дневное задание рейда. */
@@ -1222,11 +1358,28 @@ export async function claimQuest(
     .where(and(eq(raidHitsTable.userId, userId), gte(raidHitsTable.at, startOfDay(now))));
   if (Number(row?.damage ?? 0) < QUEST_DAMAGE) return fail(`Нужно ${QUEST_DAMAGE} урона за день`);
 
-  return await applyPatch(
-    userId,
-    { questDay: today, questClaimed: true, coins: state.coins + QUEST_COINS },
-    now,
-  );
+  // Отметка ставится тем же запросом и только если её ещё нет: два
+  // одновременных нажатия иначе начислят награду дважды.
+  const [after] = await db
+    .update(raidStateTable)
+    .set({
+      questDay: today,
+      questClaimed: true,
+      coins: sql`${raidStateTable.coins} + ${QUEST_COINS}`,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(raidStateTable.userId, userId),
+      or(
+        ne(raidStateTable.questDay, today),
+        isNull(raidStateTable.questDay),
+        eq(raidStateTable.questClaimed, false),
+      ),
+    ))
+    .returning();
+
+  if (!after) return fail("Награда за сегодня уже получена");
+  return after;
 }
 
 export interface ChestResult {
@@ -1259,24 +1412,34 @@ export async function claimChest(
   if (row.claimed) return fail("Сундук уже открыт");
   if (row.damage <= 0) return fail("Нужен хотя бы один удар по боссу");
 
-  const state = await syncState(userId, now);
   const won = row.status === "won";
   const coins = won ? 500 : 120;
   const title = won ? `Победитель ${bossByKey(row.boss).name}` : "Выживший";
   const boostUntil = won ? new Date(now.getTime() + BOOST_MS) : null;
 
+  // Отметку «сундук открыт» ставим ПЕРВОЙ и с условием: без этого два быстрых
+  // нажатия начисляли монеты дважды.
+  const opened = await db
+    .update(raidParticipantsTable)
+    .set({ chestClaimed: true })
+    .where(and(
+      eq(raidParticipantsTable.id, row.participantId),
+      eq(raidParticipantsTable.chestClaimed, false),
+    ))
+    .returning({ id: raidParticipantsTable.id });
+  if (opened.length === 0) return fail("Сундук уже открыт");
+
+  await syncState(userId, now);
+
   const patch: StatePatch = {
-    coins: state.coins + coins,
+    // Прибавкой в базе, а не «прочитанное + N» (см. ГРАБЛИ в шапке файла).
+    coins: sql`${raidStateTable.coins} + ${coins}`,
     title,
     titleUntil: new Date(now.getTime() + 7 * DAY_MS),
   };
   if (boostUntil) patch.boostUntil = boostUntil;
 
   await applyPatch(userId, patch, now);
-  await db
-    .update(raidParticipantsTable)
-    .set({ chestClaimed: true })
-    .where(eq(raidParticipantsTable.id, row.participantId));
 
   return { status: row.status, coins, title, boostUntil: boostUntil?.toISOString() ?? null };
 }
