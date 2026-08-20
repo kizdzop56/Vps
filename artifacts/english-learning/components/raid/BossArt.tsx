@@ -8,14 +8,34 @@
 // сервера (BOSSES.colors), а «жизнь» даёт анимация, не кадры.
 //
 // Анимируются только transform и opacity: на слабом телефоне всё остальное
-// плывёт. Дыхание — бесконечный цикл масштаба, удар — короткий шейк по X плюс
+// плывёт. Дыхание — бесконечный цикл масштаба, удар — короткий шейк плюс
 // вспышка. Эмодзи нет, как и во всём интерфейсе.
+//
+// ── ОТДАЧА НА УДАР ────────────────────────────────────────────────────
+// Фигура — ЕДИНСТВЕННАЯ обратная связь боя, поэтому удар должен быть
+// виден, а не угадываться. Здесь три вещи, которые работают вместе:
+//
+//   1. шейк с убыванием и просадкой масштаба: босс ПРИНИМАЕТ удар, а не
+//      просто дрожит на одном месте;
+//   2. вспышка ЦВЕТОМ ФАЗЫ (flashColor), а не всегда белая: в берсерке удар
+//      должен читаться иначе, чем в начале недели;
+//   3. АУРА КОМБО (aura 0…3): серия без ошибок видна как свечение вокруг
+//      фигуры, которое растёт с каждым порогом (3 → 5 → 10). До этого комбо
+//      было только цифрой в пилюле, то есть самая азартная механика рейда никак
+//      не ощущалась.
+//
+// Аура намеренно живёт на том же цикле breathe, что и дыхание: второй
+// бесконечный цикл ради свечения — это лишние кадры на слабом телефоне
+// ровно там, где идёт самый быстрый темп ответов.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from "react";
 import { Animated, Easing, Platform, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 
 const NATIVE_DRIVER = Platform.OS !== "web";
+
+/** Цвет свечения комбо по порогам 3 / 5 / 10. */
+const AURA_COLORS = ["transparent", "#fbbf24", "#fb923c", "#f43f5e"];
 
 export interface BossArtProps {
   boss: string;
@@ -27,12 +47,21 @@ export interface BossArtProps {
   size?: number;
   /** Босс повержен: фигура оседает и гаснет. */
   defeated?: boolean;
+  /** Цвет вспышки попадания. По умолчанию белая. */
+  flashColor?: string;
+  /** Сила ауры комбо: 0 — нет, 1…3 — пороги 3 / 5 / 10. */
+  aura?: number;
 }
 
-export function BossArt({ boss, colors, phase, hitToken, size = 200, defeated = false }: BossArtProps) {
+export function BossArt({
+  boss, colors, phase, hitToken, size = 200, defeated = false,
+  flashColor, aura = 0,
+}: BossArtProps) {
   const breathe = React.useRef(new Animated.Value(0)).current;
   const shake = React.useRef(new Animated.Value(0)).current;
   const flash = React.useRef(new Animated.Value(0)).current;
+  /** Просадка от удара: короткое сжатие фигуры. */
+  const punch = React.useRef(new Animated.Value(0)).current;
 
   // Дыхание: чем ниже здоровье, тем чаще.
   React.useEffect(() => {
@@ -47,31 +76,67 @@ export function BossArt({ boss, colors, phase, hitToken, size = 200, defeated = 
     return () => loop.stop();
   }, [breathe, phase]);
 
-  // Удар: шейк и вспышка. Первый рендер не считается ударом.
+  // Удар: шейк, просадка и вспышка. Первый рендер не считается ударом.
   const first = React.useRef(true);
   React.useEffect(() => {
     if (first.current) { first.current = false; return; }
     shake.setValue(0);
     flash.setValue(1);
+    punch.setValue(1);
     Animated.parallel([
+      // Шейк с убыванием: резко влево, потом всё меньше — так читается как
+      // удар, а не как вибрация телефона.
       Animated.sequence([
-        Animated.timing(shake, { toValue: 1, duration: 55, useNativeDriver: NATIVE_DRIVER }),
-        Animated.timing(shake, { toValue: -1, duration: 55, useNativeDriver: NATIVE_DRIVER }),
-        Animated.timing(shake, { toValue: 0.6, duration: 55, useNativeDriver: NATIVE_DRIVER }),
-        Animated.timing(shake, { toValue: 0, duration: 70, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(shake, { toValue: 1, duration: 45, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(shake, { toValue: -0.8, duration: 55, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(shake, { toValue: 0.5, duration: 60, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(shake, { toValue: -0.25, duration: 65, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(shake, { toValue: 0, duration: 80, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER }),
       ]),
-      Animated.timing(flash, { toValue: 0, duration: 260, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER }),
+      Animated.sequence([
+        Animated.timing(punch, { toValue: 1, duration: 40, useNativeDriver: NATIVE_DRIVER }),
+        Animated.timing(punch, { toValue: 0, duration: 240, easing: Easing.out(Easing.back(2)), useNativeDriver: NATIVE_DRIVER }),
+      ]),
+      Animated.timing(flash, { toValue: 0, duration: 300, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE_DRIVER }),
     ]).start();
-  }, [hitToken, shake, flash]);
+  }, [hitToken, shake, flash, punch]);
 
-  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 1.035] });
-  const translateX = shake.interpolate({ inputRange: [-1, 1], outputRange: [-9, 9] });
+  const breathScale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 1.035] });
+  const punchScale = punch.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] });
+  const translateX = shake.interpolate({ inputRange: [-1, 1], outputRange: [-11, 11] });
+
+  const tier = Math.max(0, Math.min(3, Math.round(aura)));
+  const auraColor = AURA_COLORS[tier] ?? "transparent";
+  const auraOpacity = breathe.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.12 + tier * 0.07, 0.22 + tier * 0.1],
+  });
+  const auraScale = breathe.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.98, 1.06 + tier * 0.02],
+  });
 
   return (
     <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      {/* Аура комбо: серия без ошибок видна, а не только написана цифрой. */}
+      {tier > 0 && (
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            width: size * 0.86,
+            height: size * 0.86,
+            borderRadius: size,
+            backgroundColor: auraColor,
+            opacity: auraOpacity,
+            transform: [{ scale: auraScale }],
+          }}
+        />
+      )}
+
       <Animated.View
         style={{
-          transform: [{ translateX }, { scale }],
+          transform: [{ translateX }, { scale: breathScale }, { scale: punchScale }],
           opacity: defeated ? 0.35 : 1,
         }}
       >
@@ -86,7 +151,7 @@ export function BossArt({ boss, colors, phase, hitToken, size = 200, defeated = 
         </Svg>
       </Animated.View>
 
-      {/* Вспышка попадания: белое свечение поверх фигуры. */}
+      {/* Вспышка попадания: свечение цветом фазы поверх фигуры. */}
       <Animated.View
         pointerEvents="none"
         style={{
@@ -94,7 +159,7 @@ export function BossArt({ boss, colors, phase, hitToken, size = 200, defeated = 
           width: size * 0.8,
           height: size * 0.8,
           borderRadius: size,
-          backgroundColor: "#ffffff",
+          backgroundColor: flashColor ?? "#ffffff",
           opacity: flash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.5] }),
         }}
       />
