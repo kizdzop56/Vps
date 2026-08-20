@@ -21,7 +21,15 @@
 //   NotificationCenter — история уведомлений за колокольчиком в шапке
 //                      (components/NotificationCenter.tsx);
 //   LevelUpCelebration — окно нового уровня
-//                      (components/LevelUpCelebration.tsx).
+//                      (components/LevelUpCelebration.tsx);
+//   DeleteAccountCard — удаление аккаунта
+//                      (components/DeleteAccountCard.tsx).
+//
+// ── УДАЛЕНИЕ АККАУНТА ───────────────────────────────────────────────────────
+// Живёт здесь же, рядом с выходом из аккаунта, и это не случайно: и Apple, и
+// Google требуют, чтобы удаление было ВНУТРИ приложения и его было легко найти.
+// Кнопка «Выйти» это требование не закрывает — выход не удаляет данные.
+// Подробности и барьеры подтверждения — в шапке DeleteAccountCard.
 //
 // ── «Друзья» больше не вкладка панели ────────────────────────────────────────
 // Раньше у учителя был отдельный нижний таб «Друзья» (app/(main)/friends.tsx),
@@ -122,6 +130,7 @@ import { AssignmentsCard } from "@/components/AssignmentsCard";
 import { FriendsSheet } from "@/components/FriendsSheet";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationCenter } from "@/components/NotificationCenter";
+import { DeleteAccountCard } from "@/components/DeleteAccountCard";
 import { type CategoryStat } from "@/components/AssignmentRingsChart";
 import { useGamification, type GamificationStats } from "@/hooks/useGamification";
 import { useNotifications } from "@/hooks/useNotifications";
@@ -1292,6 +1301,13 @@ export default function ProfileScreen() {
             tone="danger"
             onPress={handleLogout}
           />
+        </View>
+
+        {/* Удаление аккаунта. Рядом с выходом и намеренно НЕ спрятано: и Apple,
+            и Google требуют, чтобы удаление было в приложении и легко
+            находилось. Подтверждение и пароль — внутри компонента. */}
+        <View style={{ paddingHorizontal: 20, marginTop: 18 }}>
+          <DeleteAccountCard onDeleted={logout} />
         </View>
       </ScrollView>
     </View>
