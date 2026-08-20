@@ -355,6 +355,39 @@ const PATCHES: ColumnPatch[] = [
     definition: "jsonb",
     reason: "просмотренные вкладки онбординга",
   },
+  // ── Согласия с документами ─────────────────────────────────────────────
+  // Критично именно для users: эту таблицу читает КАЖДЫЙ запрос с авторизацией,
+  // и одна недоехавшая колонка ломает вход в приложение целиком, а не один раздел.
+  {
+    table: "users",
+    column: "terms_accepted_at",
+    definition: "timestamp",
+    reason: "когда приняты условия использования",
+  },
+  {
+    table: "users",
+    column: "terms_version",
+    definition: "text",
+    reason: "редакция условий, на которую дано согласие",
+  },
+  {
+    table: "users",
+    column: "privacy_accepted_at",
+    definition: "timestamp",
+    reason: "когда принята политика конфиденциальности",
+  },
+  {
+    table: "users",
+    column: "privacy_version",
+    definition: "text",
+    reason: "редакция политики, на которую дано согласие",
+  },
+  {
+    table: "users",
+    column: "consent_by",
+    definition: "text",
+    reason: "кто дал согласие: self | parent | teacher (для несовершеннолетних нужен родитель)",
+  },
   {
     table: "review_log",
     column: "grade",
