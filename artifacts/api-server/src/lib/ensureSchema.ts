@@ -218,6 +218,7 @@ const TABLES: TablePatch[] = [
          "combo" integer not null default 0,
          "clean_streak" integer not null default 0,
          "power_armed" boolean not null default false,
+         "power_stacks" integer not null default 0,
          "aoe_left" integer not null default 0,
          "shield_until" timestamp,
          "rust_until" timestamp,
@@ -362,6 +363,13 @@ const PATCHES: ColumnPatch[] = [
     column: "bonus_day",
     definition: "date",
     reason: "день, за который выданы монеты за вход (пришла на место mana_day)",
+  },
+  {
+    table: "raid_state",
+    column: "power_stacks",
+    definition: "integer not null default 0",
+    reason:
+      "запас купленных мощных ударов: без неё баф нельзя купить второй раз, пока не потрачен первый",
   },
 ];
 
