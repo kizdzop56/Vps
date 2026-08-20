@@ -33,6 +33,17 @@
 // событие ОБЩЕЕ, у него один босс и один пул здоровья, значит и таблица одна.
 // Место считается по всем участникам рейда.
 //
+// ── История: только ПРОШЛЫЙ рейд ────────────────────────────────────────────
+// Раньше отдавались четыре последних закончившихся рейда, и клиент рисовал их
+// списком прямо на экране события. Список этот никто не читал: рейд недельный,
+// то есть четвёртая строка — это событие месячной давности, к которому уже
+// нечего добавить. Теперь отдаётся РОВНО ОДИН, самый последний, зато целиком:
+// вместе с моими ударами, критами и лучшим комбо — из них клиент собирает
+// отдельный экран итога, который открывается по нажатию.
+//
+// Сами события в raid_events при этом никуда не деваются (на них держится
+// расписание недель и несобранные сундуки) — сокращена только выдача наружу.
+//
 // ── Медалей рейд не считает ─────────────────────────────────────────────────
 // Награды за рейды стали обычными медалями витрины в профиле. Их условия живут
 // в routes/gamification.ts (ACHIEVEMENT_CONDITIONS), а показатели за всё время
@@ -940,14 +951,24 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     .orderBy(desc(raidEventsTable.endsAt))
     .limit(1);
 
-  const history = await db
+  // ── Прошлый рейд ──
+  // РОВНО ОДИН, самый последний закончившийся (см. «История: только ПРОШЛЫЙ
+  // рейд» в шапке файла). Забираем его целиком, вместе с личными счётчиками:
+  // клиент показывает по нему отдельный экран итога, а не строку в списке.
+  const [previous] = await db
     .select({
       weekKey: raidEventsTable.weekKey,
       boss: raidEventsTable.boss,
       status: raidEventsTable.status,
       hpTotal: raidEventsTable.hpTotal,
       damageDealt: raidEventsTable.damageDealt,
+      startsAt: raidEventsTable.startsAt,
+      endsAt: raidEventsTable.endsAt,
+      killerUserId: raidEventsTable.killerUserId,
       myDamage: raidParticipantsTable.damage,
+      myHits: raidParticipantsTable.hits,
+      myCrits: raidParticipantsTable.crits,
+      myBestCombo: raidParticipantsTable.bestCombo,
     })
     .from(raidEventsTable)
     .leftJoin(raidParticipantsTable, and(
@@ -956,7 +977,7 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
     ))
     .where(ne(raidEventsTable.status, "active"))
     .orderBy(desc(raidEventsTable.endsAt))
-    .limit(4);
+    .limit(1);
 
   const rusty = !!state.rustUntil && state.rustUntil.getTime() > now.getTime();
   const boosted = !!state.boostUntil && state.boostUntil.getTime() > now.getTime();
@@ -1045,14 +1066,33 @@ export async function raidSnapshot(userId: number, now: Date = new Date()): Prom
         coins: pending.status === "won" ? 500 : 120,
       }
       : null,
-    history: history.map((h) => ({
-      weekKey: h.weekKey,
-      bossName: bossByKey(h.boss).name,
-      status: h.status,
-      hpTotal: h.hpTotal,
-      damageDealt: h.damageDealt,
-      myDamage: Number(h.myDamage ?? 0),
-    })),
+    /**
+     * Итог ПРОШЛОГО рейда. null — прошлого рейда ещё не было (первая неделя).
+     * Раньше здесь лежал список из четырёх последних событий.
+     */
+    previous: previous
+      ? {
+        weekKey: previous.weekKey,
+        bossName: bossByKey(previous.boss).name,
+        bossShort: bossByKey(previous.boss).short,
+        boss: previous.boss,
+        colors: bossByKey(previous.boss).colors,
+        status: previous.status,
+        hpTotal: previous.hpTotal,
+        damageDealt: previous.damageDealt,
+        startsAt: previous.startsAt.toISOString(),
+        endsAt: previous.endsAt.toISOString(),
+        myDamage: Number(previous.myDamage ?? 0),
+        myHits: Number(previous.myHits ?? 0),
+        myCrits: Number(previous.myCrits ?? 0),
+        myBestCombo: Number(previous.myBestCombo ?? 0),
+        /** Доля личного вклада в общий урон по этому боссу, в процентах. */
+        myShare: Number(previous.damageDealt) > 0
+          ? Math.round((Number(previous.myDamage ?? 0) / Number(previous.damageDealt)) * 1000) / 10
+          : 0,
+        lastHero: previous.killerUserId === userId,
+      }
+      : null,
     recent: recent.map((r) => ({
       damage: r.damage,
       crit: r.crit,
