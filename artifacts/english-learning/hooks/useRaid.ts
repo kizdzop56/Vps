@@ -13,6 +13,12 @@
 // Медалей в снимке тоже нет: награды за рейды стали обычными медалями витрины
 // в профиле (constants/raidAchievements.ts), а показатели для них приходят с
 // остальной статистикой в /gamification/stats.
+//
+// ── История: только ПРОШЛЫЙ рейд ────────────────────────────────────────────
+// Раньше снимок нёс поле history — список из четырёх последних событий, и
+// экран рисовал его строками. Теперь приходит previous — РОВНО ОДИН рейд, самый
+// последний, зато со всеми личными счётчиками: из них собирается отдельный экран
+// итога, который открывается по нажатию.
 import { apiFetch } from "@/hooks/useFlashcards";
 
 export type RaidPhase = "normal" | "hardened" | "berserk";
@@ -85,6 +91,34 @@ export interface RaidRow {
   me: boolean;
 }
 
+/**
+ * Итог ПРОШЛОГО рейда — единственного, который помнит приложение.
+ *
+ * Собирается в отдельный экран, который открывается по нажатию, поэтому полей
+ * больше, чем было у строки списка: там было только имя босса и мой урон.
+ */
+export interface RaidPrevious {
+  weekKey: string;
+  boss: string;
+  bossName: string;
+  bossShort: string;
+  colors: [string, string];
+  /** won — сообщество добило босса, lost — босс выжил. */
+  status: string;
+  hpTotal: number;
+  damageDealt: number;
+  startsAt: string;
+  endsAt: string;
+  myDamage: number;
+  myHits: number;
+  myCrits: number;
+  myBestCombo: number;
+  /** Доля личного вклада в общий урон, в процентах. */
+  myShare: number;
+  /** Этот ученик нанёс добивающий удар. */
+  lastHero: boolean;
+}
+
 export interface RaidSnapshot {
   event: RaidEventInfo;
   me: RaidMe;
@@ -105,14 +139,8 @@ export interface RaidSnapshot {
     damage: number;
     coins: number;
   } | null;
-  history: {
-    weekKey: string;
-    bossName: string;
-    status: string;
-    hpTotal: number;
-    damageDealt: number;
-    myDamage: number;
-  }[];
+  /** Итог прошлого рейда. null — прошлого рейда ещё не было. */
+  previous: RaidPrevious | null;
   recent: { damage: number; crit: boolean; superEffective: boolean; combo: number; at: string }[];
 }
 
