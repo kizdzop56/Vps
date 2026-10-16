@@ -34,7 +34,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
 
   if (error) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24, backgroundColor: colors.background }}>
         <Text style={{ color: colors.foreground, fontSize: 15, textAlign: "center" }}>{error}</Text>
       </View>
     );
@@ -42,7 +42,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
 
   if (!questions) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.background }}>
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
@@ -51,7 +51,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
   // экран результата
   if (result) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 28, paddingTop: insets.top + 20 }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 28, paddingTop: insets.top + 20, backgroundColor: colors.background }}>
         <Text style={{ fontSize: 56 }}>🎓</Text>
         <Text style={{ fontSize: 16, color: colors.mutedForeground, marginTop: 10 }}>Твой уровень</Text>
         <Text style={{ fontSize: 64, fontWeight: "900", color: colors.primary, marginVertical: 6 }}>{result.cefrLevel}</Text>
@@ -94,7 +94,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
   };
 
   return (
-    <View style={{ flex: 1, paddingTop: insets.top + 12 }}>
+    <View style={{ flex: 1, paddingTop: insets.top + 12, backgroundColor: colors.background, zIndex: 1000 }}>
       {/* прогресс */}
       <View style={{ paddingHorizontal: 20 }}>
         <View style={{ height: 10, backgroundColor: "rgba(160,140,220,0.25)", borderRadius: 6, overflow: "hidden" }}>
@@ -105,7 +105,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
         </Text>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 24 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: 24 }}>
         <View style={{ backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 20, marginBottom: 18 }}>
           <Text style={{ fontSize: 19, fontWeight: "700", color: colors.foreground, lineHeight: 27 }}>{q.question}</Text>
         </View>
@@ -140,7 +140,7 @@ export function PlacementTest({ onDone }: { onDone: (r: PlacementResultResponse)
       </ScrollView>
 
       {/* навигация */}
-      <View style={{ flexDirection: "row", gap: 12, padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 8 }}>
+      <View style={{ flexDirection: "row", gap: 12, padding: 20, paddingBottom: Math.max(insets.bottom, 12) + 8, backgroundColor: colors.background }}>
         {idx > 0 && (
           <TouchableOpacity
             onPress={() => setIdx((i) => i - 1)}
