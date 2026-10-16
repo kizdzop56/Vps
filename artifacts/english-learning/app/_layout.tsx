@@ -124,12 +124,13 @@ export default function RootLayout() {
     }
   });
 
-  // On web, hide the small header-only create button on the assignments page.
-  // Keep the larger, centered empty-state action; it is the primary CTA.
+  // On web, remove redundant quick-action buttons from the assignments screen:
+  // the compact header plus and the large "Start assignment" shortcut. The
+  // original create/start actions remain available elsewhere on their screens.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
 
-    const hideCompactCreateButton = () => {
+    const hideRedundantAssignmentButtons = () => {
       document.querySelectorAll<HTMLElement>('[aria-label="Создать задание"]').forEach((element) => {
         if (element.dataset["compactCreateHidden"] === "1") return;
         const rect = element.getBoundingClientRect();
@@ -138,10 +139,16 @@ export default function RootLayout() {
           element.dataset["compactCreateHidden"] = "1";
         }
       });
+
+      document.querySelectorAll<HTMLElement>('[aria-label^="Начать задание"]').forEach((element) => {
+        if (element.dataset["startAssignmentHidden"] === "1") return;
+        element.style.display = "none";
+        element.dataset["startAssignmentHidden"] = "1";
+      });
     };
 
-    hideCompactCreateButton();
-    const observer = new MutationObserver(hideCompactCreateButton);
+    hideRedundantAssignmentButtons();
+    const observer = new MutationObserver(hideRedundantAssignmentButtons);
     observer.observe(document.body, {
       childList: true,
       subtree: true,
