@@ -36,7 +36,6 @@ import { TypeArt } from "@/components/ui/TypeArt";
 import { ChunkyButton, SectionLabel } from "@/components/ui/GameKit";
 import { ScenarioForm } from "@/components/ScenarioForm";
 import { accents, radii } from "@/constants/theme";
-import { DUE_PRESETS, type DuePresetKey } from "@/utils/dueDate";
 
 const BASE = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -122,9 +121,6 @@ const FRESH = () => ({
   audioUrl: "", audioInputMode: "url" as "url" | "file", uploadedAudioName: "",
   videoUrl: "", videoInputMode: "url" as "url" | "file", uploadedVideoName: "",
   timerEnabled: false, timerMinutes: "30",
-  // Срок сдачи по умолчанию. Уходит в задание как число дней и подставляется
-  // в окно отправки — сам срок всё равно считается в момент отправки.
-  duePreset: "none" as DuePresetKey,
   questions: [DEFAULT_QUESTION()],
   formError: "", success: false,
 });
@@ -167,10 +163,9 @@ export default function CreateAssignmentScreen() {
     imageUrl, imageInputMode, uploadedImageName,
     audioUrl, audioInputMode, uploadedAudioName,
     videoUrl, videoInputMode, uploadedVideoName,
-    timerEnabled, timerMinutes, duePreset, questions, formError, success } = st;
+    timerEnabled, timerMinutes, questions, formError, success } = st;
 
   const activeType = TYPES.find((t) => t.key === type) ?? TYPES[0];
-  const dueDays = DUE_PRESETS.find((p) => p.key === duePreset)?.days ?? null;
 
   // ── Question helpers ────────────────────────────────────────────────
   const addQuestion = () => setSt(p => ({ ...p, questions: [...p.questions, DEFAULT_QUESTION()] }));
@@ -360,7 +355,6 @@ export default function CreateAssignmentScreen() {
           imageUrl: imageUrl.trim() || undefined,
           questions: questionPayload,
           timeLimitMinutes: timerEnabled ? parseInt(timerMinutes, 10) : null,
-          defaultDueDays: dueDays,
         }),
       });
       set("success", true);
@@ -432,12 +426,6 @@ export default function CreateAssignmentScreen() {
       width: 80, textAlign: "center", fontVariant: ["tabular-nums"],
       ...(Platform.OS === "web" ? { outlineWidth: 0, outlineStyle: "none" } as any : {}),
     },
-    // Пресеты срока сдачи — те же, что в окне отправки задания.
-    duePreset: {
-      paddingHorizontal: 14, paddingVertical: 9, borderRadius: radii.pill,
-      borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.card,
-    },
-    duePresetText: { fontSize: 13, fontWeight: "800", color: colors.mutedForeground },
     mediaToggle: { flexDirection: "row", gap: 8, marginBottom: 14 },
     mediaBtn: {
       flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
@@ -815,47 +803,6 @@ export default function CreateAssignmentScreen() {
             placeholder="Краткое описание задания для ученика" placeholderTextColor={colors.mutedForeground} multiline />
         </View>
 
-        {/* Срок сдачи по умолчанию.
-            Отличается от таймера ниже: таймер ограничивает саму попытку
-            (сколько минут на решение), а срок — когда задание должно быть
-            сдано. По истечении срока задание закрывается само и уходит
-            учителю как несданное. */}
-        <View style={s.section}>
-          <SectionLabel>Срок сдачи</SectionLabel>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-            {DUE_PRESETS.map((preset) => {
-              const active = duePreset === preset.key;
-              return (
-                <TouchableOpacity
-                  key={preset.key}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  onPress={() => set("duePreset", preset.key)}
-                  style={[s.duePreset, active && {
-                    borderColor: colors.primary,
-                    backgroundColor: colors.primary + "14",
-                  }]}
-                >
-                  <Text style={[s.duePresetText, active && { color: colors.primary }]}>
-                    {preset.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          <View style={[s.hintBox, { marginBottom: 0 }]}>
-            <View style={{ marginTop: 1 }}>
-              <Glyph name={dueDays === null ? "calendar" : "clock"} size={18} color={colors.primary} />
-            </View>
-            <Text style={{ fontSize: 13, color: colors.foreground, flex: 1, lineHeight: 19 }}>
-              {dueDays === null
-                ? "Без срока: задание будет висеть у ученика, пока он его не сдаст. Срок можно выбрать и позже, при отправке."
-                : `Срок подставится при отправке: ${preset_label(duePreset)}. Если ученик не сдаст вовремя, задание закроется само и придёт вам с пометкой «не сдано в срок».`}
-            </Text>
-          </View>
-        </View>
-
         {/* Таймер */}
         <View style={s.section}>
           <SectionLabel>Таймер на решение</SectionLabel>
@@ -1109,7 +1056,7 @@ export default function CreateAssignmentScreen() {
         ) : (
           <ChunkyButton
             label="Создать задание"
-            sublabel={dueDays === null ? activeType.label : `${activeType.label} · срок: ${preset_label(duePreset)}`}
+            sublabel={activeType.label}
             icon="check"
             onPress={handleSubmit}
             style={{ marginTop: 8 }}
@@ -1121,10 +1068,4 @@ export default function CreateAssignmentScreen() {
       </ScrollView>
     </View>
   );
-}
-
-/** Подпись выбранного пресета срока в нижнем регистре — для строк в тексте. */
-function preset_label(key: DuePresetKey): string {
-  const preset = DUE_PRESETS.find((p) => p.key === key);
-  return (preset?.label ?? "без срока").toLowerCase();
 }
