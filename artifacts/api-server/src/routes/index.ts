@@ -25,6 +25,7 @@ import messagingRouter from "./messaging";
 import ttsRouter from "./tts";
 import raidRouter from "./raid";
 import maintenanceRouter from "./maintenance";
+import placementBootstrapRouter from "./placementBootstrap";
 
 const router: IRouter = Router();
 
@@ -58,6 +59,9 @@ router.use(gamificationRouter);
 // Лента событий: /notifications. Своё пространство путей, ни с чем не
 // пересекается — вынесено отдельно, чтобы не растить gamification.ts дальше.
 router.use(notificationsRouter);
+// Старым ученическим профилям при первом чтении настроек задаём A2 и пропускаем
+// обязательный тест. Новые профили проходят placement-тест как обычно.
+router.use(placementBootstrapRouter);
 // Перехватчик routes/raidHook.ts, который раньше стоял здесь, снят: урон по
 // боссу теперь наносится ТОЛЬКО из заданий самого рейда (POST /raid/answer,
 // см. routes/raid.ts — он сам вызывает recordRaidHit). Раньше любой верный
