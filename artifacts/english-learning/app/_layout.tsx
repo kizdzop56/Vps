@@ -7,7 +7,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { setBaseUrl } from "@workspace/api-client-react";
 import { LinearGradient } from "expo-linear-gradient";
-import { Platform, StyleSheet } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { useFonts } from "expo-font";
 import {
   Unbounded_700Bold,
@@ -145,24 +145,36 @@ export default function RootLayout() {
           end={{ x: 0.9, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
-        <SafeAreaProvider>
-          <QueryClientProvider client={queryClient}>
-            <AuthProvider>
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: "transparent" },
-                  animation: "fade",
-                }}
-              >
-                <Stack.Screen name="index" />
-                <Stack.Screen name="(auth)" />
-                <Stack.Screen name="(main)" />
-                <Stack.Screen name="+not-found" />
-              </Stack>
-            </AuthProvider>
-          </QueryClientProvider>
-        </SafeAreaProvider>
+        {/* На телефоне интерфейс остаётся во всю ширину. На широком экране
+            ограничиваем рабочую область и центрируем её: контент больше не
+            растягивается от края до края монитора, а фон остаётся полноэкранным. */}
+        <View
+          style={{
+            flex: 1,
+            width: "100%",
+            maxWidth: Platform.OS === "web" ? 1200 : undefined,
+            alignSelf: "center",
+          }}
+        >
+          <SafeAreaProvider>
+            <QueryClientProvider client={queryClient}>
+              <AuthProvider>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: "transparent" },
+                    animation: "fade",
+                  }}
+                >
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="(auth)" />
+                  <Stack.Screen name="(main)" />
+                  <Stack.Screen name="+not-found" />
+                </Stack>
+              </AuthProvider>
+            </QueryClientProvider>
+          </SafeAreaProvider>
+        </View>
       </GestureHandlerRootView>
     </ErrorScreen>
   );
