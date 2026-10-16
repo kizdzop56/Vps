@@ -124,6 +124,33 @@ export default function RootLayout() {
     }
   });
 
+  // On web, hide the small header-only create button on the assignments page.
+  // Keep the larger, centered empty-state action; it is the primary CTA.
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+
+    const hideCompactCreateButton = () => {
+      document.querySelectorAll<HTMLElement>('[aria-label="Создать задание"]').forEach((element) => {
+        if (element.dataset["compactCreateHidden"] === "1") return;
+        const rect = element.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0 && rect.width <= 64 && rect.height <= 64) {
+          element.style.display = "none";
+          element.dataset["compactCreateHidden"] = "1";
+        }
+      });
+    };
+
+    hideCompactCreateButton();
+    const observer = new MutationObserver(hideCompactCreateButton);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-label"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== "web" && (fontsLoaded || fontError)) {
       SplashScreen.hideAsync();
