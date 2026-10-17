@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { View, Text, Platform, TouchableOpacity } from "react-native";
+import { View, Text, Platform, TouchableOpacity, useWindowDimensions } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import {
@@ -42,6 +42,14 @@ type Props = {
 };
 
 export function InlineMediaPlayer({ url, kind, height = 200, style, title }: Props) {
+  const { height: viewportHeight } = useWindowDimensions();
+  // Inline videos used to stay at a fixed 200px even on a tall screen, leaving
+  // a large dead area above the fixed answer button. Use more of the viewport
+  // while retaining headroom for the question and response controls.
+  const mediaHeight = Platform.OS === "web"
+    ? Math.min(Math.max(Math.round(viewportHeight * 0.42), height), 460)
+    : Math.min(Math.max(Math.round(viewportHeight * 0.34), height), 360);
+
   // Leave absolute http(s), same-origin relative ("/api/..."), blob: and data:
   // URLs untouched — prefixing them with "https://" produces broken sources
   // (e.g. "https:///api/storage/..." on same-origin deployments).
@@ -52,7 +60,7 @@ export function InlineMediaPlayer({ url, kind, height = 200, style, title }: Pro
   const audioRef            = useRef<HTMLAudioElement | null>(null);
   const [audioPlaying,      setAudioPlaying]      = useState(false);
   const [audioCurrentTime,  setAudioCurrentTime]  = useState(0);
-  const [audioDuration,     setAudioDuration]      = useState(0);
+  const [audioDuration,     setAudioDuration]     = useState(0);
   const [audioSpeed,        setAudioSpeed]         = useState(1);
 
   function toggleAudio() {
@@ -79,7 +87,7 @@ export function InlineMediaPlayer({ url, kind, height = 200, style, title }: Pro
   // ── Video ──────────────────────────────────────────────────────────
   if (kind === "video") {
     return (
-      <View style={[{ borderRadius: 10, overflow: "hidden", height, backgroundColor: "#000" }, style]}>
+      <View style={[{ borderRadius: 10, overflow: "hidden", height: mediaHeight, backgroundColor: "#000" }, style]}>
         {isYoutube ? (
           Platform.OS === "web" ? (
             /* @ts-ignore */
@@ -197,7 +205,7 @@ export function InlineMediaPlayer({ url, kind, height = 200, style, title }: Pro
     Platform.OS === "web" ? (
       <View style={[{ borderRadius: 10, overflow: "hidden", backgroundColor: "#f8fafc", borderWidth: 1, borderColor: "#e2e8f0" }, style]}>
         {/* @ts-ignore */}
-        <iframe src={fullUrl} style={{ width: "100%", height, border: "none", display: "block" }} />
+        <iframe src={fullUrl} style={{ width: "100%", height: mediaHeight, border: "none", display: "block" }} />
       </View>
     ) : (
       <View style={[{ backgroundColor: "#ede9fe", borderRadius: 14, borderWidth: 1, borderColor: "#8b5cf640", padding: 14, flexDirection: "row", alignItems: "center", gap: 12 }, style]}>
