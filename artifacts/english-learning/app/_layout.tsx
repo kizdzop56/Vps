@@ -40,16 +40,9 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
 
   try {
     const featherUrl = require("../assets/fonts/Feather.ttf");
-
-    // font-display: swap — сразу показываем fallback-символ, меняем на иконку
-    // когда шрифт загружен. Раньше было block: браузер держал невидимый текст
-    // до 3 секунд — отсюда «пустые квадраты» при первой загрузке.
     const iconStyle = document.createElement("style");
     iconStyle.textContent = `@font-face { font-family: 'Feather'; src: url('${featherUrl}') format('truetype'); font-display: swap; }`;
     document.head.appendChild(iconStyle);
-
-    // Preload: браузер начинает скачивать шрифт ещё до разбора CSS/JS,
-    // поэтому к моменту первой отрисовки он уже в кэше.
     if (!document.querySelector('link[data-feather-preload]')) {
       const preload = document.createElement("link");
       preload.rel = "preload";
@@ -63,9 +56,6 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
   } catch (_) {}
 }
 
-// SplashScreen is native-only — on web it creates a persistent overlay that
-// never gets removed because useFonts does not resolve for CSS-loaded fonts,
-// so hideAsync() is never called and the overlay blocks the React tree forever.
 if (Platform.OS !== "web") {
   SplashScreen.preventAutoHideAsync();
 }
@@ -74,9 +64,6 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      // 5 минут: при переходах между вкладками данные не перезапрашиваются
-      // без необходимости. Экраны, которым нужна свежая выдача, делают явный
-      // refetch через useFocusEffect с проверкой isStale.
       staleTime: 5 * 60_000,
     },
   },
@@ -86,17 +73,10 @@ const domain = process.env["EXPO_PUBLIC_DOMAIN"];
 setBaseUrl(domain ? `https://${domain}` : null);
 
 export default function RootLayout() {
-  // Feather — иконочный шрифт, без него интерфейс ломается, поэтому на нативе
-  // ждём именно его (см. проверку ниже).
   const [fontsLoaded, fontError] = useFonts({
     Feather: require("../assets/fonts/Feather.ttf"),
   });
 
-  // Шрифты оформления грузим ОТДЕЛЬНЫМ хуком и намеренно не блокируем ими
-  // запуск: пока Unbounded и Manrope едут, текст рисуется системным шрифтом,
-  // а затем подменяется. Если объединить их с Feather, первый запуск на
-  // медленной сети даст лишнюю задержку белого экрана ради косметики.
-  // Имена ключей совпадают с fonts.* в constants/theme.ts.
   useFonts({
     Unbounded_700Bold,
     Unbounded_800ExtraBold,
@@ -106,9 +86,6 @@ export default function RootLayout() {
     Manrope_800ExtraBold,
   });
 
-  // On web: directly remove the HTML loading screen as soon as React renders.
-  // We manipulate the DOM directly so this works even when Telegram/WKWebView
-  // CSP blocks inline scripts (which would prevent window.__hideSplash from loading).
   useLayoutEffect(() => {
     if (Platform.OS === "web" && typeof document !== "undefined") {
       const splash = document.getElementById("_splash-screen");
@@ -118,19 +95,19 @@ export default function RootLayout() {
           if (splash.parentNode) splash.parentNode.removeChild(splash);
         }, 500);
       }
-      // Also call helper if it was loaded (belt-and-suspenders)
       const hide = (window as any).__hideSplash;
       if (typeof hide === "function") hide();
     }
   });
 
-  // On web, remove redundant quick-action buttons and the draft badge from the
-  // assignments list. Assignment titles stay as the preview button for drafts
-  // and assigned tasks alike.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
 
+    const win = window as any;
+    const originalFetch = window.fetch.bind(window);
     const updateAssignmentList = () => {
+      // Preserve the existing preview affordance while hiding duplicate actions
+      // and the draft label from the assignment list.
       document.querySelectorAll<HTMLElement>('[aria-label="Создать задание"]').forEach((element) => {
         if (element.dataset["compactCreateHidden"] === "1") return;
         const rect = element.getBoundingClientRect();
@@ -139,7 +116,6 @@ export default function RootLayout() {
           element.dataset["compactCreateHidden"] = "1";
         }
       });
-
       document.querySelectorAll<HTMLElement>('[aria-label^="Начать задание"]').forEach((element) => {
         if (element.dataset["startAssignmentHidden"] === "1") return;
         element.style.display = "none";
@@ -157,6 +133,84 @@ export default function RootLayout() {
           previewButton.setAttribute("aria-label", "Предпросмотр задания");
         }
       }
+
+      // Replace the segmented assignment progress bar with a clear start count.
+      // The existing line below it continues to show submissions separately.
+      if (location.pathname.includes("/assignments")) {
+        const rows = Array.isArray(win.__teacherAssignmentRows) ? win.__teacherAssignmentRows : [];
+        for (const row of rows) {
+          const assigned = Number(row?.assignedCount ?? 0);
+          if (!row?.title || assigned < 1) continue;
+          const titleWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          let titleNode: Node | null;
+          while ((titleNode = titleWalker.nextNode())) {
+            if (titleNode.nodeValue?.trim() !== String(row.title)) continue;
+            let card: HTMLElement | null = titleNode.parentElement;
+            for (let depth = 0; card && depth < 12; depth++, card = card.parentElement) {
+              const cardText = card.innerText ?? "";
+              if (!cardText.includes("сдали") || !cardText.includes("ждём")) continue;
+              const noteText = Array.from(card.querySelectorAll<HTMLElement>("*")).find((el) =>
+                el.innerText?.includes(`из ${assigned} сдали`) && el.innerText?.includes("ждём"),
+              );
+              if (!noteText) continue;
+              const noteRow = noteText.parentElement;
+              const pips = noteRow?.previousElementSibling as HTMLElement | null;
+              if (pips && pips.dataset["assignmentPips"] !== "1") {
+                pips.style.display = "none";
+                pips.dataset["assignmentPips"] = "1";
+              }
+              if (noteRow) {
+                let startedLine = noteRow.nextElementSibling as HTMLElement | null;
+                if (startedLine?.dataset["startedCountFor"] !== String(row.id)) {
+                  startedLine = document.createElement("div");
+                  startedLine.dataset["startedCountFor"] = String(row.id);
+                  startedLine.style.cssText = "margin-top:6px;font-size:12px;font-weight:700;color:#6b6387";
+                  noteRow.insertAdjacentElement("afterend", startedLine);
+                }
+                startedLine.textContent = `Приступили: ${Number(row.startedCount ?? 0)} из ${assigned}`;
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      // Assignment media used to be forced into a short, cropped 170px strip.
+      // Let it keep its natural ratio, grow up to a sensible viewport height,
+      // and the question content below will flow down naturally.
+      if (location.pathname.includes("/assignment/")) {
+        document.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
+          if (!image.style.height || !/^(?:160|170)px$/.test(image.style.height)) return;
+          image.style.setProperty("height", "auto", "important");
+          image.style.setProperty("max-height", "420px", "important");
+          image.style.setProperty("width", "100%", "important");
+          image.style.setProperty("object-fit", "contain", "important");
+        });
+
+        const scoreWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let scoreNode: Node | null;
+        while ((scoreNode = scoreWalker.nextNode())) {
+          if (!/^\d{1,3}%$/.test(scoreNode.nodeValue?.trim() ?? "")) continue;
+          const scoreText = scoreNode.parentElement as HTMLElement | null;
+          if (!scoreText || scoreText.dataset["scoreRingFit"] === "1") continue;
+          scoreText.style.setProperty("font-size", "22px", "important");
+          scoreText.style.setProperty("line-height", "1.1", "important");
+          scoreText.style.setProperty("white-space", "nowrap", "important");
+          scoreText.dataset["scoreRingFit"] = "1";
+        }
+      }
+    };
+
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await originalFetch(input, init);
+      const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (requestUrl.includes("/api/assignments/my-assignments") && response.ok) {
+        void response.clone().json().then((rows) => {
+          win.__teacherAssignmentRows = rows;
+          updateAssignmentList();
+        }).catch(() => {});
+      }
+      return response;
     };
 
     updateAssignmentList();
@@ -168,7 +222,13 @@ export default function RootLayout() {
       attributes: true,
       attributeFilter: ["aria-label"],
     });
-    return () => observer.disconnect();
+    const onNavigation = () => updateAssignmentList();
+    window.addEventListener("popstate", onNavigation);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("popstate", onNavigation);
+      window.fetch = originalFetch;
+    };
   }, []);
 
   useEffect(() => {
@@ -180,10 +240,6 @@ export default function RootLayout() {
   if (Platform.OS !== "web" && !fontsLoaded && !fontError) return null;
 
   return (
-    // ErrorScreen стоит САМЫМ ВЕРХНИМ: если экран падает при отрисовке, дерево
-    // размонтируется целиком и остаётся белый лист. Здесь вместо белизны
-    // показывается текст ошибки, который можно скопировать с телефона —
-    // консоли браузера на iOS нет, и без этого причину не увидеть.
     <ErrorScreen>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <LinearGradient
@@ -192,9 +248,6 @@ export default function RootLayout() {
           end={{ x: 0.9, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
-        {/* На телефоне интерфейс остаётся во всю ширину. На широком экране
-            ограничиваем рабочую область и центрируем её: контент больше не
-            растягивается от края до края монитора, а фон остаётся полноэкранным. */}
         <View
           style={{
             flex: 1,
