@@ -60,7 +60,7 @@ function isImageLink(value: unknown): boolean {
 
 function isAudioLink(value: unknown): boolean {
   const url = mediaUrlParts(value);
-  return !!url && (AUDIO_EXT.test(url.pathname) || isStoredFile(url, "audio"));
+  return !!url && (AUDIO_EXT.test(url.pathname) || isStoredFile(url, "audio") || isYouTubeLink(url));
 }
 
 function isYouTubeLink(url: URL): boolean {
@@ -93,7 +93,7 @@ function validateAssignmentMedia(req: express.Request, res: express.Response, ne
   }
 
   if (type === "audio" && !isAudioLink(mediaUrl)) {
-    res.status(400).json({ error: "Для аудирования нужна прямая ссылка на аудиофайл MP3, M4A, WAV, OGG, AAC или FLAC. Ссылки YouTube сюда не подходят." });
+    res.status(400).json({ error: "Для аудирования нужна прямая ссылка на аудиофайл MP3, M4A, WAV, OGG, AAC или FLAC либо корректная ссылка YouTube." });
     return;
   }
   if (type === "video" && !isVideoLink(mediaUrl)) {
