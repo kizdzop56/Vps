@@ -115,10 +115,7 @@ interface TabGuideProps {
 }
 
 export function TabGuide({
-  tabName,
-  visible,
-  mascotName = "Снежа",
-  onClose,
+  tabName, visible, mascotName, onClose,
 }: TabGuideProps) {
   const { width: W, height: H } = useWindowDimensions();
   const fadeAnim  = useRef(new Animated.Value(0)).current;
@@ -127,6 +124,15 @@ export function TabGuide({
   const info = tabName ? TAB_GUIDE_CONTENT[tabName] : null;
 
   useEffect(() => {
+    // Подсказка «Задания» написана для ученика («от твоего учителя»). Для
+    // учителя это окно закрывало весь рабочий экран и блокировало его кнопки.
+    // Учитель сразу попадает в список, а закрытие сохраняет обычный first-visit
+    // flow и продолжает навигацию, как после нажатия «Понятно».
+    if (visible && tabName === "assignments" && !mascotName) {
+      onClose();
+      return;
+    }
+
     if (visible) {
       fadeAnim.setValue(0);
       slideAnim.setValue(30);
@@ -135,9 +141,9 @@ export function TabGuide({
         Animated.spring(slideAnim, { toValue: 0, tension: 90, friction: 10, useNativeDriver: true }),
       ]).start();
     }
-  }, [visible, tabName]);
+  }, [visible, tabName, mascotName, onClose]);
 
-  if (!visible || !info) return null;
+  if (!visible || !info || (tabName === "assignments" && !mascotName)) return null;
 
   const cardW = Math.min(W - 40, 380);
   const { width: mascotW, height: mascotH } = mascotBox({
