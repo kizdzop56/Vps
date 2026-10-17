@@ -8,6 +8,8 @@ export const assignedTasksTable = pgTable("assigned_tasks", {
   studentId: integer("student_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   teacherId: integer("teacher_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   assignedAt: timestamp("assigned_at").notNull().defaultNow(),
+  /** First time the student opened this assignment. Null means not started. */
+  startedAt: timestamp("started_at"),
   /**
    * Срок сдачи. Живёт на назначении, а не на самом задании: одно и то же
    * задание учитель выдаёт разным ученикам в разное время и с разным сроком.
