@@ -3,6 +3,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import teacherDecksRouter from "./routes/teacherDecks";
+import teacherAssignmentsRouter from "./routes/teacherAssignments";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -125,8 +126,9 @@ function validateAssignmentMedia(req: express.Request, res: express.Response, ne
 app.use(validateAssignmentMedia);
 
 // Для списка колод учителя не нужны тяжёлые данные прогресса по словам.
-// Этот лёгкий маршрут отвечает раньше общего /flashcards/decks.
+// Эти лёгкие маршруты должны отвечать раньше общих маршрутов.
 app.use("/api", teacherDecksRouter);
+app.use("/api", teacherAssignmentsRouter);
 app.use("/api", router);
 
 // JSON 404 для /api маршрутов, не совпавших с роутером.
