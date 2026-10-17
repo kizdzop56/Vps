@@ -5,6 +5,7 @@ import usersRouter from "./users";
 import studentProfileRouter from "./studentProfile";
 import interestsRouter from "./interests";
 import assignmentsRouter from "./assignments";
+import assignmentProgressRouter from "./assignmentProgress";
 import submissionsRouter from "./submissions";
 import analysisRouter from "./analysis";
 import voiceChatRouter from "./voiceChat";
@@ -39,6 +40,9 @@ router.use(studentProfileRouter);
 // Интересы живут отдельным маршрутом: /users/:id/interests не пересекается
 // с /users/:id, поэтому порядок здесь роли не играет.
 router.use(interestsRouter);
+// До основного assignment router отмечаем первое открытие учеником и добавляем
+// количество начавших в ответ учителю. Все остальные запросы проходят дальше.
+router.use(assignmentProgressRouter);
 router.use(assignmentsRouter);
 router.use(submissionsRouter);
 // Разбор успеваемости нейросетью: /analysis/ai. Своё пространство путей.
