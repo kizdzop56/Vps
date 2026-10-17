@@ -459,14 +459,13 @@ export default function AssignmentDetailScreen() {
   const autoSubmitRef = useRef(false);
   const answersRef = useRef<Record<number, string>>({});
 
-  // Аудио (веб — скрытый <audio>)
+  // Audio (web uses an HTMLAudioElement)
   const audioRef = useRef<any>(null);
+  const audioSourceRef = useRef<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioSpeed, setAudioSpeed] = useState(1);
-  // Сколько раз прослушано целиком: ученику полезно знать, что попыток
-  // сколько угодно, а учителю в будущем — сколько их понадобилось.
   const [audioPlays, setAudioPlays] = useState(0);
 
   const isTeacherRole = user?.role === "teacher" || user?.role === "admin";
@@ -571,8 +570,6 @@ export default function AssignmentDetailScreen() {
         const presignedData = await presignedRes.json();
         if (!presignedRes.ok) throw new Error(presignedData.error ?? "Ошибка получения URL загрузки");
         const { uploadURL, objectPath } = presignedData as { uploadURL: string; objectPath: string };
-        // Без настроенного хранилища сервер отдаёт ОТНОСИТЕЛЬНУЮ ссылку на свой
-        // local-put — дополняем её BASE_URL.
         const uploadTarget = uploadURL.startsWith("http")
           ? uploadURL
           : `${BASE_URL}${uploadURL}`;
@@ -584,7 +581,6 @@ export default function AssignmentDetailScreen() {
         if (!uploadRes.ok) throw new Error("Ошибка загрузки файла на сервер");
         setFreeFormAttachment(`${BASE_URL}/api/storage${objectPath}?kind=image`);
       } else {
-        // Нативный фолбэк (в вебе не используется): multer multipart.
         const form = new FormData();
         form.append("file", { uri: asset.uri, name: filename, type: contentType } as any);
         const uploadRes = await fetch(`${BASE_URL}/api/upload/image`, {
@@ -696,26 +692,44 @@ export default function AssignmentDetailScreen() {
     setMediaModal({ url: mediaUrl, kind, title: assignment.title });
   };
 
-  const toggleAudio = () => {
+  const stopAudio = () => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.pause();
+    try { el.currentTime = 0; } catch {}
+    setAudioPlaying(false);
+  };
+
+  const toggleAudio = async () => {
     const el = audioRef.current;
     if (!el) return;
     el.playbackRate = audioSpeed;
     if (audioPlaying) {
       el.pause();
       setAudioPlaying(false);
-    } else {
-      el.play().catch(() => {});
+      return;
+    }
+    try {
+      await el.play();
       setAudioPlaying(true);
+    } catch (error) {
+      setAudioPlaying(false);
+      Alert.alert("Не удалось воспроизвести аудио", "Проверьте ссылку на аудио и доступ к файлу.");
     }
   };
 
-  const replayAudio = () => {
+  const replayAudio = async () => {
     const el = audioRef.current;
     if (!el) return;
-    el.currentTime = 0;
-    el.playbackRate = audioSpeed;
-    el.play().catch(() => {});
-    setAudioPlaying(true);
+    try {
+      el.currentTime = 0;
+      el.playbackRate = audioSpeed;
+      await el.play();
+      setAudioPlaying(true);
+    } catch {
+      setAudioPlaying(false);
+      Alert.alert("Не удалось воспроизвести аудио", "Проверьте ссылку на аудио и доступ к файлу.");
+    }
   };
 
   const skipAudio = () => {
@@ -740,7 +754,6 @@ export default function AssignmentDetailScreen() {
   const hasTimer = isStudent && !!assignment.timeLimitMinutes && !submitted;
   const timerWarning = timeLeft !== null && timeLeft < 60;
   const timerDanger = timeLeft !== null && timeLeft < 30;
-  // В предпросмотре поля выключены: учитель смотрит, а не решает.
   const inputsDisabled = submitted || timerExpired || isPreview;
 
   // ═════════════════ РЕЗУЛЬТАТ ═════════════════
@@ -765,8 +778,6 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: insets.bottom + 30, gap: 12 }}>
-          {/* Кольцо вместо цифры в кружке: доля читается формой, а не только
-              числом, и одинаково понятна на любом балле. */}
           <LinearGradient
             colors={[accents.violetDeep, accents.indigoDeep, "#7e22ce"]}
             start={{ x: 0.1, y: 0 }}
@@ -775,10 +786,7 @@ export default function AssignmentDetailScreen() {
           >
             <View style={{ width: ringSize, height: ringSize, alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
               <Svg width={ringSize} height={ringSize} style={{ position: "absolute" }}>
-                <Circle
-                  cx={ringSize / 2} cy={ringSize / 2} r={r}
-                  stroke="rgba(255,255,255,0.22)" strokeWidth={stroke} fill="none"
-                />
+                <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke="rgba(255,255,255,0.22)" strokeWidth={stroke} fill="none" />
                 <Circle
                   cx={ringSize / 2} cy={ringSize / 2} r={r}
                   stroke={isFreeFormResult ? accents.gold : passed ? "#e9d5ff" : "#fda4af"}
@@ -803,12 +811,7 @@ export default function AssignmentDetailScreen() {
             </Text>
 
             {result.pointsEarned > 0 && (
-              <LinearGradient
-                colors={[accents.gold, accents.amber]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={s.earned}
-              >
+              <LinearGradient colors={[accents.gold, accents.amber]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.earned}>
                 <Glyph name="star" size={15} color="#42200a" />
                 <Text style={s.earnedText}>+{result.pointsEarned} очков</Text>
               </LinearGradient>
@@ -840,9 +843,7 @@ export default function AssignmentDetailScreen() {
                       <Text style={[s.revA, { color: correct ? PRIMARY_DARK : DANGER }]}>
                         {correct ? (answers[q.id] || "Верно") : `Вы ответили: ${answers[q.id] || "(пусто)"}`}
                       </Text>
-                      {!correct && !!qr?.correctAnswer && (
-                        <Text style={s.revFix}>Правильно: {qr.correctAnswer}</Text>
-                      )}
+                      {!correct && !!qr?.correctAnswer && <Text style={s.revFix}>Правильно: {qr.correctAnswer}</Text>}
                     </View>
                   </Plate>
                 );
@@ -858,9 +859,6 @@ export default function AssignmentDetailScreen() {
     );
   }
 
-  // ═════════════════ ПРОХОЖДЕНИЕ И ПРЕДПРОСМОТР ═════════════════
-  // Один и тот же разбор для ученика и учителя. Учитель видит ровно то, что
-  // увидит ребёнок; отличия перечислены у флага isPreview.
   const isFreeForm = assignment.type === "free_form";
   const currentQ = isFreeForm ? null : questions[currentQuestionIndex];
   const isLastStep = isFreeForm ? true : currentQuestionIndex >= questions.length - 1;
@@ -869,20 +867,15 @@ export default function AssignmentDetailScreen() {
 
   const goNext = () => {
     if (isPreview) {
-      // Предпросмотр ничего не отправляет: на последнем шаге просто выходим.
       if (!isLastStep) setCurrentQuestionIndex(i => i + 1);
       else router.back();
       return;
     }
-    if (!isLastStep) {
-      setCurrentQuestionIndex(i => i + 1);
-    } else {
-      handleSubmitPressed();
-    }
+    if (!isLastStep) setCurrentQuestionIndex(i => i + 1);
+    else handleSubmitPressed();
   };
 
   const goPrev = () => setCurrentQuestionIndex(i => Math.max(0, i - 1));
-
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
 
   const ctaLabel = isPreview
@@ -891,17 +884,13 @@ export default function AssignmentDetailScreen() {
       ? (freeFormReady ? "Отправить учителю" : "Напишите ответ")
       : !currentAnswered
         ? "Выберите ответ"
-        : isLastStep
-          ? "Завершить и отправить"
-          : "Следующий вопрос";
+        : isLastStep ? "Завершить и отправить" : "Следующий вопрос";
 
   const ctaIcon: GlyphName | undefined = isPreview
     ? (isLastStep ? "close" : "arrowRight")
     : isFreeForm
       ? (freeFormReady ? "send" : undefined)
-      : !currentAnswered
-        ? undefined
-        : isLastStep ? "send" : "arrowRight";
+      : !currentAnswered ? undefined : isLastStep ? "send" : "arrowRight";
 
   return (
     <View style={{ flex: 1, backgroundColor: QUIZ_BG }}>
@@ -926,45 +915,27 @@ export default function AssignmentDetailScreen() {
         onCancel={() => setShowExitModal(false)}
       />
 
-      {/* ── Шапка: выход, тип задания, таймер или метка предпросмотра ── */}
       <View style={[s.topBar, { paddingTop: topPad }]}>
-        {/* У учителя стрелка «назад»: он ничего не сдаёт, и предупреждать
-            о потере ответов не о чем. */}
         {isPreview
           ? <RoundBtn icon="chevron" flip onPress={() => router.back()} />
           : <RoundBtn icon="close" onPress={() => setShowExitModal(true)} />}
-
         <TypeChip type={assignment.type} title={assignment.title} />
-
         {isPreview ? (
-          <View style={s.previewPill}>
-            <Glyph name="search" size={12} color={accents.indigoDeep} />
-            <Text style={s.previewPillText}>Просмотр</Text>
-          </View>
+          <View style={s.previewPill}><Glyph name="search" size={12} color={accents.indigoDeep} /><Text style={s.previewPillText}>Просмотр</Text></View>
         ) : hasTimer && timeLeft !== null ? (
-          <View style={[
-            s.timer,
-            timerDanger
-              ? { backgroundColor: "rgba(225,29,72,0.13)", borderColor: "rgba(225,29,72,0.4)" }
-              : timerWarning
-                ? { backgroundColor: "rgba(245,158,11,0.16)", borderColor: "rgba(245,158,11,0.45)" }
-                : null,
-          ]}>
+          <View style={[s.timer, timerDanger
+            ? { backgroundColor: "rgba(225,29,72,0.13)", borderColor: "rgba(225,29,72,0.4)" }
+            : timerWarning ? { backgroundColor: "rgba(245,158,11,0.16)", borderColor: "rgba(245,158,11,0.45)" } : null]}>
             <Glyph name="clock" size={13} color={timerDanger ? DANGER : timerWarning ? "#b45309" : PRIMARY_DARK} />
-            <Text style={[s.timerText, { color: timerDanger ? DANGER : timerWarning ? "#b45309" : PRIMARY_DARK }]}>
-              {formatTime(timeLeft)}
-            </Text>
+            <Text style={[s.timerText, { color: timerDanger ? DANGER : timerWarning ? "#b45309" : PRIMARY_DARK }]}>{formatTime(timeLeft)}</Text>
           </View>
         ) : null}
       </View>
 
-      {/* ── Лестница шагов ── */}
       <StepLadder
         total={isFreeForm ? 1 : Math.max(questions.length, 1)}
         index={isFreeForm ? 0 : currentQuestionIndex}
-        rightNote={isFreeForm
-          ? (assignment.points > 0 ? `${assignment.points} очков` : "проверит учитель")
-          : undefined}
+        rightNote={isFreeForm ? (assignment.points > 0 ? `${assignment.points} очков` : "проверит учитель") : undefined}
       />
 
       <ScrollView
@@ -973,16 +944,10 @@ export default function AssignmentDetailScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Полоса предпросмотра ──
-            Объясняет, что именно видит учитель, и заодно собирает настройки
-            задания (баллы, таймер), ради которых раньше существовал отдельный
-            экран-простыня. */}
         {isPreview && (
           <View style={s.previewBar}>
             <Glyph name="cap" size={16} color={accents.indigoDeep} />
-            <Text style={s.previewBarText}>
-              Так задание видит ученик{assignment.isDraft ? " · черновик" : ""}
-            </Text>
+            <Text style={s.previewBarText}>Так задание видит ученик{assignment.isDraft ? " · черновик" : ""}</Text>
           </View>
         )}
 
@@ -990,23 +955,17 @@ export default function AssignmentDetailScreen() {
           <View style={{ flexDirection: "row", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
             <View style={[s.badge, { backgroundColor: "#fce7f3" }]}>
               <Glyph name="star" size={11} color="#9d174d" />
-              <Text style={[s.badgeText, { color: "#9d174d" }]}>
-                {assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}
-              </Text>
+              <Text style={[s.badgeText, { color: "#9d174d" }]}>{assignment.points > 0 ? `${assignment.points} очков` : "Баллы по проверке"}</Text>
             </View>
             {!!assignment.timeLimitMinutes && (
               <View style={[s.badge, { backgroundColor: "#e0e7ff" }]}>
                 <Glyph name="clock" size={11} color={accents.indigoDeep} />
-                <Text style={[s.badgeText, { color: accents.indigoDeep }]}>
-                  {assignment.timeLimitMinutes} мин на решение
-                </Text>
+                <Text style={[s.badgeText, { color: accents.indigoDeep }]}>{assignment.timeLimitMinutes} мин на решение</Text>
               </View>
             )}
             {questions.length > 0 && (
               <View style={[s.badge, { backgroundColor: "#ede9fe" }]}>
-                <Text style={[s.badgeText, { color: PRIMARY }]}>
-                  {questions.length} {plural(questions.length, ["вопрос", "вопроса", "вопросов"])}
-                </Text>
+                <Text style={[s.badgeText, { color: PRIMARY }]}>{questions.length} {plural(questions.length, ["вопрос", "вопроса", "вопросов"])}</Text>
               </View>
             )}
           </View>
@@ -1015,15 +974,10 @@ export default function AssignmentDetailScreen() {
         {timerExpired && !submitted && (
           <View style={s.expired}>
             <Glyph name="clock" size={18} color={DANGER} />
-            <Text style={s.expiredText}>
-              {submitting ? "Ответы отправляются…" : "Время вышло"}
-            </Text>
+            <Text style={s.expiredText}>{submitting ? "Ответы отправляются…" : "Время вышло"}</Text>
           </View>
         )}
 
-        {/* ── Задание от учителя ──
-            Для свободного ответа это единственная постановка задачи, поэтому
-            блок называется «Задание», а не безымянное «Описание». */}
         {!!assignment.description?.trim() && (
           <Plate style={{ padding: 14, marginBottom: 12 }}>
             <Text style={[s.lbl, { marginBottom: 7 }]}>{isFreeForm ? "Задание" : "Описание"}</Text>
@@ -1032,18 +986,13 @@ export default function AssignmentDetailScreen() {
               <View style={{ flexDirection: "row", gap: 7, marginTop: 11, flexWrap: "wrap" }}>
                 <View style={[s.badge, { backgroundColor: "rgba(251,191,36,0.22)" }]}>
                   <Glyph name="star" size={11} color="#92400e" />
-                  <Text style={[s.badgeText, { color: "#92400e" }]}>
-                    {assignment.points > 0 ? `${assignment.points} очков после проверки` : "Баллы после проверки"}
-                  </Text>
+                  <Text style={[s.badgeText, { color: "#92400e" }]}>{assignment.points > 0 ? `${assignment.points} очков после проверки` : "Баллы после проверки"}</Text>
                 </View>
               </View>
             )}
           </Plate>
         )}
 
-        {/* ── Аудио ──
-            Тёмная карта: плеер — главный объект экрана, а не строка над
-            вопросом. На белом фоне он терялся среди остальных карточек. */}
         {showAudioBlock && (
           <LinearGradient
             colors={[accents.violetDeep, accents.indigoDeep]}
@@ -1052,14 +1001,22 @@ export default function AssignmentDetailScreen() {
             style={s.audio}
           >
             {Platform.OS === "web" && mediaUrl && (
-              // @ts-ignore — веб-элемент внутри RN-дерева
+              // @ts-ignore
               <audio
                 ref={audioRef}
                 src={mediaUrl}
+                preload="metadata"
+                crossOrigin="anonymous"
                 style={{ display: "none" }}
+                onError={() => {
+                  setAudioPlaying(false);
+                  console.error("Audio load failed", mediaUrl, audioRef.current?.error);
+                }}
+                onPlay={() => setAudioPlaying(true)}
+                onPause={() => setAudioPlaying(false)}
                 onEnded={() => { setAudioPlaying(false); setAudioPlays(n => n + 1); }}
-                onLoadedMetadata={(e: any) => setAudioDuration(e.target.duration)}
-                onTimeUpdate={(e: any) => setAudioCurrentTime(e.target.currentTime)}
+                onLoadedMetadata={(e: any) => setAudioDuration(e.currentTarget.duration)}
+                onTimeUpdate={(e: any) => setAudioCurrentTime(e.currentTarget.currentTime)}
               />
             )}
 
@@ -1075,19 +1032,21 @@ export default function AssignmentDetailScreen() {
                 </View>
               </Pressable>
 
-              {/* Волна: высоты детерминированы формулой, а не случайны — иначе
-                  рисунок прыгал бы на каждом ре-рендере во время проигрывания. */}
-              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", height: 38, gap: 2.5 }}>
-                {Array.from({ length: 30 }).map((_, i) => {
+              {/* Тонкие частые штрихи вместо широких прямоугольников. */}
+              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", height: 38, gap: 3 }}>
+                {Array.from({ length: 64 }).map((_, i) => {
                   const fraction = audioDuration ? audioCurrentTime / audioDuration : 0;
-                  const played = i / 30 < fraction;
+                  const played = i / 64 < fraction;
+                  const height = 5 + Math.abs(Math.sin(i * 0.62 + 1) * 25);
                   return (
                     <View
                       key={i}
                       style={{
-                        flex: 1, borderRadius: 2,
-                        height: 7 + Math.abs(Math.sin(i * 0.62 + 1) * 22),
-                        backgroundColor: played ? "#f0abfc" : "rgba(255,255,255,0.28)",
+                        flex: 1,
+                        maxWidth: 3,
+                        borderRadius: 99,
+                        height,
+                        backgroundColor: played ? "#f0abfc" : "rgba(255,255,255,0.45)",
                       }}
                     />
                   );
@@ -1106,10 +1065,7 @@ export default function AssignmentDetailScreen() {
               </Pressable>
               {Platform.OS === "web" && (
                 <>
-                  <Pressable
-                    style={[s.gchip, audioSpeed === 0.5 && s.gchipOn]}
-                    onPress={toggleAudioSpeed}
-                  >
+                  <Pressable style={[s.gchip, audioSpeed === 0.5 && s.gchipOn]} onPress={toggleAudioSpeed}>
                     <Text style={[s.gchipText, audioSpeed === 0.5 && { color: accents.violetDeep }]}>
                       {audioSpeed === 1 ? "1×" : "0.5×"}
                     </Text>
@@ -1130,7 +1086,6 @@ export default function AssignmentDetailScreen() {
           </LinearGradient>
         )}
 
-        {/* ── Видео ── */}
         {showVideoBlock && mediaUrl && (
           <View style={s.videoWrap}>
             <InlineMediaPlayer url={mediaUrl} kind="video" height={200} title={assignment.title} />
@@ -1143,9 +1098,6 @@ export default function AssignmentDetailScreen() {
           </Plate>
         )}
 
-        {/* ── Текст для чтения ──
-            Раскрыт по умолчанию: без него на вопрос не ответить. Свернуть
-            можно, когда текст уже прочитан и мешает видеть варианты. */}
         {textContent && (
           <Plate style={{ padding: 14, marginBottom: 12 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 11 }}>
@@ -1163,10 +1115,7 @@ export default function AssignmentDetailScreen() {
               </Text>
             </View>
 
-            <Text
-              style={s.readBody}
-              numberOfLines={readingExpanded ? undefined : 4}
-            >
+            <Text style={s.readBody} numberOfLines={readingExpanded ? undefined : 4}>
               {textContent}
             </Text>
 
@@ -1179,7 +1128,6 @@ export default function AssignmentDetailScreen() {
           </Plate>
         )}
 
-        {/* ── Картинка задания ── */}
         {imageUrl && (
           <TouchableOpacity
             activeOpacity={0.92}
@@ -1194,20 +1142,15 @@ export default function AssignmentDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {/* ── Вопрос ── */}
         {currentQ && <QuestionHead n={currentQuestionIndex + 1} text={currentQ.text} />}
 
-        {/* ── Варианты или поле ответа ── */}
         {currentQ && (() => {
           const opts = Array.isArray(currentQ.options) ? currentQ.options : [];
           const selected = answers[currentQ.id];
-
           if (opts.length > 0) {
             return (
               <View style={{ marginTop: 14 }}>
                 {opts.map((opt, oi) => {
-                  // В предпросмотре верный вариант подсвечен сразу — учитель
-                  // проверяет не себя, а то, что ключ проставлен правильно.
                   const right = isPreview && !!currentQ.correctAnswer && opt === currentQ.correctAnswer;
                   return (
                     <OptionKey
@@ -1225,8 +1168,6 @@ export default function AssignmentDetailScreen() {
             );
           }
 
-          // Вопрос со свободным вводом. В предпросмотре вместо пустого поля
-          // показываем эталонный ответ: именно с ним сравнивается ученик.
           if (isPreview) {
             return (
               <Plate style={{ padding: 14, marginTop: 14, borderColor: SUCCESS, borderWidth: 1.5, backgroundColor: "#f7f0ff" }}>
@@ -1256,17 +1197,11 @@ export default function AssignmentDetailScreen() {
           );
         })()}
 
-        {/* ── Свободный ответ ── */}
         {isFreeForm && (
           <View>
             <View>
               <TextInput
-                style={[
-                  s.field,
-                  { minHeight: 126, paddingBottom: 26 },
-                  freeFormFocused && { borderColor: "#8b5cf6" },
-                  isPreview && { backgroundColor: "#faf9fd" },
-                ]}
+                style={[s.field, { minHeight: 126, paddingBottom: 26 }, freeFormFocused && { borderColor: "#8b5cf6" }, isPreview && { backgroundColor: "#faf9fd" }]}
                 value={freeFormText}
                 onChangeText={setFreeFormText}
                 onFocus={() => setFreeFormFocused(true)}
@@ -1279,8 +1214,6 @@ export default function AssignmentDetailScreen() {
                 editable={!inputsDisabled}
                 {...(Platform.OS === "web" ? { outlineWidth: 0 } as any : {})}
               />
-              {/* Счётчик символов: раньше поле молчало, и было непонятно,
-                  ждут от тебя строчку или сочинение. */}
               {!isPreview && <Text style={s.fieldCount}>{freeFormText.length} / 2000</Text>}
             </View>
 
@@ -1296,351 +1229,132 @@ export default function AssignmentDetailScreen() {
                 </View>
               )}
               <View style={[s.attach, isPreview && { opacity: 0.6 }]}>
-                {freeFormUploading ? (
-                  <ActivityIndicator color={PRIMARY_DARK} size="small" />
-                ) : (
+                {freeFormUploading ? <ActivityIndicator color={PRIMARY_DARK} size="small" /> : (
                   <>
                     <Glyph name="camera" size={16} color={PRIMARY_DARK} />
-                    <Text style={s.attachText}>
-                      {isPreview
-                        ? "Ученик может приложить фото"
-                        : freeFormAttachment ? "Заменить фото" : "Прикрепить фото"}
-                    </Text>
+                    <Text style={s.attachText}>{isPreview ? "Ученик может приложить фото" : freeFormAttachment ? "Заменить фото" : "Прикрепить фото"}</Text>
                   </>
                 )}
-                {!isPreview && (
-                  <Pressable
-                    style={StyleSheet.absoluteFill}
-                    onPress={handleAttachPhoto}
-                    disabled={freeFormUploading || inputsDisabled}
-                    accessibilityRole="button"
-                    accessibilityLabel="Прикрепить фото"
-                  />
-                )}
+                {!isPreview && <Pressable style={StyleSheet.absoluteFill} onPress={handleAttachPhoto} disabled={freeFormUploading || inputsDisabled} accessibilityRole="button" accessibilityLabel="Прикрепить фото" />}
               </View>
             </View>
           </View>
         )}
       </ScrollView>
 
-      {/* ── Нижняя кнопка ── */}
       {(isPreview || !inputsDisabled) && (
         <View style={[s.foot, { paddingBottom: insets.bottom + 12 }]}>
-          {/* В предпросмотре можно ходить назад: учитель листает задание в обе
-              стороны, а ученик — только вперёд, чтобы не переигрывать ответы. */}
           {isPreview && currentQuestionIndex > 0 ? (
             <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
-              <Pressable
-                onPress={goPrev}
-                style={({ pressed }) => [s.prevBtn, pressed && { opacity: 0.85 }]}
-                accessibilityRole="button"
-                accessibilityLabel="Предыдущий вопрос"
-              >
-                <View style={{ transform: [{ rotate: "180deg" }] }}>
-                  <Glyph name="chevron" size={18} color={PRIMARY_DARK} />
-                </View>
+              <Pressable onPress={goPrev} style={({ pressed }) => [s.prevBtn, pressed && { opacity: 0.85 }]} accessibilityRole="button" accessibilityLabel="Предыдущий вопрос">
+                <View style={{ transform: [{ rotate: "180deg" }] }}><Glyph name="chevron" size={18} color={PRIMARY_DARK} /></View>
               </Pressable>
-              <View style={{ flex: 1 }}>
-                <Cta label={ctaLabel} icon={ctaIcon} onPress={goNext} />
-              </View>
+              <View style={{ flex: 1 }}><Cta label={ctaLabel} icon={ctaIcon} onPress={goNext} /></View>
             </View>
           ) : (
-            <Cta
-              label={ctaLabel}
-              icon={ctaIcon}
-              busy={submitting}
-              disabled={isPreview ? false : isFreeForm ? !freeFormReady : !currentAnswered}
-              onPress={goNext}
-            />
+            <Cta label={ctaLabel} icon={ctaIcon} busy={submitting} disabled={isPreview ? false : isFreeForm ? !freeFormReady : !currentAnswered} onPress={goNext} />
           )}
-
-          {!isPreview && !isFreeForm && !currentAnswered && (
-            <Text style={s.footNote}>Кнопка оживёт, как только выберете вариант</Text>
-          )}
-          {!isPreview && isFreeForm && freeFormReady && (
-            <Text style={s.footNote}>Изменить ответ после отправки нельзя</Text>
-          )}
+          {!isPreview && !isFreeForm && !currentAnswered && <Text style={s.footNote}>Кнопка оживёт, как только выберете вариант</Text>}
+          {!isPreview && isFreeForm && freeFormReady && <Text style={s.footNote}>Изменить ответ после отправки нельзя</Text>}
         </View>
       )}
     </View>
   );
 }
 
-/**
- * Аварийный экран роута.
- *
- * Expo Router подхватывает экспорт с этим именем и показывает его вместо
- * белого экрана, если рендер упал. Тот же приём, что на вкладках «Задания» и
- * «Слова»: ошибка в одном задании не должна выглядеть как поломка приложения.
- */
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => void }) {
   return (
     <View style={[s.stateBox, { flex: 1, backgroundColor: QUIZ_BG }]}>
-      <LinearGradient
-        colors={["#8b5cf6", accents.indigoDeep]}
-        start={{ x: 0.1, y: 0 }}
-        end={{ x: 0.9, y: 1 }}
-        style={s.stateBadge}
-      >
+      <LinearGradient colors={["#8b5cf6", accents.indigoDeep]} start={{ x: 0.1, y: 0 }} end={{ x: 0.9, y: 1 }} style={s.stateBadge}>
         <Glyph name="alert" size={28} color="#fff" />
       </LinearGradient>
       <Text style={s.stateTitle}>Задание не открылось</Text>
       <Text style={s.stateText}>{error?.message ?? "Неизвестная ошибка"}</Text>
-      <View style={{ alignSelf: "stretch", marginTop: 6 }}>
-        <Cta label="Попробовать снова" icon="repeat" onPress={retry} />
-      </View>
+      <View style={{ alignSelf: "stretch", marginTop: 6 }}><Cta label="Попробовать снова" icon="repeat" onPress={retry} /></View>
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  // ── Шапка ──
-  topBar: {
-    flexDirection: "row", alignItems: "center", gap: 10,
-    paddingHorizontal: 16, paddingBottom: 2,
-  },
+  topBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingBottom: 2 },
   headerTitle: { flex: 1, fontSize: 17, fontWeight: "900", color: TEXT_DARK, letterSpacing: -0.3 },
-  roundBtn: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER,
-    alignItems: "center", justifyContent: "center",
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.16, shadowRadius: 8, elevation: 3,
-  },
-  typeChip: {
-    flex: 1, minWidth: 0,
-    flexDirection: "row", alignItems: "center", gap: 8,
-    paddingVertical: 7, paddingLeft: 8, paddingRight: 14,
-    borderRadius: radii.pill,
-    backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER,
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.14, shadowRadius: 9, elevation: 3,
-  },
+  roundBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center", shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.16, shadowRadius: 8, elevation: 3 },
+  typeChip: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 7, paddingLeft: 8, paddingRight: 14, borderRadius: radii.pill, backgroundColor: CARD_BG, borderWidth: 1, borderColor: BORDER, shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.14, shadowRadius: 9, elevation: 3 },
   typeChipIcon: { width: 26, height: 26, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   typeChipLabel: { fontSize: 13, fontWeight: "800", color: TEXT_DARK, letterSpacing: -0.1 },
   typeChipSub: { fontSize: 10.5, fontWeight: "600", color: TEXT_MUTED, marginTop: 2 },
-  timer: {
-    flexDirection: "row", alignItems: "center", gap: 5,
-    paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill,
-    backgroundColor: "rgba(139,92,246,0.13)",
-    borderWidth: 1.5, borderColor: "rgba(139,92,246,0.3)",
-  },
+  timer: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill, backgroundColor: "rgba(139,92,246,0.13)", borderWidth: 1.5, borderColor: "rgba(139,92,246,0.3)" },
   timerText: { fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
-  previewPill: {
-    flexDirection: "row", alignItems: "center", gap: 5,
-    paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill,
-    backgroundColor: "rgba(99,102,241,0.14)",
-    borderWidth: 1.5, borderColor: "rgba(99,102,241,0.32)",
-  },
+  previewPill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 7, borderRadius: radii.pill, backgroundColor: "rgba(99,102,241,0.14)", borderWidth: 1.5, borderColor: "rgba(99,102,241,0.32)" },
   previewPillText: { fontSize: 12, fontWeight: "800", color: accents.indigoDeep },
-
-  // ── Полоса предпросмотра ──
-  previewBar: {
-    flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 12,
-    paddingHorizontal: 13, paddingVertical: 11, borderRadius: radii.md,
-    backgroundColor: "rgba(99,102,241,0.1)",
-    borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(99,102,241,0.34)",
-  },
+  previewBar: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 12, paddingHorizontal: 13, paddingVertical: 11, borderRadius: radii.md, backgroundColor: "rgba(99,102,241,0.1)", borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(99,102,241,0.34)" },
   previewBarText: { flex: 1, fontSize: 13, fontWeight: "800", color: accents.indigoDeep },
-
-  // ── Лестница шагов ──
   ladder: { paddingHorizontal: 16, paddingTop: 14 },
   ladderBars: { flexDirection: "row", gap: 5 },
-  ladderBar: {
-    flex: 1, height: 6, borderRadius: radii.pill,
-    backgroundColor: "rgba(139,92,246,0.18)", overflow: "hidden",
-  },
+  ladderBar: { flex: 1, height: 6, borderRadius: radii.pill, backgroundColor: "rgba(139,92,246,0.18)", overflow: "hidden" },
   ladderMeta: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 8 },
   ladderLeft: { fontSize: 12, fontWeight: "800", color: TEXT_MID, fontVariant: ["tabular-nums"] },
   ladderRight: { fontSize: 11.5, fontWeight: "700", color: TEXT_MUTED },
-
-  // ── Плитка ──
-  plate: {
-    backgroundColor: CARD_BG, borderRadius: radii.md,
-    borderWidth: 1, borderColor: BORDER,
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.1, shadowRadius: 14, elevation: 3,
-  },
-  lbl: {
-    fontSize: 10, fontWeight: "800", letterSpacing: 1.2,
-    textTransform: "uppercase", color: TEXT_MUTED,
-  },
+  plate: { backgroundColor: CARD_BG, borderRadius: radii.md, borderWidth: 1, borderColor: BORDER, shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.1, shadowRadius: 14, elevation: 3 },
+  lbl: { fontSize: 10, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase", color: TEXT_MUTED },
   sectionTitle: { fontSize: 14, fontWeight: "800", color: TEXT_DARK, marginBottom: 6 },
   bodyText: { fontSize: 14, color: TEXT_MID, lineHeight: 21 },
   taskText: { fontSize: 15, fontWeight: "700", color: TEXT_DARK, lineHeight: 22, letterSpacing: -0.15 },
   assignTitle: { fontSize: 18, fontWeight: "900", color: TEXT_DARK, marginBottom: 6, letterSpacing: -0.3 },
-  badge: {
-    flexDirection: "row", alignItems: "center", gap: 5,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill,
-  },
+  badge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: radii.pill },
   badgeText: { fontSize: 11.5, fontWeight: "800" },
-
-  // ── Вопрос ──
   qRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  qNum: {
-    width: 34, height: 34, borderRadius: 12,
-    alignItems: "center", justifyContent: "center",
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.36, shadowRadius: 12, elevation: 5,
-  },
+  qNum: { width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center", shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.36, shadowRadius: 12, elevation: 5 },
   qNumText: { fontSize: 15, fontWeight: "900", color: "#fff", fontVariant: ["tabular-nums"] },
-  qText: {
-    flex: 1, fontSize: 16.5, fontWeight: "800", color: TEXT_DARK,
-    lineHeight: 23, letterSpacing: -0.3, paddingTop: 4,
-  },
-
-  // ── Вариант-клавиша ──
+  qText: { flex: 1, fontSize: 16.5, fontWeight: "800", color: TEXT_DARK, lineHeight: 23, letterSpacing: -0.3, paddingTop: 4 },
   optEdge: { position: "absolute", left: 0, right: 0, top: 4, bottom: 0, borderRadius: 14 },
-  opt: {
-    flexDirection: "row", alignItems: "center", gap: 11,
-    paddingVertical: 13, paddingHorizontal: 14,
-    borderRadius: 14, borderWidth: 2,
-  },
+  opt: { flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14, borderWidth: 2 },
   optKey: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   optKeyText: { fontSize: 13, fontWeight: "900" },
   optText: { flex: 1, fontSize: 14.5, lineHeight: 20 },
-  optBadge: {
-    paddingHorizontal: 9, paddingVertical: 4, borderRadius: radii.pill,
-    backgroundColor: "rgba(168,85,247,0.18)",
-  },
+  optBadge: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: radii.pill, backgroundColor: "rgba(168,85,247,0.18)" },
   optBadgeText: { fontSize: 10.5, fontWeight: "900", color: PRIMARY_DARK, letterSpacing: 0.3 },
-
-  // ── Поля ввода ──
-  field: {
-    borderWidth: 2, borderColor: BORDER, borderRadius: radii.md,
-    paddingHorizontal: 14, paddingVertical: 13,
-    fontSize: 14.5, lineHeight: 21, color: TEXT_DARK,
-    backgroundColor: CARD_BG,
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.08, shadowRadius: 14, elevation: 2,
-  },
-  fieldCount: {
-    position: "absolute", right: 13, bottom: 9,
-    fontSize: 11, fontWeight: "700", color: TEXT_MUTED, fontVariant: ["tabular-nums"],
-  },
-  attach: {
-    flexDirection: "row", alignItems: "center", gap: 8,
-    paddingHorizontal: 14, paddingVertical: 12, borderRadius: radii.sm,
-    backgroundColor: CARD_BG,
-    borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.45)",
-  },
+  field: { borderWidth: 2, borderColor: BORDER, borderRadius: radii.md, paddingHorizontal: 14, paddingVertical: 13, fontSize: 14.5, lineHeight: 21, color: TEXT_DARK, backgroundColor: CARD_BG, shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.08, shadowRadius: 14, elevation: 2 },
+  fieldCount: { position: "absolute", right: 13, bottom: 9, fontSize: 11, fontWeight: "700", color: TEXT_MUTED, fontVariant: ["tabular-nums"] },
+  attach: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 12, borderRadius: radii.sm, backgroundColor: CARD_BG, borderWidth: 1.5, borderStyle: "dashed", borderColor: "rgba(139,92,246,0.45)" },
   attachText: { fontSize: 13, fontWeight: "800", color: PRIMARY_DARK },
-  thumb: {
-    width: 74, height: 74, borderRadius: radii.sm,
-    borderWidth: 2, borderColor: CARD_BG,
-  },
-  thumbX: {
-    position: "absolute", top: 3, right: 3,
-    width: 20, height: 20, borderRadius: 10,
-    backgroundColor: "rgba(30,27,75,0.72)",
-    alignItems: "center", justifyContent: "center",
-  },
-
-  // ── Аудио ──
-  audio: {
-    borderRadius: radii.md, padding: 15, marginBottom: 12,
-    shadowColor: accents.indigoDeep, shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.36, shadowRadius: 22, elevation: 8,
-  },
-  play: {
-    width: 52, height: 52, borderRadius: 26, backgroundColor: "#fff",
-    alignItems: "center", justifyContent: "center",
-    shadowColor: "#1e1b4b", shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4, shadowRadius: 14, elevation: 6,
-  },
-  audioTime: {
-    fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.8)",
-    fontVariant: ["tabular-nums"], minWidth: 34, textAlign: "right",
-  },
-  gchip: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.pill,
-    backgroundColor: "rgba(255,255,255,0.16)",
-    borderWidth: 1, borderColor: "rgba(255,255,255,0.26)",
-  },
+  thumb: { width: 74, height: 74, borderRadius: radii.sm, borderWidth: 2, borderColor: CARD_BG },
+  thumbX: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(30,27,75,0.72)", alignItems: "center", justifyContent: "center" },
+  audio: { borderRadius: radii.md, padding: 15, marginBottom: 12, shadowColor: accents.indigoDeep, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.36, shadowRadius: 22, elevation: 8 },
+  play: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#fff", alignItems: "center", justifyContent: "center", shadowColor: "#1e1b4b", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 14, elevation: 6 },
+  audioTime: { fontSize: 11.5, fontWeight: "800", color: "rgba(255,255,255,0.8)", fontVariant: ["tabular-nums"], minWidth: 34, textAlign: "right" },
+  gchip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.pill, backgroundColor: "rgba(255,255,255,0.16)", borderWidth: 1, borderColor: "rgba(255,255,255,0.26)" },
   gchipOn: { backgroundColor: "#fff", borderColor: "#fff" },
   gchipText: { fontSize: 12, fontWeight: "800", color: "#fff" },
   audioHint: { marginTop: 11, fontSize: 11.5, fontWeight: "600", color: "rgba(255,255,255,0.7)", lineHeight: 16 },
-
-  // ── Видео ──
-  videoWrap: {
-    borderRadius: radii.md, overflow: "hidden", marginBottom: 12,
-    backgroundColor: "#1e1b4b",
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3, shadowRadius: 22, elevation: 7,
-  },
-
-  // ── Чтение ──
+  videoWrap: { borderRadius: radii.md, overflow: "hidden", marginBottom: 12, backgroundColor: "#1e1b4b", shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 22, elevation: 7 },
   readIcon: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   readTitle: { fontSize: 13.5, fontWeight: "800", color: TEXT_DARK, letterSpacing: -0.1 },
   readCount: { marginLeft: "auto", fontSize: 11, fontWeight: "700", color: TEXT_MUTED },
   readBody: { fontSize: 14, lineHeight: 22.5, color: TEXT_MID },
-  readMore: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
-    marginTop: 11, paddingVertical: 9, borderRadius: radii.sm,
-    backgroundColor: "rgba(139,92,246,0.1)",
-  },
+  readMore: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 11, paddingVertical: 9, borderRadius: radii.sm, backgroundColor: "rgba(139,92,246,0.1)" },
   readMoreText: { fontSize: 12.5, fontWeight: "800", color: PRIMARY_DARK },
-
-  zoomHint: {
-    position: "absolute", right: 12, bottom: 12,
-    flexDirection: "row", alignItems: "center", gap: 5,
-    backgroundColor: "rgba(255,255,255,0.92)",
-    paddingHorizontal: 9, paddingVertical: 5, borderRadius: radii.sm - 2,
-  },
-
-  // ── Время вышло ──
-  expired: {
-    flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12,
-    backgroundColor: "#fff1f3", borderRadius: radii.md, padding: 14,
-    borderWidth: 1.5, borderColor: "#fda4af",
-  },
+  zoomHint: { position: "absolute", right: 12, bottom: 12, flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(255,255,255,0.92)", paddingHorizontal: 9, paddingVertical: 5, borderRadius: radii.sm - 2 },
+  expired: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, backgroundColor: "#fff1f3", borderRadius: radii.md, padding: 14, borderWidth: 1.5, borderColor: "#fda4af" },
   expiredText: { flex: 1, fontSize: 14, fontWeight: "800", color: DANGER },
-
-  // ── Нижняя кнопка ──
   foot: { paddingHorizontal: 16, paddingTop: 8 },
   ctaEdge: { position: "absolute", left: 0, right: 0, top: chunky.edge, bottom: 0, borderRadius: radii.md },
-  cta: {
-    borderRadius: radii.md, paddingVertical: 16,
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9,
-  },
+  cta: { borderRadius: radii.md, paddingVertical: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9 },
   ctaText: { fontSize: 15.5, fontWeight: "900", color: "#fff", letterSpacing: -0.2 },
   footNote: { marginTop: 9, textAlign: "center", fontSize: 11.5, fontWeight: "600", color: TEXT_MUTED },
-  prevBtn: {
-    width: 54, height: 54, borderRadius: radii.md,
-    backgroundColor: CARD_BG, borderWidth: 2, borderColor: BORDER,
-    alignItems: "center", justifyContent: "center",
-  },
-
-  // ── Результат ──
-  resultHero: {
-    borderRadius: radii.lg, paddingVertical: 26, paddingHorizontal: 18,
-    alignItems: "center", overflow: "hidden",
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.4, shadowRadius: 30, elevation: 10,
-  },
+  prevBtn: { width: 54, height: 54, borderRadius: radii.md, backgroundColor: CARD_BG, borderWidth: 2, borderColor: BORDER, alignItems: "center", justifyContent: "center" },
+  resultHero: { borderRadius: radii.lg, paddingVertical: 26, paddingHorizontal: 18, alignItems: "center", overflow: "hidden", shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 14 }, shadowOpacity: 0.4, shadowRadius: 30, elevation: 10 },
   ringValue: { fontSize: 29, fontWeight: "900", color: "#fff", letterSpacing: -1.2, fontVariant: ["tabular-nums"] },
   resultTitle: { fontSize: 21, fontWeight: "900", color: "#fff", letterSpacing: -0.5 },
   resultSub: { marginTop: 6, fontSize: 13, fontWeight: "600", color: "rgba(255,255,255,0.78)", textAlign: "center", lineHeight: 19 },
-  earned: {
-    flexDirection: "row", alignItems: "center", gap: 7, marginTop: 14,
-    paddingHorizontal: 16, paddingVertical: 9, borderRadius: radii.pill,
-    shadowColor: accents.amber, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45, shadowRadius: 16, elevation: 6,
-  },
+  earned: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 14, paddingHorizontal: 16, paddingVertical: 9, borderRadius: radii.pill, shadowColor: accents.amber, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 6 },
   earnedText: { fontSize: 14, fontWeight: "900", color: "#42200a" },
   revMark: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", marginTop: 1 },
   revQ: { fontSize: 13, fontWeight: "800", color: TEXT_DARK, lineHeight: 18 },
   revA: { fontSize: 12.5, fontWeight: "800", marginTop: 3, lineHeight: 17 },
   revFix: { fontSize: 12.5, fontWeight: "600", color: TEXT_MID, marginTop: 2, lineHeight: 17 },
-
-  // ── Пустые состояния ──
   stateBox: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 34, gap: 12 },
-  stateBadge: {
-    width: 66, height: 66, borderRadius: 22, alignItems: "center", justifyContent: "center",
-    shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.36, shadowRadius: 22, elevation: 8,
-  },
+  stateBadge: { width: 66, height: 66, borderRadius: 22, alignItems: "center", justifyContent: "center", shadowColor: accents.violetDeep, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.36, shadowRadius: 22, elevation: 8 },
   stateTitle: { fontSize: 17, fontWeight: "900", color: TEXT_DARK, letterSpacing: -0.3 },
   stateText: { fontSize: 13.5, fontWeight: "600", color: TEXT_MID, textAlign: "center", lineHeight: 20 },
 });
