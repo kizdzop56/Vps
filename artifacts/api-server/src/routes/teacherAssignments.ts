@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, assignmentsTable, assignedTasksTable, submissionsTable } from "@workspace/db";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { getUser, isTeacher } from "../lib/auth";
+import { getUser, isTeacher, requireAuth } from "../lib/auth";
 
 const router = Router();
 
@@ -11,7 +11,7 @@ const router = Router();
  * clicking its title, but the card no longer displays a "Черновик" badge.
  * The database state and publish-on-assign behavior remain unchanged.
  */
-router.get("/assignments/my-assignments", async (req, res) => {
+router.get("/assignments/my-assignments", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store");
   const caller = getUser(req);
   if (!isTeacher(caller.role) && caller.role !== "admin") {
