@@ -55,7 +55,15 @@ function isStoredFile(url: URL, kind: "image" | "audio" | "video"): boolean {
 
 function isImageLink(value: unknown): boolean {
   const url = mediaUrlParts(value);
-  return !!url && (IMAGE_EXT.test(url.pathname) || isStoredFile(url, "image"));
+  if (!url) return false;
+  if (isStoredFile(url, "image") || IMAGE_EXT.test(url.pathname)) return true;
+
+  // Links copied from image search often point directly to an image but use
+  // query parameters instead of a file extension (e.g. encrypted-tbn*.gstatic.com).
+  // Accept a normal HTTP(S) image URL here; React Native Image will load actual
+  // images and report a broken/non-image page in the preview rather than
+  // rejecting useful direct image URLs based only on their pathname.
+  return url.protocol === "http:" || url.protocol === "https:";
 }
 
 function isAudioLink(value: unknown): boolean {
@@ -88,7 +96,7 @@ function validateAssignmentMedia(req: express.Request, res: express.Response, ne
   const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl.trim() : "";
 
   if (imageUrl && !isImageLink(imageUrl)) {
-    res.status(400).json({ error: "Ссылка на изображение должна вести напрямую на файл JPG, PNG, GIF, WEBP или AVIF. Для страниц общего доступа загрузите изображение файлом." });
+    res.status(400).json({ error: "Вставьте полную ссылку на изображение, начинающуюся с http:// или https://, либо загрузите файл." });
     return;
   }
 
