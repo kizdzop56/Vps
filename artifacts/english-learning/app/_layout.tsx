@@ -124,13 +124,13 @@ export default function RootLayout() {
     }
   });
 
-  // On web, remove redundant quick-action buttons from the assignments screen:
-  // the compact header plus and the large "Start assignment" shortcut. The
-  // original create/start actions remain available elsewhere on their screens.
+  // On web, remove redundant quick-action buttons and the draft badge from the
+  // assignments list. Assignment titles stay as the preview button for drafts
+  // and assigned tasks alike.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
 
-    const hideRedundantAssignmentButtons = () => {
+    const updateAssignmentList = () => {
       document.querySelectorAll<HTMLElement>('[aria-label="Создать задание"]').forEach((element) => {
         if (element.dataset["compactCreateHidden"] === "1") return;
         const rect = element.getBoundingClientRect();
@@ -145,13 +145,26 @@ export default function RootLayout() {
         element.style.display = "none";
         element.dataset["startAssignmentHidden"] = "1";
       });
+
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let textNode: Node | null;
+      while ((textNode = walker.nextNode())) {
+        if (textNode.nodeValue?.trim() !== "Черновик") continue;
+        textNode.nodeValue = "";
+        const previewButton = textNode.parentElement?.closest<HTMLElement>('[role="button"]');
+        if (previewButton) {
+          previewButton.style.cursor = "pointer";
+          previewButton.setAttribute("aria-label", "Предпросмотр задания");
+        }
+      }
     };
 
-    hideRedundantAssignmentButtons();
-    const observer = new MutationObserver(hideRedundantAssignmentButtons);
+    updateAssignmentList();
+    const observer = new MutationObserver(updateAssignmentList);
     observer.observe(document.body, {
       childList: true,
       subtree: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ["aria-label"],
     });
