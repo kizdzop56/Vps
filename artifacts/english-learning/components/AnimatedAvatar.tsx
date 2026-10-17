@@ -86,8 +86,10 @@ export function AnimatedAvatar({
   return (
     <View
       style={{
-        width: size * 1.7,
-        height: size * 1.7,
+        // Static avatars occupy exactly their visible size, so list rows align
+        // them with the text. Reserve extra room only when pulse rings are used.
+        width: animated ? size * 1.7 : size,
+        height: animated ? size * 1.7 : size,
         justifyContent: "center",
         alignItems: "center",
       }}
