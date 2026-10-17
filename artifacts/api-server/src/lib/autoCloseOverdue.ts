@@ -1,24 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Автозакрытие заданий по истечении срока сдачи.
 //
-// Что делает: находит назначения, у которых срок (assigned_tasks.due_at) уже
-// прошёл, а ученик так и не сдал работу, и создаёт за него сдачу со статусом
-// "expired". После этого задание уходит из списка ученика (запрос my-tasks
-// исключает задания, по которым есть сдача) и появляется у учителя в ответах
-// с пометкой «не сдано в срок».
+// Находит назначения с истёкшим сроком, по которым ученик не отправил работу,
+// и создаёт сдачу со статусом "expired". Она исчезает из активного списка
+// ученика и появляется у учителя в ответах как «не сдано в срок».
 //
-// Почему создаётся именно сдача, а не отдельный флаг: у учителя уже есть один
-// экран со всеми работами, и просроченное должно попадать туда же, а не в
-// параллельный список, который нужно проверять отдельно. Учитель видит факт
-// «срок вышел, работы нет» там, где смотрит остальные результаты.
-//
-// Очки не начисляются, ответы не создаются: работа не выполнялась.
-// score = 0 честно отражает результат и попадает в средний балл — иначе
-// пропущенные задания были бы бесплатными.
-//
-// Идемпотентность: повторный запуск ничего не дублирует, потому что после
-// первой вставки у назначения уже есть сдача и оно перестаёт попадать в
-// выборку. Поэтому задачу безопасно гонять по таймеру.
+// Повторные запуски безопасны: после вставки просроченной сдачи назначение
+// больше не попадает в выборку. Запросы списка ученика и результатов учителя
+// также запускают эту проверку, поэтому после пробуждения сервера пропуски
+// сроков закрываются при первом обращении.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { db } from "@workspace/db";
@@ -31,19 +21,10 @@ import { logger } from "./logger";
 /** Статус сдачи, созданной автоматически из-за истёкшего срока. */
 export const EXPIRED_STATUS = "expired";
 
-/**
- * Закрывает все просроченные назначения. Возвращает число закрытых.
- *
- * Ошибка внутри не пробрасывается наружу: задача фоновая, падать из-за неё
- * сервер не должен.
- */
+/** Закрывает просроченные назначения. Возвращает число закрытых. */
 export async function autoCloseOverdueAssignments(): Promise<number> {
   try {
     const now = new Date();
-
-    // Назначения с истёкшим сроком и без сдачи, сделанной ПОСЛЕ выдачи.
-    // Условие на submittedAt > assignedAt то же, что в GET /assignments/my-tasks:
-    // старая сдача до повторной выдачи не считается выполнением текущей.
     const overdue = await db.select({
       assignedTaskId: assignedTasksTable.id,
       assignmentId: assignedTasksTable.assignmentId,
@@ -69,17 +50,20 @@ export async function autoCloseOverdueAssignments(): Promise<number> {
 
     if (overdue.length === 0) return 0;
 
-    // Число вопросов по каждому заданию — чтобы в карточке результата стояло
-    // честное «0 из 12», а не «0 из 0».
-    const assignmentIds = [...new Set(overdue.map((t) => t.assignmentId))];
-    const questions = await db
-      .select({ id: questionsTable.id, assignmentId: questionsTable.assignmentId })
+    const assignmentIds = [...new Set(overdue.map((task) => task.assignmentId))];
+    const questions = await db.select({
+      id: questionsTable.id,
+      assignmentId: questionsTable.assignmentId,
+    })
       .from(questionsTable)
       .where(inArray(questionsTable.assignmentId, assignmentIds));
 
     const totalByAssignment = new Map<number, number>();
-    for (const q of questions) {
-      totalByAssignment.set(q.assignmentId, (totalByAssignment.get(q.assignmentId) ?? 0) + 1);
+    for (const question of questions) {
+      totalByAssignment.set(
+        question.assignmentId,
+        (totalByAssignment.get(question.assignmentId) ?? 0) + 1,
+      );
     }
 
     await db.insert(submissionsTable).values(
@@ -103,16 +87,8 @@ export async function autoCloseOverdueAssignments(): Promise<number> {
   }
 }
 
-/**
- * Запускает автозакрытие сразу и дальше по таймеру.
- *
- * Пять минут — компромисс: срок ставится с точностью до дня (пресеты в
- * utils/dueDate.ts дают 23:59), поэтому чаще проверять незачем, а реже —
- * задание висело бы у ученика уже после дедлайна.
- *
- * unref(), чтобы таймер не держал процесс при остановке сервера.
- */
-export function startOverdueWatcher(intervalMs = 5 * 60_000): void {
+/** Starts an immediate check and then checks once per minute. */
+export function startOverdueWatcher(intervalMs = 60_000): void {
   void autoCloseOverdueAssignments();
   const timer = setInterval(() => { void autoCloseOverdueAssignments(); }, intervalMs);
   timer.unref?.();
