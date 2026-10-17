@@ -29,7 +29,16 @@ applyGlobalFonts();
 
 if (Platform.OS === "web" && typeof document !== "undefined") {
   const style = document.createElement("style");
-  style.textContent = "input, textarea { outline: none !important; }";
+  style.textContent = `
+    input, textarea { outline: none !important; }
+    /* Assignment prompt images were capped at 170px, leaving most of the
+       viewport blank. Enlarge only those fixed-height inline media images. */
+    img[style*="170px"] {
+      height: min(42vh, 420px) !important;
+      max-height: min(42vh, 420px) !important;
+      object-fit: contain !important;
+    }
+  `;
   document.head.appendChild(style);
 
   if (!document.querySelector('meta[name="format-detection"]')) {
