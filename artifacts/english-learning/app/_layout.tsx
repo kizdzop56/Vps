@@ -31,8 +31,11 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
   const style = document.createElement("style");
   style.textContent = `
     input, textarea { outline: none !important; }
-    /* Assignment prompt images were capped at 170px, leaving most of the
-       viewport blank. Enlarge only those fixed-height inline media images. */
+    /* Remove the decorative segmented bars from teacher assignment cards.
+       Keep the adjacent textual submitted/waiting counts visible. */
+    div[style*="height: 11px"][style*="border-radius: 4px"][style*="overflow: hidden"] {
+      display: none !important;
+    }
     img[style*="170px"] {
       height: min(42vh, 420px) !important;
       max-height: min(42vh, 420px) !important;
