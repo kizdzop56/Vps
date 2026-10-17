@@ -100,7 +100,11 @@ function shutdown() {
 }
 
 for (const p of procs) {
-  const child = spawn(p.cmd, p.args, { cwd: root, env: p.env });
+  // Windows exposes pnpm as a .cmd shim, which cannot be spawned directly
+  // without a shell. Route it through cmd.exe; keep direct spawning elsewhere.
+  const child = process.platform === "win32" && p.cmd === "pnpm"
+    ? spawn("cmd.exe", ["/d", "/s", "/c", "pnpm", ...p.args], { cwd: root, env: p.env })
+    : spawn(p.cmd, p.args, { cwd: root, env: p.env });
   child.stdout.on("data", (d) => log(p.name, p.color, d));
   child.stderr.on("data", (d) => log(p.name, p.color, d));
   child.on("exit", (code) => {
