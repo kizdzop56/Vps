@@ -37,7 +37,7 @@ router.get("/assignments/my-assignments", requireAuth, (req, res, next) => {
         const byAssignment = new Map(counts.map((row) => [row.assignmentId, Number(row.count)]));
         sendJson(rows.map((row) => ({ ...row, startedCount: byAssignment.get(row.id) ?? 0 })));
       })
-      .catch(() => sendJson(rows.map((row) => ({ ...row, startedCount: 0 })));
+      .catch(() => sendJson(rows.map((row) => ({ ...row, startedCount: 0 }))));
     return response;
   };
 
