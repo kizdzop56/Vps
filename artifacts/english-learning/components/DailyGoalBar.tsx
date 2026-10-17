@@ -1,40 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Цель дня в шапке «Заданий» — компактная версия карточки из профиля.
-//
-// Раньше здесь жила отдельная реализация: свой список «целей дня» (время в
-// приложении, марафон заданий, AI-разговор), выбираемый по дню года, со своими
-// захардкоженными наградами и своим определением выполнения — только по
-// минутам. Профиль в это же время считал день через utils/dailyQuests.ts.
-//
-// Два разных счёта в одном приложении давали прямое противоречие: «Задания»
-// показывали «Цель на сегодня выполнена! +20 очков получено», а профиль в ту же
-// секунду — 100% по времени, невыполненные задачи дня и +15 очков за цель.
-//
-// Теперь источник один: buildDailyPlan.
-//
-// ── Свёрнуто и раскрыто ─────────────────────────────────────────────────────
-// В свёрнутом виде — кольцо времени, счётчик задач и награда. Нажатие
-// раскрывает чек-лист: те же задачи, что в профиле. До этого из «Заданий» было
-// видно только время, и чтобы узнать, что ещё осталось сделать, приходилось
-// уходить в профиль.
-//
-// ── Награда ─────────────────────────────────────────────────────────────────
-// В пилюле — очки за ПОЛНОСТЬЮ закрытый день (plan.reward). Цен у отдельных
-// задач больше нет: раньше выполненная задача показывала «+35», и это читалось
-// как начисление за неё одну.
-//
-// Выбор цели из шапки убран намеренно. Он применял новую цель мгновенно, а по
-// правилу она вступает в силу со следующего дня (иначе набор задач можно
-// подобрать под себя). Цель меняется в профиле, где рядом стоит подпись об
-// этом.
-//
-// Прогресс задач компонент догружает сам (gamification/stats + flashcards/stats):
-// шапка «Заданий» не знает о словах и разговорах, а тащить эти счётчики через
-// весь экран ради одной полоски не стоит.
+// Источник прогресса общий с профилем: buildDailyPlan.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet, AppState, Platform } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { View, Text, Pressable, StyleSheet, AppState, Platform, Animated, Easing } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle } from "react-native-svg";
 import authStorage from "@/utils/authStorage";
@@ -68,21 +38,15 @@ export interface DailyGoalBarProps {
   todayMinutes: number;
   /** Цель, которая действует СЕГОДНЯ. */
   goalMinutes: number;
-  /**
-   * Оставлено ради совместимости с прежними местами вызова. Цель меняется в
-   * профиле: там же объяснено, что новая цель начнёт действовать завтра.
-   */
+  /** Оставлено ради совместимости с прежними местами вызова. */
   onGoalChange?: (minutes: number) => void;
 }
 
-/** Как часто подтягивать прогресс задач, пока вкладка открыта. */
 const REFRESH_MS = 60_000;
-
-/** Тот же фиолетовый, что у карточки цели в профиле. */
 const CARD_GRADIENT = ["#8b5cf6", "#7c3aed", "#6d28d9"] as const;
-
 const RING = 54;
 const STROKE = 7;
+const OPEN_MS = 280;
 
 interface ProgressInput {
   todayMinutes: number;
@@ -105,6 +69,9 @@ const EMPTY: ProgressInput = {
 export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
   const [live, setLive] = useState<ProgressInput>(EMPTY);
   const [open, setOpen] = useState(false);
+  const [checklistHeight, setChecklistHeight] = useState(0);
+  // Animate real pixel height, so the card grows naturally to fit its checklist.
+  const reveal = useRef(new Animated.Value(0)).current;
 
   const load = useCallback(async () => {
     const [gam, words] = await Promise.all([
@@ -124,9 +91,6 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
   useEffect(() => {
     load();
     const interval = setInterval(load, REFRESH_MS);
-
-    // Возврат во вкладку браузера или в приложение — повод обновиться сразу:
-    // за время отсутствия ученик мог закрыть задачу в другом месте.
     if (Platform.OS === "web" && typeof document !== "undefined") {
       const onVisibility = () => { if (!document.hidden) load(); };
       document.addEventListener("visibilitychange", onVisibility);
@@ -135,7 +99,6 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
         clearInterval(interval);
       };
     }
-
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") load();
     });
@@ -144,6 +107,18 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
       clearInterval(interval);
     };
   }, [load]);
+
+  useEffect(() => {
+    if (checklistHeight <= 0) return;
+    const animation = Animated.timing(reveal, {
+      toValue: open ? checklistHeight : 0,
+      duration: OPEN_MS,
+      easing: open ? Easing.out(Easing.cubic) : Easing.inOut(Easing.cubic),
+      useNativeDriver: false,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [open, checklistHeight, reveal]);
 
   const plan = buildDailyPlan({
     todayMinutes: Math.max(todayMinutes || 0, live.todayMinutes),
@@ -158,33 +133,49 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
 
   const { time, quests, doneCount, allDone, reward } = plan;
   const total = quests.length;
-
   const r = (RING - STROKE) / 2;
   const circumference = 2 * Math.PI * r;
-
   const minutesWord = plural(time.target, ["минута", "минуты", "минут"]);
   const remainingWord = plural(time.remaining, ["минута", "минуты", "минут"]);
   const taskWord = plural(total, ["задача", "задачи", "задач"]);
-
-  // Заголовок и подпись повторяют профиль слово в слово: одинаковый день не
-  // должен читаться как два разных.
   const title = allDone
     ? "Цель дня выполнена!"
     : time.done
       ? `${time.target} ${minutesWord} есть`
       : `${time.current} из ${time.target} ${minutesWord}`;
-
   const sub = allDone
     ? `Время и все ${total} ${taskWord} закрыты`
     : time.done
       ? `Время закрыто · задачи ${doneCount} из ${total}`
       : `Ещё ${time.remaining} ${remainingWord} · задачи ${doneCount} из ${total}`;
 
+  const fadeIn = reveal.interpolate({
+    inputRange: [0, Math.max(1, checklistHeight * 0.32)],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
+  const fadeOut = reveal.interpolate({
+    inputRange: [0, Math.max(1, checklistHeight)],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+  const pipsHeight = reveal.interpolate({
+    inputRange: [0, Math.max(1, checklistHeight)],
+    outputRange: [5, 0],
+    extrapolate: "clamp",
+  });
+  const chevronRotation = reveal.interpolate({
+    inputRange: [0, Math.max(1, checklistHeight)],
+    outputRange: ["90deg", "-90deg"],
+    extrapolate: "clamp",
+  });
+
   return (
     <Pressable
       onPress={() => setOpen((v) => !v)}
       accessibilityRole="button"
       accessibilityLabel={open ? "Свернуть цель дня" : "Показать задачи дня"}
+      accessibilityState={{ expanded: open }}
       style={{ marginBottom: 12 }}
     >
       <LinearGradient
@@ -225,7 +216,6 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
             <Text style={s.sub} numberOfLines={1}>{sub}</Text>
           </View>
 
-          {/* Очки за полностью закрытый день. Отдельные задачи цены не имеют. */}
           <LinearGradient
             colors={[accents.gold, accents.amber]}
             start={{ x: 0, y: 0 }}
@@ -236,21 +226,31 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
           </LinearGradient>
         </View>
 
-        {/* Свёрнуто: задачи сегментами. Раскрыто: сам чек-лист. */}
-        {open ? (
-          <View style={s.list}>
+        {/* Keep both states mounted so expansion and collapse can animate. */}
+        <Animated.View
+          pointerEvents={open ? "none" : "auto"}
+          style={[s.pips, { height: pipsHeight, opacity: fadeOut, overflow: "hidden" }]}
+        >
+          {quests.map((q) => <View key={q.kind} style={[s.pip, q.done && s.pipDone]} />)}
+        </Animated.View>
+
+        <Animated.View style={{ height: reveal, opacity: fadeIn, overflow: "hidden" }}>
+          <View
+            style={s.list}
+            onLayout={(event) => {
+              const next = event.nativeEvent.layout.height;
+              setChecklistHeight((current) => Math.abs(current - next) > 1 ? next : current);
+            }}
+          >
             {quests.map((q) => (
               <View key={q.kind} style={[s.task, q.done && s.taskDone]}>
                 <View style={[s.box, q.done && s.boxDone]}>
                   {q.done && <Glyph name="check" size={11} color={accents.violetDeep} />}
                 </View>
-                <Text style={[s.taskText, q.done && s.taskTextDone]} numberOfLines={1}>
-                  {q.title}
-                </Text>
+                <Text style={[s.taskText, q.done && s.taskTextDone]} numberOfLines={1}>{q.title}</Text>
                 <Text style={s.taskCount}>{q.done ? "" : q.counter}</Text>
               </View>
             ))}
-
             <View style={s.foot}>
               <Glyph name="star" size={12} color="rgba(255,255,255,0.86)" />
               <Text style={s.footText}>
@@ -260,19 +260,13 @@ export function DailyGoalBar({ todayMinutes, goalMinutes }: DailyGoalBarProps) {
               </Text>
             </View>
           </View>
-        ) : (
-          <View style={s.pips}>
-            {quests.map((q) => (
-              <View key={q.kind} style={[s.pip, q.done && s.pipDone]} />
-            ))}
-          </View>
-        )}
+        </Animated.View>
 
         <View style={s.toggle}>
           <Text style={s.toggleText}>{open ? "Свернуть" : "Что осталось сделать"}</Text>
-          <View style={{ transform: [{ rotate: open ? "-90deg" : "90deg" }] }}>
+          <Animated.View style={{ transform: [{ rotate: chevronRotation }] }}>
             <Glyph name="chevron" size={12} color="rgba(255,255,255,0.8)" />
-          </View>
+          </Animated.View>
         </View>
       </LinearGradient>
     </Pressable>
@@ -289,9 +283,7 @@ const s = StyleSheet.create({
     position: "absolute", width: 170, height: 170, borderRadius: 85,
     top: -95, right: -55, backgroundColor: "rgba(255,255,255,0.10)",
   },
-
   row: { flexDirection: "row", alignItems: "center", gap: 13 },
-
   ring: { width: RING, height: RING, alignItems: "center", justifyContent: "center" },
   ringText: {
     position: "absolute", fontSize: 13, fontWeight: "900", color: "#fff",
@@ -302,34 +294,24 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center", justifyContent: "center",
   },
-
   mid: { flex: 1, minWidth: 0, paddingRight: 46 },
   lbl: {
     fontSize: 9.5, fontWeight: "800", letterSpacing: 1.2, textTransform: "uppercase",
     color: "rgba(255,255,255,0.72)",
   },
-  title: {
-    fontSize: 17, fontWeight: "900", color: "#fff",
-    letterSpacing: -0.4, marginTop: 3,
-  },
+  title: { fontSize: 17, fontWeight: "900", color: "#fff", letterSpacing: -0.4, marginTop: 3 },
   sub: {
     fontSize: 11.5, fontWeight: "600", color: "rgba(255,255,255,0.82)",
     marginTop: 3, fontVariant: ["tabular-nums"],
   },
-
   pts: {
     position: "absolute", top: 0, right: 0,
     paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.pill,
   },
   ptsText: { fontSize: 11.5, fontWeight: "900", color: "#42200a", fontVariant: ["tabular-nums"] },
-
   pips: { flexDirection: "row", gap: 5, marginTop: 12 },
-  pip: {
-    flex: 1, height: 5, borderRadius: 3,
-    backgroundColor: "rgba(255,255,255,0.24)",
-  },
+  pip: { flex: 1, height: 5, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.24)" },
   pipDone: { backgroundColor: accents.gold },
-
   list: { marginTop: 12, gap: 7 },
   task: {
     flexDirection: "row", alignItems: "center", gap: 10,
@@ -345,11 +327,7 @@ const s = StyleSheet.create({
   boxDone: { backgroundColor: "#fff", borderColor: "#fff" },
   taskText: { flex: 1, fontSize: 13, fontWeight: "700", color: "#fff" },
   taskTextDone: { color: "rgba(255,255,255,0.6)", textDecorationLine: "line-through" },
-  taskCount: {
-    fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.72)",
-    fontVariant: ["tabular-nums"],
-  },
-
+  taskCount: { fontSize: 12, fontWeight: "800", color: "rgba(255,255,255,0.72)", fontVariant: ["tabular-nums"] },
   foot: {
     flexDirection: "row", alignItems: "center", gap: 7,
     marginTop: 2, paddingVertical: 8, paddingHorizontal: 11,
@@ -357,11 +335,7 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(255,255,255,0.16)",
   },
   footText: { flex: 1, fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.86)" },
-
-  toggle: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
-    marginTop: 10,
-  },
+  toggle: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 10 },
   toggleText: { fontSize: 11, fontWeight: "800", color: "rgba(255,255,255,0.8)" },
 });
 
