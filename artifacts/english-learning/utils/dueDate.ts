@@ -1,41 +1,22 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Срок сдачи задания: пресеты, человеческий формат, сортировка.
+// Срок сдачи задания: без срока или введённые учителем дата и время.
 //
-// Срок хранится на назначении (assigned_tasks.due_at) и приходит клиенту
-// ISO-строкой в UTC либо null. Всё преобразование в местное время и в текст
-// живёт здесь, чтобы «сегодня до 20:00» на всех экранах считалось одинаково.
-//
-// Почему пресеты, а не полноценный date picker: срок ставит учитель на ходу,
-// прямо в модалке отправки. «Сегодня / завтра / 3 дня / неделя» закрывают почти
-// все случаи в один тап, а WheelDatePicker в проекте заточен под дату рождения
-// (год-месяц-день с прокруткой лет) и для этого сценария избыточен.
+// Срок хранится на назначении (assigned_tasks.due_at) в UTC. Учитель вводит
+// дедлайн в своём местном времени; ученику показывается локальная дата и время.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Насколько срок горит. Используется для выбора цвета и значка:
- *   none     — срока нет, спокойная серая метка
- *   overdue  — просрочено, красный
- *   today    — сегодня, янтарный
- *   soon     — до недели, янтарный поспокойнее
- *   later    — дальше недели, нейтральный
- */
 export type DueUrgency = "none" | "overdue" | "today" | "soon" | "later";
 
 export interface DueInfo {
-  /** Готовая подпись: «сегодня до 20:00», «через 3 дня», «просрочено на день». */
   text: string;
   urgency: DueUrgency;
-  /** true — срок есть и он не прошёл. Удобно для «горит / не горит». */
   active: boolean;
 }
 
-/** Варианты срока в модалке отправки. days = null означает «без срока». */
+/** Сроки в форме: без срока или ввод своего дедлайна. */
 export const DUE_PRESETS = [
   { key: "none", label: "Без срока", days: null },
-  { key: "today", label: "Сегодня", days: 0 },
-  { key: "tomorrow", label: "Завтра", days: 1 },
-  { key: "days3", label: "3 дня", days: 3 },
-  { key: "week", label: "Неделя", days: 7 },
+  { key: "custom", label: "Указать дату и время", days: null },
 ] as const;
 
 export type DuePresetKey = typeof DUE_PRESETS[number]["key"];
@@ -50,85 +31,128 @@ function pluralRu(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-/** Полночь указанной даты по местному времени: база для счёта «в днях». */
 function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-/**
- * ISO-строка срока по выбранному пресету.
- *
- * Время ставим на 23:59 местных: «сегодня» должно означать весь сегодняшний
- * день, а не момент нажатия кнопки — иначе задание становится просроченным
- * сразу после отправки.
- */
-export function dueDateFromPreset(key: DuePresetKey, now: Date = new Date()): string | null {
-  const preset = DUE_PRESETS.find((p) => p.key === key);
-  if (!preset || preset.days === null) return null;
-  const date = new Date(now);
-  date.setDate(date.getDate() + preset.days);
-  date.setHours(23, 59, 0, 0);
-  return date.toISOString();
+let customDueDate: string | null = null;
+let customDueDatePrompted = false;
+
+function clearCustomDueDate(): void {
+  customDueDate = null;
+  customDueDatePrompted = false;
 }
 
-/** Разбор значения из API. Мусор и пустая строка считаются «срока нет». */
+/** Parse a local date and time strictly, rejecting impossible dates and past deadlines. */
+function parseLocalDeadline(dateText: string, timeText: string, now: Date): Date | null {
+  const dateMatch = dateText.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const timeMatch = timeText.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!dateMatch || !timeMatch) return null;
+
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+
+  const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day ||
+    date.getHours() !== hour || date.getMinutes() !== minute || date.getTime() <= now.getTime()
+  ) return null;
+  return date;
+}
+
+/**
+ * Browser input for the custom deadline. The function caches the response because
+ * the assignments screen also calls dueDateFromPreset while rendering its
+ * preview text. Closing/reopening the assignment modal asks for a fresh value.
+ */
+function promptForCustomDeadline(now: Date): string | null {
+  if (customDueDatePrompted) return customDueDate;
+  customDueDatePrompted = true;
+
+  const prompt = (globalThis as any).prompt as ((message: string, defaultValue?: string) => string | null) | undefined;
+  const alert = (globalThis as any).alert as ((message: string) => void) | undefined;
+  if (!prompt) return null;
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const defaultDate = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+
+  while (true) {
+    const dateText = prompt("Срок сдачи: введите дату в формате ГГГГ-ММ-ДД", defaultDate);
+    if (dateText === null) return null;
+    const timeText = prompt("Введите время в формате ЧЧ:ММ (24-часовой формат)", "23:59");
+    if (timeText === null) return null;
+    const date = parseLocalDeadline(dateText, timeText, now);
+    if (date) {
+      customDueDate = date.toISOString();
+      return customDueDate;
+    }
+    alert?.("Проверьте дату и время: дата должна быть реальной и находиться в будущем. Пример: 2026-10-20 и 18:30.");
+  }
+}
+
+/** Get the deadline selected in the form as an ISO timestamp, or null. */
+export function dueDateFromPreset(key: DuePresetKey, now: Date = new Date()): string | null {
+  if (key === "none") {
+    clearCustomDueDate();
+    return null;
+  }
+  if (key === "custom") return promptForCustomDeadline(now);
+  return null;
+}
+
+/** Legacy default-due field is no longer offered; open each send dialog without a deadline. */
+export function presetFromDays(_days: number | null | undefined): DuePresetKey {
+  clearCustomDueDate();
+  return "none";
+}
+
 function parseDue(dueAt?: string | Date | null): Date | null {
   if (!dueAt) return null;
   const date = dueAt instanceof Date ? dueAt : new Date(dueAt);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/**
- * Человеческая подпись срока.
- *
- * Считаем разницу в календарных днях, а не в часах: «завтра» должно оставаться
- * «завтра» и в 9 утра, и в 11 вечера. Само сравнение «просрочено или нет» идёт
- * по точному времени, иначе срок «сегодня 23:59» посреди дня выглядел бы
- * пропущенным.
- */
+/** Human-readable local deadline, including its exact time. */
 export function formatDue(dueAt?: string | Date | null, now: Date = new Date()): DueInfo {
   const due = parseDue(dueAt);
   if (!due) return { text: "без срока", urgency: "none", active: false };
 
   const diffDays = Math.round((startOfDay(due) - startOfDay(now)) / 86400000);
+  const dateLabel = `${String(due.getDate()).padStart(2, "0")} ${MONTHS_SHORT[due.getMonth()]} ${due.getFullYear()}`;
+  const time = `${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`;
 
   if (due.getTime() < now.getTime()) {
-    if (diffDays === 0) return { text: "просрочено сегодня", urgency: "overdue", active: false };
+    if (diffDays === 0) return { text: `срок истёк сегодня в ${time}`, urgency: "overdue", active: false };
     const late = Math.abs(diffDays);
     return {
-      text: `просрочено на ${late} ${pluralRu(late, "день", "дня", "дней")}`,
+      text: `срок истёк ${dateLabel} в ${time} · ${pluralRu(late, "день", "дня", "дней")} назад`,
       urgency: "overdue",
       active: false,
     };
   }
 
-  const time = `${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`;
   if (diffDays === 0) return { text: `сегодня до ${time}`, urgency: "today", active: true };
-  if (diffDays === 1) return { text: "завтра", urgency: "soon", active: true };
+  if (diffDays === 1) return { text: `завтра до ${time}`, urgency: "soon", active: true };
   if (diffDays <= 7) {
-    return { text: `через ${diffDays} ${pluralRu(diffDays, "день", "дня", "дней")}`, urgency: "soon", active: true };
+    return { text: `${dateLabel} до ${time}`, urgency: "soon", active: true };
   }
-  return { text: `до ${due.getDate()} ${MONTHS_SHORT[due.getMonth()]}`, urgency: "later", active: true };
+  return { text: `${dateLabel} до ${time}`, urgency: "later", active: true };
 }
 
-/**
- * Ключ сортировки: чем меньше, тем выше в списке. Задания без срока уходят
- * в конец — они никогда не горят, и держать их сверху бессмысленно.
- */
 export function dueSortKey(dueAt?: string | Date | null): number {
   const due = parseDue(dueAt);
   return due ? due.getTime() : Number.MAX_SAFE_INTEGER;
 }
 
-/**
- * Сортировка списка по сроку: просроченное сверху, затем ближайшее, в конце —
- * без срока. Исходный массив не меняется: он приходит прямо из состояния.
- */
 export function sortByDue<T>(items: T[], getDue: (item: T) => string | Date | null | undefined): T[] {
   return [...items].sort((a, b) => dueSortKey(getDue(a)) - dueSortKey(getDue(b)));
 }
 
-/** Сколько заданий в списке просрочено или горит сегодня. Для сводки в шапке. */
 export function countUrgent<T>(items: T[], getDue: (item: T) => string | Date | null | undefined, now: Date = new Date()): number {
   return items.filter((item) => {
     const { urgency } = formatDue(getDue(item), now);
