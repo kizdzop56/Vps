@@ -23,8 +23,29 @@ export default function Root({ children }: PropsWithChildren) {
           content="telephone=no, address=no, email=no, date=no"
         />
 
-        {/* Hide only the circular shortcut containing the plus glyph. */}
-        <style>{`[role="button"]:has([style*="width: 42px"][style*="height: 42px"][style*="border-radius: 21px"] svg path[d="M12 5.4v13.2M5.4 12h13.2"]) { display: none !important; }`}</style>
+        {/* Hide only the round 42px button with the plus glyph; leave labeled buttons alone. */}
+        <script dangerouslySetInnerHTML={{ __html: `(function(){
+          var plusPath = 'M12 5.4v13.2M5.4 12h13.2';
+          function hideCircularPlus(){
+            document.querySelectorAll('svg path[d="' + plusPath + '"]').forEach(function(path){
+              var node = path;
+              while (node && node !== document.body) {
+                var style = window.getComputedStyle(node);
+                var width = parseFloat(style.width);
+                var height = parseFloat(style.height);
+                var radius = parseFloat(style.borderTopLeftRadius);
+                if (Math.abs(width - 42) < 1 && Math.abs(height - 42) < 1 && Math.abs(radius - 21) < 1) {
+                  var button = node.closest('[role="button"]');
+                  (button || node).style.display = 'none';
+                  break;
+                }
+                node = node.parentElement;
+              }
+            });
+          }
+          hideCircularPlus();
+          new MutationObserver(hideCircularPlus).observe(document.documentElement, { childList: true, subtree: true });
+        })();` }} />
 
         <ScrollViewStyleReset />
       </head>
