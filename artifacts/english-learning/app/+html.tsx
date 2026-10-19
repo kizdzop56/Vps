@@ -23,8 +23,8 @@ export default function Root({ children }: PropsWithChildren) {
           content="telephone=no, address=no, email=no, date=no"
         />
 
-        {/* Hide only the 42px circular create-task shortcut. */}
-        <style>{`[role="button"]:has([style*="width: 42px"][style*="height: 42px"][style*="border-radius: 21px"]) { display: none !important; }`}</style>
+        {/* Hide only the circular shortcut containing the plus glyph. */}
+        <style>{`[role="button"]:has([style*="width: 42px"][style*="height: 42px"][style*="border-radius: 21px"] svg path[d="M12 5.4v13.2M5.4 12h13.2"]) { display: none !important; }`}</style>
 
         <ScrollViewStyleReset />
       </head>
