@@ -23,20 +23,21 @@ export default function Root({ children }: PropsWithChildren) {
           content="telephone=no, address=no, email=no, date=no"
         />
 
-        {/* Hide only the round 42px button with the plus glyph; leave labeled buttons alone. */}
+        {/* On the assignments page, hide only the 42px circular plus shortcut. */}
         <script dangerouslySetInnerHTML={{ __html: `(function(){
-          var plusPath = 'M12 5.4v13.2M5.4 12h13.2';
           function hideCircularPlus(){
-            document.querySelectorAll('svg path[d="' + plusPath + '"]').forEach(function(path){
+            if (!/\\/assignments\\/?$/.test(window.location.pathname)) return;
+            document.querySelectorAll('svg path').forEach(function(path){
+              var d = path.getAttribute('d') || '';
+              if (d.indexOf('M12 5.4') === -1 || d.indexOf('M5.4 12') === -1) return;
               var node = path;
               while (node && node !== document.body) {
+                var rect = node.getBoundingClientRect();
                 var style = window.getComputedStyle(node);
-                var width = parseFloat(style.width);
-                var height = parseFloat(style.height);
                 var radius = parseFloat(style.borderTopLeftRadius);
-                if (Math.abs(width - 42) < 1 && Math.abs(height - 42) < 1 && Math.abs(radius - 21) < 1) {
+                if (Math.abs(rect.width - 42) < 2 && Math.abs(rect.height - 42) < 2 && Math.abs(radius - 21) < 2) {
                   var button = node.closest('[role="button"]');
-                  (button || node).style.display = 'none';
+                  (button || node).style.setProperty('display', 'none', 'important');
                   break;
                 }
                 node = node.parentElement;
@@ -45,6 +46,8 @@ export default function Root({ children }: PropsWithChildren) {
           }
           hideCircularPlus();
           new MutationObserver(hideCircularPlus).observe(document.documentElement, { childList: true, subtree: true });
+          window.addEventListener('load', hideCircularPlus);
+          setInterval(hideCircularPlus, 500);
         })();` }} />
 
         <ScrollViewStyleReset />
