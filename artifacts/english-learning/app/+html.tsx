@@ -23,8 +23,8 @@ export default function Root({ children }: PropsWithChildren) {
           content="telephone=no, address=no, email=no, date=no"
         />
 
-        {/* Hide the circular create-task shortcut on the assignments screen. */}
-        <style>{`[role="button"][aria-label="Создать задание"] { display: none !important; }`}</style>
+        {/* Hide only the 42px circular create-task shortcut. */}
+        <style>{`[role="button"]:has([style*="width: 42px"][style*="height: 42px"][style*="border-radius: 21px"]) { display: none !important; }`}</style>
 
         <ScrollViewStyleReset />
       </head>
